@@ -19,6 +19,35 @@ from datetime import datetime
 # Add parent dir to path to import local modules
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+# Load .env from repo root if present (behaviour consistent with vast_submit/run_reliable_upscale)
+ROOT = Path(__file__).resolve().parents[1]
+_env_path = ROOT / '.env'
+if _env_path.exists():
+    try:
+        import importlib
+        _dotenv = importlib.import_module('dotenv')
+        load_dotenv = getattr(_dotenv, 'load_dotenv')
+        # load_dotenv will not overwrite existing env vars by default
+        load_dotenv(dotenv_path=str(_env_path))
+    except Exception:
+        # fallback parser: don't overwrite existing env vars
+        try:
+            with open(_env_path, 'r', encoding='utf-8') as _f:
+                for _line in _f:
+                    _line = _line.strip()
+                    if not _line or _line.startswith('#') or _line.startswith('//'):
+                        continue
+                    if '=' not in _line:
+                        continue
+                    _k, _v = _line.split('=', 1)
+                    _k = _k.strip()
+                    _v = _v.strip().strip('"').strip("'")
+                    if _k and _k not in os.environ:
+                        os.environ[_k] = _v
+        except Exception:
+            print('Warning: failed to parse .env file; continuing without modifying environment')
+
+
 try:
     import vast_submit
     import upload_b2

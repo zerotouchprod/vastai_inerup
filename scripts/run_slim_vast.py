@@ -30,6 +30,33 @@ from pathlib import Path
 # Add parent dir to path to import local modules
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+# Load .env from repo root if present (keep behaviour consistent with other scripts)
+ROOT = Path(__file__).resolve().parents[1]
+_env_path = ROOT / '.env'
+if _env_path.exists():
+    try:
+        import importlib
+        _dotenv = importlib.import_module('dotenv')
+        load_dotenv = getattr(_dotenv, 'load_dotenv')
+        load_dotenv(dotenv_path=str(_env_path))
+    except Exception:
+        try:
+            with open(_env_path, 'r', encoding='utf-8') as _f:
+                for _line in _f:
+                    _line = _line.strip()
+                    if not _line or _line.startswith('#') or _line.startswith('//'):
+                        continue
+                    if '=' not in _line:
+                        continue
+                    _k, _v = _line.split('=', 1)
+                    _k = _k.strip()
+                    _v = _v.strip().strip('"').strip("'")
+                    if _k and _k not in os.environ:
+                        os.environ[_k] = _v
+        except Exception:
+            print('Warning: failed to parse .env file; continuing')
+
+
 try:
     import vast_submit
     import upload_b2
@@ -205,22 +232,22 @@ def build_container_command(input_url: str, mode: str, scale: int, target_fps: i
     # Prefix: download fresh scripts from Git (allows quick fixes without rebuilding image)
     # Remove existing dir first if it exists, then clone fresh
     # Ensure we're not inside /workspace/project when removing it (prevents Git fatal error on some containers)
-    # Determine repository URL: prefer REPO_URL env var, then project root config.json, then fallback
+    # Determine repository URL: prefer REPO_URL env var, then project root config.yaml, then fallback to known upstream
     repo_url = os.environ.get('REPO_URL')
     if not repo_url:
         try:
-            cfg_path = Path(__file__).resolve().parents[1] / 'config.json'
+            cfg_path = Path(__file__).resolve().parents[1] / 'config.yaml'
             if cfg_path.exists():
-                import json
+                import yaml
                 with open(cfg_path, 'r', encoding='utf-8') as cf:
-                    cfg = json.load(cf)
-                    # Support keys 'repo_url' or 'repository'
+                    cfg = yaml.safe_load(cf) or {}
                     repo_url = cfg.get('repo_url') or cfg.get('repository')
         except Exception:
             repo_url = None
 
     if not repo_url:
-        exit(1)
+        # Use the canonical upstream GitLab repo used by this project as a fallback
+        repo_url = 'https://gitlab.com/zerotouchprod/vastai_interup.git'
 
     git_clone = f'cd / && rm -rf /workspace/project && git clone --depth 1 {repo_url} /workspace/project'
 
