@@ -568,7 +568,7 @@ def main():
     )
 
     # Create instance
-    image = config.get('image', 'registry.gitlab.com/gfever/vastai_interup:pytorch-fat-07110957')
+    image = config.get('image', '')
     wait_finish = vast_config.get('wait', False)
 
     print(f"\n🚀 Creating instance...")

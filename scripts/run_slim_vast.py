@@ -205,7 +205,24 @@ def build_container_command(input_url: str, mode: str, scale: int, target_fps: i
     # Prefix: download fresh scripts from Git (allows quick fixes without rebuilding image)
     # Remove existing dir first if it exists, then clone fresh
     # Ensure we're not inside /workspace/project when removing it (prevents Git fatal error on some containers)
-    git_clone = 'cd / && rm -rf /workspace/project && git clone --depth 1 https://gitlab.com/gfever/vastai_interup.git /workspace/project'
+    # Determine repository URL: prefer REPO_URL env var, then project root config.json, then fallback
+    repo_url = os.environ.get('REPO_URL')
+    if not repo_url:
+        try:
+            cfg_path = Path(__file__).resolve().parents[1] / 'config.json'
+            if cfg_path.exists():
+                import json
+                with open(cfg_path, 'r', encoding='utf-8') as cf:
+                    cfg = json.load(cf)
+                    # Support keys 'repo_url' or 'repository'
+                    repo_url = cfg.get('repo_url') or cfg.get('repository')
+        except Exception:
+            repo_url = None
+
+    if not repo_url:
+        exit(1)
+
+    git_clone = f'cd / && rm -rf /workspace/project && git clone --depth 1 {repo_url} /workspace/project'
 
     env_prefix = ' '.join(env_vars)
     run_cmd = f"{git_clone} && {env_prefix} bash {runner_cmd}"
@@ -274,24 +291,32 @@ def create_vast_instance(image: str, cmd: str, min_vram: int, max_price: float,
         raise RuntimeError("Failed to pick an offer")
 
     offer_id = str(chosen.get('id') or chosen.get('offer_id') or chosen.get('offer'))
-    print('Selected offer:', vast_submit.human_offer_summary(chosen))
+    # Cast to str to avoid static typing warnings from linters/type checkers
+    try:
+        offer_summary = vast_submit.human_offer_summary(chosen)
+    except Exception:
+        offer_summary = repr(chosen)
+    print('Selected offer:', str(offer_summary))
 
     # Build env to pass to the instance (read local credentials)
     env = {}
     if os.environ.get('B2_KEY'):
-        env['B2_KEY'] = os.environ.get('B2_KEY')
+        env['B2_KEY'] = str(os.environ.get('B2_KEY'))
     if os.environ.get('B2_SECRET'):
-        env['B2_SECRET'] = os.environ.get('B2_SECRET')
-    env['B2_ENDPOINT'] = os.environ.get('B2_ENDPOINT', 'https://s3.us-west-004.backblazeb2.com')
-    env['B2_BUCKET'] = os.environ.get('B2_BUCKET', 'noxfvr-videos')
+        env['B2_SECRET'] = str(os.environ.get('B2_SECRET'))
+    env['B2_ENDPOINT'] = str(os.environ.get('B2_ENDPOINT', ''))
+    env['B2_BUCKET'] = str(os.environ.get('B2_BUCKET', ''))
     if input_get_url:
-        env['INPUT_URL'] = input_get_url
+        env['INPUT_URL'] = str(input_get_url)
 
     # Options for instance creation: runtype='oneshot' prevents auto-restart on failure
     # This ensures container runs once and stops (no infinite restart loops)
-    options = {
-        'runtype': 'oneshot'  # Run once, do not restart on failure
-    }
+    # options = {
+    #     'runtype': 'oneshot'  # Run once, do not restart on failure
+    # }
+    # Use a plain dict and set keys to avoid static analysis treating all values as same type
+    options = {}
+    options['runtype'] = 'oneshot'  # Run once, do not restart on failure
     # If specific disk requested, add to options (Vast API accepts 'disk' in payload)
     if disk_gb:
         try:
@@ -521,7 +546,7 @@ def main():
     
     # Vast.ai options
     parser.add_argument('--image', 
-                       default='registry.gitlab.com/gfever/vastai_interup:pytorch-fat-07110957',
+                       default='',
                        help='Docker image to use')
     parser.add_argument('--min-vram', type=int, default=8,
                        help='Minimum GPU VRAM in GB')

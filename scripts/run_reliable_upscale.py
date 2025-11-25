@@ -171,7 +171,7 @@ print('Env keys to pass: B2_BUCKET=', env.get('B2_BUCKET') is not None)
 
 print('Calling create_instance...')
 try:
-    resp = vast_submit.create_instance(offer_id, os.environ.get('VAST_IMAGE','registry.gitlab.com/gfever/vastai_interup:latest'), args_str, env=env, start=True)
+    resp = vast_submit.create_instance(offer_id, os.environ.get('VAST_IMAGE',''), args_str, env=env, start=True)
     print('Create response:', json.dumps(resp, indent=2))
 except Exception as e:
     print('Create failed:', e)

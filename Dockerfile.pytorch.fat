@@ -108,15 +108,6 @@ RUN mkdir -p /opt/realesrgan_models && \
 RUN pip install --no-cache-dir --force-reinstall "numpy<2" && \
     rm -rf /root/.cache/pip
 
-# DO NOT clone repos or copy scripts - everything will be downloaded at runtime from Git.
-# This allows quick bug fixes without rebuilding the image.
-# The runtime command will do: git clone https://gitlab.com/gfever/vastai_interup.git /workspace/project
-# That clone will include:
-#   - /workspace/project/external/Real-ESRGAN (cloned as git submodule or by scripts)
-#   - /workspace/project/external/RIFE (cloned as git submodule or by scripts)
-#   - /workspace/project/scripts/* (all helper scripts)
-#   - /workspace/project/pipeline.py (main processing script)
-
 ENV PYTHONPATH="/workspace/project:/workspace/project/external/Real-ESRGAN:/workspace/project/external/RIFE"
 
 # Enable strict frame count validation by default (ensures Real-ESRGAN doesn't change frame count)
