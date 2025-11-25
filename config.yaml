@@ -1,0 +1,376 @@
+# Configuration for run_slim_vast.py
+# Commit this file to Git and push to GitLab
+# Container will read fresh config on every restart
+
+config_url: "https://gist.githubusercontent.com/zerotouchprod/56872fc774442b627dbf2e658d03d19c/raw/config.json"
+# Video processing settings
+
+image: "registry.gitlab.com/gfever/vastai_interup:pytorch-fat-07110957"
+
+# ==================== PREDEFINED PRESETS ====================
+presets:
+  low:
+    preset: "low"
+    min_vram: 12
+    # gpu_models остаётся удобным коротким списком предпочтительных моделей (необязательно)
+    gpu_models:
+      - "RTX_3060_Ti"
+      - "RTX_3070"
+      - "RTX_2080_Ti"
+    # Больше контроля: whitelist/blacklist — необязательные.
+    # - gpu_whitelist: если задан и gpu_required=true — ТОлько эти модели допускаются
+    # - если gpu_whitelist задан и gpu_required=false (по-умолчанию) — эти модели имеют приоритет
+    gpu_whitelist: []
+    gpu_blacklist: []
+    gpu_required: false
+    gpu_priority: true
+    min_price: 0.08
+    max_price: 0.25
+    min_reliability: 0.70
+    min_dlperf: 20
+    min_cuda: 11.0
+    compute_cap: 700
+    min_inet_down: 50
+    min_inet_up: 25
+    min_cpu_cores: 4
+    min_cpu_ram: 16
+    datacenter: false
+    verified: false
+    type: "bid"
+    wait: false
+    download: true
+
+  balanced:
+    preset: "balanced"
+    min_vram: 16
+    gpu_models:
+      - "RTX_3080"
+      - "RTX_3080_Ti"
+      - "RTX_3090"
+      - "RTX_4070_Ti"
+      - "RTX_4080"
+      - "A100"
+    # Преференции/ограничения
+    gpu_whitelist: []
+    gpu_blacklist: []
+    gpu_required: false
+    gpu_priority: true
+    min_price: 0.12
+    max_price: 0.50
+    min_reliability: 0.80
+    min_dlperf: 35
+    min_dlperf_per_dphtotal: 100
+    min_cuda: 11.2
+    compute_cap: 750
+    min_inet_down: 100
+    min_inet_up: 50
+    min_cpu_cores: 6
+    min_cpu_ram: 20
+    min_disk_bw: 100
+    min_gpu_mem_bw: 400
+    datacenter: false
+    verified: true
+    type: "bid"
+    wait: false
+    download: true
+
+  high:
+    preset: "high"
+    min_vram: 24
+    gpu_models:
+      - "RTX_4090"
+      - "RTX_A6000"
+      - "RTX_3090"
+      - "A100"
+      - "A40"
+    gpu_whitelist: []
+    gpu_blacklist: []
+    gpu_required: false
+    gpu_priority: true
+    min_price: 0.25
+    max_price: 0.90
+    min_reliability: 0.98
+    min_dlperf: 60
+    min_dlperf_per_dphtotal: 150
+    min_cuda: 11.7
+    compute_cap: 800
+    min_inet_down: 200
+    min_inet_up: 100
+    min_cpu_cores: 8
+    min_cpu_ram: 32
+    min_disk_bw: 500
+    min_gpu_mem_bw: 600
+    min_pcie_gen: 4
+    datacenter: true
+    verified: true
+    static_ip: true
+    type: "on-demand"
+    wait: false
+    download: true
+
+# Примечание: текущий активный блок vast: далее в файле остаётся без изменений —
+# вы можете установить vast.preset: "balanced" (или другой) чтобы использовать пресет автоматически
+
+# ==================== VAST.AI PRESETS ====================
+# Раскомментируйте ОДИН пресет, который подходит под ваши нужды
+# Цель: апскейл 4K + интерполяция 60fps+
+
+# ==================== PRESET: LOW (Бюджетный) ====================
+# Недорогие GPU, может быть менее надёжно
+# Подходит для: тестирования, коротких видео, некритичные задачи
+# Ожидаемая скорость: ~5-10 мин для 10 сек видео
+# vast:
+#   preset: "low"
+#   # GPU параметры
+#   min_vram: 12              # GB - минимум для 4K upscale
+#   gpu_models:               # бюджетные, но быстрые модели
+#     - "RTX_3060_Ti"
+#     - "RTX_3070"
+#     - "RTX_2080_Ti"
+#   # Цена
+#   min_price: 0.08           # $/hour - фильтруем слишком медленные
+#   max_price: 0.25           # $/hour - бюджетный лимит
+#   # Надёжность и производительность
+#   min_reliability: 0.90     # минимальная надёжность (0-1)
+#   min_dlperf: 20            # минимальная DL производительность
+#   min_cuda: 11.0            # CUDA 11.0+
+#   compute_cap: 700          # CUDA compute capability 7.0+
+#   # Сеть и ресурсы
+#   min_inet_down: 50         # MB/s - скорость скачивания
+#   min_inet_up: 25           # MB/s - скорость загрузки
+#   min_cpu_cores: 4          # минимум CPU ядер
+#   min_cpu_ram: 16           # GB - системная RAM
+#   # Настройки
+#   datacenter: false         # домашние серверы дешевле
+#   verified: false           # разрешаем неверифицированные для экономии
+#   wait: false
+#   download: true
+
+# ==================== PRESET: BALANCED (Рекомендуется) ====================
+# Баланс скорости, надёжности и цены
+# Подходит для: регулярный апскейл 4K + интерполяция 60fps
+# Ожидаемая скорость: ~3-7 мин для 10 сек видео
+vast:
+  preset: "balanced"
+  #num_gpus: 1
+  # GPU параметры (gpu_models остаётся опцией — можно опереться на dlperf/vram и другие метрики)
+  gpu_models:                # необязательно; рекомендуется как подсказка/приоритет
+    - "RTX_3080"
+    - "RTX_3090"
+  gpu_whitelist: []          # если хотите строго требовать конкретные модели — укажите и установите gpu_required: true
+  gpu_blacklist: []
+  gpu_required: false        # false = модели в whitelist будут предпочтением; true = только эти модели
+  gpu_priority: true         # true = использовать whitelist как фактор сортировки (кроме строгого требования)
+  min_vram: 14
+  # Цена
+  min_price: 0.05
+  max_price: 0.1
+  # Надёжность и производительность
+  min_reliability: 0.95      # Increased from 0.90
+  min_dlperf: 40             # Increased from 35
+  min_dlperf_per_dphtotal: 100
+  min_cuda: 11.2
+  compute_cap: 750
+  # Сеть и ресурсы
+  min_inet_down: 100
+  min_inet_up: 50
+  min_cpu_cores: 6
+  min_cpu_ram: 20
+  min_disk_bw: 100
+  min_gpu_mem_bw: 400
+  # Настройки
+  datacenter: true           # Changed from false
+  verified: true
+  type: "bid"
+  wait: false
+  download: true
+  # Request allocated storage (GB) for created instances to avoid small-disk hosts
+  allocated_storage: 100
+  host_whitelist:
+    - 78246
+    - 124171
+    - 67268
+    - 85538
+    - 84962 #ua
+    - 264182
+    - 150602
+    - 67268
+    - 280301 #2cpu
+    - 160473 #2cpu
+  # Blacklist of host IDs to ignore when searching offers (vasts.host_blacklist)
+  host_blacklist:
+    - 155386
+    - 319870
+    - 124171
+    - 81456
+
+# ==================== PRESET: HIGH (Производительность) ====================
+# Максимальная скорость и надёжность, высокая цена
+# Подходит для: продакшн, срочные задачи, большие файлы, 8K upscale
+# Ожидаемая скорость: ~1-3 мин для 10 сек видео
+# vast:
+#   preset: "high"
+#   # GPU параметры
+#   min_vram: 24              # GB - максимум для сложных задач
+#   gpu_models:               # топовые модели
+#     - "RTX_4090"
+#     - "RTX_A6000"
+#     - "RTX_3090"
+#     - "A100"
+#     - "A40"
+#   # Цена
+#   min_price: 0.25           # $/hour - только быстрые GPU
+#   max_price: 0.90           # $/hour - премиум бюджет
+#   # Надёжность и производительность
+#   min_reliability: 0.98     # максимальная надёжность
+#   min_dlperf: 60            # высокая производительность
+#   min_dlperf_per_dphtotal: 150  # лучшее соотношение цена/производительность
+#   min_cuda: 11.7            # новая CUDA
+#   compute_cap: 800          # CUDA compute capability 8.0+
+#   # Сеть и ресурсы
+#   min_inet_down: 200        # MB/s - очень быстрый интернет
+#   min_inet_up: 100          # MB/s - быстрая загрузка
+#   min_cpu_cores: 8          # мощный CPU
+#   min_cpu_ram: 32           # GB - много RAM
+#   min_disk_bw: 500          # MB/s - быстрый NVMe диск
+#   min_gpu_mem_bw: 600       # GB/s - высокая пропускная способность
+#   min_pcie_gen: 4           # PCIe 4.0+
+#   # Настройки
+#   datacenter: true          # только дата-центры
+#   verified: true            # только верифицированные
+#   static_ip: true           # стабильный IP
+#   type: "on-demand"         # гарантированные ресурсы (дороже)
+#   wait: false
+#   download: true
+#   # Приоритет локации (низкий ping)
+#   # geolocation_prefer:
+#   #   - "US"                # США
+#   #   - "DE"                # Германия
+#   #   - "NL"                # Нидерланды
+
+# ==================== ADVANCED: Reuse Host (Самый быстрый!) ====================
+# Переиспользование хоста с предыдущего запуска
+# Запуск: 10-30 сек вместо 5-10 мин!
+# 1. Запустите первый раз любым пресетом
+# 2. Сохраните Instance ID (например: 27641701) или Host ID (например: 54814)
+# 3. Раскомментируйте и установите:
+# vast:
+#   reuse_host: 27641701    # Instance ID или Host ID
+#   # ... остальные параметры из пресета ...
+
+# B2 settings (read from env vars, but can override here)
+b2:
+  bucket: "noxfvr-videos"
+  endpoint: "https://s3.us-west-004.backblazeb2.com"
+
+# Advanced settings
+advanced:
+  # Backend preference: auto, pytorch, ncnn, ffmpeg
+  prefer: "auto"
+
+  # Strict mode: fail if GPU not available (default: false for fallback support)
+  # Set to true only if you want to fail immediately when GPU processing fails
+  strict: false
+
+  # Low-res strategy: interp-then-upscale (fast, default) or upscale-then-interp
+  lowres_strategy: "interp-then-upscale"
+
+# Examples of different configurations:
+# Uncomment and modify for different use cases
+
+# Example 1: Quick 2x upscale (fast, ~2 min)
+# video:
+#   input: "test.mp4"
+#   output: "test_2x.mp4"
+#   mode: "upscale"
+#   scale: 2
+# vast:
+#   min_vram: 6
+#   max_price: 0.15
+
+# Example 2: Only interpolation (no upscale)
+# video:
+#   input: "video.mp4"
+#   output: "video_60fps.mp4"
+#   mode: "interpolate"
+#   target_fps: 60
+# vast:
+#   min_vram: 8
+#   max_price: 0.20
+
+# Example 3: Reuse host from previous run (10-30 sec startup!)
+# First, run once and save the output:
+#   Instance ID: 27641701  ← Use this
+#   Host: 54814            ← Or this
+# Then uncomment and set:
+# video:
+#   input: "video2.mp4"
+#   output: "video2_4k.mp4"
+#   mode: "both"
+#   scale: 4
+#   target_fps: 60
+# vast:
+#   reuse_host: 27641701  # Instance ID from previous run
+#   # OR
+#   # reuse_host: 54814   # Host ID directly
+#   min_vram: 8
+#   max_price: 0.30
+
+# Example 4: Multiple videos on same host (fastest workflow!)
+# Step 1: First video
+# python scripts/run_with_config.py
+# Save: Instance ID: 27641701
+#
+# Step 2: Edit config, add reuse_host
+# video:
+#   input: "video3.mp4"
+# vast:
+#   reuse_host: 27641701
+# git add config.yaml && git commit -m "video3" && git push
+# vastai restart instance 27641701
+# (30 seconds startup!)
+#
+# Step 3: Repeat for more videos
+# Just edit config, commit, push, restart
+# Each time: 30 seconds instead of 10 minutes!
+
+# ==================== SPEED OPTIMIZATION TIPS ====================
+# Текущие оптимизации (автоматические):
+# ✅ Batch RIFE processing - 3-5x faster than frame-by-frame
+# ✅ Optimized padding (64x) for RIFE HDv3
+# ✅ Model stays in GPU memory during batch processing
+# ✅ Progress indicators to avoid "frozen" feeling
+#
+# Дополнительные способы ускорения:
+#
+# 1. Используйте HIGH preset для максимальной скорости:
+#    vast:
+#      preset: "high"
+#    Это выберет RTX 4090/A6000 → обработка в 2-3x быстрее
+#
+# 2. Reuse host для следующих видео (10-30 сек вместо 5-10 мин старта):
+#    После первого запуска сохраните Instance ID и используйте:
+#    vast:
+#      reuse_host: 27641701
+#
+# 3. Понизьте разрешение если не нужен 4K:
+#    video:
+#      scale: 2  # вместо 4
+#    Обработка в 4x быстрее!
+#
+# 4. Понизьте FPS если не нужно 60:
+#    video:
+#      target_fps: 48  # вместо 60
+#    Обработка в 1.25x быстрее!
+#
+# 5. Только апскейл или только интерполяция:
+#    video:
+#      mode: "upscale"  # или "interpolate"
+#    Обработка в 2x быстрее!
+#
+# Ожидаемое время для qad.mp4 (640x480, 6 сек):
+# - С batch RIFE + RTX 3090 Ti: ~2 мин интерполяция + ~6 мин апскейл = 8-10 мин
+# - С batch RIFE + RTX 4090:    ~1 мин интерполяция + ~4 мин апскейл = 5-7 мин
+# - Frame-by-frame (старый):    ~20-25 мин интерполяция + ~6 мин апскейл = 26-31 мин
+#
+# Итоговое ускорение: до 3-5x быстрее! 🚀

@@ -1,0 +1,202 @@
+#!/usr/bin/env bash
+set -eo pipefail
+
+# remote_runner.sh
+# Run inside the container on vast.ai. Reads env vars set by the caller.
+#
+# NEW: If config.yaml exists in repo, uses it instead of ENV vars!
+# This allows updating processing parameters via Git without rebuilding instance.
+#
+# ENV vars (fallback if no config.yaml):
+#  INPUT_URL - URL to download input (if not provided, assume /workspace/input.mp4 already present)
+#  MODE - upscale|interpolate|both
+#  SCALE - integer (2 or 4)
+#  INTERP_FACTOR - float (e.g. 2.5)
+#  B2_BUCKET - destination bucket
+#  B2_OUTPUT_KEY - object key for output
+#  B2_ENDPOINT - S3 endpoint (optional)
+
+echo "=== Remote Runner Starting ==="
+echo "Time: $(date)"
+echo ""
+
+# Check if config.yaml exists in repository (after Git pull by entrypoint.sh)
+CONFIG_FILE="/workspace/project/config.yaml"
+USE_CONFIG=false
+
+if [ -f "$CONFIG_FILE" ]; then
+  echo "✓ Found config.yaml in repository!"
+  echo "  → Will use config-driven workflow instead of ENV vars"
+  USE_CONFIG=true
+else
+  echo "✗ No config.yaml found, using ENV vars (legacy mode)"
+fi
+
+echo ""
+
+# Set defaults from ENV (used only if USE_CONFIG=false)
+INPUT="${INPUT_URL:-}"
+MODE="${MODE:-both}"
+SCALE="${SCALE:-2}"
+INTERP="${INTERP_FACTOR:-2.50}"
+OUTPUT_DIR=/workspace/output
+FINAL=/workspace/final_output.mp4
+
+if [ "$USE_CONFIG" = false ]; then
+  echo "[remote_runner] ENV MODE=$MODE SCALE=$SCALE INTERP=$INTERP"
+  echo "[remote_runner] PREFER=${PREFER:-auto}"
+fi
+
+echo "[remote_runner] Checking for PyTorch wrapper scripts and ncnn binaries:"
+if [ -x "/workspace/project/run_realesrgan_pytorch.sh" ]; then echo "  run_realesrgan_pytorch.sh: exists+executable"; else echo "  run_realesrgan_pytorch.sh: missing or not executable"; fi
+if [ -x "/workspace/project/run_rife_pytorch.sh" ]; then echo "  run_rife_pytorch.sh: exists+executable"; else echo "  run_rife_pytorch.sh: missing or not executable"; fi
+for b in realesrgan-ncnn-vulkan rife-ncnn-vulkan realesrgan-ncnn rife-ncnn realesrgan rife; do
+  which $b >/dev/null 2>&1 && echo "  ncnn binary found in PATH: $b" || true
+done
+
+# Clone Real-ESRGAN and RIFE repos to get inference scripts
+# Remove package directories to avoid import conflicts with installed packages
+if [ ! -d "/workspace/project/external/Real-ESRGAN" ]; then
+  echo "[remote_runner] Cloning Real-ESRGAN (for inference scripts)..."
+  mkdir -p /workspace/project/external
+  git clone --depth 1 https://github.com/xinntao/Real-ESRGAN.git /workspace/project/external/Real-ESRGAN
+  # Remove realesrgan package dir to avoid import conflicts - use installed package instead
+  rm -rf /workspace/project/external/Real-ESRGAN/realesrgan
+  echo "[remote_runner] Removed realesrgan/ package dir from cloned repo (using installed package)"
+fi
+if [ ! -d "/workspace/project/external/RIFE" ]; then
+  echo "[remote_runner] Cloning RIFE (for inference scripts)..."
+  mkdir -p /workspace/project/external
+  git clone --depth 1 https://github.com/hzwer/arXiv2020-RIFE.git /workspace/project/external/RIFE
+fi
+
+echo "[remote_runner] Using installed Real-ESRGAN/RIFE packages from image"
+
+# Ensure wrapper scripts are executable (helpful in some git/FS setups)
+if [ -f "/workspace/project/run_realesrgan_pytorch.sh" ]; then
+  chmod +x /workspace/project/run_realesrgan_pytorch.sh || true
+  echo "[remote_runner] Ensured run_realesrgan_pytorch.sh is executable"
+fi
+if [ -f "/workspace/project/run_rife_pytorch.sh" ]; then
+  chmod +x /workspace/project/run_rife_pytorch.sh || true
+  echo "[remote_runner] Ensured run_rife_pytorch.sh is executable"
+fi
+
+# If PyTorch wrappers exist, try to install Python deps (torchvision and repo requirements)
+if [ -x "/workspace/project/run_realesrgan_pytorch.sh" ] || [ -x "/workspace/project/run_rife_pytorch.sh" ]; then
+  echo "[remote_runner] Detected PyTorch wrappers; installing Python dependencies (may take a while)..."
+  # upgrade pip and wheel
+  python3 -m pip install --upgrade pip setuptools wheel || true
+  # Avoid performing heavy runtime installs (torch/torchvision) which can pull large wheels
+  # and cause disk pressure on small ephemeral instances. Prefer building a Docker image
+  # that already contains PyTorch+torchvision+basicsr/realesrgan. If any of the following
+  # imports fail, we print a diagnostic and continue (pipeline will fallback to CPU/ffmpeg).
+  if python3 -c "import torchvision" >/dev/null 2>&1; then
+    echo "torchvision present"
+  else
+    echo "WARNING: torchvision not found in runtime environment."
+    echo "  Recommended: use an image that includes PyTorch+torchvision (see Dockerfile.pytorch.slim)"
+  fi
+
+  if python3 -c "import basicsr" >/dev/null 2>&1; then
+    echo "basicsr present"
+  else
+    echo "WARNING: basicsr (Real-ESRGAN dependency) not found. If you need Real-ESRGAN, rebuild image with basicsr installed."
+  fi
+
+  if python3 -c "import moviepy" >/dev/null 2>&1; then
+    echo "moviepy present"
+  else
+    echo "NOTE: moviepy not found. RIFE fallback or some helpers may not work without it. Consider including it in the image."
+  fi
+fi
+
+# Download input if INPUT is set
+if [ -n "$INPUT" ]; then
+  echo "[remote_runner] Downloading input from $INPUT..."
+  wget -O /workspace/input.mp4 "$INPUT" || curl -L -o /workspace/input.mp4 "$INPUT"
+else
+  echo "[remote_runner] No INPUT_URL provided; assuming /workspace/input.mp4 exists"
+fi
+
+# GPU diagnostics
+echo "=== GPU DIAGNOSTICS (inside container) ==="
+if command -v nvidia-smi >/dev/null 2>&1; then
+  nvidia-smi || true
+# Run pipeline - CONFIG-DRIVEN or ENV-DRIVEN
+if [ "$USE_CONFIG" = true ]; then
+  echo ""
+  echo "=== CONFIG-DRIVEN WORKFLOW ==="
+  echo "Using config from: $CONFIG_FILE"
+  echo ""
+
+  # Show config content (for debugging)
+  echo "--- Config preview ---"
+  head -n 20 "$CONFIG_FILE"
+  echo "--- End preview ---"
+  echo ""
+
+  # Run using container_config_runner.py which reads config.yaml
+  # This script downloads input, runs pipeline, uploads output - all from config!
+  if [ -f "/workspace/project/scripts/container_config_runner.py" ]; then
+    echo "[remote_runner] Running with config.yaml via container_config_runner.py..."
+    python3 /workspace/project/scripts/container_config_runner.py "$CONFIG_FILE"
+  else
+    echo "ERROR: container_config_runner.py not found!"
+    echo "Falling back to ENV-driven mode..."
+    USE_CONFIG=false
+  fi
+fi
+
+# Fallback to ENV-driven mode (legacy)
+if [ "$USE_CONFIG" = false ]; then
+  echo ""
+  echo "=== ENV-DRIVEN WORKFLOW (legacy) ==="
+  echo "[remote_runner] Running pipeline with ENV vars..."
+  python3 /workspace/project/pipeline.py --input /workspace/input.mp4 --output "$OUTPUT_DIR" --mode "$MODE" --scale "$SCALE" --interp-factor "$INTERP" --prefer "$PREFER"
+python3 - <<'PY'
+  # Find result
+  echo "[remote_runner] Locating output file..."
+  OUT=$(find "$OUTPUT_DIR" -name "*.mp4" -type f | head -n1 || true)
+  if [ -z "$OUT" ]; then
+    echo "No output .mp4 found in $OUTPUT_DIR"
+    exit 2
+  fi
+  cp "$OUT" "$FINAL"
+  ls -lh "$FINAL"
+                print('cuda_device_name:', torch.cuda.get_device_name(0))
+  echo "Found output file, uploading..."
+  # Call container_upload.py which uses boto3 or transfer.sh fallback
+  python3 /workspace/project/scripts/container_upload.py "$FINAL" "${B2_BUCKET:-noxfvr-videos}" "${B2_OUTPUT_KEY:-output/output.mp4}" "${B2_ENDPOINT:-https://s3.us-west-004.backblazeb2.com}"
+fi
+        print('torch.cuda check failed:', e)
+except Exception as e:
+    print('import torch failed:', e)
+PY
+
+# Ensure output dir exists
+mkdir -p "$OUTPUT_DIR"
+
+# Run pipeline
+echo "[remote_runner] Running pipeline..."
+python3 /workspace/project/pipeline.py --input /workspace/input.mp4 --output "$OUTPUT_DIR" --mode "$MODE" --scale "$SCALE" --interp-factor "$INTERP" --prefer "$PREFER"
+
+# Find result
+echo "[remote_runner] Locating output file..."
+OUT=$(find "$OUTPUT_DIR" -name "*.mp4" -type f | head -n1 || true)
+if [ -z "$OUT" ]; then
+  echo "No output .mp4 found in $OUTPUT_DIR"
+  exit 2
+fi
+cp "$OUT" "$FINAL"
+ls -lh "$FINAL"
+
+echo "Found output file, uploading..."
+# Call container_upload.py which uses boto3 or transfer.sh fallback
+python3 /workspace/project/scripts/container_upload.py "$FINAL" "${B2_BUCKET:-noxfvr-videos}" "${B2_OUTPUT_KEY:-output/output.mp4}" "${B2_ENDPOINT:-https://s3.us-west-004.backblazeb2.com}"
+
+echo "remote_runner done"
+echo "[remote_runner] SUCCESS! Exiting container..."
+
+# Exit explicitly to prevent restart
+exit 0

@@ -1,0 +1,62 @@
+# Ignore Git metadata
+.git
+.gitlab-ci.yml
+
+# Python artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+*.egg
+venv/
+.venv/
+.venv*/
+env/
+
+# Virtualenv and pip cache
+pip-wheel-metadata/
+root/.cache/
+**/.cache/
+
+# Large outputs - videos, temporary outputs
+out_*
+out_*/
+out_4k/
+out_upscale/
+out_interp/
+out_upscale/*
+tmp_*/
+tmp_*/
+out_upscale/
+
+# Common media formats (skip large binaries)
+*.mp4
+*.mkv
+*.mov
+*.avi
+
+# Build artifacts
+dist/
+build/
+*.egg-info/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Editor settings
+.vscode/
+.idea/
+
+# Kaniko/CI temp
+.kaniko/
+
+# Any other heavy folders/files you don't want in image
+out_*/
+
+# End of file
+

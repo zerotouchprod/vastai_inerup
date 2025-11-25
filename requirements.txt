@@ -1,0 +1,10 @@
+# Optional Python requirements for advanced pipelines (Real-ESRGAN / RIFE) -- leave empty for ffmpeg-only
+# Example if you want PyTorch-based RIFE/Real-ESRGAN:
+# torch==2.0.1+cu117
+# torchvision
+
+# Utilities used by dev scripts
+requests>=2.32.0
+boto3>=1.28.0
+python-dotenv>=1.0.0
+PyYAML>=6.0  # For config.yaml support

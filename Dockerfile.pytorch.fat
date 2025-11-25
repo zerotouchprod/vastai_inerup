@@ -1,0 +1,134 @@
+# Dockerfile.pytorch.fat
+# Full PyTorch fat image (CUDA + PyTorch + Real-ESRGAN dependencies). This Dockerfile
+# uses a multi-stage wheelbuilder to prebuild Python wheels and install them from a
+# local wheelhouse to avoid heavy network downloads during final image build.
+# Build locally:
+#   docker build -f Dockerfile.pytorch.fat -t vastai-interup:pytorch-fat .
+
+FROM nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04 AS base
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install only runtime deps (keep the image small)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    wget \
+    curl \
+    git \
+    python3-pip \
+    python3-venv \
+    ffmpeg \
+    libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender-dev \
+    libgomp1 \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /workspace/project
+
+# Create and use venv to avoid system package issues
+RUN python3 -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+# Upgrade pip and install minimal Python packages
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel
+
+# Install CUDA-enabled PyTorch wheel. Host reports Max CUDA ~12.x — install matching torch+cu121 wheels.
+RUN pip install --no-cache-dir \
+    torch==2.2.2+cu121 \
+    torchvision==0.17.2+cu121 \
+    --index-url https://download.pytorch.org/whl/cu121 && \
+    rm -rf /root/.cache/pip
+
+# Lightweight Python utilities used by scripts
+# Pin numpy<2 FIRST to avoid compatibility issues with PyTorch 2.2.2
+RUN pip install --no-cache-dir "numpy<2" && \
+    rm -rf /root/.cache/pip
+
+# Install Real-ESRGAN and RIFE dependencies (HEAVY - install early for better caching)
+# Install basicsr with patch for torchvision 0.17+ compatibility
+RUN pip install --no-cache-dir basicsr && \
+    sed -i 's/from torchvision.transforms.functional_tensor import rgb_to_grayscale/from torchvision.transforms.functional import rgb_to_grayscale/' \
+        /opt/venv/lib/python3.10/site-packages/basicsr/data/degradations.py && \
+    rm -rf /root/.cache/pip /tmp/*
+
+RUN pip install --no-cache-dir facexlib gfpgan && rm -rf /root/.cache/pip /tmp/*
+
+RUN pip install --no-cache-dir timm einops && rm -rf /root/.cache/pip /tmp/*
+
+# Install lightweight utilities and video processing libraries (change often - install last)
+# NOTE: scikit-video removed - it's unmaintained (last update 2019) and has NumPy 2.x compatibility issues
+# RIFE will use frame-by-frame method instead (more reliable)
+RUN pip install --no-cache-dir \
+    opencv-python-headless pillow tqdm pyyaml boto3 botocore \
+    ffmpeg-python scikit-video scipy \
+    imageio imageio-ffmpeg decorator moviepy \
+    gdown && \
+    rm -rf /root/.cache/pip /tmp/*
+
+
+# Install Real-ESRGAN and RIFE as Python packages to avoid missing modules at runtime
+RUN set -eux; \
+    git clone --depth 1 https://github.com/xinntao/Real-ESRGAN.git /tmp/Real-ESRGAN && \
+    cd /tmp/Real-ESRGAN && \
+    pip install --no-cache-dir . && \
+    cd / && \
+    rm -rf /tmp/Real-ESRGAN && \
+    git clone --depth 1 https://github.com/hzwer/arXiv2020-RIFE.git /tmp/RIFE && \
+    cd /tmp/RIFE && \
+    pip install --no-cache-dir torch-tb-profiler || true && \
+    cd / && \
+    rm -rf /tmp/RIFE /root/.cache/pip
+
+# Create directory structure for RIFE models (will be downloaded automatically on first run)
+# RIFE has built-in model downloading, we just ensure the directory exists
+RUN mkdir -p /opt/rife_models/train_log
+
+# Copy pre-downloaded RIFE models into image (faster and more reliable than runtime download)
+# Using RIFE v4.26 (24MB model, better quality than v3.6)
+COPY RIFEv4.26_0921/train_log/ /opt/rife_models/train_log/
+
+# Download Real-ESRGAN models directly in image (faster and more reliable than COPY for large files)
+# x2plus: 33 MB, x4plus: 67 MB
+RUN mkdir -p /opt/realesrgan_models && \
+    cd /opt/realesrgan_models && \
+    echo "Downloading RealESRGAN_x2plus.pth (33 MB)..." && \
+    wget -q --show-progress \
+        https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.1/RealESRGAN_x2plus.pth \
+        -O RealESRGAN_x2plus.pth && \
+    echo "Downloading RealESRGAN_x4plus.pth (67 MB)..." && \
+    wget -q --show-progress \
+        https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth \
+        -O RealESRGAN_x4plus.pth && \
+    echo "✓ Real-ESRGAN models downloaded successfully" && \
+    ls -lh /opt/realesrgan_models/
+
+# Force numpy<2 again in case any package upgraded it
+RUN pip install --no-cache-dir --force-reinstall "numpy<2" && \
+    rm -rf /root/.cache/pip
+
+# DO NOT clone repos or copy scripts - everything will be downloaded at runtime from Git.
+# This allows quick bug fixes without rebuilding the image.
+# The runtime command will do: git clone https://gitlab.com/gfever/vastai_interup.git /workspace/project
+# That clone will include:
+#   - /workspace/project/external/Real-ESRGAN (cloned as git submodule or by scripts)
+#   - /workspace/project/external/RIFE (cloned as git submodule or by scripts)
+#   - /workspace/project/scripts/* (all helper scripts)
+#   - /workspace/project/pipeline.py (main processing script)
+
+ENV PYTHONPATH="/workspace/project:/workspace/project/external/Real-ESRGAN:/workspace/project/external/RIFE"
+
+# Enable strict frame count validation by default (ensures Real-ESRGAN doesn't change frame count)
+# Set to 0 to allow frame count changes (faster but less accurate)
+ENV STRICT_FRAME_COUNT=1
+
+# Copy entrypoint script that updates project from Git on every container start
+COPY scripts/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+# Set entrypoint to update project on every start (including reboot)
+ENTRYPOINT ["/entrypoint.sh"]
+
+# Default command: start a bash shell
+CMD ["/bin/bash"]
