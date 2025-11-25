@@ -125,7 +125,7 @@ except ImportError as e:
     sys.exit(1)
 
 
-def load_model(model_name='RealESRGAN_x4plus', scale=4, device='cuda', tile_size=None, half=True):
+def load_model(model_name='RealESRGAN_x4plus', scale=4, device='cuda', tile_size=None, half=True, allow_data_parallel=True, gpu_id=None):
     """Load Real-ESRGAN model with smart model selection"""
 
     # Try to auto-select x2plus for scale=2 (faster), but fallback to x4plus if unavailable
@@ -253,11 +253,11 @@ def load_model(model_name='RealESRGAN_x4plus', scale=4, device='cuda', tile_size
         pre_pad=0,
         half=half,  # Use FP16 if requested
         device=device,
-        gpu_id=0,  # Explicitly set GPU
+        gpu_id=(0 if gpu_id is None else gpu_id),  # Explicitly set GPU (allow worker override)
         dni_weight=None,  # Disable DNI for speed (if available in this version)
     )
 
-    # --- Multi-GPU support: if multiple CUDA devices are available, wrap model in DataParallel ---
+    # --- Multi-GPU support: optionally wrap model in DataParallel ---
     try:
         import torch
         if torch.cuda.is_available():
@@ -267,7 +267,9 @@ def load_model(model_name='RealESRGAN_x4plus', scale=4, device='cuda', tile_size
     except Exception:
         gpu_count = 0
 
-    if gpu_count > 1:
+    # Wrap in DataParallel only when allowed (single-process mode). In multi-process per-GPU mode
+    # each process should load the model on its assigned GPU and NOT wrap across all devices.
+    if allow_data_parallel and gpu_count > 1:
         try:
             import torch.nn as nn
             device_ids = list(range(gpu_count))
@@ -758,6 +760,42 @@ def auto_tune(device='cuda'):
     }
 
 
+def _split_list(lst, n):
+    """Split list into n chunks (contiguous)"""
+    if n <= 1:
+        return [lst]
+    k, m = divmod(len(lst), n)
+    chunks = []
+    start = 0
+    for i in range(n):
+        end = start + k + (1 if i < m else 0)
+        chunks.append(lst[start:end])
+        start = end
+    return chunks
+
+
+def _worker_process(frame_paths, out_dir, model_name, scale, device_id, tile_size, half, batch_size, save_workers, use_local_temp):
+    """Process target for each GPU: sets device, loads model and processes given frames."""
+    try:
+        import torch
+        # Each worker must set its CUDA device
+        if device_id is not None and torch.cuda.is_available():
+            torch.cuda.set_device(device_id)
+        # Ensure fresh model copy in this process
+        # When running as a dedicated per-GPU worker, disable DataParallel wrapping inside load_model
+        upsampler = load_model(model_name, scale, device='cuda' if (device_id is not None and torch.cuda.is_available()) else 'cpu', tile_size=tile_size, half=half, allow_data_parallel=False, gpu_id=device_id)
+        if upsampler is None:
+            print(f"Worker {device_id}: Failed to load model")
+            return
+        # Create output dir
+        Path(out_dir).mkdir(parents=True, exist_ok=True)
+        print(f"Worker {device_id}: processing {len(frame_paths)} frames into {out_dir}")
+        # Call batch_upscale on this subset (it expects list of paths)
+        batch_upscale(upsampler, frame_paths, out_dir, batch_size=batch_size, progress_callback=None, save_workers=save_workers, use_local_temp=use_local_temp)
+    except Exception as e:
+        print(f"Worker {device_id} failed: {e}")
+
+
 def main():
     parser = argparse.ArgumentParser(description='Batch Real-ESRGAN upscaling')
     parser.add_argument('input_dir', help='Directory containing input frames')
@@ -773,6 +811,7 @@ def main():
     parser.add_argument('--use-local-temp', action='store_true', help='Use local temp directory for faster saving (may use more disk space)')
     parser.add_argument('--save-workers', type=int, default=4, help='Number of worker threads for saving frames (default: 4)')
     parser.add_argument('--no-auto', action='store_true', help='Disable auto-tuning of parameters')
+    parser.add_argument('--no-multiproc', action='store_true', help='Disable multi-process per-GPU splitting (force single-process DataParallel)')
 
     args = parser.parse_args()
 
@@ -848,7 +887,7 @@ def main():
     # If user asked for selftest, load model and run a larger dummy forward to measure GPU usage
     if args.selftest:
         print("\n=== SELFTEST MODE: loading model and running dummy forward ===")
-        upsampler = load_model(args.model, 2 if args.scale is None else args.scale, args.device, tile_size=args.tile_size, half=not args.no_half)
+        upsampler = load_model(args.model, 2 if args.scale is None else args.scale, args.device, tile_size=args.tile_size, half=not args.no_half, allow_data_parallel=True, gpu_id=0)
         if upsampler is None:
             print("ERROR: Failed to load model for selftest")
             sys.exit(2)
@@ -920,9 +959,55 @@ def main():
             print(f"📊 Auto: {input_height}p → {input_height*4}p using 4x scale")
 
     # Load model
-    print(f"Loading Real-ESRGAN model ({args.model}) for {scale}x upscaling...")
-    upsampler = load_model(args.model, scale, args.device, tile_size=tile_size, half=half)
-    print("✓ Model loaded")
+    # If multiple GPUs available and multiproc not disabled, run one worker per GPU to utilize GPUs independently
+    try:
+        import torch
+        gpu_count = torch.cuda.device_count() if torch.cuda.is_available() else 0
+    except Exception:
+        gpu_count = 0
+
+    if gpu_count > 1 and args.device == 'cuda' and not args.no_multiproc:
+        print(f"⚡ Detected {gpu_count} CUDA devices — launching {gpu_count} worker processes (one per GPU)")
+        # Split frames into contiguous chunks
+        chunks = _split_list(frames, gpu_count)
+        from multiprocessing import Process
+        workers = []
+        tmp_dirs = []
+        for i, chunk in enumerate(chunks):
+            out_subdir = Path(args.output_dir) / f'part_{i}'
+            tmp_dirs.append(out_subdir)
+            p = Process(target=_worker_process, args=(chunk, str(out_subdir), args.model, scale, i, tile_size, half, batch_size, save_workers, use_local_temp))
+            p.start()
+            workers.append(p)
+
+        # Wait for workers to complete
+        for p in workers:
+            p.join()
+
+        # Merge outputs (move files from part_* to final output_dir)
+        print(f"Merging worker outputs into {args.output_dir}")
+        Path(args.output_dir).mkdir(parents=True, exist_ok=True)
+        for out_subdir in tmp_dirs:
+            if out_subdir.exists():
+                for f in sorted(out_subdir.glob('*')):
+                    try:
+                        target = Path(args.output_dir) / f.name
+                        if target.exists():
+                            target.unlink()
+                        shutil.move(str(f), str(target))
+                    except Exception as e:
+                        print(f"Failed to move {f}: {e}")
+                try:
+                    out_subdir.rmdir()
+                except Exception:
+                    pass
+
+        print("Multi-process upscaling done")
+        sys.exit(0)
+    else:
+        print(f"Loading Real-ESRGAN model ({args.model}) for {scale}x upscaling...")
+        upsampler = load_model(args.model, scale, args.device, tile_size=tile_size, half=half, allow_data_parallel=True, gpu_id=0)
+        print("✓ Model loaded")
 
     print(f"Found {len(frames)} input frames")
     print(f"Upscale factor: {scale}x")
