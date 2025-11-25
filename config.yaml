@@ -113,7 +113,7 @@ presets:
 # Ожидаемая скорость: ~3-7 мин для 10 сек видео
 vast:
   preset: "balanced"
-  #num_gpus: 1
+  num_gpus: 2
   # GPU параметры (gpu_models остаётся опцией — можно опереться на dlperf/vram и другие метрики)
   gpu_models:                # необязательно; рекомендуется как подсказка/приоритет
     - "RTX_3080"
@@ -122,10 +122,10 @@ vast:
   gpu_blacklist: []
   gpu_required: false        # false = модели в whitelist будут предпочтением; true = только эти модели
   gpu_priority: true         # true = использовать whitelist как фактор сортировки (кроме строгого требования)
-  min_vram: 24
+  min_vram: 12
   # Цена
   min_price: 0.05
-  max_price: 0.1
+  max_price: 0.15
   # Надёжность и производительность
   min_reliability: 0.95      # Increased from 0.90
   min_dlperf: 40             # Increased from 35
