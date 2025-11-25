@@ -961,7 +961,7 @@ def main():
     # Load model
     # If multiple GPUs available and multiproc not disabled, run one worker per GPU to utilize GPUs independently
     try:
-        import torch
+        # Use top-level imported `torch` (avoid local import which makes `torch` a local variable)
         gpu_count = torch.cuda.device_count() if torch.cuda.is_available() else 0
     except Exception:
         gpu_count = 0
