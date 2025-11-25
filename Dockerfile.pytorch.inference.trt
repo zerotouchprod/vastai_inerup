@@ -1,0 +1,83 @@
+# Dockerfile.pytorch.inference.trt
+# Inference-optimized image with TensorRT and ONNXRuntime (for NVIDIA GPUs).
+# This image is intended to be used for production inference. It includes TensorRT
+# runtime libraries and onnxruntime-gpu so you can convert and run ONNX/TensorRT
+# engines for Real-ESRGAN models.
+#
+# Important: TensorRT packages are version-sensitive. This Dockerfile targets
+# CUDA 12.1 and pulls TensorRT runtime packages from NVIDIA apt repo. Adjust
+# versions if your environment uses a different CUDA/TensorRT.
+# Build (requires network and NVIDIA apt key):
+#   docker build -f Dockerfile.pytorch.inference.trt -t vastai-interup:pytorch-trt .
+
+FROM nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04 AS base
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install system packages and NVIDIA TensorRT runtime (libnvinfer)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates wget curl gnupg lsb-release software-properties-common \
+    python3-pip python3-venv git ffmpeg libgomp1 libgomp1 && \
+    rm -rf /var/lib/apt/lists/*
+
+# Add NVIDIA apt repository for TensorRT packages
+RUN set -eux; \
+    distribution="$(. /etc/os-release && echo $ID$VERSION_ID)"; \
+    wget -qO - https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/3bf863cc.pub | apt-key add - || true; \
+    wget -qO - https://developer.download.nvidia.com/compute/machine-learning/repos/ubuntu2204/x86_64/7fa2af80.pub | apt-key add - || true; \
+    echo "deb https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/ /" > /etc/apt/sources.list.d/cuda.list; \
+    echo "deb https://developer.download.nvidia.com/compute/machine-learning/repos/ubuntu2204/x86_64/ /" > /etc/apt/sources.list.d/nvidia-ml.list; \
+    apt-get update && apt-get install -y --no-install-recommends \
+      libcudnn8 libcudnn8-dev \
+      libnvinfer8 libnvinfer-dev libnvinfer-plugin8 libnvinfer-plugin-dev \
+      python3-libnvinfer && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /workspace/project
+
+# Use virtualenv to isolate python deps
+RUN python3 -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel
+
+# Install torch wheel matching CUDA 12.1
+RUN pip install --no-cache-dir \
+    "torch==2.2.2+cu121" \
+    "torchvision==0.17.2+cu121" \
+    --index-url https://download.pytorch.org/whl/cu121 && rm -rf /root/.cache/pip
+
+# Numeric compatibility
+RUN pip install --no-cache-dir "numpy<2" && rm -rf /root/.cache/pip
+
+# Install core inference packages: onnx, onnxruntime-gpu (with TRT EP), and utilities
+RUN pip install --no-cache-dir onnx onnxruntime-gpu tensorrt trt-graphsurgeon pycuda
+
+# Optional: torch-tensorrt might not have wheels for every torch+cuda combo; try install but don't fail the build
+RUN pip install --no-cache-dir torch-tensorrt || true
+
+# Install light runtime dependencies for Real-ESRGAN
+RUN pip install --no-cache-dir basicsr facexlib gfpgan opencv-python-headless pillow tqdm pyyaml imageio imageio-ffmpeg && rm -rf /root/.cache/pip
+
+# Download Real-ESRGAN models into image
+RUN mkdir -p /opt/realesrgan_models && cd /opt/realesrgan_models && \
+    wget -q https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.1/RealESRGAN_x2plus.pth -O RealESRGAN_x2plus.pth || true && \
+    wget -q https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth -O RealESRGAN_x4plus.pth || true
+
+# Env to reduce fragmentation
+ENV PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:128
+
+COPY scripts/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+COPY scripts/entrypoint_trt.sh /entrypoint_trt.sh
+RUN chmod +x /entrypoint_trt.sh
+
+ENTRYPOINT ["/entrypoint_trt.sh"]
+CMD ["/bin/bash"]
+
+# Notes and next steps (README inside image):
+# - Use export_to_onnx.py (we'll add to repo) to export Real-ESRGAN model to ONNX targeting a sensible tile-size.
+# - Use trtexec or the provided build_trt.py to build a TensorRT engine from ONNX.
+# - onnxruntime-gpu can also directly use TensorRT Execution Provider if configured.
+

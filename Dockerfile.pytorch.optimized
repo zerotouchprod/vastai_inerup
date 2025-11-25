@@ -1,0 +1,76 @@
+# Dockerfile.pytorch.optimized
+# Slimmer runtime image with low-risk optimizations for inference (no TensorRT).
+# Built to be a faster drop-in replacement for Dockerfile.pytorch.fat when you
+# only need inference and want a smaller image with a couple of runtime tweaks.
+# Build:
+#   docker build -f Dockerfile.pytorch.optimized -t vastai-interup:pytorch-optimized .
+
+FROM nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04 AS base
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install minimal runtime deps
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    wget \
+    curl \
+    git \
+    python3-pip \
+    python3-venv \
+    ffmpeg \
+    libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender-dev \
+    libgomp1 \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /workspace/project
+
+# Use a venv to isolate runtime
+RUN python3 -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+# pip basics
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel
+
+# Install CUDA-enabled PyTorch wheels
+RUN pip install --no-cache-dir \
+    "torch==2.2.2+cu121" \
+    "torchvision==0.17.2+cu121" \
+    --index-url https://download.pytorch.org/whl/cu121 && rm -rf /root/.cache/pip
+
+# Force numpy < 2 to avoid compatibility issues with some packages
+RUN pip install --no-cache-dir "numpy<2" && rm -rf /root/.cache/pip
+
+# Low-risk inference dependencies (trimmed compared to fat image)
+RUN pip install --no-cache-dir \
+    basicsr facexlib gfpgan timm einops \
+    opencv-python-headless pillow tqdm pyyaml boto3 botocore \
+    ffmpeg-python imageio imageio-ffmpeg && rm -rf /root/.cache/pip
+
+# Download Real-ESRGAN models into image (optional but convenient)
+RUN mkdir -p /opt/realesrgan_models && \
+    cd /opt/realesrgan_models && \
+    wget -q https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.1/RealESRGAN_x2plus.pth -O RealESRGAN_x2plus.pth || true && \
+    wget -q https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth -O RealESRGAN_x4plus.pth || true || true
+
+# Set helpful runtime env to reduce GPU memory fragmentation
+ENV PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:128
+
+# Provide a small script to set runtime envs and then exec the original entrypoint
+COPY scripts/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+COPY scripts/entrypoint_optimized.sh /entrypoint_optimized.sh
+RUN chmod +x /entrypoint_optimized.sh
+
+ENTRYPOINT ["/entrypoint_optimized.sh"]
+CMD ["/bin/bash"]
+
+# Notes:
+# - This image keeps a minimal dependency set for inference workloads.
+# - It intentionally does not include system TensorRT libraries. For large gains
+#   from TensorRT/ONNX, use the dedicated inference/TensorRT image provided in
+#   Dockerfile.pytorch.inference.trt.
+

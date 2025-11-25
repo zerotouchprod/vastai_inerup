@@ -789,8 +789,9 @@ def _worker_process(frame_paths, out_dir, model_name, scale, device_id, tile_siz
             return
         # Create output dir
         Path(out_dir).mkdir(parents=True, exist_ok=True)
+        # frame_paths may be a list of strings from parent process; convert to Path-like usage is OK
         print(f"Worker {device_id}: processing {len(frame_paths)} frames into {out_dir}")
-        # Call batch_upscale on this subset (it expects list of paths)
+        # Call batch_upscale on this subset (it accepts list of path-like or string paths)
         batch_upscale(upsampler, frame_paths, out_dir, batch_size=batch_size, progress_callback=None, save_workers=save_workers, use_local_temp=use_local_temp)
     except Exception as e:
         print(f"Worker {device_id} failed: {e}")
@@ -970,13 +971,17 @@ def main():
         print(f"⚡ Detected {gpu_count} CUDA devices — launching {gpu_count} worker processes (one per GPU)")
         # Split frames into contiguous chunks
         chunks = _split_list(frames, gpu_count)
-        from multiprocessing import Process
+        # Use 'spawn' start method to avoid CUDA reinitialization in forked subprocesses
+        from multiprocessing import get_context
+        ctx = get_context('spawn')
         workers = []
         tmp_dirs = []
         for i, chunk in enumerate(chunks):
             out_subdir = Path(args.output_dir) / f'part_{i}'
             tmp_dirs.append(out_subdir)
-            p = Process(target=_worker_process, args=(chunk, str(out_subdir), args.model, scale, i, tile_size, half, batch_size, save_workers, use_local_temp))
+            # pass frame paths as strings (safer for pickling)
+            chunk_strs = [str(p) for p in chunk]
+            p = ctx.Process(target=_worker_process, args=(chunk_strs, str(out_subdir), args.model, scale, i, tile_size, half, batch_size, save_workers, use_local_temp))
             p.start()
             workers.append(p)
 
