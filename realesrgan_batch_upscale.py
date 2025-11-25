@@ -257,6 +257,35 @@ def load_model(model_name='RealESRGAN_x4plus', scale=4, device='cuda', tile_size
         dni_weight=None,  # Disable DNI for speed (if available in this version)
     )
 
+    # --- Multi-GPU support: if multiple CUDA devices are available, wrap model in DataParallel ---
+    try:
+        import torch
+        if torch.cuda.is_available():
+            gpu_count = torch.cuda.device_count()
+        else:
+            gpu_count = 0
+    except Exception:
+        gpu_count = 0
+
+    if gpu_count > 1:
+        try:
+            import torch.nn as nn
+            device_ids = list(range(gpu_count))
+            print(f"⚡ Multiple GPUs detected: {gpu_count} GPUs — enabling DataParallel on devices {device_ids}")
+            # Wrap the underlying model with DataParallel so forward calls scatter/collect across GPUs
+            try:
+                upsampler.model = nn.DataParallel(upsampler.model, device_ids=device_ids)
+                upsampler.multi_gpu = True
+                upsampler.device_ids = device_ids
+            except Exception as _e:
+                print(f"Warning: DataParallel wrapping failed: {_e}")
+                upsampler.multi_gpu = False
+        except Exception as _e:
+            print(f"Warning: failed to configure multi-gpu support: {_e}")
+            upsampler.multi_gpu = False
+    else:
+        upsampler.multi_gpu = False
+
     # CRITICAL: Force model to GPU (RealESRGANer sometimes doesn't do this properly)
     if device == 'cuda':
         print(f"🔧 Forcing model to GPU...")
@@ -330,6 +359,7 @@ def load_model(model_name='RealESRGAN_x4plus', scale=4, device='cuda', tile_size
                     import time as _time
                     dummy_h, dummy_w = 64, 64
                     dtype = torch.half if getattr(upsampler, 'half', False) else torch.float
+                    # Create dummy on primary CUDA device (DataParallel will scatter to others)
                     dummy = torch.randn(1, 3, dummy_h, dummy_w, dtype=dtype, device='cuda')
                     with torch.no_grad():
                         t0 = _time.time()
