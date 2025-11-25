@@ -184,8 +184,10 @@ def build_container_command(input_url: str, mode: str, scale: int, target_fps: i
     env_vars.append(f'B2_BUCKET="{b2_bucket}"')
     env_vars.append(f'B2_OUTPUT_KEY="{output_key}"')
     env_vars.append(f'B2_ENDPOINT="{b2_endpoint}"')
-    env_vars.append(f'B2_KEY="{b2_key}"')
-    env_vars.append(f'B2_SECRET="{b2_secret}"')
+    # Do NOT embed secrets into args_str. B2_KEY/B2_SECRET will be passed via instance env mapping
+    # so they are available inside the container without exposing them in printed commands.
+    # If you need to pass non-sensitive variables, add them here explicitly.
+    # e.g., env_vars.append(f'B2_SOME_FLAG="{some_flag}"')
     # Pass strict mode setting (false by default to allow fallback to NCNN/CPU)
     env_vars.append(f'STRICT="{str(strict).lower()}"')
     # Smoke-test parameters (optional)

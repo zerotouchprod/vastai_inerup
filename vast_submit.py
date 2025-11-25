@@ -528,7 +528,20 @@ def create_instance(offer_id: str, image: str, cmd: str, env: Optional[Dict[str,
             if k in options and options[k] is not None:
                 payload[k] = options[k]
 
-    print("Creating instance (accept ask) with payload:\n", payload)
+    # Print only a redacted payload to avoid leaking secrets in logs
+    try:
+        redacted = dict(payload)
+        if 'env' in redacted and isinstance(redacted['env'], dict):
+            env_copy = dict(redacted['env'])
+            for k in ('B2_KEY', 'B2_SECRET', 'AWS_SECRET_ACCESS_KEY', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_KEY'):
+                if k in env_copy:
+                    env_copy[k] = '<redacted>'
+            redacted['env'] = env_copy
+        print('Creating instance (redacted payload):', redacted)
+    except Exception:
+        # ignore redaction errors
+        pass
+
     # Use PUT /asks/{id}/ to accept the ask
     try:
         inst = api_put(f"/asks/{offer_id}/", payload)
