@@ -144,6 +144,7 @@ if [ -f "$REPO_DIR/inference_img.py" ] || [ -f "/workspace/project/rife_interpol
   log "Created temp directory: $TMP_DIR (base: $TMP_BASE)"
 
   # Ensure cleanup on exit
+  rc=0
   trap 'rc=$?; rm -rf "${TMP_DIR}" >/dev/null 2>&1 || true; exit $rc' EXIT
 
   # Get original FPS and calculate target FPS
@@ -183,7 +184,7 @@ if [ -f "$REPO_DIR/inference_img.py" ] || [ -f "/workspace/project/rife_interpol
 
   # Extract audio track
   log "Extracting audio track..."
-  AUDIO_RESULT=$(ffmpeg -v warning -i "$INPUT_VIDEO_PATH" -vn -acodec copy "$TMP_DIR/audio.aac" 2>&1)
+  ffmpeg -v warning -i "$INPUT_VIDEO_PATH" -vn -acodec copy "$TMP_DIR/audio.aac" >/dev/null 2>&1
   AUDIO_EXIT=$?
   if [ $AUDIO_EXIT -ne 0 ]; then
     log "Audio extraction failed (exit code: $AUDIO_EXIT)"
@@ -210,7 +211,8 @@ if [ -f "$REPO_DIR/inference_img.py" ] || [ -f "/workspace/project/rife_interpol
     RC=${PIPESTATUS[0]:-0}
   elif [ -f "$REPO_DIR/inference_img.py" ]; then
     log "Found $REPO_DIR/inference_img.py — attempting frame-by-frame inference"
-    (cd "$REPO_DIR" && python3 -u inference_img.py --input "$TMP_DIR/input" --output "$TMP_DIR/output" --exp 1 -f "$FACTOR" 2>&1) | tee "$TMP_DIR/rife.log"
+    # inference_img.py expects: --img <input_dir> <output_dir> and optionally --exp and --ratio
+    (cd "$REPO_DIR" && python3 -u inference_img.py --img "$TMP_DIR/input" "$TMP_DIR/output" --exp 1 --ratio "$FACTOR" 2>&1) | tee "$TMP_DIR/rife.log"
     RC=${PIPESTATUS[0]:-0}
   elif [ -f "$REPO_DIR/inference_video.py" ]; then
     log "Found $REPO_DIR/inference_video.py — attempting video inference (may require scikit-video)"
