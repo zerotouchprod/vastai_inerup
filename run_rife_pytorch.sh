@@ -143,9 +143,14 @@ if [ -f "$REPO_DIR/inference_img.py" ] || [ -f "/workspace/project/rife_interpol
   fi
   log "Created temp directory: $TMP_DIR (base: $TMP_BASE)"
 
-  # Ensure cleanup on exit
+  # Ensure cleanup on exit. If KEEP_TMP=1, preserve TMP_DIR for debugging.
   rc=0
-  trap 'rc=$?; rm -rf "${TMP_DIR}" >/dev/null 2>&1 || true; exit $rc' EXIT
+  if [ "${KEEP_TMP:-0}" = "1" ]; then
+    log "KEEP_TMP=1 -> temporary dir will be preserved for debugging: $TMP_DIR"
+    trap 'rc=$?; echo "KEEP_TMP=1 set; temporary dir preserved: ${TMP_DIR}"; exit $rc' EXIT
+  else
+    trap 'rc=$?; rm -rf "${TMP_DIR}" >/dev/null 2>&1 || true; exit $rc' EXIT
+  fi
 
   # Get original FPS and calculate target FPS
   log "Getting video FPS..."
@@ -198,6 +203,51 @@ if [ -f "$REPO_DIR/inference_img.py" ] || [ -f "/workspace/project/rife_interpol
     log "Audio extracted successfully"
   fi
 
+  # Ensure required RIFE model files exist (e.g., flownet.pkl)
+  log "Checking for required RIFE model files in $REPO_DIR/train_log..."
+  if ! ls "$REPO_DIR/train_log"/flownet*.pkl >/dev/null 2>&1 && ! ls "$REPO_DIR/train_log"/*flownet*.pkl >/dev/null 2>&1; then
+    log "flownet model not found in $REPO_DIR/train_log."
+    # Try environment-provided model dir first
+    if [ -n "${RIFE_MODEL_DIR:-}" ] && [ -d "$RIFE_MODEL_DIR" ] && ls "$RIFE_MODEL_DIR"/flownet*.pkl >/dev/null 2>&1; then
+      log "Copying RIFE models from RIFE_MODEL_DIR=$RIFE_MODEL_DIR -> $REPO_DIR/train_log"
+      mkdir -p "$REPO_DIR/train_log"
+      cp -r "$RIFE_MODEL_DIR"/* "$REPO_DIR/train_log/" || true
+      if ls "$REPO_DIR/train_log"/flownet*.pkl >/dev/null 2>&1 || ls "$REPO_DIR/train_log"/*flownet*.pkl >/dev/null 2>&1; then
+        log "Copied flownet model files into $REPO_DIR/train_log"
+      else
+        log "ERROR: Copy from RIFE_MODEL_DIR failed or files missing after copy"
+        [ "${KEEP_TMP:-0}" = "1" ] || rm -rf "$TMP_DIR"
+        exit 3
+      fi
+    elif [ -d "/opt/rife_models/train_log" ] && ls "/opt/rife_models/train_log"/flownet*.pkl >/dev/null 2>&1; then
+      log "Copying RIFE models from /opt/rife_models/train_log -> $REPO_DIR/train_log"
+      mkdir -p "$REPO_DIR/train_log"
+      cp -r /opt/rife_models/train_log/* "$REPO_DIR/train_log/" || true
+      if ls "$REPO_DIR/train_log"/flownet*.pkl >/dev/null 2>&1 || ls "$REPO_DIR/train_log"/*flownet*.pkl >/dev/null 2>&1; then
+        log "Copied flownet model files into $REPO_DIR/train_log"
+      else
+        log "ERROR: Copy from /opt/rife_models failed or files missing after copy"
+        [ "${KEEP_TMP:-0}" = "1" ] || rm -rf "$TMP_DIR"
+        exit 3
+      fi
+    else
+      log "ERROR: No RIFE models found (looked in $REPO_DIR/train_log, /opt/rife_models/train_log, and RIFE_MODEL_DIR=${RIFE_MODEL_DIR:-<unset>})"
+      log "RIFE requires model files (e.g., flownet.pkl) placed in $REPO_DIR/train_log"
+      [ "${KEEP_TMP:-0}" = "1" ] || rm -rf "$TMP_DIR"
+      exit 3
+    fi
+  else
+    log "Found flownet model files in $REPO_DIR/train_log"
+  fi
+
+  # Ensure repo contains 'model' package (otherwise imports like model.RIFE_HD fail)
+  if [ ! -d "$REPO_DIR/model" ]; then
+    log "ERROR: RIFE code folder 'model' not found in $REPO_DIR (needed for imports like model.RIFE_HD)."
+    log "Make sure you have a complete RIFE repo at $REPO_DIR (clone the correct fork) and that the 'model' directory exists."
+    rm -rf "$TMP_DIR"
+    exit 3
+  fi
+
   # Test which interpolation method works
   log "Testing interpolation methods..."
   echo ""
@@ -246,11 +296,13 @@ if [ -f "$REPO_DIR/inference_img.py" ] || [ -f "/workspace/project/rife_interpol
           break
         fi
 
-        # Snapshot existing outputs (may be empty)
-        pre_list=$(ls -1 "$TMP_DIR/output"/*.png 2>/dev/null || true)
+        # Snapshot existing outputs in both repo and tmp output (to detect new files)
+        pre_repo=$(ls -1 "$REPO_DIR"/*.png 2>/dev/null || true)
+        pre_out=$(ls -1 "$TMP_DIR/output"/*.png 2>/dev/null || true)
 
-        # Run inference_img.py from the output dir so outputs are written there
-        (cd "$TMP_DIR/output" && python3 -u "$REPO_DIR/inference_img.py" --img "$A" "$B" --exp 1 --ratio "$FACTOR" 2>&1) | tee -a "$TMP_DIR/rife.log"
+        # Run inference_img.py from REPO_DIR so imports and relative train_log resolution work
+        log "Running: (cd $REPO_DIR && PYTHONPATH=\"$REPO_DIR\" python3 -u inference_img.py --img $A $B --exp 1 --ratio $FACTOR)"
+        (cd "$REPO_DIR" && PYTHONPATH="$REPO_DIR" python3 -u inference_img.py --img "$A" "$B" --exp 1 --ratio "$FACTOR" 2>&1) | tee -a "$TMP_DIR/rife.log"
         RC_CUR=${PIPESTATUS[0]:-0}
         if [ $RC_CUR -ne 0 ]; then
           log "ERROR: inference_img.py failed for pair $(basename "$A")/$(basename "$B") (exit $RC_CUR)"
@@ -258,21 +310,26 @@ if [ -f "$REPO_DIR/inference_img.py" ] || [ -f "/workspace/project/rife_interpol
           break
         fi
 
-        # Find newly created files
-        post_list=$(ls -1 "$TMP_DIR/output"/*.png 2>/dev/null || true)
-        # compute difference: lines present in post_list but not in pre_list
+        # Find newly created files in repo and tmp output
+        post_repo=$(ls -1 "$REPO_DIR"/*.png 2>/dev/null || true)
+        post_out=$(ls -1 "$TMP_DIR/output"/*.png 2>/dev/null || true)
         new_files=""
-        if [ -n "$post_list" ]; then
-          for f in $post_list; do
-            case " $pre_list " in
-              *" $f "*) ;;
-              *) new_files="$new_files $f";;
-            esac
-          done
-        fi
+        # files new in repo
+        for f in $post_repo; do
+          case " $pre_repo " in
+            *" $f "*) ;;
+            *) new_files="$new_files $f";;
+          esac
+        done
+        # files new in tmp output
+        for f in $post_out; do
+          case " $pre_out " in
+            *" $f "*) ;;
+            *) new_files="$new_files $f";;
+          esac
+        done
 
         if [ -z "$new_files" ]; then
-          # Some forks may write to stdout or different locations — treat as error
           log "ERROR: inference_img.py did not produce any new output files for pair $(basename "$A")/$(basename "$B")"
           RC=7
           break
@@ -280,10 +337,13 @@ if [ -f "$REPO_DIR/inference_img.py" ] || [ -f "/workspace/project/rife_interpol
 
         # Move/rename each new file into sequential frame_%06d_out.png names
         for nf in $new_files; do
-          target="$TMP_DIR/output/frame_$(printf "%06d" $OUT_SEQ)_out.png"
-          mv "$nf" "$target" 2>/dev/null || cp "$nf" "$target" 2>/dev/null || true
-          log "Saved interpolated frame: $(basename "$target")"
-          OUT_SEQ=$((OUT_SEQ + 1))
+          # If file found in repo and not already in tmp output, copy it
+          if [ -f "$nf" ]; then
+            target="$TMP_DIR/output/frame_$(printf "%06d" $OUT_SEQ)_out.png"
+            mv "$nf" "$target" 2>/dev/null || cp "$nf" "$target" 2>/dev/null || true
+            log "Saved interpolated frame: $(basename "$target")"
+            OUT_SEQ=$((OUT_SEQ + 1))
+          fi
         done
       done
     fi
