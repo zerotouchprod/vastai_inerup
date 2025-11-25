@@ -321,8 +321,8 @@ if [ -f "$REPO_DIR/inference_img.py" ] || [ -f "/workspace/project/rife_interpol
           RC=2
           break
         fi
-        log "Running: (cd $REPO_DIR && PYTHONPATH=\"$REPO_DIR\" python3 -u $COPY_INFERENCE --img $A $B --exp 1 --ratio $FACTOR)"
-        (cd "$REPO_DIR" && PYTHONPATH="$REPO_DIR" python3 -u "$COPY_INFERENCE" --img "$A" "$B" --exp 1 --ratio "$FACTOR" 2>&1) | tee -a "$TMP_DIR/rife.log"
+        log "Running copied inference script in-process with REPO_DIR as CWD and on PYTHONPATH"
+        python3 -u -c "import sys,os,runpy; os.chdir('$REPO_DIR'); sys.path.insert(0,'$REPO_DIR'); sys.argv=['inference_img.py','--img','$A','$B','--exp','1','--ratio','$FACTOR']; runpy.run_path('$COPY_INFERENCE', run_name='__main__')" 2>&1 | tee -a "$TMP_DIR/rife.log"
         RC_CUR=${PIPESTATUS[0]:-0}
         if [ $RC_CUR -ne 0 ]; then
           log "ERROR: inference_img.py failed for pair $(basename "$A")/$(basename "$B") (exit $RC_CUR)"
