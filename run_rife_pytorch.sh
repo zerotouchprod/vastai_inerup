@@ -267,6 +267,21 @@ if [ -f "$REPO_DIR/inference_img.py" ] || [ -f "/workspace/project/rife_interpol
     mkdir -p "$TMP_DIR/output"
     # collect sorted frames
     mapfile -t FRAMES < <(ls -1 "$TMP_DIR/input"/*.png 2>/dev/null | sort)
+    # Make a stable copy of the inference script into the temp dir so it can't disappear mid-run
+    COPY_INFERENCE="$TMP_DIR/inference_img.py"
+    if [ -f "$REPO_DIR/inference_img.py" ]; then
+      cp -p "$REPO_DIR/inference_img.py" "$COPY_INFERENCE" 2>/dev/null || true
+      if [ ! -f "$COPY_INFERENCE" ]; then
+        log "ERROR: Failed to copy $REPO_DIR/inference_img.py -> $COPY_INFERENCE"
+        RC=2
+      else
+        log "Using copied inference script: $COPY_INFERENCE"
+      fi
+    else
+      log "ERROR: $REPO_DIR/inference_img.py not found when attempting to copy into temp dir"
+      RC=2
+    fi
+
     if [ ${#FRAMES[@]} -lt 2 ]; then
       log "ERROR: Not enough frames for frame-pair inference (${#FRAMES[@]} found)"
       RC=5
@@ -300,9 +315,14 @@ if [ -f "$REPO_DIR/inference_img.py" ] || [ -f "/workspace/project/rife_interpol
         pre_repo=$(ls -1 "$REPO_DIR"/*.png 2>/dev/null || true)
         pre_out=$(ls -1 "$TMP_DIR/output"/*.png 2>/dev/null || true)
 
-        # Run inference_img.py from REPO_DIR so imports and relative train_log resolution work
-        log "Running: (cd $REPO_DIR && PYTHONPATH=\"$REPO_DIR\" python3 -u inference_img.py --img $A $B --exp 1 --ratio $FACTOR)"
-        (cd "$REPO_DIR" && PYTHONPATH="$REPO_DIR" python3 -u inference_img.py --img "$A" "$B" --exp 1 --ratio "$FACTOR" 2>&1) | tee -a "$TMP_DIR/rife.log"
+        # Ensure the copied inference script exists and run it (execute from REPO_DIR so imports work)
+        if [ ! -f "$COPY_INFERENCE" ]; then
+          log "ERROR: Copied inference script missing: $COPY_INFERENCE"
+          RC=2
+          break
+        fi
+        log "Running: (cd $REPO_DIR && PYTHONPATH=\"$REPO_DIR\" python3 -u $COPY_INFERENCE --img $A $B --exp 1 --ratio $FACTOR)"
+        (cd "$REPO_DIR" && PYTHONPATH="$REPO_DIR" python3 -u "$COPY_INFERENCE" --img "$A" "$B" --exp 1 --ratio "$FACTOR" 2>&1) | tee -a "$TMP_DIR/rife.log"
         RC_CUR=${PIPESTATUS[0]:-0}
         if [ $RC_CUR -ne 0 ]; then
           log "ERROR: inference_img.py failed for pair $(basename "$A")/$(basename "$B") (exit $RC_CUR)"
