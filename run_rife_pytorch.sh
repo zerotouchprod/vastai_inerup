@@ -437,11 +437,22 @@ if [ -f "$REPO_DIR/inference_img.py" ] || [ -f "/workspace/project/rife_interpol
   # Reassemble into final video
   log "Reassembling interpolated frames into video (FPS: ${TARGET_FPS})"
   if [ -f "$TMP_DIR/audio.aac" ]; then
-    ffmpeg -y -v warning -stats -framerate "$TARGET_FPS" -i "$TMP_DIR/output/$OUT_PATTERN" -i "$TMP_DIR/audio.aac" -c:v libx264 -crf 18 -pix_fmt yuv420p -c:a aac -shortest "$OUTPUT_VIDEO_PATH"
+    ffmpeg -y -v warning -stats -framerate "$TARGET_FPS" -start_number 1 -i "$TMP_DIR/output/$OUT_PATTERN" -i "$TMP_DIR/audio.aac" -c:v libx264 -crf 18 -pix_fmt yuv420p -c:a aac -shortest "$OUTPUT_VIDEO_PATH"
   else
-    ffmpeg -y -v warning -stats -framerate "$TARGET_FPS" -i "$TMP_DIR/output/$OUT_PATTERN" -c:v libx264 -crf 18 -pix_fmt yuv420p "$OUTPUT_VIDEO_PATH"
+    ffmpeg -y -v warning -stats -framerate "$TARGET_FPS" -start_number 1 -i "$TMP_DIR/output/$OUT_PATTERN" -c:v libx264 -crf 18 -pix_fmt yuv420p "$OUTPUT_VIDEO_PATH"
   fi
   FFMPEG_RC=$?
+
+  # If ffmpeg could not find the pattern (some builds/OS), try pattern_type glob as a fallback
+  if [ $FFMPEG_RC -ne 0 ]; then
+    log "ffmpeg failed with $FFMPEG_RC; attempting glob-based reassembly as fallback"
+    if [ -f "$TMP_DIR/audio.aac" ]; then
+      ffmpeg -y -v warning -stats -framerate "$TARGET_FPS" -pattern_type glob -i "$TMP_DIR/output/*.png" -i "$TMP_DIR/audio.aac" -c:v libx264 -crf 18 -pix_fmt yuv420p -c:a aac -shortest "$OUTPUT_VIDEO_PATH"
+    else
+      ffmpeg -y -v warning -stats -framerate "$TARGET_FPS" -pattern_type glob -i "$TMP_DIR/output/*.png" -c:v libx264 -crf 18 -pix_fmt yuv420p "$OUTPUT_VIDEO_PATH"
+    fi
+    FFMPEG_RC=$?
+  fi
 
   if [ $FFMPEG_RC -ne 0 ]; then
     log "ERROR: Failed to reassemble video from frames (ffmpeg exit: $FFMPEG_RC)"
