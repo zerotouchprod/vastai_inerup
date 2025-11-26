@@ -8,7 +8,7 @@ with other similarly named scripts in the environment.
 import os
 import sys
 import argparse
-from importlib import import_module
+import importlib
 from glob import glob
 
 
@@ -59,75 +59,27 @@ def main():
     except Exception:
         pass
 
-    # Prefer module import by name if available. Many RIFE forks parse argparse at import-time,
-    # so temporarily set sys.argv to a safe value to avoid SystemExit from argparse.
+    # Prefer module import by name if available
     try:
-        # Prevent top-level argparse parsing in many RIFE forks by monkeypatching parse_args
-        import argparse as _argparse
-        _orig_parse_args = _argparse.ArgumentParser.parse_args
-        _orig_parse_known = _argparse.ArgumentParser.parse_known_args
-        def _fake_parse_args(self, *a, **k):
-            return _argparse.Namespace()
-        def _fake_parse_known(self, *a, **k):
-            return (_argparse.Namespace(), [])
-
-        _argparse.ArgumentParser.parse_args = _fake_parse_args
-        _argparse.ArgumentParser.parse_known_args = _fake_parse_known
-
-        old_argv = sys.argv
-        sys.argv = [os.path.join(repo, 'inference_img.py')]
-        try:
-            mod = import_module('inference_img')
-            log('Imported inference_img from', repo)
-        finally:
-            sys.argv = old_argv
-            # restore argparse
-            _argparse.ArgumentParser.parse_args = _orig_parse_args
-            _argparse.ArgumentParser.parse_known_args = _orig_parse_known
+        mod = importlib.import_module('inference_img')
+        log('Imported inference_img from', repo)
     except Exception as e:
-        log('importlib import failed:', e)
-        # Try to create a safe modified copy of inference_img.py that prevents top-level execution
+        # As fallback, try runpy to execute script (but we prefer import to find callables)
+        log('Failed to import inference_img (importlib):', e)
+        # Try to load the script via runpy.run_path without executing __main__ guarded code
         try:
-            import tempfile
-            import shutil
-            src = os.path.join(repo, 'inference_img.py')
-            if os.path.isfile(src):
-                tmpdir = tempfile.mkdtemp(prefix='rife_mod_')
-                dst = os.path.join(tmpdir, 'inference_img_mod.py')
-                with open(src, 'r', encoding='utf-8') as f:
-                    lines = f.readlines()
-                out_lines = []
-                replaced = False
-                for i, ln in enumerate(lines):
-                    stripped = ln.lstrip()
-                    if not replaced and (stripped.startswith("if __name__ == '__main__'") or stripped.startswith('if __name__ == "__main__"')):
-                        # replace the if guard with a function definition to avoid execution
-                        indent = ln[:len(ln)-len(stripped)]
-                        out_lines.append(indent + 'def __rife_main__():\n')
-                        replaced = True
-                        # following indented block lines will be part of function as-is
-                    else:
-                        out_lines.append(ln)
-                # If we didn't find an if __name__ guard, still create mod copy (no guarantee)
-                with open(dst, 'w', encoding='utf-8') as f:
-                    f.writelines(out_lines)
-                # Import modified module via spec_from_file_location
-                try:
-                    import importlib.util
-                    spec = importlib.util.spec_from_file_location('inference_img_mod', dst)
-                    mod = importlib.util.module_from_spec(spec)
-                    sys.modules['inference_img_mod'] = mod
-                    spec.loader.exec_module(mod)
-                    log('Imported modified inference_img module from', dst)
-                except Exception as e2:
-                    log('Failed to import modified inference_img module:', e2)
-                    shutil.rmtree(tmpdir, ignore_errors=True)
-                    return 2
+            import runpy
+            script_path = os.path.join(repo, 'inference_img.py')
+            if os.path.isfile(script_path):
+                log('Attempting runpy.run_path fallback with', script_path)
+                ns = runpy.run_path(script_path, run_name='inference_img_module')
+                mod = ns
+                log('Loaded inference_img namespace via runpy (persistent)')
             else:
-                log('Original inference_img.py not found at', src)
+                log('Fallback script not found at', script_path)
                 return 2
-        except Exception as e3:
-            log('Error while attempting to create modified inference_img copy:', e3)
+        except Exception as e2:
+            log('runpy fallback failed:', e2)
             return 2
 
     fn = find_callable(mod)
@@ -205,83 +157,21 @@ def main():
             # Load module or fallback to runpy
             mod_local = None
             try:
-                # monkeypatch argparse to avoid parse_args SystemExit during import
-                import argparse as _argparse
-                _orig_parse_args = _argparse.ArgumentParser.parse_args
-                _orig_parse_known = _argparse.ArgumentParser.parse_known_args
-                def _fake_parse_args(self, *a, **k):
-                    return _argparse.Namespace()
-                def _fake_parse_known(self, *a, **k):
-                    return (_argparse.Namespace(), [])
-
-                _argparse.ArgumentParser.parse_args = _fake_parse_args
-                _argparse.ArgumentParser.parse_known_args = _fake_parse_known
-
-                old_argv = sys.argv
-                sys.argv = [os.path.join(repo_dir, 'inference_img.py')]
+                mod_local = importlib.import_module('inference_img')
+            except Exception:
                 try:
-                    mod_local = import_module('inference_img')
-                finally:
-                    sys.argv = old_argv
-                    _argparse.ArgumentParser.parse_args = _orig_parse_args
-                    _argparse.ArgumentParser.parse_known_args = _orig_parse_known
-            except Exception as e:
-                log(f'[worker {worker_id}] import failed: {e}; attempting modified copy fallback')
-                # try modified copy approach
-                try:
-                    import tempfile, shutil, importlib.util
-                    src = os.path.join(repo_dir, 'inference_img.py')
-                    if os.path.isfile(src):
-                        tmpdir = tempfile.mkdtemp(prefix=f'rife_mod_worker_{worker_id}_')
-                        dst = os.path.join(tmpdir, 'inference_img_mod.py')
-                        with open(src, 'r', encoding='utf-8') as f:
-                            lines = f.readlines()
-                        out_lines = []
-                        replaced = False
-                        for ln in lines:
-                            stripped = ln.lstrip()
-                            if not replaced and (stripped.startswith("if __name__ == '__main__'") or stripped.startswith('if __name__ == "__main__"')):
-                                indent = ln[:len(ln)-len(stripped)]
-                                out_lines.append(indent + 'def __rife_main__():\n')
-                                replaced = True
-                            else:
-                                out_lines.append(ln)
-                        with open(dst, 'w', encoding='utf-8') as f:
-                            f.writelines(out_lines)
-                        spec = importlib.util.spec_from_file_location(f'inference_img_worker_mod_{worker_id}', dst)
-                        mod_local = importlib.util.module_from_spec(spec)
-                        spec.loader.exec_module(mod_local)
-                        log(f'[worker {worker_id}] imported modified module from', dst)
-                    else:
-                        log(f'[worker {worker_id}] original inference_img.py not found at', src)
-                        return 2
-                except Exception as e2:
-                    log('[worker', worker_id, '] failed to load modified inference_img:', e2)
+                    import runpy
+                    script_path = os.path.join(repo_dir, 'inference_img.py')
+                    if os.path.isfile(script_path):
+                        mod_local = runpy.run_path(script_path, run_name=f'inference_img_worker_{worker_id}')
+                except Exception as e:
+                    log('[worker', worker_id, '] failed to load inference_img:', e)
                     return 2
 
             fn_local = find_callable(mod_local)
             if fn_local is None:
                 log('[worker', worker_id, '] no callable found in inference_img; aborting')
                 return 2
-
-            # Try to locate a batch-capable function in the module (best-effort)
-            batch_candidates = ['inference_pairs', 'inference_batch', 'infer_batch', 'infer_pairs', 'batch_infer', 'run_pairs']
-            batch_fn = None
-            for name in batch_candidates:
-                try:
-                    cand = getattr(mod_local, name, None) if not isinstance(mod_local, dict) else mod_local.get(name)
-                except Exception:
-                    cand = None
-                if callable(cand):
-                    batch_fn = cand
-                    log(f'[worker {worker_id}] using batch function: {name}')
-                    break
-
-            # Determine batch size from env or default
-            try:
-                batch_size = int(os.environ.get('RIFE_BATCH_SIZE', '4'))
-            except Exception:
-                batch_size = 4
 
             # Prepare per-worker output dir
             worker_out = os.path.join(out_dir, f'worker_{worker_id}')
