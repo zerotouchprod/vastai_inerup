@@ -174,7 +174,9 @@ if [ -f "$REPO_DIR/inference_img.py" ] || [ -f "/workspace/project/rife_interpol
   # Pad frames to next multiple of 64 (width/height) to match RIFE model internal downsampling expectations
   # Expression: pad=iw+mod(64-iw,64):ih+mod(64-ih,64)
   # Use ffmpeg progress reporting so remote logs show extraction progress
-  ffmpeg -hide_banner -loglevel info -progress pipe:1 -nostats -i "$INPUT_VIDEO_PATH" -vf "pad=iw+mod(64-iw\\,64):ih+mod(64-ih\\,64)" -pix_fmt rgb24 -qscale:v 1 "$TMP_DIR/input/frame_%06d.png"
+  # Pad to multiples of 32 (inference_img.py pads to 32) to avoid size mismatches
+  # Expression: pad=iw+mod(32-iw,32):ih+mod(32-ih,32)
+  ffmpeg -hide_banner -loglevel info -progress pipe:1 -nostats -i "$INPUT_VIDEO_PATH" -vf "pad=iw+mod(32-iw\\,32):ih+mod(32-ih\\,32)" -pix_fmt rgb24 -qscale:v 1 "$TMP_DIR/input/frame_%06d.png"
   if [ $? -ne 0 ]; then
     log "ERROR: Failed to extract frames"
     rm -rf "$TMP_DIR"
