@@ -420,7 +420,7 @@ sys.exit(0)
 PY
 
     # run batch script
-    PYTHONPATH="$REPO_DIR:$PYTHONPATH" $STDOUT_WRAP PYTHONUNBUFFERED=1 python3 "$TMP_DIR/batch_rife.py" "$TMP_DIR/input" "$TMP_DIR/output" "$FACTOR" 2>&1 | tee "$TMP_DIR/batch_rife_run.log" || true
+    PYTHONPATH="$REPO_DIR:$PYTHONPATH" $STDOUT_WRAP env PYTHONUNBUFFERED=1 python3 "$TMP_DIR/batch_rife.py" "$TMP_DIR/input" "$TMP_DIR/output" "$FACTOR" 2>&1 | tee "$TMP_DIR/batch_rife_run.log" || true
     # Consider batch successful ONLY if output PNGs were created (count them explicitly)
     PNG_COUNT=$(find "$TMP_DIR/output" -maxdepth 1 -type f -iname '*.png' -print | wc -l 2>/dev/null || true)
     if [ -n "$PNG_COUNT" ] && [ "$PNG_COUNT" -gt 0 ]; then
@@ -573,7 +573,7 @@ PY
         b="$TMP_DIR/input/$(printf 'frame_%06d.png' $((i+1)))"
         out_mid="$TMP_DIR/output/$(printf 'frame_%06d_mid.png' $i)"
         log "RIFE pair #$i: $a $b -> $out_mid"
-        PYTHONPATH="$REPO_DIR:$PYTHONPATH" $STDOUT_WRAP PYTHONUNBUFFERED=1 python3 "$REPO_DIR/inference_img.py" --img "$a" "$b" --ratio 0.5 --model train_log 2>&1 | tee "$TMP_DIR/rife_pair_$i.log" || true
+        PYTHONPATH="$REPO_DIR:$PYTHONPATH" $STDOUT_WRAP env PYTHONUNBUFFERED=1 python3 "$REPO_DIR/inference_img.py" --img "$a" "$b" --ratio 0.5 --model train_log 2>&1 | tee "$TMP_DIR/rife_pair_$i.log" || true
 
         # Emit the pair log to stdout for remote debugging
         if [ -f "$TMP_DIR/rife_pair_$i.log" ]; then
