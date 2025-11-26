@@ -164,7 +164,9 @@ if [ -f "$REPO_DIR/inference_img.py" ] || [ -f "/workspace/project/rife_interpol
   mkdir -p "$TMP_DIR/input" "$TMP_DIR/output"
 
   # Force 8-bit RGB frames to avoid dtype issues (e.g., numpy.uint16) in RIFE inference
-  ffmpeg -v warning -i "$INPUT_VIDEO_PATH" -pix_fmt rgb24 -qscale:v 1 "$TMP_DIR/input/frame_%06d.png"
+  # Pad frames to next multiple of 64 (width/height) to match RIFE model internal downsampling expectations
+  # Expression: pad=iw+mod(64-iw,64):ih+mod(64-ih,64)
+  ffmpeg -v warning -i "$INPUT_VIDEO_PATH" -vf "pad=iw+mod(64-iw\\,64):ih+mod(64-ih\\,64)" -pix_fmt rgb24 -qscale:v 1 "$TMP_DIR/input/frame_%06d.png"
   if [ $? -ne 0 ]; then
     log "ERROR: Failed to extract frames"
     rm -rf "$TMP_DIR"
