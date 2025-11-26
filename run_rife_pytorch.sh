@@ -418,35 +418,26 @@ PY
               idx=$((idx+1))
             fi
             # copy any mids for this pair, support both frame_x_mid.png and frame_x_mid_01.png variants
-            for midf in $(ls -1 "$TMP_DIR/output/$(printf 'frame_%06d_mid'* $i)" 2>/dev/null | sort || true); do
-              if [ -f "$midf" ]; then
-                dst="$ASMDIR/$(printf 'frame_%06d.png' $idx)"
-                cp -f "$midf" "$dst" || true
-                idx=$((idx+1))
-              fi
+            mid_pattern="$TMP_DIR/output/$(printf 'frame_%06d' "$i")_mid"*
+            for midf in $mid_pattern; do
+              [ -f "$midf" ] || continue
+              dst="$ASMDIR/$(printf 'frame_%06d.png' "$idx")"
+              cp -f "$midf" "$dst" || true
+              idx=$((idx+1))
             done
             i=$((i+1))
           done
         fi
         CHOSEN_PATTERN="$ASMDIR/frame_%06d.png"
-        # Compute assembled framerate robustly using Python to avoid awk quoting issues
+        # Compute assembled framerate and log diagnostics
         ASSEMBLED_COUNT=$(ls -1 "$ASMDIR"/*.png 2>/dev/null | wc -l || true)
         if [ -n "$NUM_IN" ] && [ "$NUM_IN" -gt 0 ] && [ -n "$ASSEMBLED_COUNT" ] && [ "$ASSEMBLED_COUNT" -gt 0 ]; then
-          FRAMERATE=$(python3 - <<PY
-import sys
-orig=float(sys.argv[1])
-assembled=int(sys.argv[2])
-num_in=int(sys.argv[3])
-factor=float(sys.argv[4])
-expected=round(num_in*factor)
-if abs(assembled-expected) <= 2:
-    print(orig*factor)
-else:
-    print(orig * (assembled/num_in))
-PY
-            "$ORIG_FPS" "$ASSEMBLED_COUNT" "$NUM_IN" "$FACTOR")
+          EXPECTED_APPROX=$(awk -v N="$NUM_IN" -v F="$FACTOR" 'BEGIN{printf("%.0f", N*F)}')
+          FRAMERATE=$(awk -v orig="$ORIG_FPS" -v assembled="$ASSEMBLED_COUNT" -v num_in="$NUM_IN" -v factor="$FACTOR" 'BEGIN{ if(num_in>0){ expected=int(num_in*factor+0.5); if(assembled >= expected-2 && assembled <= expected+2) printf("%.6f", orig*factor); else printf("%.6f", orig*(assembled/num_in)); } else printf("%.6f", orig*factor) }')
+          log "[debug] assembled_count=$ASSEMBLED_COUNT num_in=$NUM_IN expected_approx=$EXPECTED_APPROX framerate=$FRAMERATE"
         else
           FRAMERATE="$TARGET_FPS"
+          log "[debug] assembled_count or num_in missing, using FRAMERATE=$FRAMERATE"
         fi
         run_ffmpeg_pattern "$CHOSEN_PATTERN"; ASM_RC=$?
       fi
@@ -615,40 +606,28 @@ PY
               cp -f "$src_in" "$dst" || true
               idx=$((idx+1))
             fi
-            for midf in $(ls -1 "$TMP_DIR/output/$(printf 'frame_%06d_mid'* $i)" 2>/dev/null | sort || true); do
-              if [ -f "$midf" ]; then
-                dst="$ASMDIR/$(printf 'frame_%06d.png' $idx)"
-                cp -f "$midf" "$dst" || true
-                idx=$((idx+1))
-              fi
+            # copy any mids for this pair, support both frame_x_mid.png and frame_x_mid_01.png variants
+            mid_pattern="$TMP_DIR/output/$(printf 'frame_%06d' "$i")_mid"*
+            for midf in $mid_pattern; do
+              [ -f "$midf" ] || continue
+              dst="$ASMDIR/$(printf 'frame_%06d.png' $idx)"
+              cp -f "$midf" "$dst" || true
+              idx=$((idx+1))
             done
             i=$((i+1))
           done
         fi
         IN_PATTERN="$ASMDIR/frame_%06d.png"
         log "Using assembled interleaved pattern: frame_%06d.png"
-        # Compute assembled framerate using Python (avoid awk quoting issues)
+        # Compute assembled framerate using awk (avoid quoting/argv issues) and log diagnostics
         ASSEMBLED_COUNT=$(ls -1 "$ASMDIR"/*.png 2>/dev/null | wc -l || true)
         if [ -n "$NUM_IN" ] && [ "$NUM_IN" -gt 0 ] && [ -n "$ASSEMBLED_COUNT" ] && [ "$ASSEMBLED_COUNT" -gt 0 ]; then
-          FRAMERATE_RAW=$(python3 - <<PY
-import sys
-orig=float(sys.argv[1])
-assembled=int(sys.argv[2])
-num_in=int(sys.argv[3])
-factor=float(sys.argv[4])
-expected=round(num_in*factor)
-if abs(assembled-expected) <= 2:
-    print(orig*factor)
-else:
-    print(orig * (assembled/num_in))
-PY
-            "$ORIG_FPS" "$ASSEMBLED_COUNT" "$NUM_IN" "$FACTOR" 2>/dev/null || true)
-          FRAMERATE=$(echo "$FRAMERATE_RAW" | tr -d '\r\n' | tr -d ' ')
-          if ! echo "$FRAMERATE" | grep -Eq '^[0-9]+(\.[0-9]+)?$'; then
-            FRAMERATE="$TARGET_FPS"
-          fi
+          EXPECTED_APPROX=$(awk -v N="$NUM_IN" -v F="$FACTOR" 'BEGIN{printf("%.0f", N*F)}')
+          FRAMERATE=$(awk -v orig="$ORIG_FPS" -v assembled="$ASSEMBLED_COUNT" -v num_in="$NUM_IN" -v factor="$FACTOR" 'BEGIN{ if(num_in>0){ expected=int(num_in*factor+0.5); if(assembled >= expected-2 && assembled <= expected+2) printf("%.6f", orig*factor); else printf("%.6f", orig*(assembled/num_in)); } else printf("%.6f", orig*factor) }')
+          log "[debug] assembled_count=$ASSEMBLED_COUNT num_in=$NUM_IN expected_approx=$EXPECTED_APPROX framerate=$FRAMERATE"
         else
           FRAMERATE="$TARGET_FPS"
+          log "[debug] assembled_count or num_in missing, using FRAMERATE=$FRAMERATE"
         fi
         if [ -f "$TMP_DIR/audio.aac" ]; then
           ffmpeg -v warning -y -framerate "$FRAMERATE" -i "$IN_PATTERN" -i "$TMP_DIR/audio.aac" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p -c:a aac -shortest "$OUTPUT_VIDEO_PATH"
