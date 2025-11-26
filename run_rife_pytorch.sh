@@ -239,70 +239,60 @@ if [ -f "$REPO_DIR/inference_img.py" ] || [ -f "/workspace/project/rife_interpol
 import sys, os
 from importlib.util import spec_from_file_location
 import types
-import runpy
 
 in_dir = sys.argv[1]
 out_dir = sys.argv[2]
 factor = float(sys.argv[3])
 repo = os.environ.get('REPO_DIR', '/workspace/project/external/RIFE')
 
-def try_direct():
-    # already attempted external direct script from shell; return False so we try import-based options
-    return False
-
 def try_import_inference():
     path = os.path.join(repo, 'inference_img.py')
     if not os.path.exists(path):
         return False
-    mod = None
-    # Try spec import
     try:
         spec = spec_from_file_location('rife_inference', path)
-        if spec and spec.loader:
-            module = types.ModuleType(spec.name)
-            spec.loader.exec_module(module)
-            mod = module
-    except Exception:
-        mod = None
-    # Fallback to runpy (returns dict)
-    if mod is None:
-        try:
-            mod_dict = runpy.run_path(path)
-            mod = mod_dict
-        except Exception:
+        if not spec or not spec.loader:
             return False
+        module = types.ModuleType(spec.name)
+        # Exec module but mask sys.argv to avoid CLI arg parsing at import time
+        import sys as _sys
+        _old_argv = None
+        try:
+            _old_argv = _sys.argv
+            _sys.argv = [path]
+            spec.loader.exec_module(module)
+        finally:
+            if _old_argv is not None:
+                _sys.argv = _old_argv
+         mod = module
+    except Exception:
+        # If import fails, avoid executing the script as CLI (which triggers argparse usage)
+        return False
 
-    # helper to get attr from module or dict
     def get_attr(obj, name):
-        if obj is None:
-            return None
-        if isinstance(obj, dict):
-            return obj.get(name)
         return getattr(obj, name, None)
 
-    # If module provided a batch API, try to call it
-    try:
-        batch_fn = get_attr(mod, 'batch_inference') or get_attr(mod, 'inference_dir')
-        if batch_fn:
-            # call appropriately
+    # Prefer a batch API if present
+    batch_fn = get_attr(mod, 'batch_inference') or get_attr(mod, 'inference_dir')
+    if batch_fn:
+        try:
             try:
                 batch_fn(in_dir, out_dir, factor)
             except TypeError:
                 batch_fn(in_dir, out_dir)
             return True
+        except Exception:
+            return False
 
-        # try common pattern: module.load_model() and module.inference(img0, img1, model)
-        load_model = get_attr(mod, 'load_model') or get_attr(mod, 'build_model')
-        infer_fn = get_attr(mod, 'inference') or get_attr(mod, 'inference_pair')
-
-        model = None
-        if load_model:
+    # Try load_model + inference pattern
+    load_model = get_attr(mod, 'load_model') or get_attr(mod, 'build_model')
+    infer_fn = get_attr(mod, 'inference') or get_attr(mod, 'inference_pair')
+    if load_model and infer_fn:
+        try:
             try:
                 model = load_model(os.path.join(repo, 'train_log'))
             except TypeError:
                 model = load_model()
-
-        if model is not None and infer_fn is not None:
             imgs = sorted([p for p in os.listdir(in_dir) if p.lower().endswith('.png')])
             from PIL import Image
             import numpy as np
@@ -310,14 +300,11 @@ def try_import_inference():
                 a = os.path.join(in_dir, imgs[i])
                 b = os.path.join(in_dir, imgs[i+1])
                 try:
-                    # call infer function with (a,b,model) or (a,b)
-                    if callable(infer_fn):
-                        try:
-                            out = infer_fn(a, b, model)
-                        except TypeError:
-                            out = infer_fn(a, b)
-                    else:
-                        out = None
+                    out = None
+                    try:
+                        out = infer_fn(a, b, model)
+                    except TypeError:
+                        out = infer_fn(a, b)
                 except Exception:
                     out = None
                 if out is None:
@@ -332,8 +319,8 @@ def try_import_inference():
                 except Exception:
                     pass
             return True
-    except Exception:
-        return False
+        except Exception:
+            return False
     return False
 
 if __name__ == '__main__':
