@@ -323,13 +323,14 @@ PY
 
     # run batch script
     PYTHONPATH="$REPO_DIR:$PYTHONPATH" python3 "$TMP_DIR/batch_rife.py" "$TMP_DIR/input" "$TMP_DIR/output" "$FACTOR" >/tmp/batch_rife_run.log 2>&1 || true
-    # Consider batch successful ONLY if output PNGs were created (use find)
-    if find "$TMP_DIR/output" -maxdepth 1 -type f -iname '*.png' -print -quit >/dev/null 2>&1; then
+    # Consider batch successful ONLY if output PNGs were created (count them explicitly)
+    PNG_COUNT=$(find "$TMP_DIR/output" -maxdepth 1 -type f -iname '*.png' -print | wc -l 2>/dev/null || true)
+    if [ -n "$PNG_COUNT" ] && [ "$PNG_COUNT" -gt 0 ]; then
       BATCH_OK=1
-      log "Batch-runner produced outputs: $(find "$TMP_DIR/output" -maxdepth 1 -type f -iname '*.png' -printf '%f\n' | head -n 5 | tr '\n' ',')"
+      log "Batch-runner produced $PNG_COUNT outputs (sample): $(find "$TMP_DIR/output" -maxdepth 1 -type f -iname '*.png' -printf '%f\n' | head -n 5 | tr '\n' ',')"
     else
-      log "Batch-runner produced no output PNGs; batch log (first 200 chars):"
-      head -c 200 "/tmp/batch_rife_run.log" || true
+      log "Batch-runner produced no output PNGs (count=$PNG_COUNT); printing batch log (up to 5KB) for debugging:"
+      head -c 5000 "/tmp/batch_rife_run.log" || true
     fi
   fi
 
