@@ -278,8 +278,8 @@ PY
     log "Single-frame extraction log (tail 200 lines):"
     tail -n 200 "$TMP_DIR/ff_test_extract.log" 2>/dev/null || true
     if [ -f "$TMP_DIR/input/frame_test_000001.png" ]; then
-      log "Test frame created; hexdump first 128 bytes:"
-      hexdump -C -n 128 "$TMP_DIR/input/frame_test_000001.png" | sed -n '1,20p' || true
+      log "Test frame created; hex head (first 128 bytes):"
+      print_hex_head "$TMP_DIR/input/frame_test_000001.png" 128
       file "$TMP_DIR/input/frame_test_000001.png" || true
     else
       log "Test frame was NOT created — ffmpeg cannot write PNGs; check ffmpeg build and container permissions"
@@ -294,10 +294,11 @@ PY
   # Post-extraction diagnostics: list input dir and inspect first frame header (png or jpg)
   log "Post-extract listing of $TMP_DIR/input (first 200 entries):"
   ls -la "$TMP_DIR/input" | head -n 200 || true
-  FIRST_FRAME=$(ls -1 "$TMP_DIR/input"/*.{png,jpg,jpeg} 2>/dev/null | head -n 1 || true)
+  # pick the first image file (full path) using find to avoid accidental non-image matches
+  FIRST_FRAME=$(find "$TMP_DIR/input" -maxdepth 1 -type f \( -iname '*.png' -o -iname '*.jpg' -o -iname '*.jpeg' \) -print | head -n 1 || true)
   if [ -n "$FIRST_FRAME" ] && [ -f "$FIRST_FRAME" ]; then
-    log "Showing hexdump of first frame (first 128 bytes): $FIRST_FRAME"
-    hexdump -C -n 128 "$FIRST_FRAME" | sed -n '1,20p' || true
+    log "Showing hex head of first frame (first 128 bytes): $FIRST_FRAME"
+    print_hex_head "$FIRST_FRAME" 128
     if command -v file >/dev/null 2>&1; then
       file "$FIRST_FRAME" || true
     fi
@@ -345,8 +346,8 @@ PY
     fi
   fi
 
-  # Count frames (png/jpg)
-  FRAME_COUNT=$(( (ls -1 "$TMP_DIR/input"/*.png 2>/dev/null || true; ls -1 "$TMP_DIR/input"/*.jpg 2>/dev/null || true; ls -1 "$TMP_DIR/input"/*.jpeg 2>/dev/null || true) | wc -l ))
+  # Count frames (png/jpg) using command substitution (avoid arithmetic expansion error)
+  FRAME_COUNT=$( (ls -1 "$TMP_DIR/input"/*.png 2>/dev/null || true; ls -1 "$TMP_DIR/input"/*.jpg 2>/dev/null || true; ls -1 "$TMP_DIR/input"/*.jpeg 2>/dev/null || true) | wc -l )
   log "Extracted $FRAME_COUNT frames"
 
   if [ $FRAME_COUNT -eq 0 ]; then
