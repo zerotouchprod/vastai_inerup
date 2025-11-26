@@ -437,6 +437,9 @@ if [ -f "$REPO_DIR/inference_img.py" ] || [ -f "/workspace/project/rife_interpol
           OUT_COUNT=$(find "$TMP_DIR/output" -maxdepth 1 -type f -name '*.png' -size +0c 2>/dev/null | wc -l)
           if [ $RC_C -eq 0 ] && [ "$OUT_COUNT" -gt 0 ]; then
             log "Candidate $cand successfully produced $OUT_COUNT output files — adopting it for full run"
+            # Record chosen candidate and its copied tmp path for the full run
+            CHOSEN_CAND="$cand"
+            CHOSEN_COPY="$COPY_CAND"
             RC=0
             break 2
           else
@@ -446,120 +449,81 @@ if [ -f "$REPO_DIR/inference_img.py" ] || [ -f "/workspace/project/rife_interpol
       done
       if [ $RC -ne 0 ]; then
         log "No additional candidate scripts succeeded"
+      else
+        # If we found a chosen candidate, run it for all pairs (per-pair full run)
+        if [ -n "${CHOSEN_COPY:-}" ]; then
+          log "Running full per-pair processing using chosen candidate: $CHOSEN_CAND"
+          # prepare output and counters
+          rm -f "$TMP_DIR/output"/*.png 2>/dev/null || true
+          OUT_SEQ=1
+          # iterate over all pairs
+          for idx in "${!FRAMES[@]}"; do
+            if [ "$idx" -ge $((${#FRAMES[@]} - 1)) ]; then
+              break
+            fi
+            A=${FRAMES[$idx]}
+            B=${FRAMES[$((idx+1))]}
+            log "[candidate-run] Processing pair: $(basename "$A") + $(basename "$B")"
+
+            # Basic sanity checks
+            if [ ! -f "$A" ] || [ ! -s "$A" ]; then
+              log "ERROR: Frame missing or empty: $A"
+              RC=6
+              break
+            fi
+            if [ ! -f "$B" ] || [ ! -s "$B" ]; then
+              log "ERROR: Frame missing or empty: $B"
+              RC=6
+              break
+            fi
+
+            # snapshot pre lists
+            pre_repo=$(ls -1 "$REPO_DIR"/*.png 2>/dev/null || true)
+            pre_out=$(ls -1 "$TMP_DIR/output"/*.png 2>/dev/null || true)
+
+            # run chosen candidate from REPO_DIR context
+            python3 -u -c "import sys,os,runpy; os.chdir('$REPO_DIR'); sys.path.insert(0,'$REPO_DIR'); sys.argv=['$(basename "$CHOSEN_COPY")','--img','$A','$B','--ratio','$FACTOR']; runpy.run_path('$CHOSEN_COPY', run_name='__main__')" 2>&1 | tee -a "$TMP_DIR/rife.log"
+            RC_CUR=${PIPESTATUS[0]:-0}
+            if [ $RC_CUR -ne 0 ]; then
+              log "ERROR: candidate $CHOSEN_CAND failed for pair $(basename "$A")/$(basename "$B") (exit $RC_CUR)"
+              RC=$RC_CUR
+              break
+            fi
+
+            # Find new files produced
+            post_repo=$(ls -1 "$REPO_DIR"/*.png 2>/dev/null || true)
+            post_out=$(ls -1 "$TMP_DIR/output"/*.png 2>/dev/null || true)
+            new_files=""
+            for f in $post_repo; do
+              case " $pre_repo " in
+                *" $f "*) ;;
+                *) new_files="$new_files $f";;
+              esac
+            done
+            for f in $post_out; do
+              case " $pre_out " in
+                *" $f "*) ;;
+                *) new_files="$new_files $f";;
+              esac
+            done
+
+            if [ -z "$new_files" ]; then
+              log "ERROR: candidate $CHOSEN_CAND did not produce outputs for pair $(basename "$A")/$(basename "$B")"
+              RC=7
+              break
+            fi
+
+            for nf in $new_files; do
+              if [ -f "$nf" ]; then
+                target="$TMP_DIR/output/frame_$(printf "%06d" $OUT_SEQ)_out.png"
+                mv "$nf" "$target" 2>/dev/null || cp "$nf" "$target" 2>/dev/null || true
+                log "[candidate-run] Saved interpolated frame: $(basename "$target")"
+                OUT_SEQ=$((OUT_SEQ + 1))
+              fi
+            done
+          done
+        fi
       fi
-    fi
-  fi
-
-  if [ $RC -ne 0 ]; then
-    log "ERROR: RIFE interpolation step failed (exit code: $RC)."
-    # Print helper diagnostics: list recent temp dirs and show rife.log/contents
-    echo "--- DEBUG: Listing temp directories matching /tmp/rife_tmp.* ---"
-    ls -ld /tmp/rife_tmp.* 2>/dev/null || true
-
-    # If TMP_DIR is set, prefer it; otherwise try to find the most recent temp dir
-    if [ -n "${TMP_DIR:-}" ] && [ -d "$TMP_DIR" ]; then
-      LATEST_TMP="$TMP_DIR"
-    else
-      LATEST_TMP=$(ls -1dt /tmp/rife_tmp.* 2>/dev/null | head -n1 || true)
-    fi
-
-    if [ -n "$LATEST_TMP" ] && [ -d "$LATEST_TMP" ]; then
-      echo "--- DEBUG: Showing tail of $LATEST_TMP/rife.log (last 400 lines) ---"
-      tail -n 400 "$LATEST_TMP/rife.log" 2>/dev/null || echo "(no rife.log in $LATEST_TMP)"
-      echo "--- DEBUG: Listing contents of $LATEST_TMP ---"
-      ls -la "$LATEST_TMP" 2>/dev/null || true
-    else
-      echo "--- DEBUG: No temp dir found at /tmp/rife_tmp.* ---"
-    fi
-
-    # If a rife.log exists in the (current) TMP_DIR, also print a helpful tail for debugging (legacy behavior)
-    if [ -n "${TMP_DIR:-}" ] && [ -f "$TMP_DIR/rife.log" ]; then
-      log "----- BEGIN RIFE LOG ($TMP_DIR/rife.log) (last 500 lines) -----"
-      tail -n 500 "$TMP_DIR/rife.log" || true
-      log "-----  END RIFE LOG -----"
-    fi
-
-    # Cleanup (respect KEEP_TMP for debugging)
-    [ "${KEEP_TMP:-0}" = "1" ] || rm -rf "${TMP_DIR:-}" 2>/dev/null || true
-    exit $RC
-  fi
-
-  # Find output frames produced by RIFE. Try several common filename patterns.
-  OUT_PATTERN=""
-  if ls "$TMP_DIR/output"/*_out.png >/dev/null 2>&1; then
-    # RIFE variants sometimes emit frame_000001_out.png
-    OUT_PATTERN="frame_%06d_out.png"
-  elif ls "$TMP_DIR/output"/frame_*.png >/dev/null 2>&1; then
-    OUT_PATTERN="frame_%06d.png"
-  elif ls "$TMP_DIR/output"/*.png >/dev/null 2>&1; then
-    # fallback: pick any png and let ffmpeg glob it (requires numeric sequence naming)
-    OUT_PATTERN="frame_%06d.png"
-  else
-    log "ERROR: No output frames found in $TMP_DIR/output after RIFE run"
-    rm -rf "$TMP_DIR"
-    exit 5
-  fi
-
-  # To make ffmpeg assembly robust, create a sequentially numbered set in assembled/
-  ASSEMBLE_DIR="$TMP_DIR/assembled"
-  mkdir -p "$ASSEMBLE_DIR"
-  IDX=1
-  # Use a stable sort (version sort) if available, otherwise plain sort
-  if ls "$TMP_DIR/output"/*.png >/dev/null 2>&1; then
-    # generate list of files in natural order
-    FILE_LIST=$(ls -1v "$TMP_DIR/output"/*.png 2>/dev/null || true)
-    if [ -z "$FILE_LIST" ]; then
-      FILE_LIST=$(printf "%s\n" "$TMP_DIR/output"/*.png | sort -V 2>/dev/null || true)
-    fi
-    for f in $FILE_LIST; do
-      if [ -f "$f" ] && [ -s "$f" ]; then
-        cp -f "$f" "$ASSEMBLE_DIR/frame_$(printf "%06d" $IDX).png" || cp -f "$f" "$ASSEMBLE_DIR/frame_$(printf "%06d" $IDX).png" 2>/dev/null || true
-        IDX=$((IDX+1))
-      fi
-    done
-  fi
-  ASSEMBLED_COUNT=$(ls -1 "$ASSEMBLE_DIR"/*.png 2>/dev/null | wc -l)
-  if [ $ASSEMBLED_COUNT -eq 0 ]; then
-    log "ERROR: No valid assembled frames found in $ASSEMBLE_DIR — cannot reassemble video"
-    [ "${KEEP_TMP:-0}" = "1" ] || rm -rf "$TMP_DIR"
-    exit 5
-  fi
-  # We'll use assembled/frame_%06d.png for ffmpeg
-  ASSEMBLED_PATTERN="frame_%06d.png"
-
-  # Reassemble into final video using assembled set
-  log "Reassembling interpolated frames into video (FPS: ${TARGET_FPS}) using $ASSEMBLE_DIR"
-  if [ -f "$TMP_DIR/audio.aac" ]; then
-    ffmpeg -y -v warning -stats -framerate "$TARGET_FPS" -start_number 1 -i "$ASSEMBLE_DIR/$ASSEMBLED_PATTERN" -i "$TMP_DIR/audio.aac" -c:v libx264 -crf 18 -pix_fmt yuv420p -c:a aac -shortest "$OUTPUT_VIDEO_PATH"
-  else
-    ffmpeg -y -v warning -stats -framerate "$TARGET_FPS" -start_number 1 -i "$ASSEMBLE_DIR/$ASSEMBLED_PATTERN" -c:v libx264 -crf 18 -pix_fmt yuv420p "$OUTPUT_VIDEO_PATH"
-  fi
-  FFMPEG_RC=$?
-
-  # If ffmpeg failed with assembled set, try glob fallback directly on output (edge cases)
-  if [ $FFMPEG_RC -ne 0 ]; then
-    log "ffmpeg failed with $FFMPEG_RC on assembled set; attempting glob-based reassembly as fallback"
-    if [ -f "$TMP_DIR/audio.aac" ]; then
-      ffmpeg -y -v warning -stats -framerate "$TARGET_FPS" -pattern_type glob -i "$TMP_DIR/output/*.png" -i "$TMP_DIR/audio.aac" -c:v libx264 -crf 18 -pix_fmt yuv420p -c:a aac -shortest "$OUTPUT_VIDEO_PATH"
-    else
-      ffmpeg -y -v warning -stats -framerate "$TARGET_FPS" -pattern_type glob -i "$TMP_DIR/output/*.png" -c:v libx264 -crf 18 -pix_fmt yuv420p "$OUTPUT_VIDEO_PATH"
-    fi
-    FFMPEG_RC=$?
-  fi
-
-  if [ $FFMPEG_RC -ne 0 ]; then
-    log "ERROR: Failed to reassemble video from frames (ffmpeg exit: $FFMPEG_RC)"
-    rm -rf "$TMP_DIR"
-    exit $FFMPEG_RC
-  fi
-
-  # Success - cleanup and exit 0
-  log "✅ RIFE interpolation completed successfully — output: $OUTPUT_VIDEO_PATH"
-  rm -rf "$TMP_DIR"
-  exit 0
-
-fi
-
-# If we reach here it means the fast frame-by-frame branch was not available.
-log "No supported RIFE frame-by-frame method detected — exiting with code 2 to allow fallback."
-exit 2
+     fi
+   fi
+# ...existing code...
