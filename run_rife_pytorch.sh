@@ -407,10 +407,58 @@ if [ -f "$REPO_DIR/inference_img.py" ] || [ -f "/workspace/project/rife_interpol
     (cd "$REPO_DIR" && python3 -u inference_video.py -i "$INPUT_VIDEO_PATH" -o "$OUTPUT_VIDEO_PATH" -f "$FACTOR" 2>&1) | tee "$TMP_DIR/rife.log"
     RC=${PIPESTATUS[0]:-0}
   else
-    log "No known RIFE entrypoint found in $REPO_DIR or /workspace/project — cannot run GPU RIFE here."
-    log "Please implement the invocation for your RIFE fork or place a compatible script in the repo."
-    RC=2
-  fi
+    # No standard entrypoint matched yet. Try heuristic discovery of other candidate scripts
+    log "No standard RIFE entrypoint matched; searching for additional candidate scripts (heuristic)"
+    # List potential candidates for diagnostics
+    echo "--- Candidate python files in $REPO_DIR ---" >> "$TMP_DIR/rife.log" 2>/dev/null || true
+    ls -1 "$REPO_DIR"/*.py 2>/dev/null | tee -a "$TMP_DIR/rife.log" || true
+
+    # Build FRAMES array if not present
+    mapfile -t FRAMES < <(ls -1 "$TMP_DIR/input"/*.png 2>/dev/null | sort)
+    if [ ${#FRAMES[@]} -lt 2 ]; then
+      log "Not enough frames to run candidate tests (${#FRAMES[@]} found)"
+      RC=2
+    else
+      RC=2
+      A=${FRAMES[0]}
+      B=${FRAMES[1]}
+      # Candidate filename patterns
+      patterns=("*inference*.py" "*interp*.py" "*interpolate*.py" "*rife*.py" "*_rife_*.py")
+      for pat in "${patterns[@]}"; do
+        for cand in $REPO_DIR/$pat; do
+          [ -f "$cand" ] || continue
+          log "Attempting candidate script: $cand"
+          echo "---- HEAD of $cand ----" >> "$TMP_DIR/rife.log" 2>/dev/null || true
+          head -n 60 "$cand" >> "$TMP_DIR/rife.log" 2>/dev/null || true
+          # copy to tmp and attempt a single pair run
+          COPY_CAND="$TMP_DIR/$(basename "$cand")"
+          cp -p "$cand" "$COPY_CAND" 2>/dev/null || cp "$cand" "$COPY_CAND" 2>/dev/null || true
+          # clear tmp output
+          rm -f "$TMP_DIR/output"/*.png 2>/dev/null || true
+          log "Running candidate $COPY_CAND on a single pair to test compatibility"
+          python3 -u -c "import sys,os,runpy; os.chdir('$REPO_DIR'); sys.path.insert(0,'$REPO_DIR'); sys.argv=['$(basename "$COPY_CAND")','--img','$A','$B','--ratio','$FACTOR']; runpy.run_path('$COPY_CAND', run_name='__main__')" 2>&1 | tee -a "$TMP_DIR/rife.log"
+          RC_C=${PIPESTATUS[0]:-0}
+          OUT_COUNT=$(find "$TMP_DIR/output" -maxdepth 1 -type f -name '*.png' -size +0c 2>/dev/null | wc -l)
+          if [ $RC_C -eq 0 ] && [ "$OUT_COUNT" -gt 0 ]; then
+            log "Candidate $cand successfully produced $OUT_COUNT output files — adopting it for full run"
+            RC=0
+            break 2
+          else
+            log "Candidate $cand failed (exit $RC_C, outputs: $OUT_COUNT) — continuing search"
+            # continue to next candidate
+          fi
+        done
+      done
+      if [ $RC -ne 0 ]; then
+        log "No additional candidate scripts succeeded"
+      fi
+    fi
+
+   else
+     log "No known RIFE entrypoint found in $REPO_DIR or /workspace/project — cannot run GPU RIFE here."
+     log "Please implement the invocation for your RIFE fork or place a compatible script in the repo."
+     RC=2
+   fi
 
   if [ $RC -ne 0 ]; then
     log "ERROR: RIFE interpolation step failed (exit code: $RC)."
