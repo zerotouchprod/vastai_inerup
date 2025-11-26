@@ -69,13 +69,49 @@ def main():
         def _fake_parse_args(self, *a, **k):
             ns = _argparse.Namespace()
             # Provide common RIFE CLI attributes to avoid AttributeError on import
-            for _k in ('img','exp','ratio','rthreshold','rmaxcycles','model','modelDir','model_dir','MODELDIR','train_log'):
+            # Prefer RIFE_MODEL_DIR env, then /opt/rife_models/train_log, then repo/train_log
+            mdl = None
+            try:
+                mdl = os.environ.get('RIFE_MODEL_DIR')
+            except Exception:
+                mdl = None
+            if not mdl:
+                cand = os.path.join('/opt', 'rife_models', 'train_log')
+                if os.path.isdir(cand):
+                    mdl = cand
+            if not mdl:
+                cand2 = os.path.join(repo, 'train_log')
+                # create repo train_log if missing so scripts can find a directory
+                try:
+                    os.makedirs(cand2, exist_ok=True)
+                    mdl = cand2
+                except Exception:
+                    mdl = None
+            for _k in ('img','exp','ratio','rthreshold','rmaxcycles','model','model_dir','MODELDIR','train_log'):
                 setattr(ns, _k, None)
+            setattr(ns, 'modelDir', mdl)
             return ns
         def _fake_parse_known(self, *a, **k):
             ns = _argparse.Namespace()
-            for _k in ('img','exp','ratio','rthreshold','rmaxcycles','model','modelDir','model_dir','MODELDIR','train_log'):
+            mdl = None
+            try:
+                mdl = os.environ.get('RIFE_MODEL_DIR')
+            except Exception:
+                mdl = None
+            if not mdl:
+                cand = os.path.join('/opt', 'rife_models', 'train_log')
+                if os.path.isdir(cand):
+                    mdl = cand
+            if not mdl:
+                cand2 = os.path.join(repo, 'train_log')
+                try:
+                    os.makedirs(cand2, exist_ok=True)
+                    mdl = cand2
+                except Exception:
+                    mdl = None
+            for _k in ('img','exp','ratio','rthreshold','rmaxcycles','model','model_dir','MODELDIR','train_log'):
                 setattr(ns, _k, None)
+            setattr(ns, 'modelDir', mdl)
             return (ns, [])
 
         _argparse.ArgumentParser.parse_args = _fake_parse_args
@@ -269,9 +305,30 @@ def _safe_parse_args(self, *a, **k):
         return _orig_parse_args(self, *a, **k)
     except Exception:
         from types import SimpleNamespace as _NS
+        import os as _os
         ns = _NS()
+        # common RIFE argument names: provide None defaults to avoid AttributeError
         for _k in ('img','exp','ratio','rthreshold','rmaxcycles','model','modelDir','model_dir','MODELDIR','train_log'):
             setattr(ns, _k, None)
+        # prefer env var, then /opt, then repo-relative train_log
+        mdl = _os.environ.get('RIFE_MODEL_DIR') or None
+        if not mdl:
+            cand = _os.path.join('/opt', 'rife_models', 'train_log')
+            if _os.path.isdir(cand):
+                mdl = cand
+        if not mdl:
+            try:
+                base = _os.path.dirname(__file__)
+                cand2 = _os.path.join(base, 'train_log')
+                if _os.path.isdir(cand2):
+                    mdl = cand2
+                else:
+                    # create it to satisfy loaders
+                    _os.makedirs(cand2, exist_ok=True)
+                    mdl = cand2
+            except Exception:
+                pass
+        setattr(ns, 'modelDir', mdl)
         return ns
 def _safe_parse_known(self, *a, **k):
     try:
