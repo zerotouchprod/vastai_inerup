@@ -115,6 +115,29 @@ for raw in sys.stdin:
 PY
 }
 
+# Global helper: deterministic filelist-based assembly usable anywhere in the script
+try_filelist_assembly() {
+  local src_dir="$1"
+  local out_file="$2"
+  local fr="$3"
+  local flist
+  flist="${TMP_DIR:-/tmp}/filelist.txt"
+  rm -f "$flist" || true
+  (for f in "$src_dir"/*.png; do [ -f "$f" ] || continue; echo "file '$f'"; done) >"$flist"
+  if [ ! -s "$flist" ]; then
+    return 1
+  fi
+  log "Using filelist concat assembly (first lines):"
+  head -n 20 "$flist" || true
+  if [ -f "${TMP_DIR:-/tmp}/audio.aac" ]; then
+    (ffmpeg -hide_banner -loglevel info -progress pipe:1 -nostats -y -f concat -safe 0 -i "$flist" -framerate "$fr" -i "${TMP_DIR:-/tmp}/audio.aac" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p -c:a aac -shortest "$out_file" 2>&1 | progress_collapse) | tee "${ASM_LOG:-/tmp/batch_assemble.log}"
+    return ${PIPESTATUS[0]:-1}
+  else
+    (ffmpeg -hide_banner -loglevel info -progress pipe:1 -nostats -y -f concat -safe 0 -i "$flist" -framerate "$fr" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p "$out_file" 2>&1 | progress_collapse) | tee "${ASM_LOG:-/tmp/batch_assemble.log}"
+    return ${PIPESTATUS[0]:-1}
+  fi
+}
+
 # Frame-by-frame interpolation method (reliable, doesn't require scikit-video)
 if [ -f "$REPO_DIR/inference_img.py" ] || [ -f "/workspace/project/rife_interpolate_direct.py" ]; then
   log "Using frame-by-frame RIFE interpolation (factor: $FACTOR)"
@@ -174,8 +197,32 @@ if [ -f "$REPO_DIR/inference_img.py" ] || [ -f "/workspace/project/rife_interpol
   fi
   log "Created temp directory: $TMP_DIR (base: $TMP_BASE)"
 
-  # Ensure cleanup on exit
-  trap 'rc=$?; rm -rf "${TMP_DIR}" >/dev/null 2>&1 || true; exit $rc' EXIT
+  # Create a standalone try_filelist_assembly helper in TMP_DIR to avoid scope/function issues
+  cat > "$TMP_DIR/try_filelist_assembly.sh" <<'PY'
+#!/usr/bin/env bash
+SRC_DIR="$1"
+OUT_FILE="$2"
+FR="$3"
+FLIST="$TMP_DIR/filelist.txt"
+rm -f "$FLIST" || true
+for f in "$SRC_DIR"/*.png; do
+  [ -f "$f" ] || continue
+  echo "file '$f'"
+done >"$FLIST"
+if [ ! -s "$FLIST" ]; then
+  exit 1
+fi
+# print head for remote debugging
+head -n 20 "$FLIST" || true
+if [ -f "$TMP_DIR/audio.aac" ]; then
+  ffmpeg -hide_banner -loglevel info -progress pipe:1 -nostats -y -f concat -safe 0 -i "$FLIST" -framerate "$FR" -i "$TMP_DIR/audio.aac" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p -c:a aac -shortest "$OUT_FILE"
+  exit $?
+else
+  ffmpeg -hide_banner -loglevel info -progress pipe:1 -nostats -y -f concat -safe 0 -i "$FLIST" -framerate "$FR" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p "$OUT_FILE"
+  exit $?
+fi
+PY
+  chmod +x "$TMP_DIR/try_filelist_assembly.sh" || true
 
   # Get original FPS and calculate target FPS
   log "Getting video FPS..."
@@ -458,21 +505,43 @@ PY
       # Try assembly using candidate patterns in order: *_mid -> *_out -> frame_*.png -> glob
       ASM_LOG="/tmp/batch_assemble.log"
       rm -f "$ASM_LOG" || true
+      # Ensure a reusable filelist-based assembly function is defined (global scope)
+      try_filelist_assembly() {
+        local src_dir="$1"
+        local out_file="$2"
+        local fr="$3"
+        local flist="$TMP_DIR/filelist.txt"
+        rm -f "$flist" || true
+        # create filelist with explicit ordering
+        (for f in "$src_dir"/*.png; do [ -f "$f" ] || continue; echo "file '$f'"; done) >"$flist"
+        if [ ! -s "$flist" ]; then
+          return 1
+        fi
+        log "Using filelist concat assembly (first lines):"
+        head -n 20 "$flist" || true
+        if [ -f "$TMP_DIR/audio.aac" ]; then
+          (ffmpeg -hide_banner -loglevel info -progress pipe:1 -nostats -y -f concat -safe 0 -i "$flist" -framerate "$fr" -i "$TMP_DIR/audio.aac" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p -c:a aac -shortest "$out_file" 2>&1 | progress_collapse) | tee "$ASM_LOG"
+          return ${PIPESTATUS[0]:-1}
+        else
+          (ffmpeg -hide_banner -loglevel info -progress pipe:1 -nostats -y -f concat -safe 0 -i "$flist" -framerate "$fr" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p "$out_file" 2>&1 | progress_collapse) | tee "$ASM_LOG"
+          return ${PIPESTATUS[0]:-1}
+        fi
+      }
       ASM_RC=1
       CHOSEN_PATTERN=""
       # helper to run ffmpeg with/without audio
       run_ffmpeg_pattern() {
-        local pattern="$1"
-        if [ -f "$TMP_DIR/audio.aac" ]; then
-          # Pipe ffmpeg progress through collapse filter and tee to ASM_LOG
-          (ffmpeg -hide_banner -loglevel info -progress pipe:1 -nostats -v warning -y -framerate "$FRAMERATE" -i "$pattern" -i "$TMP_DIR/audio.aac" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p -c:a aac -shortest "$OUTPUT_VIDEO_PATH" 2>&1 | progress_collapse) | tee "$ASM_LOG"
-          return ${PIPESTATUS[0]:-1}
-        else
-          (ffmpeg -hide_banner -loglevel info -progress pipe:1 -nostats -v warning -y -framerate "$FRAMERATE" -i "$pattern" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p "$OUTPUT_VIDEO_PATH" 2>&1 | progress_collapse) | tee "$ASM_LOG"
-          return ${PIPESTATUS[0]:-1}
-        fi
-        return $?
-      }
+         local pattern="$1"
+         if [ -f "$TMP_DIR/audio.aac" ]; then
+           # Pipe ffmpeg progress through collapse filter and tee to ASM_LOG
+           (ffmpeg -hide_banner -loglevel info -progress pipe:1 -nostats -v warning -y -framerate "$FRAMERATE" -i "$pattern" -i "$TMP_DIR/audio.aac" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p -c:a aac -shortest "$OUTPUT_VIDEO_PATH" 2>&1 | progress_collapse) | tee "$ASM_LOG"
+           return ${PIPESTATUS[0]:-1}
+         else
+           (ffmpeg -hide_banner -loglevel info -progress pipe:1 -nostats -v warning -y -framerate "$FRAMERATE" -i "$pattern" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p "$OUTPUT_VIDEO_PATH" 2>&1 | progress_collapse) | tee "$ASM_LOG"
+           return ${PIPESTATUS[0]:-1}
+         fi
+         return $?
+       }
 
       # 1) *_mid.png
       if find "$TMP_DIR/output" -maxdepth 1 -type f -iname '*_mid.png' -print -quit >/dev/null 2>&1; then
@@ -516,7 +585,7 @@ PY
         # ensure FRAMERATE fallback
         FRAMERATE=${FRAMERATE:-$TARGET_FPS}
         # Try deterministic filelist-based assembly first (preferred)
-        if try_filelist_assembly "$ASMDIR" "$OUTPUT_VIDEO_PATH" "$FRAMERATE"; then
+        if "$TMP_DIR/try_filelist_assembly.sh" "$ASMDIR" "$OUTPUT_VIDEO_PATH" "$FRAMERATE"; then
           ASM_RC=0
         else
           run_ffmpeg_pattern "$CHOSEN_PATTERN"; ASM_RC=$?
@@ -757,7 +826,7 @@ PY
           return $?
         }
         # Try deterministic filelist-based assembly first (preferred)
-        if try_filelist_assembly "$TMP_DIR/assembled" "$OUTPUT_VIDEO_PATH" "$FRAMERATE"; then
+        if "$TMP_DIR/try_filelist_assembly.sh" "$TMP_DIR/assembled" "$OUTPUT_VIDEO_PATH" "$FRAMERATE"; then
           log "Assembled video successfully from filelist-based assembly: $OUTPUT_VIDEO_PATH"
         else
           # fallback to ffmpeg pattern matching
@@ -790,7 +859,7 @@ PY
           return $?
         }
         # Try deterministic filelist-based assembly first (preferred)
-        if try_filelist_assembly "$TMP_DIR/output" "$OUTPUT_VIDEO_PATH" "$FRAMERATE"; then
+        if "$TMP_DIR/try_filelist_assembly.sh" "$TMP_DIR/output" "$OUTPUT_VIDEO_PATH" "$FRAMERATE"; then
           log "Assembled video successfully from filelist-based assembly: $OUTPUT_VIDEO_PATH"
         else
           # fallback to ffmpeg pattern matching
