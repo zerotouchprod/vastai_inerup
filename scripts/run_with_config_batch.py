@@ -32,6 +32,20 @@ except ImportError as e:
     print("Make sure you're running from the project root or scripts/ directory")
     sys.exit(1)
 
+# video detection helper (optional, fallback provided)
+try:
+    from scripts.utils import is_video_key
+except Exception:
+    def is_video_key(key, probe=False):
+        try:
+            k = (key or '').lower()
+            for ext in ('.mp4', '.mkv', '.mov', '.avi', '.webm', '.mjpeg', '.mpeg', '.mpg'):
+                if k.endswith(ext):
+                    return True
+        except Exception:
+            pass
+        return False
+
 
 def load_config(config_path: str = 'config.yaml') -> dict:
     """Load configuration from YAML file"""
@@ -103,7 +117,8 @@ def main():
         sys.stdout.flush()
         objects = b2_presign.list_objects(bucket, prefix, os.environ.get('B2_KEY'), os.environ.get('B2_SECRET'), b2_endpoint, b2_region)
         # keep only .mp4 files, skip zero-size artifacts and skip file equal to input_dir+'.mp4'
-        raw_files = [obj for obj in objects if obj['key'].endswith('.mp4')]
+        # accept common video container extensions via helper
+        raw_files = [obj for obj in objects if is_video_key(obj.get('key',''))]
         video_files = []
         input_dir_name = Path(input_dir).name
         for obj in raw_files:
@@ -171,6 +186,7 @@ def main():
         # Create output name: original_name_timestamp.mp4
         original_name = Path(obj['key']).stem
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        # Keep .mp4 output for backward compatibility
         output_name = f"{original_name}_{timestamp}.mp4"
 
         # Create temporary config

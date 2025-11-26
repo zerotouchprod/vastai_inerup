@@ -39,6 +39,7 @@ import sys
 import time
 import argparse
 import yaml
+import shlex
 from typing import Any, Dict, List, Optional
 from pathlib import Path
 
@@ -755,7 +756,9 @@ def main(argv: Optional[List[str]] = None) -> int:
                 return 3
 
         # simple command: download and ffprobe (non-failing)
-        run_cmd_str = f"bash -lc 'wget -O /workspace/input.mp4 \"{get_url}\" && ffprobe -v error /workspace/input.mp4 || true'"
+        # download to a generic path without forcing .mp4 extension so ffprobe/ffmpeg can inspect the container
+        inner = f"wget -O /workspace/input {shlex.quote(get_url)} && ffprobe -v error /workspace/input || true"
+        run_cmd_str = f"bash -lc {shlex.quote(inner)}"
 
     # At this point we must have a run command
     if not run_cmd_str:
@@ -843,7 +846,9 @@ def main(argv: Optional[List[str]] = None) -> int:
                     # Safely wrap the existing command so remote will download the input to /workspace/input.mp4 first
                     original = run_cmd_str
                     # Use bash -lc wrapper; if original already contains complex quoting this is best-effort
-                    run_cmd_str = f"bash -lc 'wget -O /workspace/input.mp4 \"{get_url}\" || curl -L -o /workspace/input.mp4 \"{get_url}\"; {original}'"
+                    # download to a generic /workspace/input path (no forced extension)
+                    inner = f"wget -O /workspace/input {shlex.quote(get_url)} || curl -L -o /workspace/input {shlex.quote(get_url)}; {original}"
+                    run_cmd_str = f"bash -lc {shlex.quote(inner)}"
         except Exception as e:
             print('Failed during local-file upload step:', e)
             # proceed without failing — user can still provide input_url or b2 params

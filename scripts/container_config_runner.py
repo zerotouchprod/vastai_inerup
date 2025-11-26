@@ -798,7 +798,21 @@ def process_batch_input_dir(input_dir: str, config: dict) -> bool:
                 b2_secret = b2_cfg.get('secret') or b2_cfg.get('secret_key') or b2_cfg.get('B2_SECRET')
 
         objects = b2_presign.list_objects(bucket, prefix, b2_key, b2_secret, b2_endpoint, b2_region)
-        video_files = [obj for obj in objects if obj['key'].endswith('.mp4')]
+        # prefer helper that checks common video extensions; fallback to simple .mp4 check
+        try:
+            from scripts.utils import is_video_key
+        except Exception:
+            def is_video_key(k, probe=False):
+                try:
+                    kk = (k or '').lower()
+                    for ext in ('.mp4', '.mkv', '.mov', '.avi', '.webm', '.mjpeg', '.mpeg', '.mpg'):
+                        if kk.endswith(ext):
+                            return True
+                except Exception:
+                    pass
+                return False
+
+        video_files = [obj for obj in objects if is_video_key(obj.get('key',''))]
 
         # Check existing outputs in bucket and skip already-processed files
         try:
@@ -923,7 +937,7 @@ def process_batch_input_dir(input_dir: str, config: dict) -> bool:
         sys.exit(1)
 
     if not video_files:
-        print(f"No .mp4 files found in {bucket}/{prefix}")
+        print(f"No video files found in {bucket}/{prefix}")
         return False
 
     # Summary: clear, single-line overview for container logs/monitoring

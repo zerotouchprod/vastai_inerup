@@ -64,6 +64,20 @@ except ImportError as e:
     print("Make sure you're running from the project root or scripts/ directory")
     sys.exit(1)
 
+# video detection helper (optional, fallback provided)
+try:
+    from scripts.utils import is_video_key
+except Exception:
+    def is_video_key(key, probe=False):
+        try:
+            k = (key or '').lower()
+            for ext in ('.mp4', '.mkv', '.mov', '.avi', '.webm', '.mjpeg', '.mpeg', '.mpg'):
+                if k.endswith(ext):
+                    return True
+        except Exception:
+            pass
+        return False
+
 
 def load_config(config_path: str = 'config.yaml') -> dict:
     """Load configuration from YAML file"""
@@ -229,8 +243,8 @@ def main():
     print(f"\n📂 Getting file list from B2: {bucket}/{prefix}")
     try:
         objects = b2_presign.list_objects(bucket, prefix, b2_key, b2_secret)
-        # Keep .mp4 files; don't skip zero-size (some listings report 0) but note them
-        raw_files = [obj for obj in objects if obj.get('key','').endswith('.mp4')]
+        # Keep video-like files (common container extensions). Use is_video_key for flexible detection.
+        raw_files = [obj for obj in objects if is_video_key(obj.get('key',''))]
         video_files = []
         input_dir_name = Path(input_dir).name if input_dir else None
         for obj in raw_files:
@@ -239,9 +253,14 @@ def main():
             if size == 0:
                 print(f"⚠️  Note: object reports size 0 (will still attempt to process): {key}")
             # skip index file named like the directory (e.g., input/kk3.mp4) only if we have input_dir
-            if input_dir and (key.rstrip('/') == f"{input_dir}.mp4" or key.rstrip('/') == f"input/{input_dir_name}.mp4"):
-                print(f"⚠️  Ignoring directory-index file: {key}")
-                continue
+            if input_dir:
+                # ignore top-level index file whose stem equals the directory name (regardless of extension)
+                try:
+                    if Path(key).stem == input_dir_name and (str(key).count('/') <= 1):
+                        print(f"⚠️  Ignoring directory-index file: {key}")
+                        continue
+                except Exception:
+                    pass
             video_files.append(obj)
     except Exception:
         import traceback
@@ -251,7 +270,7 @@ def main():
         sys.exit(1)
 
     if not video_files:
-        print(f"❌ No .mp4 files found in {bucket}/{prefix}")
+        print(f"❌ No video files found in {bucket}/{prefix}")
         sys.exit(1)
 
     print(f"✅ Found {len(video_files)} video files:")
