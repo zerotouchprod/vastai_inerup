@@ -142,41 +142,54 @@ for i in range(len(imgs)-1):
 
         im0 = cv2.imread(a_path, cv2.IMREAD_UNCHANGED)
         im1 = cv2.imread(b_path, cv2.IMREAD_UNCHANGED)
+        # If OpenCV cannot read the image, try a Pillow fallback (common in minimal containers)
         if im0 is None:
-            print(f"CV2_IMREAD_FAILED: {a_path} returned None from cv2.imread; attempting raw-inspect")
             try:
-                with open(a_path, 'rb') as fh:
-                    head = fh.read(128)
-                print(f"RAW_HDR({a_path}) len={len(head)} bytes header_hex={head[:16].hex()}")
-                # copy raw file for offline inspection
-                badcopy = os.path.join(out_dir, f'bad_raw_{os.path.basename(a_path)}')
+                from PIL import Image
+                pil = Image.open(a_path).convert('RGB')
+                im0 = np.array(pil)[:,:,::-1]  # PIL gives RGB, convert to BGR to match cv2's convention
+                print(f"PIL_FALLBACK_OK: {a_path}")
+            except Exception as e:
+                print(f"CV2_IMREAD_FAILED: {a_path} returned None from cv2.imread; attempting raw-inspect; PIL failed: {e}")
                 try:
-                    import shutil
-                    shutil.copy2(a_path, badcopy)
-                    print(f"Copied bad raw file to {badcopy}")
+                    with open(a_path, 'rb') as fh:
+                        head = fh.read(128)
+                    print(f"RAW_HDR({a_path}) len={len(head)} bytes header_hex={head[:16].hex()}")
+                    # copy raw file for offline inspection
+                    badcopy = os.path.join(out_dir, f'bad_raw_{os.path.basename(a_path)}')
+                    try:
+                        import shutil
+                        shutil.copy2(a_path, badcopy)
+                        print(f"Copied bad raw file to {badcopy}")
+                    except Exception as _e:
+                        print(f"Failed to copy bad raw file: {_e}")
                 except Exception as _e:
-                    print(f"Failed to copy bad raw file: {_e}")
-            except Exception as _e:
-                print(f"Failed to open raw file {a_path}: {_e}")
-            sys.stdout.flush()
-            continue
+                    print(f"Failed to open raw file {a_path}: {_e}")
+                sys.stdout.flush()
+                continue
         if im1 is None:
-            print(f"CV2_IMREAD_FAILED: {b_path} returned None from cv2.imread; attempting raw-inspect")
             try:
-                with open(b_path, 'rb') as fh:
-                    head = fh.read(128)
-                print(f"RAW_HDR({b_path}) len={len(head)} bytes header_hex={head[:16].hex()}")
-                badcopy = os.path.join(out_dir, f'bad_raw_{os.path.basename(b_path)}')
+                from PIL import Image
+                pil = Image.open(b_path).convert('RGB')
+                im1 = np.array(pil)[:,:,::-1]
+                print(f"PIL_FALLBACK_OK: {b_path}")
+            except Exception as e:
+                print(f"CV2_IMREAD_FAILED: {b_path} returned None from cv2.imread; attempting raw-inspect; PIL failed: {e}")
                 try:
-                    import shutil
-                    shutil.copy2(b_path, badcopy)
-                    print(f"Copied bad raw file to {badcopy}")
+                    with open(b_path, 'rb') as fh:
+                        head = fh.read(128)
+                    print(f"RAW_HDR({b_path}) len={len(head)} bytes header_hex={head[:16].hex()}")
+                    badcopy = os.path.join(out_dir, f'bad_raw_{os.path.basename(b_path)}')
+                    try:
+                        import shutil
+                        shutil.copy2(b_path, badcopy)
+                        print(f"Copied bad raw file to {badcopy}")
+                    except Exception as _e:
+                        print(f"Failed to copy bad raw file: {_e}")
                 except Exception as _e:
-                    print(f"Failed to copy bad raw file: {_e}")
-            except Exception as _e:
-                print(f"Failed to open raw file {b_path}: {_e}")
-            sys.stdout.flush()
-            continue
+                    print(f"Failed to open raw file {b_path}: {_e}")
+                sys.stdout.flush()
+                continue
 
         # convert to torch tensor [1,C,H,W], normalize if uint8
         # Ensure images have 3 channels; if grayscale, convert to 3-channel
