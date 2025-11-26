@@ -91,6 +91,30 @@ if ! has_models "$REPO_DIR/train_log"; then
   fi
 fi
 
+# If available, collapse ffmpeg -progress key=value blocks into one-line summaries for cleaner logs
+progress_collapse() {
+  python3 -u - <<'PY'
+import sys, time
+kv = {}
+order = []
+for raw in sys.stdin:
+    line = raw.strip()
+    if not line or '=' not in line:
+        continue
+    k, v = line.split('=', 1)
+    if k not in order:
+        order.append(k)
+    kv[k] = v
+    if k == 'progress':
+        parts = [f"{key}={kv.get(key,'')}" for key in order if key != 'progress']
+        parts.append(f"progress={kv.get('progress','')}")
+        ts = time.strftime('%H:%M:%S')
+        print(f"[{ts}] " + ' '.join(parts), flush=True)
+        kv.clear()
+        order = []
+PY
+}
+
 # Frame-by-frame interpolation method (reliable, doesn't require scikit-video)
 if [ -f "$REPO_DIR/inference_img.py" ] || [ -f "/workspace/project/rife_interpolate_direct.py" ]; then
   log "Using frame-by-frame RIFE interpolation (factor: $FACTOR)"
@@ -176,12 +200,12 @@ if [ -f "$REPO_DIR/inference_img.py" ] || [ -f "/workspace/project/rife_interpol
   # Use ffmpeg progress reporting so remote logs show extraction progress
   # Pad to multiples of 32 (inference_img.py pads to 32) to avoid size mismatches
   # Expression: pad=iw+mod(32-iw,32):ih+mod(32-ih,32)
-  ffmpeg -hide_banner -loglevel info -progress pipe:1 -nostats -i "$INPUT_VIDEO_PATH" -vf "pad=iw+mod(32-iw\\,32):ih+mod(32-ih\\,32)" -pix_fmt rgb24 -qscale:v 1 "$TMP_DIR/input/frame_%06d.png"
-  if [ $? -ne 0 ]; then
-    log "ERROR: Failed to extract frames"
-    rm -rf "$TMP_DIR"
-    exit 4
-  fi
+  ffmpeg -hide_banner -loglevel info -progress pipe:1 -nostats -i "$INPUT_VIDEO_PATH" -vf "pad=iw+mod(32-iw\\,32):ih+mod(32-ih\\,32)" -pix_fmt rgb24 -qscale:v 1 "$TMP_DIR/input/frame_%06d.png" 2>&1 | progress_collapse
+   if [ $? -ne 0 ]; then
+     log "ERROR: Failed to extract frames"
+     rm -rf "$TMP_DIR"
+     exit 4
+   fi
 
   # Count frames
   FRAME_COUNT=$(ls -1 "$TMP_DIR/input"/*.png 2>/dev/null | wc -l)
@@ -196,19 +220,19 @@ if [ -f "$REPO_DIR/inference_img.py" ] || [ -f "/workspace/project/rife_interpol
   # Extract audio track
   log "Extracting audio track..."
   # Extract audio with progress reporting (small, but keeps logs consistent)
-  AUDIO_RESULT=$(ffmpeg -hide_banner -loglevel info -progress pipe:1 -nostats -i "$INPUT_VIDEO_PATH" -vn -acodec copy "$TMP_DIR/audio.aac" 2>&1)
-  AUDIO_EXIT=$?
-  if [ $AUDIO_EXIT -ne 0 ]; then
-    log "Audio extraction failed (exit code: $AUDIO_EXIT)"
-    log "Will proceed without audio"
-    rm -f "$TMP_DIR/audio.aac"
-  elif [ ! -s "$TMP_DIR/audio.aac" ]; then
-    log "Audio extraction produced empty file"
-    log "Will proceed without audio"
-    rm -f "$TMP_DIR/audio.aac"
-  else
-    log "Audio extracted successfully"
-  fi
+  AUDIO_RESULT=$(ffmpeg -hide_banner -loglevel info -progress pipe:1 -nostats -i "$INPUT_VIDEO_PATH" -vn -acodec copy "$TMP_DIR/audio.aac" 2>&1 | progress_collapse)
+   AUDIO_EXIT=$?
+   if [ $AUDIO_EXIT -ne 0 ]; then
+     log "Audio extraction failed (exit code: $AUDIO_EXIT)"
+     log "Will proceed without audio"
+     rm -f "$TMP_DIR/audio.aac"
+   elif [ ! -s "$TMP_DIR/audio.aac" ]; then
+     log "Audio extraction produced empty file"
+     log "Will proceed without audio"
+     rm -f "$TMP_DIR/audio.aac"
+   else
+     log "Audio extracted successfully"
+   fi
 
   # Test which interpolation method works
   log "Testing interpolation methods..."
@@ -440,9 +464,12 @@ PY
       run_ffmpeg_pattern() {
         local pattern="$1"
         if [ -f "$TMP_DIR/audio.aac" ]; then
-          ffmpeg -hide_banner -loglevel info -progress pipe:1 -nostats -v warning -y -framerate "$FRAMERATE" -i "$pattern" -i "$TMP_DIR/audio.aac" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p -c:a aac -shortest "$OUTPUT_VIDEO_PATH" >"$ASM_LOG" 2>&1
+          # Pipe ffmpeg progress through collapse filter and tee to ASM_LOG
+          (ffmpeg -hide_banner -loglevel info -progress pipe:1 -nostats -v warning -y -framerate "$FRAMERATE" -i "$pattern" -i "$TMP_DIR/audio.aac" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p -c:a aac -shortest "$OUTPUT_VIDEO_PATH" 2>&1 | progress_collapse) | tee "$ASM_LOG"
+          return ${PIPESTATUS[0]:-1}
         else
-          ffmpeg -hide_banner -loglevel info -progress pipe:1 -nostats -v warning -y -framerate "$FRAMERATE" -i "$pattern" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p "$OUTPUT_VIDEO_PATH" >"$ASM_LOG" 2>&1
+          (ffmpeg -hide_banner -loglevel info -progress pipe:1 -nostats -v warning -y -framerate "$FRAMERATE" -i "$pattern" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p "$OUTPUT_VIDEO_PATH" 2>&1 | progress_collapse) | tee "$ASM_LOG"
+          return ${PIPESTATUS[0]:-1}
         fi
         return $?
       }
@@ -662,7 +689,7 @@ PY
           return $?
         }
         # Try deterministic filelist-based assembly first (preferred)
-        if try_filelist_assembly "$TMP_DIR/output" "$OUTPUT_VIDEO_PATH" "$FRAMERATE"; then
+        if try_filelist_assembly "$ASMDIR" "$OUTPUT_VIDEO_PATH" "$FRAMERATE"; then
           log "Assembled video successfully from filelist-based assembly: $OUTPUT_VIDEO_PATH"
         else
           # fallback to ffmpeg pattern matching
