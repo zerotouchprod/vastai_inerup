@@ -163,8 +163,28 @@ def try_run_realesrgan_ncnn(infile: str, outpath: str, scale: int) -> bool:
                         except Exception:
                             pass
                         return False
-                # assemble back to video
-                run(["ffmpeg", "-y", "-framerate", "$(ffprobe -v 0 -select_streams v:0 -show_entries stream=avg_frame_rate -of default=noprint_wrappers=1:nokey=1 \"$infile\")", "-i", os.path.join(frames_out_dir, "out_%06d.png"), "-c:v", "libx264", "-crf", "18", "-preset", "medium", outpath])
+                # assemble back to video using explicit filelist to guarantee ordering
+                # Determine original framerate (if available) for assembly
+                try:
+                    fr = get_avg_fps(infile)
+                except Exception:
+                    fr = None
+
+                filelist_path = os.path.join(frd, "filelist.txt")
+                with open(filelist_path, "w", encoding="utf-8") as fl:
+                    # write absolute paths in sorted order to ensure deterministic ordering
+                    for fn in sorted(os.listdir(frames_out_dir)):
+                        if not fn.lower().endswith('.png'):
+                            continue
+                        fullp = os.path.join(frames_out_dir, fn)
+                        # ffmpeg concat expects lines like: file '/absolute/path.png'
+                        fl.write(f"file '{fullp}'\n")
+
+                ffmpeg_cmd = ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", filelist_path, "-c:v", "libx264", "-crf", "18", "-preset", "medium", outpath]
+                # If we could detect framerate, include it as input framerate to preserve timing
+                if fr is not None:
+                    ffmpeg_cmd = ["ffmpeg", "-y", "-framerate", str(fr), "-f", "concat", "-safe", "0", "-i", filelist_path, "-c:v", "libx264", "-crf", "18", "-preset", "medium", outpath]
+                run(ffmpeg_cmd)
                 return True
         except Exception as e:
             print(f"realesrgan-ncnn frame-mode exception: {e}")
