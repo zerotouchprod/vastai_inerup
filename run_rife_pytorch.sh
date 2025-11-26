@@ -242,12 +242,9 @@ PY
   mkdir -p "$TMP_DIR/input" "$TMP_DIR/output"
 
   # Force 8-bit RGB frames to avoid dtype issues (e.g., numpy.uint16) in RIFE inference
-  # Pad frames to next multiple of 64 (width/height) to match RIFE model internal downsampling expectations
-  # Expression: pad=iw+mod(64-iw,64):ih+mod(64-ih,64)
-  # Use ffmpeg progress reporting so remote logs show extraction progress
-  # Pad to multiples of 32 (inference_img.py pads to 32) to avoid size mismatches
-  # Expression: pad=iw+mod(32-iw,32):ih+mod(32-ih,32)
-  ffmpeg -hide_banner -loglevel info -progress pipe:1 -nostats -i "$INPUT_VIDEO_PATH" -vf "pad=iw+mod(32-iw\\,32):ih+mod(32-ih\\,32)" -pix_fmt rgb24 -qscale:v 1 "$TMP_DIR/input/frame_%06d.png" 2>&1 | progress_collapse
+  # Pad frames to next multiple of 64 (width/height) to satisfy some RIFE HD models which expect dims divisible by 64
+  # Robust expression using if(mod(...)) to avoid negative-mod behavior
+  ffmpeg -hide_banner -loglevel info -progress pipe:1 -nostats -i "$INPUT_VIDEO_PATH" -vf "pad=if(mod(iw\,64),iw+(64-mod(iw\,64)),iw):if(mod(ih\,64),ih+(64-mod(ih\,64)),ih)" -pix_fmt rgb24 -qscale:v 1 "$TMP_DIR/input/frame_%06d.png" 2>&1 | progress_collapse
    if [ $? -ne 0 ]; then
      log "ERROR: Failed to extract frames"
      rm -rf "$TMP_DIR"
@@ -320,202 +317,21 @@ PY
       STDOUT_WRAP=""
     fi
 
-    cat > "$TMP_DIR/batch_rife.py" <<'PY'
-import sys, os, traceback
-
-in_dir = sys.argv[1]
-out_dir = sys.argv[2]
-factor = float(sys.argv[3])
-repo = os.environ.get('REPO_DIR', '/workspace/project/external/RIFE')
-model_dir = os.path.join(repo, 'train_log')
-
-# Try importing a model class from common locations
-Model = None
-try:
-    from train_log.RIFE_HDv3 import Model as _Model
-    Model = _Model
-except Exception:
-    try:
-        from model.RIFE import Model as _Model
-        Model = _Model
-    except Exception:
-        try:
-            from train_log.RIFE_HD import Model as _Model
-            Model = _Model
-        except Exception:
-            Model = None
-
-if Model is None:
-    print('No compatible RIFE Model class found (tried train_log.RIFE_HDv3, model.RIFE, train_log.RIFE_HD)')
-    sys.exit(2)
-
-import torch
-import cv2
-import numpy as np
-
-# instantiate and load weights
-try:
-    model = Model()
-except Exception as e:
-    print('Failed to instantiate Model:', e)
-    traceback.print_exc()
-    sys.exit(2)
-
-try:
-    model.load_model(model_dir, -1)
-except Exception:
-    try:
-        model.load_model(model_dir)
-    except Exception as e:
-        print('Failed to load model from', model_dir, 'error:', e)
-        traceback.print_exc()
-        sys.exit(2)
-
-model.eval()
-try:
-    model.device()
-except Exception:
-    pass
-
-use_cuda = torch.cuda.is_available()
-device = torch.device('cuda' if use_cuda else 'cpu')
-
-# helper: bisection-style inference for arbitrary ratio (copied logic from inference_img.py)
-def inference_with_ratio(model, img0, img1, ratio, rthreshold=0.02, rmaxcycles=12):
-    # img0/img1 are torch tensors on device, shape [1,C,H,W]
-    if ratio <= 0.0:
-        return img0
-    if ratio >= 1.0:
-        return img1
-    img0_ratio = 0.0
-    img1_ratio = 1.0
-    if ratio <= img0_ratio + rthreshold/2:
-        return img0
-    if ratio >= img1_ratio - rthreshold/2:
-        return img1
-    tmp_img0 = img0
-    tmp_img1 = img1
-    for _ in range(rmaxcycles):
-        with torch.no_grad():
-            middle = model.inference(tmp_img0, tmp_img1)
-        middle_ratio = (img0_ratio + img1_ratio) / 2.0
-        if (ratio - (rthreshold/2)) <= middle_ratio <= (ratio + (rthreshold/2)):
-            return middle
-        if ratio > middle_ratio:
-            tmp_img0 = middle
-            img0_ratio = middle_ratio
-        else:
-            tmp_img1 = middle
-            img1_ratio = middle_ratio
-    # fallback: return last middle
-    return middle
-
-# Process pairs and optionally produce multiple mids per pair
-imgs = sorted([p for p in os.listdir(in_dir) if p.lower().endswith('.png')])
-if not os.path.exists(out_dir):
-    os.makedirs(out_dir, exist_ok=True)
-
-# Determine number of mids per pair
-mids_per_pair = max(0, int(round(factor)) - 1)
-
-total_pairs = max(0, len(imgs)-1)
-print(f"Batch-runner: {len(imgs)} frames -> {total_pairs} pairs to process")
-sys.stdout.flush()
-
-for i in range(len(imgs)-1):
-    a_path = os.path.join(in_dir, imgs[i])
-    b_path = os.path.join(in_dir, imgs[i+1])
-    try:
-        im0 = cv2.imread(a_path, cv2.IMREAD_UNCHANGED)
-        im1 = cv2.imread(b_path, cv2.IMREAD_UNCHANGED)
-        if im0 is None or im1 is None:
-            print('Failed to read input images', a_path, b_path)
-            sys.stdout.flush()
-            continue
-
-        # convert to torch tensor [1,C,H,W], normalize if uint8
-        t0 = torch.from_numpy(im0.transpose(2,0,1)).unsqueeze(0)
-        t1 = torch.from_numpy(im1.transpose(2,0,1)).unsqueeze(0)
-        if t0.dtype == torch.uint8:
-            t0 = t0.float() / 255.0
-        if t1.dtype == torch.uint8:
-            t1 = t1.float() / 255.0
-        # Pad to multiples of 32 (same padding as inference_img.py) to avoid mismatched tensor sizes inside the model
-        try:
-            from torch.nn import functional as F
-        except Exception:
-            import torch.nn.functional as F
-        n,c,h,w = t0.shape
-        ph = ((h - 1) // 32 + 1) * 32
-        pw = ((w - 1) // 32 + 1) * 32
-        pad = (0, pw - w, 0, ph - h)
-        if pad[1] != 0 or pad[3] != 0:
-            t0 = F.pad(t0, pad)
-            t1 = F.pad(t1, pad)
-        t0 = t0.to(device)
-        t1 = t1.to(device)
-        # debug: print shapes so remote logs can capture them
-        print(f"DEBUG: input shapes after pad t0={tuple(t0.shape)} t1={tuple(t1.shape)} mids_per_pair={mids_per_pair}")
-        sys.stdout.flush()
-
-        if mids_per_pair <= 0:
-            try:
-                with torch.no_grad():
-                    mid = model.inference(t0, t1)
-            except Exception:
-                print('ERROR: inference call failed; tensor shapes:')
-                try:
-                    print(f"t0.shape={tuple(t0.shape)} t1.shape={tuple(t1.shape)}")
-                except Exception:
-                    pass
-                traceback.print_exc()
-                sys.stdout.flush()
-                raise
-            # save as single mid for compatibility
-            try:
-                out_np = (mid[0] * 255.0).clamp(0,255).byte().cpu().numpy().transpose(1,2,0)
-            except Exception:
-                out_np = mid[0].byte().cpu().numpy().transpose(1,2,0)
-            out_path = os.path.join(out_dir, f'frame_%06d_mid.png' % (i+1))
-            cv2.imwrite(out_path, out_np)
-            # free memory
-            del mid, out_np
-            if use_cuda:
-                torch.cuda.empty_cache()
-            # progress
-            print(f"Batch-runner: pair {i+1}/{total_pairs} done (single mid)")
-            sys.stdout.flush()
-        else:
-            # generate mids at ratios k/(mids_per_pair+1)
-            for k in range(1, mids_per_pair+1):
-                ratio = float(k) / float(mids_per_pair + 1)
-                mid = inference_with_ratio(model, t0, t1, ratio)
-                # save with index
-                try:
-                    out_np = (mid[0] * 255.0).clamp(0,255).byte().cpu().numpy().transpose(1,2,0)
-                except Exception:
-                    out_np = mid[0].byte().cpu().numpy().transpose(1,2,0)
-                out_path = os.path.join(out_dir, f'frame_%06d_mid_%02d.png' % (i+1, k))
-                cv2.imwrite(out_path, out_np)
-                del mid, out_np
-                if use_cuda:
-                    torch.cuda.empty_cache()
-            # progress for multi-mid case
-            print(f"Batch-runner: pair {i+1}/{total_pairs} done ({mids_per_pair} mids)")
-            sys.stdout.flush()
-
-        # free per-pair tensors
-        del t0, t1, im0, im1
-        if use_cuda:
-            torch.cuda.empty_cache()
-
-    except Exception as e:
-        print('Exception processing pair', a_path, b_path, '->', e)
-        traceback.print_exc()
-        sys.stdout.flush()
-
-sys.exit(0)
-PY
+    # Prefer an external batch_rife.py file (easier to edit / test). Check several likely locations and copy
+    BATCH_SRC=""
+    if [ -f "$REPO_DIR/../batch_rife.py" ]; then
+      BATCH_SRC="$REPO_DIR/../batch_rife.py"
+    elif [ -f "$REPO_DIR/batch_rife.py" ]; then
+      BATCH_SRC="$REPO_DIR/batch_rife.py"
+    elif [ -f "/workspace/project/batch_rife.py" ]; then
+      BATCH_SRC="/workspace/project/batch_rife.py"
+    fi
+    if [ -n "$BATCH_SRC" ]; then
+      log "Using external batch_rife.py from: $BATCH_SRC"
+      cp "$BATCH_SRC" "$TMP_DIR/batch_rife.py" || true
+    else
+      log "No external batch_rife.py found in expected locations — skipping batch-runner creation"
+    fi
 
     # run batch script
     PYTHONPATH="$REPO_DIR:$PYTHONPATH" $STDOUT_WRAP env PYTHONUNBUFFERED=1 python3 "$TMP_DIR/batch_rife.py" "$TMP_DIR/input" "$TMP_DIR/output" "$FACTOR" 2>&1 | tee "$TMP_DIR/batch_rife_run.log" || true
