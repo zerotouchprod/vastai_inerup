@@ -352,6 +352,47 @@ PY
     if [ -n "$PNG_COUNT" ] && [ "$PNG_COUNT" -gt 0 ]; then
       BATCH_OK=1
       log "Batch-runner produced $PNG_COUNT outputs (sample): $(find "$TMP_DIR/output" -maxdepth 1 -type f -iname '*.png' -printf '%f\n' | head -n 5 | tr '\n' ',')"
+      # Attempt to assemble produced frames into the final video now (avoid falling back to ffmpeg minterpolate)
+      log "Attempting to assemble batch-produced frames into $OUTPUT_VIDEO_PATH"
+      FRAMERATE="$TARGET_FPS"
+      # Prefer *_out.png, then *_mid.png, then frame_*.png, then glob. Capture ffmpeg output to help debugging.
+      ASM_LOG="/tmp/batch_assemble.log"
+      rm -f "$ASM_LOG" || true
+      if ls "$TMP_DIR/output"/*_out.png >/dev/null 2>&1; then
+        IN_PATTERN="$TMP_DIR/output/frame_%06d_out.png"
+      elif ls "$TMP_DIR/output"/*_mid.png >/dev/null 2>&1; then
+        IN_PATTERN="$TMP_DIR/output/frame_%06d_mid.png"
+      elif ls "$TMP_DIR/output"/frame_*.png >/dev/null 2>&1; then
+        IN_PATTERN="$TMP_DIR/output/frame_%06d.png"
+      else
+        IN_PATTERN=""
+      fi
+      if [ -n "$IN_PATTERN" ]; then
+        if [ -f "$TMP_DIR/audio.aac" ]; then
+          ffmpeg -v warning -y -framerate "$FRAMERATE" -i "$IN_PATTERN" -i "$TMP_DIR/audio.aac" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p -c:a aac -shortest "$OUTPUT_VIDEO_PATH" >"$ASM_LOG" 2>&1
+        else
+          ffmpeg -v warning -y -framerate "$FRAMERATE" -i "$IN_PATTERN" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p "$OUTPUT_VIDEO_PATH" >"$ASM_LOG" 2>&1
+        fi
+      else
+        if [ -f "$TMP_DIR/audio.aac" ]; then
+          ffmpeg -v warning -y -framerate "$FRAMERATE" -pattern_type glob -i "$TMP_DIR/output/*.png" -i "$TMP_DIR/audio.aac" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p -c:a aac -shortest "$OUTPUT_VIDEO_PATH" >"$ASM_LOG" 2>&1
+        else
+          ffmpeg -v warning -y -framerate "$FRAMERATE" -pattern_type glob -i "$TMP_DIR/output/*.png" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p "$OUTPUT_VIDEO_PATH" >"$ASM_LOG" 2>&1
+        fi
+      fi
+      ASM_RC=$?
+      if [ $ASM_RC -eq 0 ] && [ -f "$OUTPUT_VIDEO_PATH" ]; then
+        log "Assembled video successfully from batch outputs: $OUTPUT_VIDEO_PATH"
+        # Final success
+        log "✓ RIFE completed at $(date '+%H:%M:%S')"
+        echo ""
+        log "Output verified: $OUTPUT_VIDEO_PATH (size: $(stat -c%s "$OUTPUT_VIDEO_PATH") bytes)"
+        exit 0
+      else
+        log "Failed to assemble frames from batch outputs (rc=$ASM_RC). Assembly log follows:";
+        sed -n '1,200p' "$ASM_LOG" 2>/dev/null || true
+        log "Will fallback to existing logic"
+      fi
     else
       log "Batch-runner produced no output PNGs (count=$PNG_COUNT); printing batch log (up to 50KB) for debugging:"
       head -c 50000 "/tmp/batch_rife_run.log" || true
@@ -462,6 +503,15 @@ PY
       if ls "$TMP_DIR/output"/*_out.png >/dev/null 2>&1; then
         IN_PATTERN="$TMP_DIR/output/frame_%06d_out.png"
         log "Using frame pattern: frame_%06d_out.png"
+        FRAMERATE="$TARGET_FPS"
+        if [ -f "$TMP_DIR/audio.aac" ]; then
+          ffmpeg -v warning -y -framerate "$FRAMERATE" -i "$IN_PATTERN" -i "$TMP_DIR/audio.aac" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p -c:a aac -shortest "$OUTPUT_VIDEO_PATH"
+        else
+          ffmpeg -v warning -y -framerate "$FRAMERATE" -i "$IN_PATTERN" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p "$OUTPUT_VIDEO_PATH"
+        fi
+      elif ls "$TMP_DIR/output"/*_mid.png >/dev/null 2>&1; then
+        IN_PATTERN="$TMP_DIR/output/frame_%06d_mid.png"
+        log "Using frame pattern: frame_%06d_mid.png"
         FRAMERATE="$TARGET_FPS"
         if [ -f "$TMP_DIR/audio.aac" ]; then
           ffmpeg -v warning -y -framerate "$FRAMERATE" -i "$IN_PATTERN" -i "$TMP_DIR/audio.aac" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p -c:a aac -shortest "$OUTPUT_VIDEO_PATH"
