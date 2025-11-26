@@ -409,11 +409,9 @@ if [ -f "$REPO_DIR/inference_img.py" ] || [ -f "/workspace/project/rife_interpol
   else
     # No standard entrypoint matched yet. Try heuristic discovery of other candidate scripts
     log "No standard RIFE entrypoint matched; searching for additional candidate scripts (heuristic)"
-    # List potential candidates for diagnostics
     echo "--- Candidate python files in $REPO_DIR ---" >> "$TMP_DIR/rife.log" 2>/dev/null || true
     ls -1 "$REPO_DIR"/*.py 2>/dev/null | tee -a "$TMP_DIR/rife.log" || true
 
-    # Build FRAMES array if not present
     mapfile -t FRAMES < <(ls -1 "$TMP_DIR/input"/*.png 2>/dev/null | sort)
     if [ ${#FRAMES[@]} -lt 2 ]; then
       log "Not enough frames to run candidate tests (${#FRAMES[@]} found)"
@@ -430,10 +428,8 @@ if [ -f "$REPO_DIR/inference_img.py" ] || [ -f "/workspace/project/rife_interpol
           log "Attempting candidate script: $cand"
           echo "---- HEAD of $cand ----" >> "$TMP_DIR/rife.log" 2>/dev/null || true
           head -n 60 "$cand" >> "$TMP_DIR/rife.log" 2>/dev/null || true
-          # copy to tmp and attempt a single pair run
           COPY_CAND="$TMP_DIR/$(basename "$cand")"
           cp -p "$cand" "$COPY_CAND" 2>/dev/null || cp "$cand" "$COPY_CAND" 2>/dev/null || true
-          # clear tmp output
           rm -f "$TMP_DIR/output"/*.png 2>/dev/null || true
           log "Running candidate $COPY_CAND on a single pair to test compatibility"
           python3 -u -c "import sys,os,runpy; os.chdir('$REPO_DIR'); sys.path.insert(0,'$REPO_DIR'); sys.argv=['$(basename "$COPY_CAND")','--img','$A','$B','--ratio','$FACTOR']; runpy.run_path('$COPY_CAND', run_name='__main__')" 2>&1 | tee -a "$TMP_DIR/rife.log"
@@ -445,7 +441,6 @@ if [ -f "$REPO_DIR/inference_img.py" ] || [ -f "/workspace/project/rife_interpol
             break 2
           else
             log "Candidate $cand failed (exit $RC_C, outputs: $OUT_COUNT) — continuing search"
-            # continue to next candidate
           fi
         done
       done
@@ -453,25 +448,39 @@ if [ -f "$REPO_DIR/inference_img.py" ] || [ -f "/workspace/project/rife_interpol
         log "No additional candidate scripts succeeded"
       fi
     fi
-
-   else
-     log "No known RIFE entrypoint found in $REPO_DIR or /workspace/project — cannot run GPU RIFE here."
-     log "Please implement the invocation for your RIFE fork or place a compatible script in the repo."
-     RC=2
-   fi
+  fi
 
   if [ $RC -ne 0 ]; then
     log "ERROR: RIFE interpolation step failed (exit code: $RC)."
-    # If a rife.log exists in the temp dir, print a helpful tail for debugging
+    # Print helper diagnostics: list recent temp dirs and show rife.log/contents
+    echo "--- DEBUG: Listing temp directories matching /tmp/rife_tmp.* ---"
+    ls -ld /tmp/rife_tmp.* 2>/dev/null || true
+
+    # If TMP_DIR is set, prefer it; otherwise try to find the most recent temp dir
+    if [ -n "${TMP_DIR:-}" ] && [ -d "$TMP_DIR" ]; then
+      LATEST_TMP="$TMP_DIR"
+    else
+      LATEST_TMP=$(ls -1dt /tmp/rife_tmp.* 2>/dev/null | head -n1 || true)
+    fi
+
+    if [ -n "$LATEST_TMP" ] && [ -d "$LATEST_TMP" ]; then
+      echo "--- DEBUG: Showing tail of $LATEST_TMP/rife.log (last 400 lines) ---"
+      tail -n 400 "$LATEST_TMP/rife.log" 2>/dev/null || echo "(no rife.log in $LATEST_TMP)"
+      echo "--- DEBUG: Listing contents of $LATEST_TMP ---"
+      ls -la "$LATEST_TMP" 2>/dev/null || true
+    else
+      echo "--- DEBUG: No temp dir found at /tmp/rife_tmp.* ---"
+    fi
+
+    # If a rife.log exists in the (current) TMP_DIR, also print a helpful tail for debugging (legacy behavior)
     if [ -n "${TMP_DIR:-}" ] && [ -f "$TMP_DIR/rife.log" ]; then
       log "----- BEGIN RIFE LOG ($TMP_DIR/rife.log) (last 500 lines) -----"
       tail -n 500 "$TMP_DIR/rife.log" || true
       log "-----  END RIFE LOG -----"
-    else
-      log "No $TMP_DIR/rife.log file found to display"
     fi
+
     # Cleanup (respect KEEP_TMP for debugging)
-    [ "${KEEP_TMP:-0}" = "1" ] || rm -rf "$TMP_DIR"
+    [ "${KEEP_TMP:-0}" = "1" ] || rm -rf "${TMP_DIR:-}" 2>/dev/null || true
     exit $RC
   fi
 
