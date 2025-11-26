@@ -148,7 +148,7 @@ vast:
   # Request allocated storage (GB) for created instances to avoid small-disk hosts
   allocated_storage: 100
   host_whitelist:
-    - 28229362
+    - 51345
     - 78246
     - 124171
     - 67268
@@ -166,6 +166,7 @@ vast:
     - 124171
     - 81456
     - 28229362
+    - 28230170 #expensive
 
 b2:
   bucket: "noxfvr-videos"

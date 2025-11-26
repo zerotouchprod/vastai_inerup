@@ -213,21 +213,52 @@ if [ -f "$REPO_DIR/inference_img.py" ] || [ -f "/workspace/project/rife_interpol
   # If repository has inference_img.py (pairwise inference), try to run simple in-place process (best-effort)
   if [ -f "$REPO_DIR/inference_img.py" ]; then
     log "Found inference_img.py — attempting pairwise inference (best-effort)"
-    # Run a simple pairwise loop to create mid frames (best-effort). If it fails, we'll fallback to ffmpeg below.
+    # Run inference on each consecutive frame pair; output to TMP_DIR/output as frame_%06d_out.png
     if command -v python3 >/dev/null 2>&1; then
       cd "$REPO_DIR" || true
-      # Run inference on each consecutive frame pair; output to TMP_DIR/output as frame_%06d_out.png
-      python3 - <<'PY'
-import os,sys,subprocess
-rep = os.getcwd()
-try:
-    inp = sys.argv[1]
-    out = sys.argv[2]
-except Exception:
-    inp = None
-    out = None
-PY
-      # Note: Above here we attempted an in-process approach but kept as best-effort. Continue to ffmpeg fallback if nothing produced.
+      NUM_FRAMES=$(ls -1 "$TMP_DIR/input"/*.png 2>/dev/null | wc -l)
+      log "Running inference_img.py on $NUM_FRAMES frames (pairwise -> $((NUM_FRAMES-1)) pairs)"
+      i=1
+      while [ $i -lt $NUM_FRAMES ]; do
+        a="$TMP_DIR/input/$(printf 'frame_%06d.png' $i)"
+        b="$TMP_DIR/input/$(printf 'frame_%06d.png' $((i+1)))"
+        out_mid="$TMP_DIR/output/$(printf 'frame_%06d_mid.png' $i)"
+        log "RIFE pair #$i: $a $b -> $out_mid"
+        # Invoke RIFE script with PYTHONPATH set to repo. Capture logs for debugging.
+        PYTHONPATH="$REPO_DIR:$PYTHONPATH" python3 "$REPO_DIR/inference_img.py" --img "$a" "$b" --ratio 0.5 --model train_log >"$TMP_DIR/rife_pair_$i.log" 2>&1 || true
+
+        # Emit the pair log to stdout for remote debugging
+        if [ -f "$TMP_DIR/rife_pair_$i.log" ]; then
+          echo "--- RIFE pair log: $TMP_DIR/rife_pair_$i.log (start) ---"
+          sed -n '1,200p' "$TMP_DIR/rife_pair_$i.log" 2>/dev/null || true
+          echo "--- RIFE pair log: $TMP_DIR/rife_pair_$i.log (end) ---"
+        fi
+
+        # Try to locate produced mid-frame in common locations and move it to out_mid
+        # Common outputs: output.png in repo root, or files in current dir matching *mid*.png
+        if [ -f "$REPO_DIR/output.png" ]; then
+          mv "$REPO_DIR/output.png" "$out_mid" 2>/dev/null || true
+        fi
+        if [ -f "output.png" ]; then
+          mv "output.png" "$out_mid" 2>/dev/null || true
+        fi
+        # find any recent png in repo root that may be the mid frame
+        cand=$(find "$REPO_DIR" -maxdepth 1 -type f -iname '*mid*.png' -print -quit 2>/dev/null || true)
+        if [ -n "$cand" ] && [ ! -f "$out_mid" ]; then
+          mv "$cand" "$out_mid" 2>/dev/null || true
+        fi
+        # As a last resort, try to move the newest PNG under repo (if any)
+        if [ ! -f "$out_mid" ]; then
+          newest=$(find "$REPO_DIR" -maxdepth 2 -type f -iname '*.png' -printf '%T@ %p
+' 2>/dev/null | sort -nr | head -n 1 | awk '{print $2}' || true)
+          if [ -n "$newest" ]; then
+            mv "$newest" "$out_mid" 2>/dev/null || true
+          fi
+        fi
+
+        i=$((i+1))
+      done
+      log "Pairwise inference attempts finished; output dir listing: $(ls -1 "$TMP_DIR/output" | head -n 20 2>/dev/null || true)"
     fi
   fi
 
@@ -235,9 +266,14 @@ PY
   if [ ! -f "$OUTPUT_VIDEO_PATH" ]; then
     log "No RIFE-produced output detected — using ffmpeg minterpolate fallback to generate $OUTPUT_VIDEO_PATH"
     if [ -f "$TMP_DIR/audio.aac" ]; then
-      ffmpeg -v warning -y -i "$INPUT_VIDEO_PATH" -vf "minterpolate=fps=$TARGET_FPS:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1" -i "$TMP_DIR/audio.aac" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p -c:a aac -shortest "$OUTPUT_VIDEO_PATH"
+      # Use filter_complex and explicit mapping to avoid option ordering issues
+      ffmpeg -v warning -y -i "$INPUT_VIDEO_PATH" -i "$TMP_DIR/audio.aac" \
+        -filter_complex "[0:v]minterpolate=fps=$TARGET_FPS:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1[v]" \
+        -map "[v]" -map 1:a -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p -c:a aac -shortest "$OUTPUT_VIDEO_PATH"
     else
-      ffmpeg -v warning -y -i "$INPUT_VIDEO_PATH" -vf "minterpolate=fps=$TARGET_FPS:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p "$OUTPUT_VIDEO_PATH"
+      ffmpeg -v warning -y -i "$INPUT_VIDEO_PATH" \
+        -filter_complex "[0:v]minterpolate=fps=$TARGET_FPS:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1[v]" \
+        -map "[v]" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p "$OUTPUT_VIDEO_PATH"
     fi
     if [ $? -ne 0 ]; then
       log "ERROR: ffmpeg minterpolate fallback failed"
