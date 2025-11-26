@@ -103,8 +103,8 @@ def inference_with_ratio(model, img0, img1, ratio, rthreshold=0.02, rmaxcycles=1
     # fallback: return last middle
     return middle
 
-# discover PNG files and emit diagnostics for remote debugging
-raw_files = sorted([os.path.join(in_dir, p) for p in os.listdir(in_dir) if p.lower().endswith('.png')])
+# discover image files (PNG/JPG/JPEG) and emit diagnostics for remote debugging
+raw_files = sorted([os.path.join(in_dir, p) for p in os.listdir(in_dir) if p.lower().endswith(('.png', '.jpg', '.jpeg'))])
 print(f"DEBUG: scanning input dir={in_dir} found_pngs={len(raw_files)}")
 for f in raw_files[:20]:
     try:

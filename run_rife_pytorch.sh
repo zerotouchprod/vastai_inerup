@@ -244,14 +244,54 @@ PY
   # Force 8-bit RGB frames to avoid dtype issues (e.g., numpy.uint16) in RIFE inference
   # Pad frames to next multiple of 64 (width/height) to satisfy some RIFE HD models which expect dims divisible by 64
   # Robust expression using if(mod(...)) to avoid negative-mod behavior
-  ffmpeg -hide_banner -loglevel info -progress pipe:1 -nostats -i "$INPUT_VIDEO_PATH" -map 0:v:0 -vsync 0 -start_number 1 -vf "pad=if(mod(iw\,64),iw+(64-mod(iw\,64)),iw):if(mod(ih\,64),ih+(64-mod(ih\,64)),ih)" -pix_fmt rgb24 -qscale:v 1 "$TMP_DIR/input/frame_%06d.png" 2>&1 | progress_collapse
+  ffmpeg -hide_banner -loglevel info -progress pipe:1 -nostats -i "$INPUT_VIDEO_PATH" -map 0:v:0 -vsync 0 -start_number 1 \
+    -vf "pad=if(mod(iw\,64),iw+(64-mod(iw\,64)),iw):if(mod(ih\,64),ih+(64-mod(ih\,64)),ih)" \
+    -pix_fmt rgb24 -f image2 -vcodec png "$TMP_DIR/input/frame_%06d.png" 2>&1 | tee "$TMP_DIR/ff_extract.log" | progress_collapse
    if [ $? -ne 0 ]; then
      log "ERROR: Failed to extract frames"
+     log "ffmpeg extraction log (tail 200 lines):"
+     tail -n 200 "$TMP_DIR/ff_extract.log" 2>/dev/null || true
      rm -rf "$TMP_DIR"
      exit 4
    fi
 
-  # Post-extraction diagnostics: list input dir and inspect first frame header if present
+  # Wait up to 10s for extracted PNGs to appear (some FS/ffmpeg edgecases may delay visibility)
+  FOUND=0
+  for try in 1 2 3 4 5 6 7 8 9 10; do
+    COUNT=$(ls -1 "$TMP_DIR/input"/*.png 2>/dev/null | wc -l || true)
+    if [ "$COUNT" -gt 0 ]; then
+      FOUND=1
+      break
+    fi
+    log "Waiting for frames to appear in $TMP_DIR/input (attempt $try): currently $COUNT files"
+    ls -la "$TMP_DIR/input" | head -n 50 || true
+    sleep 1
+  done
+  if [ "$FOUND" -eq 0 ]; then
+    log "ERROR: No frames became visible in $TMP_DIR/input after extraction"
+    ls -la "$TMP_DIR" || true
+    log "ffmpeg extraction log (tail 200 lines):"
+    tail -n 200 "$TMP_DIR/ff_extract.log" 2>/dev/null || true
+    # Try a single-frame extraction with alternative command and log outputs to help debug
+    log "Attempting single-frame extraction test into $TMP_DIR/input/frame_test_000001.png"
+    ffmpeg -hide_banner -loglevel info -i "$INPUT_VIDEO_PATH" -frames:v 1 -f image2 -vcodec png "$TMP_DIR/input/frame_test_000001.png" 2>&1 | tee "$TMP_DIR/ff_test_extract.log" | progress_collapse
+    log "Single-frame extraction log (tail 200 lines):"
+    tail -n 200 "$TMP_DIR/ff_test_extract.log" 2>/dev/null || true
+    if [ -f "$TMP_DIR/input/frame_test_000001.png" ]; then
+      log "Test frame created; hexdump first 128 bytes:"
+      hexdump -C -n 128 "$TMP_DIR/input/frame_test_000001.png" | sed -n '1,20p' || true
+      file "$TMP_DIR/input/frame_test_000001.png" || true
+    else
+      log "Test frame was NOT created — ffmpeg cannot write PNGs; check ffmpeg build and container permissions"
+    fi
+    rm -rf "$TMP_DIR"
+    exit 4
+  fi
+
+  # Ensure readable permissions for downstream processes
+  chmod a+r "$TMP_DIR/input"/*.png 2>/dev/null || true
+
+  # Post-extraction diagnostics: list input dir and inspect first frame header
   log "Post-extract listing of $TMP_DIR/input (first 200 entries):"
   ls -la "$TMP_DIR/input" | head -n 200 || true
   if [ -f "$TMP_DIR/input/frame_000001.png" ]; then
@@ -261,7 +301,39 @@ PY
       file "$TMP_DIR/input/frame_000001.png" || true
     fi
   else
-    log "No frame_000001.png found after extraction"
+    log "No frame_000001.png found after extraction (unexpected)"
+  fi
+
+  # Quick CV2 sanity check: try to read the first extracted PNG using OpenCV inside python.
+  if [ -f "$TMP_DIR/input/frame_000001.png" ]; then
+    python3 - <<'PY' >"$TMP_DIR/cv_read_check.log" 2>&1
+import cv2,sys
+img=cv2.imread(sys.argv[1], cv2.IMREAD_UNCHANGED)
+print('cv2_read_ok', img is not None)
+if img is None:
+    sys.exit(2)
+sys.exit(0)
+PY
+    if [ $? -ne 0 ]; then
+      log "CV2 failed to read extracted PNGs; attempting fallback extraction to JPEG frames"
+      # cleanup previous frames and re-extract as JPEG
+      rm -f "$TMP_DIR/input"/* 2>/dev/null || true
+      ffmpeg -hide_banner -loglevel info -progress pipe:1 -nostats -i "$INPUT_VIDEO_PATH" -map 0:v:0 -vsync 0 -start_number 1 \
+        -vf "pad=if(mod(iw\,64),iw+(64-mod(iw\,64)),iw):if(mod(ih\,64),ih+(64-mod(ih\,64)),ih)" \
+        -pix_fmt yuvj420p -f image2 -vcodec mjpeg "$TMP_DIR/input/frame_%06d.jpg" 2>&1 | tee "$TMP_DIR/ff_extract_jpg.log" | progress_collapse || true
+      # Wait briefly for files
+      sleep 1
+      COUNTJPG=$(ls -1 "$TMP_DIR/input"/*.jpg 2>/dev/null | wc -l || true)
+      log "JPEG re-extraction produced $COUNTJPG files"
+      if [ "$COUNTJPG" -gt 0 ]; then
+        # ensure readable
+        chmod a+r "$TMP_DIR/input"/*.jpg 2>/dev/null || true
+      else
+        log "JPEG re-extraction failed; see $TMP_DIR/ff_extract_jpg.log"
+      fi
+    else
+      log "CV2 read test passed for first PNG"
+    fi
   fi
 
   # Count frames
