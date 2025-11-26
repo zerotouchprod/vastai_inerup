@@ -226,15 +226,11 @@ if [ -f "$REPO_DIR/inference_img.py" ] || [ -f "/workspace/project/rife_interpol
     log "[debug] Relevant env vars:"
     env | grep -E 'CUDA|CUDA_HOME|LD_LIBRARY_PATH|TORCH|PYTHON' | head -n 50 || true
 
-    log "[debug] Listing REPO_DIR ($REPO_DIR) up to depth 2 (files/sizes):"
-    find "$REPO_DIR" -maxdepth 2 -type f -printf '%s %p\n' 2>/dev/null | sort -rn | head -n 200 || true
-
+    # Minimized debug: indicate whether inference_img.py exists (suppress large file listings)
     if [ -f "$REPO_DIR/inference_img.py" ]; then
-      log "[debug] inference_img.py found — showing head (first 200 lines):"
-      sed -n '1,200p' "$REPO_DIR/inference_img.py" 2>/dev/null || true
+      log "[debug] inference_img.py found"
     else
       log "[debug] inference_img.py NOT found in $REPO_DIR"
-      log "[debug] You can fetch it from upstream: https://raw.githubusercontent.com/hzwer/arXiv2020-RIFE/master/inference_img.py"
     fi
 
     cat > "$TMP_DIR/batch_rife.py" <<'PY'
