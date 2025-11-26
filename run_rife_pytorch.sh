@@ -166,7 +166,8 @@ if [ -f "$REPO_DIR/inference_img.py" ] || [ -f "/workspace/project/rife_interpol
   # Force 8-bit RGB frames to avoid dtype issues (e.g., numpy.uint16) in RIFE inference
   # Pad frames to next multiple of 64 (width/height) to match RIFE model internal downsampling expectations
   # Expression: pad=iw+mod(64-iw,64):ih+mod(64-ih,64)
-  ffmpeg -v warning -i "$INPUT_VIDEO_PATH" -vf "pad=iw+mod(64-iw\\,64):ih+mod(64-ih\\,64)" -pix_fmt rgb24 -qscale:v 1 "$TMP_DIR/input/frame_%06d.png"
+  # Use ffmpeg progress reporting so remote logs show extraction progress
+  ffmpeg -hide_banner -loglevel info -progress pipe:1 -nostats -i "$INPUT_VIDEO_PATH" -vf "pad=iw+mod(64-iw\\,64):ih+mod(64-ih\\,64)" -pix_fmt rgb24 -qscale:v 1 "$TMP_DIR/input/frame_%06d.png"
   if [ $? -ne 0 ]; then
     log "ERROR: Failed to extract frames"
     rm -rf "$TMP_DIR"
@@ -185,7 +186,8 @@ if [ -f "$REPO_DIR/inference_img.py" ] || [ -f "/workspace/project/rife_interpol
 
   # Extract audio track
   log "Extracting audio track..."
-  AUDIO_RESULT=$(ffmpeg -v warning -i "$INPUT_VIDEO_PATH" -vn -acodec copy "$TMP_DIR/audio.aac" 2>&1)
+  # Extract audio with progress reporting (small, but keeps logs consistent)
+  AUDIO_RESULT=$(ffmpeg -hide_banner -loglevel info -progress pipe:1 -nostats -i "$INPUT_VIDEO_PATH" -vn -acodec copy "$TMP_DIR/audio.aac" 2>&1)
   AUDIO_EXIT=$?
   if [ $AUDIO_EXIT -ne 0 ]; then
     log "Audio extraction failed (exit code: $AUDIO_EXIT)"
@@ -237,7 +239,6 @@ if [ -f "$REPO_DIR/inference_img.py" ] || [ -f "/workspace/project/rife_interpol
 
     cat > "$TMP_DIR/batch_rife.py" <<'PY'
 import sys, os
-import math
 
 in_dir = sys.argv[1]
 out_dir = sys.argv[2]
@@ -330,6 +331,10 @@ if not os.path.exists(out_dir):
 # Determine number of mids per pair
 mids_per_pair = max(0, int(round(factor)) - 1)
 
+total_pairs = max(0, len(imgs)-1)
+print(f"Batch-runner: {len(imgs)} frames -> {total_pairs} pairs to process")
+sys.stdout.flush()
+
 for i in range(len(imgs)-1):
     a_path = os.path.join(in_dir, imgs[i])
     b_path = os.path.join(in_dir, imgs[i+1])
@@ -356,6 +361,9 @@ for i in range(len(imgs)-1):
                 out_np = mid[0].byte().cpu().numpy().transpose(1,2,0)
             out_path = os.path.join(out_dir, f'frame_%06d_mid.png' % (i+1))
             cv2.imwrite(out_path, out_np)
+            # progress
+            print(f"Batch-runner: pair {i+1}/{total_pairs} done (single mid)")
+            sys.stdout.flush()
         else:
             # generate mids at ratios k/(mids_per_pair+1)
             for k in range(1, mids_per_pair+1):
@@ -368,6 +376,9 @@ for i in range(len(imgs)-1):
                     out_np = mid[0].byte().cpu().numpy().transpose(1,2,0)
                 out_path = os.path.join(out_dir, f'frame_%06d_mid_%02d.png' % (i+1, k))
                 cv2.imwrite(out_path, out_np)
+            # progress for multi-mid case
+            print(f"Batch-runner: pair {i+1}/{total_pairs} done ({mids_per_pair} mids)")
+            sys.stdout.flush()
     except Exception as e:
         print('Exception processing pair', a_path, b_path, '->', e)
 
@@ -393,9 +404,9 @@ PY
       run_ffmpeg_pattern() {
         local pattern="$1"
         if [ -f "$TMP_DIR/audio.aac" ]; then
-          ffmpeg -v warning -y -framerate "$FRAMERATE" -i "$pattern" -i "$TMP_DIR/audio.aac" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p -c:a aac -shortest "$OUTPUT_VIDEO_PATH" >"$ASM_LOG" 2>&1
+          ffmpeg -hide_banner -loglevel info -progress pipe:1 -nostats -v warning -y -framerate "$FRAMERATE" -i "$pattern" -i "$TMP_DIR/audio.aac" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p -c:a aac -shortest "$OUTPUT_VIDEO_PATH" >"$ASM_LOG" 2>&1
         else
-          ffmpeg -v warning -y -framerate "$FRAMERATE" -i "$pattern" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p "$OUTPUT_VIDEO_PATH" >"$ASM_LOG" 2>&1
+          ffmpeg -hide_banner -loglevel info -progress pipe:1 -nostats -v warning -y -framerate "$FRAMERATE" -i "$pattern" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p "$OUTPUT_VIDEO_PATH" >"$ASM_LOG" 2>&1
         fi
         return $?
       }
@@ -586,9 +597,9 @@ PY
         log "Using frame pattern: frame_%06d_out.png"
         FRAMERATE="$TARGET_FPS"
         if [ -f "$TMP_DIR/audio.aac" ]; then
-          ffmpeg -v warning -y -framerate "$FRAMERATE" -i "$IN_PATTERN" -i "$TMP_DIR/audio.aac" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p -c:a aac -shortest "$OUTPUT_VIDEO_PATH"
+          ffmpeg -hide_banner -loglevel info -progress pipe:1 -nostats -v warning -y -framerate "$FRAMERATE" -i "$IN_PATTERN" -i "$TMP_DIR/audio.aac" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p -c:a aac -shortest "$OUTPUT_VIDEO_PATH"
         else
-          ffmpeg -v warning -y -framerate "$FRAMERATE" -i "$IN_PATTERN" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p "$OUTPUT_VIDEO_PATH"
+          ffmpeg -hide_banner -loglevel info -progress pipe:1 -nostats -v warning -y -framerate "$FRAMERATE" -i "$IN_PATTERN" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p "$OUTPUT_VIDEO_PATH"
         fi
       elif ls "$TMP_DIR/output"/*_mid.png >/dev/null 2>&1; then
         # If mid files exist (including mid_01 variants), assemble interleaved sequence first
@@ -630,27 +641,27 @@ PY
           log "[debug] assembled_count or num_in missing, using FRAMERATE=$FRAMERATE"
         fi
         if [ -f "$TMP_DIR/audio.aac" ]; then
-          ffmpeg -v warning -y -framerate "$FRAMERATE" -i "$IN_PATTERN" -i "$TMP_DIR/audio.aac" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p -c:a aac -shortest "$OUTPUT_VIDEO_PATH"
+          ffmpeg -hide_banner -loglevel info -progress pipe:1 -nostats -v warning -y -framerate "$FRAMERATE" -i "$IN_PATTERN" -i "$TMP_DIR/audio.aac" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p -c:a aac -shortest "$OUTPUT_VIDEO_PATH"
         else
-          ffmpeg -v warning -y -framerate "$FRAMERATE" -i "$IN_PATTERN" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p "$OUTPUT_VIDEO_PATH"
+          ffmpeg -hide_banner -loglevel info -progress pipe:1 -nostats -v warning -y -framerate "$FRAMERATE" -i "$IN_PATTERN" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p "$OUTPUT_VIDEO_PATH"
         fi
       elif ls "$TMP_DIR/output"/frame_*.png >/dev/null 2>&1; then
         IN_PATTERN="$TMP_DIR/output/frame_%06d.png"
         log "Using frame pattern: frame_%06d.png"
         FRAMERATE="$TARGET_FPS"
         if [ -f "$TMP_DIR/audio.aac" ]; then
-          ffmpeg -v warning -y -framerate "$FRAMERATE" -i "$IN_PATTERN" -i "$TMP_DIR/audio.aac" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p -c:a aac -shortest "$OUTPUT_VIDEO_PATH"
+          ffmpeg -hide_banner -loglevel info -progress pipe:1 -nostats -v warning -y -framerate "$FRAMERATE" -i "$IN_PATTERN" -i "$TMP_DIR/audio.aac" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p -c:a aac -shortest "$OUTPUT_VIDEO_PATH"
         else
-          ffmpeg -v warning -y -framerate "$FRAMERATE" -i "$IN_PATTERN" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p "$OUTPUT_VIDEO_PATH"
+          ffmpeg -hide_banner -loglevel info -progress pipe:1 -nostats -v warning -y -framerate "$FRAMERATE" -i "$IN_PATTERN" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p "$OUTPUT_VIDEO_PATH"
         fi
       else
         # Use glob pattern as last resort
         log "Using glob input pattern for assembly"
         FRAMERATE="$TARGET_FPS"
         if [ -f "$TMP_DIR/audio.aac" ]; then
-          ffmpeg -v warning -y -framerate "$FRAMERATE" -pattern_type glob -i "$TMP_DIR/output/*.png" -i "$TMP_DIR/audio.aac" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p -c:a aac -shortest "$OUTPUT_VIDEO_PATH"
+          ffmpeg -hide_banner -loglevel info -progress pipe:1 -nostats -v warning -y -framerate "$FRAMERATE" -pattern_type glob -i "$TMP_DIR/output/*.png" -i "$TMP_DIR/audio.aac" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p -c:a aac -shortest "$OUTPUT_VIDEO_PATH"
         else
-          ffmpeg -v warning -y -framerate "$FRAMERATE" -pattern_type glob -i "$TMP_DIR/output/*.png" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p "$OUTPUT_VIDEO_PATH"
+          ffmpeg -hide_banner -loglevel info -progress pipe:1 -nostats -v warning -y -framerate "$FRAMERATE" -pattern_type glob -i "$TMP_DIR/output/*.png" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p "$OUTPUT_VIDEO_PATH"
         fi
       fi
 

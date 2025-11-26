@@ -161,6 +161,7 @@ vast:
     - 160473 #2cpu
   # Blacklist of host IDs to ignore when searching offers (vasts.host_blacklist)
   host_blacklist:
+    - 124072 #$0.198/hr
     - 155386
     - 319870
     - 124171
