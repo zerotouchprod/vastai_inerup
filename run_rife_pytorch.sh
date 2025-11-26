@@ -215,6 +215,26 @@ if [ -f "$REPO_DIR/inference_img.py" ] || [ -f "/workspace/project/rife_interpol
   # Attempt batch-runner: a single Python process that loads model once and processes all pairs.
   BATCH_OK=0
   if command -v python3 >/dev/null 2>&1; then
+
+    # Diagnostic logging to help remote debugging when user can't access container
+    log "[debug] Python version: $(python3 --version 2>&1 || true)"
+    log "[debug] pip packages (top 20):"
+    (python3 -m pip list --format=columns 2>/dev/null | head -n 20) || true
+    # environment hints
+    log "[debug] Relevant env vars:"
+    env | grep -E 'CUDA|CUDA_HOME|LD_LIBRARY_PATH|TORCH|PYTHON' | head -n 50 || true
+
+    log "[debug] Listing REPO_DIR ($REPO_DIR) up to depth 2 (files/sizes):"
+    find "$REPO_DIR" -maxdepth 2 -type f -printf '%s %p\n' 2>/dev/null | sort -rn | head -n 200 || true
+
+    if [ -f "$REPO_DIR/inference_img.py" ]; then
+      log "[debug] inference_img.py found — showing head (first 200 lines):"
+      sed -n '1,200p' "$REPO_DIR/inference_img.py" 2>/dev/null || true
+    else
+      log "[debug] inference_img.py NOT found in $REPO_DIR"
+      log "[debug] You can fetch it from upstream: https://raw.githubusercontent.com/hzwer/arXiv2020-RIFE/master/inference_img.py"
+    fi
+
     cat > "$TMP_DIR/batch_rife.py" <<'PY'
 import sys, os
 from importlib.util import spec_from_file_location
@@ -329,8 +349,10 @@ PY
       BATCH_OK=1
       log "Batch-runner produced $PNG_COUNT outputs (sample): $(find "$TMP_DIR/output" -maxdepth 1 -type f -iname '*.png' -printf '%f\n' | head -n 5 | tr '\n' ',')"
     else
-      log "Batch-runner produced no output PNGs (count=$PNG_COUNT); printing batch log (up to 5KB) for debugging:"
-      head -c 5000 "/tmp/batch_rife_run.log" || true
+      log "Batch-runner produced no output PNGs (count=$PNG_COUNT); printing batch log (up to 50KB) for debugging:"
+      head -c 50000 "/tmp/batch_rife_run.log" || true
+      log "Listing temp dir contents ($TMP_DIR) for debugging (top 200 entries):"
+      find "$TMP_DIR" -maxdepth 3 -printf '%s %p\n' 2>/dev/null | sort -rn | head -n 200 || true
     fi
   fi
 
