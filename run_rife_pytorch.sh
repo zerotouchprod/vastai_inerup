@@ -13,8 +13,8 @@ OUTFILE=${2:-}
 FACTOR=${3:-2}
 
 if [ -z "$INFILE" ] || [ -z "$OUTFILE" ]; then
-   log "Usage: $0 <input-file> <output-file> <factor:int (default 2)>"
-   exit 2
+  log "Usage: $0 <input-file> <output-file> <factor:int (default 2)>"
+  exit 2
 fi
 
 REPO_DIR="/workspace/project/external/RIFE"
@@ -528,83 +528,83 @@ if [ -f "$REPO_DIR/inference_img.py" ] || [ -f "/workspace/project/rife_interpol
    fi
 
   fi
-
-  # Find output frames produced by RIFE. Try several common filename patterns.
-  OUT_PATTERN=""
-  if ls "$TMP_DIR/output"/*_out.png >/dev/null 2>&1; then
-    # RIFE variants sometimes emit frame_000001_out.png
-    OUT_PATTERN="frame_%06d_out.png"
-  elif ls "$TMP_DIR/output"/frame_*.png >/dev/null 2>&1; then
-    OUT_PATTERN="frame_%06d.png"
-  elif ls "$TMP_DIR/output"/*.png >/dev/null 2>&1; then
-    # fallback: pick any png and let ffmpeg glob it (requires numeric sequence naming)
-    OUT_PATTERN="frame_%06d.png"
-  else
-    log "ERROR: No output frames found in $TMP_DIR/output after RIFE run"
-    rm -rf "$TMP_DIR"
-    exit 5
-  fi
-
-  # To make ffmpeg assembly robust, create a sequentially numbered set in assembled/
-  ASSEMBLE_DIR="$TMP_DIR/assembled"
-  mkdir -p "$ASSEMBLE_DIR"
-  IDX=1
-  # Use a stable sort (version sort) if available, otherwise plain sort
-  if ls "$TMP_DIR/output"/*.png >/dev/null 2>&1; then
-    # generate list of files in natural order
-    FILE_LIST=$(ls -1v "$TMP_DIR/output"/*.png 2>/dev/null || true)
-    if [ -z "$FILE_LIST" ]; then
-      FILE_LIST=$(printf "%s\n" "$TMP_DIR/output"/*.png | sort -V 2>/dev/null || true)
-    fi
-    for f in $FILE_LIST; do
-      if [ -f "$f" ] && [ -s "$f" ]; then
-        cp -f "$f" "$ASSEMBLE_DIR/frame_$(printf "%06d" $IDX).png" 2>/dev/null || true
-        IDX=$((IDX+1))
-      fi
-    done
-  fi
-  ASSEMBLED_COUNT=$(ls -1 "$ASSEMBLE_DIR"/*.png 2>/dev/null | wc -l)
-  if [ $ASSEMBLED_COUNT -eq 0 ]; then
-    log "ERROR: No valid assembled frames found in $ASSEMBLE_DIR — cannot reassemble video"
-    [ "${KEEP_TMP:-0}" = "1" ] || rm -rf "$TMP_DIR"
-    exit 5
-  fi
-  # We'll use assembled/frame_%06d.png for ffmpeg
-  ASSEMBLED_PATTERN="frame_%06d.png"
-
-  # Reassemble into final video using assembled set
-  log "Reassembling interpolated frames into video (FPS: ${TARGET_FPS}) using $ASSEMBLE_DIR"
-  if [ -f "$TMP_DIR/audio.aac" ]; then
-    ffmpeg -y -v warning -stats -framerate "$TARGET_FPS" -start_number 1 -i "$ASSEMBLE_DIR/$ASSEMBLED_PATTERN" -i "$TMP_DIR/audio.aac" -c:v libx264 -crf 18 -pix_fmt yuv420p -c:a aac -shortest "$OUTPUT_VIDEO_PATH"
-  else
-    ffmpeg -y -v warning -stats -framerate "$TARGET_FPS" -start_number 1 -i "$ASSEMBLE_DIR/$ASSEMBLED_PATTERN" -c:v libx264 -crf 18 -pix_fmt yuv420p "$OUTPUT_VIDEO_PATH"
-  fi
-
-  FFMPEG_RC=$?
-
-  # If ffmpeg failed with assembled set, try glob fallback directly on output (edge cases)
-  if [ $FFMPEG_RC -ne 0 ]; then
-    log "ffmpeg failed with $FFMPEG_RC on assembled set; attempting glob-based reassembly as fallback"
-    if [ -f "$TMP_DIR/audio.aac" ]; then
-      ffmpeg -y -v warning -stats -framerate "$TARGET_FPS" -pattern_type glob -i "$TMP_DIR/output/*.png" -i "$TMP_DIR/audio.aac" -c:v libx264 -crf 18 -pix_fmt yuv420p -c:a aac -shortest "$OUTPUT_VIDEO_PATH"
-    else
-      ffmpeg -y -v warning -stats -framerate "$TARGET_FPS" -pattern_type glob -i "$TMP_DIR/output/*.png" -c:v libx264 -crf 18 -pix_fmt yuv420p "$OUTPUT_VIDEO_PATH"
-    fi
-    FFMPEG_RC=$?
-  fi
-
-  if [ $FFMPEG_RC -ne 0 ]; then
-    log "ERROR: Failed to reassemble video from frames (ffmpeg exit: $FFMPEG_RC)"
-    rm -rf "$TMP_DIR"
-    exit $FFMPEG_RC
-  fi
-
-  # Success - cleanup and exit 0
-  log "✅ RIFE interpolation completed successfully — output: $OUTPUT_VIDEO_PATH"
-  rm -rf "$TMP_DIR"
-  exit 0
-fi
-
-# If we reach here it means the fast frame-by-frame branch was not available.
-log "No supported RIFE frame-by-frame method detected — exiting with code 2 to allow fallback."
-exit 2
++
++  # Find output frames produced by RIFE. Try several common filename patterns.
++  OUT_PATTERN=""
++  if ls "$TMP_DIR/output"/*_out.png >/dev/null 2>&1; then
++    # RIFE variants sometimes emit frame_000001_out.png
++    OUT_PATTERN="frame_%06d_out.png"
++  elif ls "$TMP_DIR/output"/frame_*.png >/dev/null 2>&1; then
++    OUT_PATTERN="frame_%06d.png"
++  elif ls "$TMP_DIR/output"/*.png >/dev/null 2>&1; then
++    # fallback: pick any png and let ffmpeg glob it (requires numeric sequence naming)
++    OUT_PATTERN="frame_%06d.png"
++  else
++    log "ERROR: No output frames found in $TMP_DIR/output after RIFE run"
++    rm -rf "$TMP_DIR"
++    exit 5
++  fi
++
++  # To make ffmpeg assembly robust, create a sequentially numbered set in assembled/
++  ASSEMBLE_DIR="$TMP_DIR/assembled"
++  mkdir -p "$ASSEMBLE_DIR"
++  IDX=1
++  # Use a stable sort (version sort) if available, otherwise plain sort
++  if ls "$TMP_DIR/output"/*.png >/dev/null 2>&1; then
++    # generate list of files in natural order
++    FILE_LIST=$(ls -1v "$TMP_DIR/output"/*.png 2>/dev/null || true)
++    if [ -z "$FILE_LIST" ]; then
++      FILE_LIST=$(printf "%s\n" "$TMP_DIR/output"/*.png | sort -V 2>/dev/null || true)
++    fi
++    for f in $FILE_LIST; do
++      if [ -f "$f" ] && [ -s "$f" ]; then
++        cp -f "$f" "$ASSEMBLE_DIR/frame_$(printf "%06d" $IDX).png" || cp -f "$f" "$ASSEMBLE_DIR/frame_$(printf "%06d" $IDX).png" 2>/dev/null || true
++        IDX=$((IDX+1))
++      fi
++    done
++  fi
++  ASSEMBLED_COUNT=$(ls -1 "$ASSEMBLE_DIR"/*.png 2>/dev/null | wc -l)
++  if [ $ASSEMBLED_COUNT -eq 0 ]; then
++    log "ERROR: No valid assembled frames found in $ASSEMBLE_DIR — cannot reassemble video"
++    [ "${KEEP_TMP:-0}" = "1" ] || rm -rf "$TMP_DIR"
++    exit 5
++  fi
++  # We'll use assembled/frame_%06d.png for ffmpeg
++  ASSEMBLED_PATTERN="frame_%06d.png"
++
++  # Reassemble into final video using assembled set
++  log "Reassembling interpolated frames into video (FPS: ${TARGET_FPS}) using $ASSEMBLE_DIR"
++  if [ -f "$TMP_DIR/audio.aac" ]; then
++    ffmpeg -y -v warning -stats -framerate "$TARGET_FPS" -start_number 1 -i "$ASSEMBLE_DIR/$ASSEMBLED_PATTERN" -i "$TMP_DIR/audio.aac" -c:v libx264 -crf 18 -pix_fmt yuv420p -c:a aac -shortest "$OUTPUT_VIDEO_PATH"
++  else
++    ffmpeg -y -v warning -stats -framerate "$TARGET_FPS" -start_number 1 -i "$ASSEMBLE_DIR/$ASSEMBLED_PATTERN" -c:v libx264 -crf 18 -pix_fmt yuv420p "$OUTPUT_VIDEO_PATH"
++  fi
++  FFMPEG_RC=$?
++
++  # If ffmpeg failed with assembled set, try glob fallback directly on output (edge cases)
++  if [ $FFMPEG_RC -ne 0 ]; then
++    log "ffmpeg failed with $FFMPEG_RC on assembled set; attempting glob-based reassembly as fallback"
++    if [ -f "$TMP_DIR/audio.aac" ]; then
++      ffmpeg -y -v warning -stats -framerate "$TARGET_FPS" -pattern_type glob -i "$TMP_DIR/output/*.png" -i "$TMP_DIR/audio.aac" -c:v libx264 -crf 18 -pix_fmt yuv420p -c:a aac -shortest "$OUTPUT_VIDEO_PATH"
++    else
++      ffmpeg -y -v warning -stats -framerate "$TARGET_FPS" -pattern_type glob -i "$TMP_DIR/output/*.png" -c:v libx264 -crf 18 -pix_fmt yuv420p "$OUTPUT_VIDEO_PATH"
++    fi
++    FFMPEG_RC=$?
++  fi
++
++  if [ $FFMPEG_RC -ne 0 ]; then
++    log "ERROR: Failed to reassemble video from frames (ffmpeg exit: $FFMPEG_RC)"
++    rm -rf "$TMP_DIR"
++    exit $FFMPEG_RC
++  fi
++
++  # Success - cleanup and exit 0
++  log "✅ RIFE interpolation completed successfully — output: $OUTPUT_VIDEO_PATH"
++  rm -rf "$TMP_DIR"
++  exit 0
++
++fi
++
++# If we reach here it means the fast frame-by-frame branch was not available.
++log "No supported RIFE frame-by-frame method detected — exiting with code 2 to allow fallback."
++exit 2
