@@ -13,7 +13,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from typing import Optional
 from datetime import datetime
 
 # Final marker used by remote monitoring to detect full successful completion
@@ -179,6 +178,50 @@ def try_run_realesrgan_ncnn(infile: str, outpath: str, scale: int) -> bool:
                         fullp = os.path.join(frames_out_dir, fn)
                         # ffmpeg concat expects lines like: file '/absolute/path.png'
                         fl.write(f"file '{fullp}'\n")
+
+                # --- New: check frame sizes and print diagnostics ---
+                try:
+                    import cv2
+                    sizes = {}
+                    any_failed = False
+                    for fn in sorted(os.listdir(frames_out_dir)):
+                        if not fn.lower().endswith('.png'):
+                            continue
+                        fp = os.path.join(frames_out_dir, fn)
+                        img = cv2.imread(fp, cv2.IMREAD_UNCHANGED)
+                        if img is None:
+                            print(f"WARNING: failed to read frame for size check: {fp}")
+                            any_failed = True
+                            continue
+                        h, w = img.shape[0], img.shape[1]
+                        sizes.setdefault((w, h), 0)
+                        sizes[(w, h)] += 1
+                        if (w % 32) != 0 or (h % 32) != 0:
+                            print(f"WARNING: frame {fn} has size {w}x{h} which is not multiple of 32 (may cause model errors)")
+                    if len(sizes) > 1:
+                        print("WARNING: multiple distinct frame sizes detected in processed frames (sample counts):")
+                        for s, cnt in sorted(sizes.items(), key=lambda x: -x[1]):
+                            print(f"  size={s[0]}x{s[1]} count={cnt}")
+                    else:
+                        # single size (or none)
+                        if len(sizes) == 1:
+                            s = next(iter(sizes))
+                            print(f"INFO: all processed frames share the same size: {s[0]}x{s[1]}")
+                        elif any_failed:
+                            print("INFO: frame size check had read failures; see warnings above")
+                except Exception:
+                    print("NOTE: OpenCV not available or size-check failed; skipping per-frame size diagnostics")
+
+                # Print head of filelist for remote debugging (first 20 lines)
+                try:
+                    print("filelist (first 20 lines):")
+                    with open(filelist_path, 'r', encoding='utf-8') as _fl:
+                        for i, line in enumerate(_fl):
+                            if i >= 20:
+                                break
+                            print(line.rstrip())
+                except Exception:
+                    print("Could not read filelist for debug printing")
 
                 ffmpeg_cmd = ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", filelist_path, "-c:v", "libx264", "-crf", "18", "-preset", "medium", outpath]
                 # If we could detect framerate, include it as input framerate to preserve timing
