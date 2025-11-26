@@ -332,6 +332,23 @@ def try_run_rife_pytorch_wrapper(infile: str, outpath: str, factor: int) -> bool
         return False
 
 
+def _verify_and_emit_success(output_path: str):
+    """Verify the output exists and emit final marker; otherwise raise RuntimeError."""
+    try:
+        if output_path and os.path.isfile(output_path) and os.path.getsize(output_path) > 0:
+            try:
+                print(FINAL_PIPELINE_MARKER)
+            except Exception:
+                pass
+            return True
+        else:
+            print(f"ERROR: Expected output missing or empty: {output_path}")
+            raise RuntimeError(f"Output missing: {output_path}")
+    except Exception:
+        # Re-raise to signal failure to callers
+        raise
+
+
 def do_upscale(infile: str, outpath: str, scale_expr: str, prefer: str = "auto", strict: bool = False):
     log_stage("Starting UPSCALE", infile)
     print(f"[pipeline.do_upscale] Called with: infile={infile}, outpath={outpath}, scale_expr={scale_expr}, prefer={prefer}, strict={strict}")
@@ -605,10 +622,7 @@ def main():
                 do_upscale(infile, up_out, scale_expr, prefer=args.prefer, strict=args.strict)
                 print("Upscale finished. Output:", up_out)
                 # Final success marker for external monitor
-                try:
-                    print(FINAL_PIPELINE_MARKER)
-                except Exception:
-                    pass
+                _verify_and_emit_success(up_out)
 
                 if args.keep_tmp:
                     shutil.copy(up_out, os.path.join(outdir, "tmp_upscaled.mp4"))
@@ -619,10 +633,7 @@ def main():
                 do_interpolate(infile, interp_out, target_fps, prefer=args.prefer, strict=args.strict)
                 print("Interpolation finished. Output:", interp_out)
                 # Final success marker for external monitor
-                try:
-                    print(FINAL_PIPELINE_MARKER)
-                except Exception:
-                    pass
+                _verify_and_emit_success(interp_out)
 
                 if args.keep_tmp:
                     shutil.copy(interp_out, os.path.join(outdir, "tmp_interpolated.mp4"))
@@ -639,10 +650,7 @@ def main():
                 do_upscale(tmp_inter, out_final, scale_expr, prefer=args.prefer, strict=args.strict)
                 print("Pipeline finished (interp then upscale). Output file:", out_final)
                 # Final success marker for external monitor
-                try:
-                    print(FINAL_PIPELINE_MARKER)
-                except Exception:
-                    pass
+                _verify_and_emit_success(out_final)
                 if args.keep_tmp:
                     keep_path = os.path.join(outdir, "tmp_kept")
                     os.makedirs(keep_path, exist_ok=True)
@@ -666,10 +674,7 @@ def main():
                 do_interpolate(upscaled, output_file, target_fps, prefer=args.prefer, strict=args.strict)
                 print("Pipeline finished (upscale then interp). Output file:", output_file)
                 # Final success marker for external monitor
-                try:
-                    print(FINAL_PIPELINE_MARKER)
-                except Exception:
-                    pass
+                _verify_and_emit_success(output_file)
                 if args.keep_tmp:
                     keep_path = os.path.join(outdir, "tmp_kept")
                     print("Keeping tmp dir ->", keep_path)
