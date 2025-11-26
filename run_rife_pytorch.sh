@@ -237,95 +237,112 @@ if [ -f "$REPO_DIR/inference_img.py" ] || [ -f "/workspace/project/rife_interpol
 
     cat > "$TMP_DIR/batch_rife.py" <<'PY'
 import sys, os
-from importlib.util import spec_from_file_location
-import types
 
 in_dir = sys.argv[1]
 out_dir = sys.argv[2]
 factor = float(sys.argv[3])
 repo = os.environ.get('REPO_DIR', '/workspace/project/external/RIFE')
+model_dir = os.path.join(repo, 'train_log')
 
-def try_import_inference():
-    path = os.path.join(repo, 'inference_img.py')
-    if not os.path.exists(path):
-        return False
+# Try importing a model class from common locations
+Model = None
+try:
+    # preferred: trained model wrapper in train_log
+    from train_log.RIFE_HDv3 import Model as _Model
+    Model = _Model
+except Exception:
     try:
-        spec = spec_from_file_location('rife_inference', path)
-        if not spec or not spec.loader:
-            return False
-        module = types.ModuleType(spec.name)
-        # Exec module but mask sys.argv to avoid CLI arg parsing at import time
-        import sys as _sys
-        _old_argv = None
-        try:
-            _old_argv = _sys.argv
-            _sys.argv = [path]
-            spec.loader.exec_module(module)
-        finally:
-            if _old_argv is not None:
-                _sys.argv = _old_argv
-         mod = module
+        from model.RIFE import Model as _Model
+        Model = _Model
     except Exception:
-        # If import fails, avoid executing the script as CLI (which triggers argparse usage)
-        return False
-
-    def get_attr(obj, name):
-        return getattr(obj, name, None)
-
-    # Prefer a batch API if present
-    batch_fn = get_attr(mod, 'batch_inference') or get_attr(mod, 'inference_dir')
-    if batch_fn:
         try:
-            try:
-                batch_fn(in_dir, out_dir, factor)
-            except TypeError:
-                batch_fn(in_dir, out_dir)
-            return True
+            from train_log.RIFE_HD import Model as _Model
+            Model = _Model
         except Exception:
-            return False
+            Model = None
 
-    # Try load_model + inference pattern
-    load_model = get_attr(mod, 'load_model') or get_attr(mod, 'build_model')
-    infer_fn = get_attr(mod, 'inference') or get_attr(mod, 'inference_pair')
-    if load_model and infer_fn:
+if Model is None:
+    print('No compatible RIFE Model class found (tried train_log.RIFE_HDv3, model.RIFE, train_log.RIFE_HD)')
+    sys.exit(2)
+
+# load torch and cv2
+import torch
+import cv2
+import numpy as np
+
+# instantiate and load weights
+try:
+    model = Model()
+except Exception as e:
+    print('Failed to instantiate Model:', e)
+    sys.exit(2)
+
+# try load_model with common signatures
+loaded = False
+try:
+    model.load_model(model_dir, -1)
+    loaded = True
+except Exception:
+    try:
+        model.load_model(model_dir)
+        loaded = True
+    except Exception as e:
+        print('Failed to load model from', model_dir, 'error:', e)
+        sys.exit(2)
+
+model.eval()
+# call device() method if available (some wrappers expose it)
+try:
+    model.device()
+except Exception:
+    pass
+
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+# Process pairs
+imgs = sorted([p for p in os.listdir(in_dir) if p.lower().endswith('.png')])
+if not os.path.exists(out_dir):
+    os.makedirs(out_dir, exist_ok=True)
+
+for i in range(len(imgs)-1):
+    a_path = os.path.join(in_dir, imgs[i])
+    b_path = os.path.join(in_dir, imgs[i+1])
+    try:
+        im0 = cv2.imread(a_path, cv2.IMREAD_UNCHANGED)
+        im1 = cv2.imread(b_path, cv2.IMREAD_UNCHANGED)
+        if im0 is None or im1 is None:
+            print('Failed to read input images', a_path, b_path)
+            continue
+        # convert to torch tensor [1,C,H,W], normalize if uint8
+        t0 = torch.tensor(im0.transpose(2,0,1)).to(device).unsqueeze(0)
+        t1 = torch.tensor(im1.transpose(2,0,1)).to(device).unsqueeze(0)
+        # if uint8 range -> normalize to 0..1
+        if t0.dtype == torch.uint8:
+            t0 = t0.float() / 255.0
+        if t1.dtype == torch.uint8:
+            t1 = t1.float() / 255.0
+        # call model.inference (signature: (img0, img1) -> mid tensor)
         try:
+            mid = model.inference(t0, t1)
+        except Exception as e:
+            # try alternative signature
             try:
-                model = load_model(os.path.join(repo, 'train_log'))
-            except TypeError:
-                model = load_model()
-            imgs = sorted([p for p in os.listdir(in_dir) if p.lower().endswith('.png')])
-            from PIL import Image
-            import numpy as np
-            for i in range(len(imgs)-1):
-                a = os.path.join(in_dir, imgs[i])
-                b = os.path.join(in_dir, imgs[i+1])
-                try:
-                    out = None
-                    try:
-                        out = infer_fn(a, b, model)
-                    except TypeError:
-                        out = infer_fn(a, b)
-                except Exception:
-                    out = None
-                if out is None:
-                    continue
-                try:
-                    if hasattr(out, 'save'):
-                        out.save(os.path.join(out_dir, f'frame_%06d_mid.png' % (i+1)))
-                    else:
-                        arr = np.asarray(out)
-                        im = Image.fromarray(arr.astype('uint8'))
-                        im.save(os.path.join(out_dir, f'frame_%06d_mid.png' % (i+1)))
-                except Exception:
-                    pass
-            return True
+                mid = model.inference(t0, t1, [1])
+            except Exception as e2:
+                print('Model inference failed for pair', a_path, b_path, 'errors:', e, e2)
+                continue
+        # mid -> save
+        try:
+            out_np = (mid[0] * 255.0).clamp(0,255).byte().cpu().numpy().transpose(1,2,0)
         except Exception:
-            return False
-    return False
+            # maybe already uint8
+            out_np = mid[0].byte().cpu().numpy().transpose(1,2,0)
+        out_path = os.path.join(out_dir, f'frame_%06d_mid.png' % (i+1))
+        cv2.imwrite(out_path, out_np)
+    except Exception as e:
+        print('Exception processing pair', a_path, b_path, '->', e)
 
-if __name__ == '__main__':
-    ok = try_import_inference()
-    sys.exit(0 if ok else 2)
+sys.exit(0)
 PY
 
     # run batch script
