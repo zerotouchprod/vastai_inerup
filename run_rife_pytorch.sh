@@ -140,6 +140,93 @@ fi
 # extract audio (optional)
 (log "Extracting audio"; ffmpeg -hide_banner -loglevel info -i "$INFILE" -vn -acodec copy "$TMP_DIR/audio.aac" 2>&1) | progress_collapse | tee "$TMP_DIR/ff_audio.log"
 
+# --- attempt batch-runner BEFORE assembly ---
+# ensure REPO_DIR is set for batch runner/model lookup
+REPO_DIR="/workspace/project/external/RIFE"
+mkdir -p "$REPO_DIR/train_log" 2>/dev/null || true
+
+log "GPU diagnostics (nvidia-smi and torch info)"
+if command -v nvidia-smi >/dev/null 2>&1; then
+  nvidia-smi -L || true
+  nvidia-smi --query-gpu=name,memory.total,memory.free --format=csv,noheader || true
+fi
+python3 - <<PY 2>/dev/null || true
+import torch
+print('torch_version=', getattr(torch, '__version__', 'n/a'))
+print('cuda_available=', torch.cuda.is_available())
+if torch.cuda.is_available():
+    print('cuda_count=', torch.cuda.device_count())
+    try:
+        print('device_name=', torch.cuda.get_device_name(0))
+    except Exception as e:
+        print('device_name_error', e)
+PY
+
+log "Attempting batch-runner for RIFE (GPU accelerated if available)"
+BATCH_PY="/workspace/project/batch_rife.py"
+if [ -f "$BATCH_PY" ]; then
+  log "Found external batch runner: $BATCH_PY"
+  (export PYTHONUNBUFFERED=1; export REPO_DIR="$REPO_DIR"; python3 "$BATCH_PY" "$TMP_DIR/input" "$TMP_DIR/output" "$FACTOR") >"$TMP_DIR/batch_rife_run.log" 2>&1 &
+  BATCH_PID=$!
+  log "batch_rife.py started (pid=$BATCH_PID), waiting up to 600s for completion"
+  WAIT_SECS=600
+  for waited in $(seq 1 $WAIT_SECS); do
+    sleep 1
+    if ! kill -0 $BATCH_PID 2>/dev/null; then
+      log "batch_rife.py exited (after $waited s)"; break
+    fi
+    if [ $((waited % 10)) -eq 0 ]; then
+      log "waiting for batch-runner to finish ($waited/$WAIT_SECS)";
+    fi
+  done
+  if kill -0 $BATCH_PID 2>/dev/null; then
+    log "batch_rife.py still running after $WAIT_SECS s, killing"
+    kill $BATCH_PID 2>/dev/null || true
+  fi
+  log "batch_rife log (tail 200):"
+  tail -n 200 "$TMP_DIR/batch_rife_run.log" 2>/dev/null || true
+  OUT_COUNT=$(ls -1 "$TMP_DIR/output"/*.png 2>/dev/null | wc -l || true)
+  log "Batch-runner produced $OUT_COUNT outputs (sample): $(ls -1 "$TMP_DIR/output" 2>/dev/null | head -n 10 | tr '\n' ',' )"
+  if [ "$OUT_COUNT" -gt 0 ]; then
+    log "Batch-runner succeeded"
+  else
+    log "Batch-runner produced no outputs, will fall back to per-pair (inference_img.py)"
+    # per-pair fallback: run inference_img.py with exp=1 for each pair
+    RIFE_PY="/workspace/project/external/RIFE/inference_img.py"
+    if [ -f "$RIFE_PY" ]; then
+      log "Using per-pair inference with $RIFE_PY"
+      # collect input frames sorted
+      mapfile -t FRAMES < <(find "$TMP_DIR/input" -maxdepth 1 -type f \( -iname '*.png' -o -iname '*.jpg' -o -iname '*.jpeg' \) -printf '%P\n' | sort)
+      N=${#FRAMES[@]}
+      log "Per-pair: discovered $N frames"
+      if [ "$N" -lt 2 ]; then
+        log "Not enough frames for per-pair inference: $N";
+      else
+        for ((i=0;i<$N-1;i++)); do
+          a="$TMP_DIR/input/${FRAMES[$i]}"
+          b="$TMP_DIR/input/${FRAMES[$i+1]}"
+          pair_index=$((i+1))
+          log "RIFE pair #$pair_index: $a $b -> $TMP_DIR/output/frame_$(printf "%06d" $pair_index)_mid.png"
+          # run inference_img.py in TMP_DIR so it writes to ./output
+          (cd "$TMP_DIR" && export PYTHONUNBUFFERED=1; timeout 300s python3 "$RIFE_PY" --img "$a" "$b" --exp 1 --model "$REPO_DIR/train_log") >"$TMP_DIR/rife_pair_${pair_index}.log" 2>&1 || true
+          # check for expected mid (inference_img writes output/img1.png for exp=1)
+          if [ -f "$TMP_DIR/output/img1.png" ]; then
+            mv -f "$TMP_DIR/output/img1.png" "$TMP_DIR/output/frame_$(printf "%06d" $pair_index)_mid.png"
+            log "Wrote mid for pair $pair_index"
+          else
+            log "No mid produced for pair $pair_index; see $TMP_DIR/rife_pair_${pair_index}.log"
+            tail -n 200 "$TMP_DIR/rife_pair_${pair_index}.log" 2>/dev/null || true
+          fi
+        done
+      fi
+    else
+      log "Per-pair inference script not found: $RIFE_PY"
+    fi
+  fi
+else
+  log "No external batch_rife.py found at $BATCH_PY; skipping batch-runner"
+fi
+
 # Attempt assembly: prefer filelist from TMP_DIR/output, else look for mids, else fallback
 try_filelist(){
   FL="$TMP_DIR/filelist.txt"
