@@ -55,10 +55,32 @@ log "orig_fps=$ORIG_FPS target_fps=$TARGET_FPS"
 log "Extracting frames to $TMP_DIR/input"
 ffmpeg -version | head -n 3 || true
 
+# Compute pad sizes (next multiple of 32) using ffprobe to avoid ffmpeg expression parsing issues
+WH=$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0:s=x "$INFILE" 2>/dev/null || true)
+if [ -z "$WH" ]; then
+  log "WARNING: failed to read input width/height, falling back to no-pad extraction"
+  PAD_W=""
+  PAD_H=""
+else
+  WIDTH=$(echo "$WH" | cut -d'x' -f1)
+  HEIGHT=$(echo "$WH" | cut -d'x' -f2)
+  PAD_W=$(( ( (WIDTH + 31) / 32 ) * 32 ))
+  PAD_H=$(( ( (HEIGHT + 31) / 32 ) * 32 ))
+  log "input_w=$WIDTH input_h=$HEIGHT pad_w=$PAD_W pad_h=$PAD_H"
+fi
+
 # Try a simple PNG extraction first (no progress pipe). Save full log for debugging.
-ffmpeg -y -hide_banner -loglevel info -i "$INFILE" -map 0:v:0 -vsync 0 -start_number 1 \
-  -vf "pad=if(mod(iw\,32),iw+(32-mod(iw\,32)),iw):if(mod(ih\,32),ih+(32-mod(ih\,32)),ih)" \
-  -f image2 -vcodec png "$TMP_DIR/input/frame_%06d.png" >"$TMP_DIR/ff_extract.log" 2>&1 || true
+if [ -n "${PAD_W:-}" ] && [ -n "${PAD_H:-}" ]; then
+  VF_PAD="pad=${PAD_W}:${PAD_H}"
+else
+  VF_PAD=""
+fi
+
+if [ -n "$VF_PAD" ]; then
+  ffmpeg -y -hide_banner -loglevel info -i "$INFILE" -map 0:v:0 -vsync 0 -start_number 1 -vf "$VF_PAD" -f image2 -vcodec png "$TMP_DIR/input/frame_%06d.png" >"$TMP_DIR/ff_extract.log" 2>&1 || true
+else
+  ffmpeg -y -hide_banner -loglevel info -i "$INFILE" -map 0:v:0 -vsync 0 -start_number 1 -f image2 -vcodec png "$TMP_DIR/input/frame_%06d.png" >"$TMP_DIR/ff_extract.log" 2>&1 || true
+fi
 RC=${PIPESTATUS[0]:-1}
 log "png extract rc=$RC; tail ff_extract.log (head 40):"
 sed -n '1,40p' "$TMP_DIR/ff_extract.log" 2>/dev/null || true
@@ -98,7 +120,11 @@ if [ "$COUNT" -eq 0 ]; then
 
   log "Attempting JPEG re-extraction (mjpeg) to avoid PNG decoder issues"
   rm -f "$TMP_DIR/input"/* || true
-  ffmpeg -hide_banner -loglevel info -progress pipe:1 -nostats -i "$INFILE" -map 0:v:0 -vsync 0 -start_number 1 -vf "pad=if(mod(iw\,32),iw+(32-mod(iw\,32)),iw):if(mod(ih\,32),ih+(32-mod(ih\,32)),ih)" -pix_fmt yuvj420p -f image2 -vcodec mjpeg "$TMP_DIR/input/frame_%06d.jpg" 2>&1 | progress_collapse | tee "$TMP_DIR/ff_extract_jpg.log"
+  if [ -n "${VF_PAD:-}" ]; then
+    ffmpeg -hide_banner -loglevel info -progress pipe:1 -nostats -i "$INFILE" -map 0:v:0 -vsync 0 -start_number 1 -vf "$VF_PAD" -pix_fmt yuvj420p -f image2 -vcodec mjpeg "$TMP_DIR/input/frame_%06d.jpg" 2>&1 | progress_collapse | tee "$TMP_DIR/ff_extract_jpg.log"
+  else
+    ffmpeg -hide_banner -loglevel info -progress pipe:1 -nostats -i "$INFILE" -map 0:v:0 -vsync 0 -start_number 1 -pix_fmt yuvj420p -f image2 -vcodec mjpeg "$TMP_DIR/input/frame_%06d.jpg" 2>&1 | progress_collapse | tee "$TMP_DIR/ff_extract_jpg.log"
+  fi
   RC3=${PIPESTATUS[0]:-1}
   log "jpeg extract rc=$RC3; tail of jpeg extract log:"; tail -n 200 "$TMP_DIR/ff_extract_jpg.log" 2>/dev/null || true
   COUNT=$(ls -1 "$TMP_DIR/input"/*.jpg 2>/dev/null | wc -l || true)
