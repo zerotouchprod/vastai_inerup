@@ -67,9 +67,16 @@ def main():
         _orig_parse_args = _argparse.ArgumentParser.parse_args
         _orig_parse_known = _argparse.ArgumentParser.parse_known_args
         def _fake_parse_args(self, *a, **k):
-            return _argparse.Namespace()
+            ns = _argparse.Namespace()
+            # Provide common RIFE CLI attributes to avoid AttributeError on import
+            for _k in ('img','exp','ratio','rthreshold','rmaxcycles','model','modelDir','model_dir','MODELDIR','train_log'):
+                setattr(ns, _k, None)
+            return ns
         def _fake_parse_known(self, *a, **k):
-            return (_argparse.Namespace(), [])
+            ns = _argparse.Namespace()
+            for _k in ('img','exp','ratio','rthreshold','rmaxcycles','model','modelDir','model_dir','MODELDIR','train_log'):
+                setattr(ns, _k, None)
+            return (ns, [])
 
         _argparse.ArgumentParser.parse_args = _fake_parse_args
         _argparse.ArgumentParser.parse_known_args = _fake_parse_known
@@ -95,22 +102,33 @@ def main():
                 tmpdir = tempfile.mkdtemp(prefix='rife_mod_')
                 dst = os.path.join(tmpdir, 'inference_img_mod.py')
                 with open(src, 'r', encoding='utf-8') as f:
-                    lines = f.readlines()
-                out_lines = []
-                replaced = False
-                for i, ln in enumerate(lines):
-                    stripped = ln.lstrip()
-                    if not replaced and (stripped.startswith("if __name__ == '__main__'") or stripped.startswith('if __name__ == "__main__"')):
-                        # replace the if guard with a function definition to avoid execution
-                        indent = ln[:len(ln)-len(stripped)]
-                        out_lines.append(indent + 'def __rife_main__():\n')
-                        replaced = True
-                        # following indented block lines will be part of function as-is
-                    else:
-                        out_lines.append(ln)
-                # If we didn't find an if __name__ guard, still create mod copy (no guarantee)
+                    orig = f.read()
+                # Header: safe argparse monkeypatch to avoid required-args crashes during import
+                header = """
+import argparse as _argparse
+_orig_parse_args = _argparse.ArgumentParser.parse_args
+_orig_parse_known = _argparse.ArgumentParser.parse_known_args
+def _safe_parse_args(self, *a, **k):
+    try:
+        return _orig_parse_args(self, *a, **k)
+    except Exception:
+        from types import SimpleNamespace as _NS
+        ns = _NS()
+        # common RIFE argument names: provide None defaults to avoid AttributeError
+        for _k in ('img','exp','ratio','rthreshold','rmaxcycles','model','modelDir','model_dir','MODELDIR','train_log'):
+            setattr(ns, _k, None)
+        return ns
+def _safe_parse_known(self, *a, **k):
+    try:
+        return _orig_parse_known(self, *a, **k)
+    except Exception:
+        return (_safe_parse_args(self, *a, **k), [])
+_argparse.ArgumentParser.parse_args = _safe_parse_args
+_argparse.ArgumentParser.parse_known_args = _safe_parse_known
+"""
+                # Create modified file with header + original content
                 with open(dst, 'w', encoding='utf-8') as f:
-                    f.writelines(out_lines)
+                    f.write(header + '\n' + orig)
                 # Import modified module via spec_from_file_location
                 try:
                     import importlib.util
@@ -210,9 +228,15 @@ def main():
                 _orig_parse_args = _argparse.ArgumentParser.parse_args
                 _orig_parse_known = _argparse.ArgumentParser.parse_known_args
                 def _fake_parse_args(self, *a, **k):
-                    return _argparse.Namespace()
+                    ns = _argparse.Namespace()
+                    for _k in ('img','exp','ratio','rthreshold','rmaxcycles','model','modelDir','model_dir','MODELDIR','train_log'):
+                        setattr(ns, _k, None)
+                    return ns
                 def _fake_parse_known(self, *a, **k):
-                    return (_argparse.Namespace(), [])
+                    ns = _argparse.Namespace()
+                    for _k in ('img','exp','ratio','rthreshold','rmaxcycles','model','modelDir','model_dir','MODELDIR','train_log'):
+                        setattr(ns, _k, None)
+                    return (ns, [])
 
                 _argparse.ArgumentParser.parse_args = _fake_parse_args
                 _argparse.ArgumentParser.parse_known_args = _fake_parse_known
@@ -235,19 +259,30 @@ def main():
                         tmpdir = tempfile.mkdtemp(prefix=f'rife_mod_worker_{worker_id}_')
                         dst = os.path.join(tmpdir, 'inference_img_mod.py')
                         with open(src, 'r', encoding='utf-8') as f:
-                            lines = f.readlines()
-                        out_lines = []
-                        replaced = False
-                        for ln in lines:
-                            stripped = ln.lstrip()
-                            if not replaced and (stripped.startswith("if __name__ == '__main__'") or stripped.startswith('if __name__ == "__main__"')):
-                                indent = ln[:len(ln)-len(stripped)]
-                                out_lines.append(indent + 'def __rife_main__():\n')
-                                replaced = True
-                            else:
-                                out_lines.append(ln)
+                            orig = f.read()
+                        header = """
+import argparse as _argparse
+_orig_parse_args = _argparse.ArgumentParser.parse_args
+_orig_parse_known = _argparse.ArgumentParser.parse_known_args
+def _safe_parse_args(self, *a, **k):
+    try:
+        return _orig_parse_args(self, *a, **k)
+    except Exception:
+        from types import SimpleNamespace as _NS
+        ns = _NS()
+        for _k in ('img','exp','ratio','rthreshold','rmaxcycles','model','modelDir','model_dir','MODELDIR','train_log'):
+            setattr(ns, _k, None)
+        return ns
+def _safe_parse_known(self, *a, **k):
+    try:
+        return _orig_parse_known(self, *a, **k)
+    except Exception:
+        return (_safe_parse_args(self, *a, **k), [])
+_argparse.ArgumentParser.parse_args = _safe_parse_args
+_argparse.ArgumentParser.parse_known_args = _safe_parse_known
+"""
                         with open(dst, 'w', encoding='utf-8') as f:
-                            f.writelines(out_lines)
+                            f.write(header + '\n' + orig)
                         spec = importlib.util.spec_from_file_location(f'inference_img_worker_mod_{worker_id}', dst)
                         mod_local = importlib.util.module_from_spec(spec)
                         spec.loader.exec_module(mod_local)
