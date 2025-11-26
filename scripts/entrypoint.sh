@@ -35,7 +35,30 @@ else
   echo "[entrypoint] Project not cloned yet (first run)"
 fi
 
+# --- Install project requirements if present (non-fatal) ---
+# NOTE: This runs only on container start when project is present; it helps ensure
+# that updated requirements are installed when the project repo changes.
+REQ_FILE="/workspace/project/requirements.txt"
+if [ -f "$REQ_FILE" ]; then
+  echo "[entrypoint] Found project requirements at $REQ_FILE — attempting pip install"
+  # If a virtualenv exists at /opt/venv activate it
+  if [ -d "/opt/venv" ] && [ -f "/opt/venv/bin/activate" ]; then
+    echo "[entrypoint] Activating venv /opt/venv"
+    # shellcheck disable=SC1091
+    source /opt/venv/bin/activate || true
+  fi
+  # Install; tolerate failures but log them
+  if command -v pip >/dev/null 2>&1; then
+    if pip install --no-cache-dir -r "$REQ_FILE"; then
+      echo "[entrypoint] requirements installed successfully"
+    else
+      echo "[entrypoint] WARNING: pip install returned non-zero exit code (continuing)"
+    fi
+  else
+    echo "[entrypoint] WARNING: pip not found in PATH — cannot install requirements"
+  fi
+fi
+
 # Execute the command passed to the container (if not skipped above)
 echo "[entrypoint] Executing: $@"
 exec "$@"
-
