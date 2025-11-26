@@ -1,11 +1,18 @@
 #!/usr/bin/env bash
 # Wrapper to run RIFE (PyTorch) if available in /workspace/project/external/RIFE
 # Note: NOT using set -e to allow fallback methods when inference_video.py fails
-# Usage: run_rife_pytorch.sh <input> <output> <factor>
+# Usage: run_rife_pytorch.sh <input> <output> <factor:int (default 2)>
 
 # Function to print with timestamp
 log() {
     echo "[$(date '+%H:%M:%S')] $*"
+}
+
+# Debug-print wrapper - only prints when VERBOSE is set to 1 (reduces spam and large dumps)
+log_debug() {
+    if [ "${VERBOSE:-0}" = "1" ]; then
+        echo "[$(date '+%H:%M:%S')] $*"
+    fi
 }
 
 INFILE=${1:-}
@@ -40,24 +47,24 @@ has_models() {
 }
 
 # Debug: print contents of possible model locations and env vars to help diagnostics
-log "[debug] STRICT=${STRICT:-<unset>} RIFE_MODEL_URL=${RIFE_MODEL_URL:-<unset>}"
+log_debug "[debug] STRICT=${STRICT:-<unset>} RIFE_MODEL_URL=${RIFE_MODEL_URL:-<unset>}"
 if [ -d "/opt/rife_models" ]; then
-  log "[debug] /opt/rife_models exists, listing:"
-  ls -la /opt/rife_models || true
+  log_debug "[debug] /opt/rife_models exists, listing (top 10):"
+  ls -la /opt/rife_models | head -n 20 || true
 else
-  log "[debug] /opt/rife_models does NOT exist"
+  log_debug "[debug] /opt/rife_models does NOT exist"
 fi
 if [ -d "/opt/rife_models/train_log" ]; then
-  log "[debug] /opt/rife_models/train_log exists, listing:"
-  ls -la /opt/rife_models/train_log || true
+  log_debug "[debug] /opt/rife_models/train_log exists, listing (top 10):"
+  ls -la /opt/rife_models/train_log | head -n 20 || true
 else
-  log "[debug] /opt/rife_models/train_log does NOT exist"
+  log_debug "[debug] /opt/rife_models/train_log does NOT exist"
 fi
 if [ -d "$REPO_DIR/train_log" ]; then
-  log "[debug] $REPO_DIR/train_log contents (before copy):"
-  ls -la "$REPO_DIR/train_log" || true
+  log_debug "[debug] $REPO_DIR/train_log contents (sample):"
+  ls -lh "$REPO_DIR/train_log" | head -n 20 || true
 else
-  log "[debug] $REPO_DIR/train_log does NOT exist (unexpected)"
+  log_debug "[debug] $REPO_DIR/train_log does NOT exist (unexpected)"
 fi
 
 # If models don't exist, copy from preinstalled location
@@ -68,7 +75,7 @@ if ! has_models "$REPO_DIR/train_log"; then
     mkdir -p "$REPO_DIR/train_log"
     cp -r /opt/rife_models/train_log/* "$REPO_DIR/train_log/"
     log "RIFE model copied successfully (sample listing):"
-    ls -lh "$REPO_DIR/train_log" | head -20 || true
+    ls -lh "$REPO_DIR/train_log" | head -n 20 || true
   else
     log "ERROR: Preinstalled RIFE model not found at /opt/rife_models/train_log/"
     log "Image may need to be rebuilt with RIFE_trained_model_v3.6 included"
@@ -228,9 +235,9 @@ if [ -f "$REPO_DIR/inference_img.py" ] || [ -f "/workspace/project/rife_interpol
 
     # Minimized debug: indicate whether inference_img.py exists (suppress large file listings)
     if [ -f "$REPO_DIR/inference_img.py" ]; then
-      log "[debug] inference_img.py found"
+      log_debug "[debug] inference_img.py found"
     else
-      log "[debug] inference_img.py NOT found in $REPO_DIR"
+      log_debug "[debug] inference_img.py NOT found in $REPO_DIR"
     fi
 
     cat > "$TMP_DIR/batch_rife.py" <<'PY'
@@ -382,7 +389,7 @@ sys.exit(0)
 PY
 
     # run batch script
-    PYTHONPATH="$REPO_DIR:$PYTHONPATH" python3 "$TMP_DIR/batch_rife.py" "$TMP_DIR/input" "$TMP_DIR/output" "$FACTOR" >/tmp/batch_rife_run.log 2>&1 || true
+    PYTHONPATH="$REPO_DIR:$PYTHONPATH" PYTHONUNBUFFERED=1 python3 "$TMP_DIR/batch_rife.py" "$TMP_DIR/input" "$TMP_DIR/output" "$FACTOR" 2>&1 | tee "$TMP_DIR/batch_rife_run.log" || true
     # Consider batch successful ONLY if output PNGs were created (count them explicitly)
     PNG_COUNT=$(find "$TMP_DIR/output" -maxdepth 1 -type f -iname '*.png' -print | wc -l 2>/dev/null || true)
     if [ -n "$PNG_COUNT" ] && [ "$PNG_COUNT" -gt 0 ]; then
@@ -428,7 +435,7 @@ PY
             mid_pattern="$TMP_DIR/output/$(printf 'frame_%06d' "$i")_mid"*
             for midf in $mid_pattern; do
               [ -f "$midf" ] || continue
-              dst="$ASMDIR/$(printf 'frame_%06d.png' "$idx")"
+              dst="$ASMDIR/$(printf 'frame_%06d.png' $idx)"
               cp -f "$midf" "$dst" || true
               idx=$((idx+1))
             done
@@ -477,13 +484,13 @@ PY
         log "Output verified: $OUTPUT_VIDEO_PATH (size: $(stat -c%s "$OUTPUT_VIDEO_PATH") bytes)"
         exit 0
       else
-        log "Failed to assemble frames from batch outputs (rc=$ASM_RC). Assembly log follows:";
+        log "Failed to assemble frames from batch outputs (rc=$ASM_RC). Assembly log follows":
         sed -n '1,200p' "$ASM_LOG" 2>/dev/null || true
         log "Will fallback to existing logic"
       fi
     else
       log "Batch-runner produced no output PNGs (count=$PNG_COUNT); printing batch log (up to 50KB) for debugging:"
-      head -c 50000 "/tmp/batch_rife_run.log" || true
+      head -c 50000 "$TMP_DIR/batch_rife_run.log" || true
       log "Listing temp dir contents ($TMP_DIR) for debugging (top 200 entries):"
       find "$TMP_DIR" -maxdepth 3 -printf '%s %p\n' 2>/dev/null | sort -rn | head -n 200 || true
     fi
@@ -528,7 +535,7 @@ PY
         b="$TMP_DIR/input/$(printf 'frame_%06d.png' $((i+1)))"
         out_mid="$TMP_DIR/output/$(printf 'frame_%06d_mid.png' $i)"
         log "RIFE pair #$i: $a $b -> $out_mid"
-        PYTHONPATH="$REPO_DIR:$PYTHONPATH" python3 "$REPO_DIR/inference_img.py" --img "$a" "$b" --ratio 0.5 --model train_log >"$TMP_DIR/rife_pair_$i.log" 2>&1 || true
+        PYTHONPATH="$REPO_DIR:$PYTHONPATH" PYTHONUNBUFFERED=1 python3 "$REPO_DIR/inference_img.py" --img "$a" "$b" --ratio 0.5 --model train_log 2>&1 | tee "$TMP_DIR/rife_pair_$i.log" || true
 
         # Emit the pair log to stdout for remote debugging
         if [ -f "$TMP_DIR/rife_pair_$i.log" ]; then
