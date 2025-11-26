@@ -240,8 +240,15 @@ if [ -f "$REPO_DIR/inference_img.py" ] || [ -f "/workspace/project/rife_interpol
       log_debug "[debug] inference_img.py NOT found in $REPO_DIR"
     fi
 
+    # If available, use stdbuf to force line buffering for Python processes (helps in some container log collectors)
+    if command -v stdbuf >/dev/null 2>&1; then
+      STDOUT_WRAP="stdbuf -oL"
+    else
+      STDOUT_WRAP=""
+    fi
+
     cat > "$TMP_DIR/batch_rife.py" <<'PY'
-import sys, os
+import sys, os, traceback
 
 in_dir = sys.argv[1]
 out_dir = sys.argv[2]
@@ -278,6 +285,7 @@ try:
     model = Model()
 except Exception as e:
     print('Failed to instantiate Model:', e)
+    traceback.print_exc()
     sys.exit(2)
 
 try:
@@ -287,6 +295,7 @@ except Exception:
         model.load_model(model_dir)
     except Exception as e:
         print('Failed to load model from', model_dir, 'error:', e)
+        traceback.print_exc()
         sys.exit(2)
 
 model.eval()
@@ -295,7 +304,8 @@ try:
 except Exception:
     pass
 
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+use_cuda = torch.cuda.is_available()
+device = torch.device('cuda' if use_cuda else 'cpu')
 
 # helper: bisection-style inference for arbitrary ratio (copied logic from inference_img.py)
 def inference_with_ratio(model, img0, img1, ratio, rthreshold=0.02, rmaxcycles=12):
@@ -313,7 +323,8 @@ def inference_with_ratio(model, img0, img1, ratio, rthreshold=0.02, rmaxcycles=1
     tmp_img0 = img0
     tmp_img1 = img1
     for _ in range(rmaxcycles):
-        middle = model.inference(tmp_img0, tmp_img1)
+        with torch.no_grad():
+            middle = model.inference(tmp_img0, tmp_img1)
         middle_ratio = (img0_ratio + img1_ratio) / 2.0
         if (ratio - (rthreshold/2)) <= middle_ratio <= (ratio + (rthreshold/2)):
             return middle
@@ -346,17 +357,22 @@ for i in range(len(imgs)-1):
         im1 = cv2.imread(b_path, cv2.IMREAD_UNCHANGED)
         if im0 is None or im1 is None:
             print('Failed to read input images', a_path, b_path)
+            sys.stdout.flush()
             continue
+
         # convert to torch tensor [1,C,H,W], normalize if uint8
-        t0 = torch.tensor(im0.transpose(2,0,1)).to(device).unsqueeze(0)
-        t1 = torch.tensor(im1.transpose(2,0,1)).to(device).unsqueeze(0)
+        t0 = torch.from_numpy(im0.transpose(2,0,1)).unsqueeze(0)
+        t1 = torch.from_numpy(im1.transpose(2,0,1)).unsqueeze(0)
         if t0.dtype == torch.uint8:
             t0 = t0.float() / 255.0
         if t1.dtype == torch.uint8:
             t1 = t1.float() / 255.0
+        t0 = t0.to(device)
+        t1 = t1.to(device)
 
         if mids_per_pair <= 0:
-            mid = model.inference(t0, t1)
+            with torch.no_grad():
+                mid = model.inference(t0, t1)
             # save as single mid for compatibility
             try:
                 out_np = (mid[0] * 255.0).clamp(0,255).byte().cpu().numpy().transpose(1,2,0)
@@ -364,6 +380,10 @@ for i in range(len(imgs)-1):
                 out_np = mid[0].byte().cpu().numpy().transpose(1,2,0)
             out_path = os.path.join(out_dir, f'frame_%06d_mid.png' % (i+1))
             cv2.imwrite(out_path, out_np)
+            # free memory
+            del mid, out_np
+            if use_cuda:
+                torch.cuda.empty_cache()
             # progress
             print(f"Batch-runner: pair {i+1}/{total_pairs} done (single mid)")
             sys.stdout.flush()
@@ -379,17 +399,28 @@ for i in range(len(imgs)-1):
                     out_np = mid[0].byte().cpu().numpy().transpose(1,2,0)
                 out_path = os.path.join(out_dir, f'frame_%06d_mid_%02d.png' % (i+1, k))
                 cv2.imwrite(out_path, out_np)
+                del mid, out_np
+                if use_cuda:
+                    torch.cuda.empty_cache()
             # progress for multi-mid case
             print(f"Batch-runner: pair {i+1}/{total_pairs} done ({mids_per_pair} mids)")
             sys.stdout.flush()
+
+        # free per-pair tensors
+        del t0, t1, im0, im1
+        if use_cuda:
+            torch.cuda.empty_cache()
+
     except Exception as e:
         print('Exception processing pair', a_path, b_path, '->', e)
+        traceback.print_exc()
+        sys.stdout.flush()
 
 sys.exit(0)
 PY
 
     # run batch script
-    PYTHONPATH="$REPO_DIR:$PYTHONPATH" PYTHONUNBUFFERED=1 python3 "$TMP_DIR/batch_rife.py" "$TMP_DIR/input" "$TMP_DIR/output" "$FACTOR" 2>&1 | tee "$TMP_DIR/batch_rife_run.log" || true
+    PYTHONPATH="$REPO_DIR:$PYTHONPATH" $STDOUT_WRAP PYTHONUNBUFFERED=1 python3 "$TMP_DIR/batch_rife.py" "$TMP_DIR/input" "$TMP_DIR/output" "$FACTOR" 2>&1 | tee "$TMP_DIR/batch_rife_run.log" || true
     # Consider batch successful ONLY if output PNGs were created (count them explicitly)
     PNG_COUNT=$(find "$TMP_DIR/output" -maxdepth 1 -type f -iname '*.png' -print | wc -l 2>/dev/null || true)
     if [ -n "$PNG_COUNT" ] && [ "$PNG_COUNT" -gt 0 ]; then
@@ -453,7 +484,14 @@ PY
           FRAMERATE="$TARGET_FPS"
           log "[debug] assembled_count or num_in missing, using FRAMERATE=$FRAMERATE"
         fi
-        run_ffmpeg_pattern "$CHOSEN_PATTERN"; ASM_RC=$?
+        # ensure FRAMERATE fallback
+        FRAMERATE=${FRAMERATE:-$TARGET_FPS}
+        # Try deterministic filelist-based assembly first (preferred)
+        if try_filelist_assembly "$ASMDIR" "$OUTPUT_VIDEO_PATH" "$FRAMERATE"; then
+          ASM_RC=0
+        else
+          run_ffmpeg_pattern "$CHOSEN_PATTERN"; ASM_RC=$?
+        fi
       fi
       # 2) *_out.png (if previous didn't work)
       if [ $ASM_RC -ne 0 ] && find "$TMP_DIR/output" -maxdepth 1 -type f -iname '*_out.png' -print -quit >/dev/null 2>&1; then
@@ -535,7 +573,7 @@ PY
         b="$TMP_DIR/input/$(printf 'frame_%06d.png' $((i+1)))"
         out_mid="$TMP_DIR/output/$(printf 'frame_%06d_mid.png' $i)"
         log "RIFE pair #$i: $a $b -> $out_mid"
-        PYTHONPATH="$REPO_DIR:$PYTHONPATH" PYTHONUNBUFFERED=1 python3 "$REPO_DIR/inference_img.py" --img "$a" "$b" --ratio 0.5 --model train_log 2>&1 | tee "$TMP_DIR/rife_pair_$i.log" || true
+        PYTHONPATH="$REPO_DIR:$PYTHONPATH" $STDOUT_WRAP PYTHONUNBUFFERED=1 python3 "$REPO_DIR/inference_img.py" --img "$a" "$b" --ratio 0.5 --model train_log 2>&1 | tee "$TMP_DIR/rife_pair_$i.log" || true
 
         # Emit the pair log to stdout for remote debugging
         if [ -f "$TMP_DIR/rife_pair_$i.log" ]; then
@@ -599,9 +637,33 @@ PY
         IN_PATTERN="$TMP_DIR/output/frame_%06d_out.png"
         log "Using frame pattern: frame_%06d_out.png"
         FRAMERATE="$TARGET_FPS"
-        if [ -f "$TMP_DIR/audio.aac" ]; then
-          ffmpeg -hide_banner -loglevel info -progress pipe:1 -nostats -v warning -y -framerate "$FRAMERATE" -i "$IN_PATTERN" -i "$TMP_DIR/audio.aac" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p -c:a aac -shortest "$OUTPUT_VIDEO_PATH"
+        # ensure FRAMERATE is set (avoid empty value causing ffmpeg to fail)
+        FRAMERATE=${FRAMERATE:-$TARGET_FPS}
+        # helper: try assembly using explicit filelist for deterministic ordering
+        try_filelist_assembly() {
+          local src_dir="$1"
+          local out_file="$2"
+          local fr="$3"
+          local flist="$TMP_DIR/filelist.txt"
+          rm -f "$flist" || true
+          # create filelist with explicit ordering
+          (for f in "$src_dir"/*.png; do [ -f "$f" ] || continue; echo "file '$f'"; done) >"$flist"
+          if [ ! -s "$flist" ]; then
+            return 1
+          fi
+          log "Using filelist concat assembly (first lines):"; head -n 20 "$flist" || true
+          if [ -f "$TMP_DIR/audio.aac" ]; then
+            ffmpeg -hide_banner -loglevel info -progress pipe:1 -nostats -y -f concat -safe 0 -i "$flist" -framerate "$fr" -i "$TMP_DIR/audio.aac" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p -c:a aac -shortest "$out_file" >"$ASM_LOG" 2>&1
+          else
+            ffmpeg -hide_banner -loglevel info -progress pipe:1 -nostats -y -f concat -safe 0 -i "$flist" -framerate "$fr" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p "$out_file" >"$ASM_LOG" 2>&1
+          fi
+          return $?
+        }
+        # Try deterministic filelist-based assembly first (preferred)
+        if try_filelist_assembly "$TMP_DIR/output" "$OUTPUT_VIDEO_PATH" "$FRAMERATE"; then
+          log "Assembled video successfully from filelist-based assembly: $OUTPUT_VIDEO_PATH"
         else
+          # fallback to ffmpeg pattern matching
           ffmpeg -hide_banner -loglevel info -progress pipe:1 -nostats -v warning -y -framerate "$FRAMERATE" -i "$IN_PATTERN" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p "$OUTPUT_VIDEO_PATH"
         fi
       elif ls "$TMP_DIR/output"/*_mid.png >/dev/null 2>&1; then
@@ -643,18 +705,66 @@ PY
           FRAMERATE="$TARGET_FPS"
           log "[debug] assembled_count or num_in missing, using FRAMERATE=$FRAMERATE"
         fi
-        if [ -f "$TMP_DIR/audio.aac" ]; then
-          ffmpeg -hide_banner -loglevel info -progress pipe:1 -nostats -v warning -y -framerate "$FRAMERATE" -i "$IN_PATTERN" -i "$TMP_DIR/audio.aac" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p -c:a aac -shortest "$OUTPUT_VIDEO_PATH"
+        # ensure FRAMERATE is set (avoid empty value causing ffmpeg to fail)
+        FRAMERATE=${FRAMERATE:-$TARGET_FPS}
+        # helper: try assembly using explicit filelist for deterministic ordering
+        try_filelist_assembly() {
+          local src_dir="$1"
+          local out_file="$2"
+          local fr="$3"
+          local flist="$TMP_DIR/filelist.txt"
+          rm -f "$flist" || true
+          # create filelist with explicit ordering
+          (for f in "$src_dir"/*.png; do [ -f "$f" ] || continue; echo "file '$f'"; done) >"$flist"
+          if [ ! -s "$flist" ]; then
+            return 1
+          fi
+          log "Using filelist concat assembly (first lines):"; head -n 20 "$flist" || true
+          if [ -f "$TMP_DIR/audio.aac" ]; then
+            ffmpeg -hide_banner -loglevel info -progress pipe:1 -nostats -y -f concat -safe 0 -i "$flist" -framerate "$fr" -i "$TMP_DIR/audio.aac" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p -c:a aac -shortest "$out_file" >"$ASM_LOG" 2>&1
+          else
+            ffmpeg -hide_banner -loglevel info -progress pipe:1 -nostats -y -f concat -safe 0 -i "$flist" -framerate "$fr" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p "$out_file" >"$ASM_LOG" 2>&1
+          fi
+          return $?
+        }
+        # Try deterministic filelist-based assembly first (preferred)
+        if try_filelist_assembly "$TMP_DIR/assembled" "$OUTPUT_VIDEO_PATH" "$FRAMERATE"; then
+          log "Assembled video successfully from filelist-based assembly: $OUTPUT_VIDEO_PATH"
         else
+          # fallback to ffmpeg pattern matching
           ffmpeg -hide_banner -loglevel info -progress pipe:1 -nostats -v warning -y -framerate "$FRAMERATE" -i "$IN_PATTERN" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p "$OUTPUT_VIDEO_PATH"
         fi
       elif ls "$TMP_DIR/output"/frame_*.png >/dev/null 2>&1; then
         IN_PATTERN="$TMP_DIR/output/frame_%06d.png"
         log "Using frame pattern: frame_%06d.png"
         FRAMERATE="$TARGET_FPS"
-        if [ -f "$TMP_DIR/audio.aac" ]; then
-          ffmpeg -hide_banner -loglevel info -progress pipe:1 -nostats -v warning -y -framerate "$FRAMERATE" -i "$IN_PATTERN" -i "$TMP_DIR/audio.aac" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p -c:a aac -shortest "$OUTPUT_VIDEO_PATH"
+        # ensure FRAMERATE is set (avoid empty value causing ffmpeg to fail)
+        FRAMERATE=${FRAMERATE:-$TARGET_FPS}
+        # helper: try assembly using explicit filelist for deterministic ordering
+        try_filelist_assembly() {
+          local src_dir="$1"
+          local out_file="$2"
+          local fr="$3"
+          local flist="$TMP_DIR/filelist.txt"
+          rm -f "$flist" || true
+          # create filelist with explicit ordering
+          (for f in "$src_dir"/*.png; do [ -f "$f" ] || continue; echo "file '$f'"; done) >"$flist"
+          if [ ! -s "$flist" ]; then
+            return 1
+          fi
+          log "Using filelist concat assembly (first lines):"; head -n 20 "$flist" || true
+          if [ -f "$TMP_DIR/audio.aac" ]; then
+            ffmpeg -hide_banner -loglevel info -progress pipe:1 -nostats -y -f concat -safe 0 -i "$flist" -framerate "$fr" -i "$TMP_DIR/audio.aac" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p -c:a aac -shortest "$out_file" >"$ASM_LOG" 2>&1
+          else
+            ffmpeg -hide_banner -loglevel info -progress pipe:1 -nostats -y -f concat -safe 0 -i "$flist" -framerate "$fr" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p "$out_file" >"$ASM_LOG" 2>&1
+          fi
+          return $?
+        }
+        # Try deterministic filelist-based assembly first (preferred)
+        if try_filelist_assembly "$TMP_DIR/output" "$OUTPUT_VIDEO_PATH" "$FRAMERATE"; then
+          log "Assembled video successfully from filelist-based assembly: $OUTPUT_VIDEO_PATH"
         else
+          # fallback to ffmpeg pattern matching
           ffmpeg -hide_banner -loglevel info -progress pipe:1 -nostats -v warning -y -framerate "$FRAMERATE" -i "$IN_PATTERN" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p "$OUTPUT_VIDEO_PATH"
         fi
       else

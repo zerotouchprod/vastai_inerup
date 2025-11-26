@@ -122,7 +122,7 @@ vast:
   gpu_blacklist: []
   gpu_required: false        # false = модели в whitelist будут предпочтением; true = только эти модели
   gpu_priority: true         # true = использовать whitelist как фактор сортировки (кроме строгого требования)
-  min_vram: 12
+  min_vram: 24
   # Цена
   min_price: 0.05
   max_price: 0.1
