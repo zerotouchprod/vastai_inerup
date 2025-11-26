@@ -237,6 +237,7 @@ if [ -f "$REPO_DIR/inference_img.py" ] || [ -f "/workspace/project/rife_interpol
 
     cat > "$TMP_DIR/batch_rife.py" <<'PY'
 import sys, os
+import math
 
 in_dir = sys.argv[1]
 out_dir = sys.argv[2]
@@ -247,7 +248,6 @@ model_dir = os.path.join(repo, 'train_log')
 # Try importing a model class from common locations
 Model = None
 try:
-    # preferred: trained model wrapper in train_log
     from train_log.RIFE_HDv3 import Model as _Model
     Model = _Model
 except Exception:
@@ -265,7 +265,6 @@ if Model is None:
     print('No compatible RIFE Model class found (tried train_log.RIFE_HDv3, model.RIFE, train_log.RIFE_HD)')
     sys.exit(2)
 
-# load torch and cv2
 import torch
 import cv2
 import numpy as np
@@ -277,21 +276,16 @@ except Exception as e:
     print('Failed to instantiate Model:', e)
     sys.exit(2)
 
-# try load_model with common signatures
-loaded = False
 try:
     model.load_model(model_dir, -1)
-    loaded = True
 except Exception:
     try:
         model.load_model(model_dir)
-        loaded = True
     except Exception as e:
         print('Failed to load model from', model_dir, 'error:', e)
         sys.exit(2)
 
 model.eval()
-# call device() method if available (some wrappers expose it)
 try:
     model.device()
 except Exception:
@@ -299,10 +293,42 @@ except Exception:
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-# Process pairs
+# helper: bisection-style inference for arbitrary ratio (copied logic from inference_img.py)
+def inference_with_ratio(model, img0, img1, ratio, rthreshold=0.02, rmaxcycles=12):
+    # img0/img1 are torch tensors on device, shape [1,C,H,W]
+    if ratio <= 0.0:
+        return img0
+    if ratio >= 1.0:
+        return img1
+    img0_ratio = 0.0
+    img1_ratio = 1.0
+    if ratio <= img0_ratio + rthreshold/2:
+        return img0
+    if ratio >= img1_ratio - rthreshold/2:
+        return img1
+    tmp_img0 = img0
+    tmp_img1 = img1
+    for _ in range(rmaxcycles):
+        middle = model.inference(tmp_img0, tmp_img1)
+        middle_ratio = (img0_ratio + img1_ratio) / 2.0
+        if (ratio - (rthreshold/2)) <= middle_ratio <= (ratio + (rthreshold/2)):
+            return middle
+        if ratio > middle_ratio:
+            tmp_img0 = middle
+            img0_ratio = middle_ratio
+        else:
+            tmp_img1 = middle
+            img1_ratio = middle_ratio
+    # fallback: return last middle
+    return middle
+
+# Process pairs and optionally produce multiple mids per pair
 imgs = sorted([p for p in os.listdir(in_dir) if p.lower().endswith('.png')])
 if not os.path.exists(out_dir):
     os.makedirs(out_dir, exist_ok=True)
+
+# Determine number of mids per pair
+mids_per_pair = max(0, int(round(factor)) - 1)
 
 for i in range(len(imgs)-1):
     a_path = os.path.join(in_dir, imgs[i])
@@ -316,29 +342,32 @@ for i in range(len(imgs)-1):
         # convert to torch tensor [1,C,H,W], normalize if uint8
         t0 = torch.tensor(im0.transpose(2,0,1)).to(device).unsqueeze(0)
         t1 = torch.tensor(im1.transpose(2,0,1)).to(device).unsqueeze(0)
-        # if uint8 range -> normalize to 0..1
         if t0.dtype == torch.uint8:
             t0 = t0.float() / 255.0
         if t1.dtype == torch.uint8:
             t1 = t1.float() / 255.0
-        # call model.inference (signature: (img0, img1) -> mid tensor)
-        try:
+
+        if mids_per_pair <= 0:
             mid = model.inference(t0, t1)
-        except Exception as e:
-            # try alternative signature
+            # save as single mid for compatibility
             try:
-                mid = model.inference(t0, t1, [1])
-            except Exception as e2:
-                print('Model inference failed for pair', a_path, b_path, 'errors:', e, e2)
-                continue
-        # mid -> save
-        try:
-            out_np = (mid[0] * 255.0).clamp(0,255).byte().cpu().numpy().transpose(1,2,0)
-        except Exception:
-            # maybe already uint8
-            out_np = mid[0].byte().cpu().numpy().transpose(1,2,0)
-        out_path = os.path.join(out_dir, f'frame_%06d_mid.png' % (i+1))
-        cv2.imwrite(out_path, out_np)
+                out_np = (mid[0] * 255.0).clamp(0,255).byte().cpu().numpy().transpose(1,2,0)
+            except Exception:
+                out_np = mid[0].byte().cpu().numpy().transpose(1,2,0)
+            out_path = os.path.join(out_dir, f'frame_%06d_mid.png' % (i+1))
+            cv2.imwrite(out_path, out_np)
+        else:
+            # generate mids at ratios k/(mids_per_pair+1)
+            for k in range(1, mids_per_pair+1):
+                ratio = float(k) / float(mids_per_pair + 1)
+                mid = inference_with_ratio(model, t0, t1, ratio)
+                # save with index
+                try:
+                    out_np = (mid[0] * 255.0).clamp(0,255).byte().cpu().numpy().transpose(1,2,0)
+                except Exception:
+                    out_np = mid[0].byte().cpu().numpy().transpose(1,2,0)
+                out_path = os.path.join(out_dir, f'frame_%06d_mid_%02d.png' % (i+1, k))
+                cv2.imwrite(out_path, out_np)
     except Exception as e:
         print('Exception processing pair', a_path, b_path, '->', e)
 
@@ -373,7 +402,49 @@ PY
 
       # 1) *_mid.png
       if find "$TMP_DIR/output" -maxdepth 1 -type f -iname '*_mid.png' -print -quit >/dev/null 2>&1; then
-        CHOSEN_PATTERN="$TMP_DIR/output/frame_%06d_mid.png"
+        # Build interleaved sequence: input frame1, mid1, input frame2, mid2, ...
+        ASMDIR="$TMP_DIR/assembled"
+        rm -rf "$ASMDIR" || true
+        mkdir -p "$ASMDIR" || true
+        NUM_IN=$(ls -1 "$TMP_DIR/input"/*.png 2>/dev/null | wc -l || true)
+        idx=1
+        if [ "$NUM_IN" -gt 0 ]; then
+          i=1
+          while [ $i -le $NUM_IN ]; do
+            src_in="$TMP_DIR/input/$(printf 'frame_%06d.png' $i)"
+            if [ -f "$src_in" ]; then
+              dst="$ASMDIR/$(printf 'frame_%06d.png' $idx)"
+              cp -f "$src_in" "$dst" || true
+              idx=$((idx+1))
+            fi
+            midf="$TMP_DIR/output/$(printf 'frame_%06d_mid.png' $i)"
+            if [ -f "$midf" ]; then
+              dst="$ASMDIR/$(printf 'frame_%06d.png' $idx)"
+              cp -f "$midf" "$dst" || true
+              idx=$((idx+1))
+            fi
+            i=$((i+1))
+          done
+        fi
+        CHOSEN_PATTERN="$ASMDIR/frame_%06d.png"
+        # Compute assembled framerate to preserve duration: frames_per_input = assembled_count / NUM_IN
+        ASSEMBLED_COUNT=$(ls -1 "$ASMDIR"/*.png 2>/dev/null | wc -l || true)
+        # Compute expected assembled count approx: NUM_IN * FACTOR (close to N + (N-1)*(factor-1))
+        if [ -n "$NUM_IN" ] && [ "$NUM_IN" -gt 0 ] && [ -n "$ASSEMBLED_COUNT" ] && [ "$ASSEMBLED_COUNT" -gt 0 ]; then
+          EXPECTED_APPROX=$(awk -v N="$NUM_IN" -v F="$FACTOR" 'BEGIN{printf("%.0f", N*F)}')
+          TOL=2
+          LOW=$((EXPECTED_APPROX - TOL))
+          HIGH=$((EXPECTED_APPROX + TOL))
+          if [ "$ASSEMBLED_COUNT" -ge "$LOW" ] && [ "$ASSEMBLED_COUNT" -le "$HIGH" ]; then
+            # matches expected count for requested factor -> use target fps
+            FRAMERATE="$TARGET_FPS"
+          else
+            # otherwise compute framerate that preserves original duration
+            FRAMERATE=$(awk "BEGIN{printf '%.6f', $ORIG_FPS * ($ASSEMBLED_COUNT / $NUM_IN)}")
+          fi
+        else
+          FRAMERATE="$TARGET_FPS"
+        fi
         run_ffmpeg_pattern "$CHOSEN_PATTERN"; ASM_RC=$?
       fi
       # 2) *_out.png (if previous didn't work)
@@ -526,9 +597,48 @@ PY
           ffmpeg -v warning -y -framerate "$FRAMERATE" -i "$IN_PATTERN" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p "$OUTPUT_VIDEO_PATH"
         fi
       elif ls "$TMP_DIR/output"/*_mid.png >/dev/null 2>&1; then
-        IN_PATTERN="$TMP_DIR/output/frame_%06d_mid.png"
-        log "Using frame pattern: frame_%06d_mid.png"
-        FRAMERATE="$TARGET_FPS"
+        # If mid files exist, assemble interleaved sequence first
+        ASMDIR="$TMP_DIR/assembled"
+        rm -rf "$ASMDIR" || true
+        mkdir -p "$ASMDIR" || true
+        NUM_IN=$(ls -1 "$TMP_DIR/input"/*.png 2>/dev/null | wc -l || true)
+        idx=1
+        if [ "$NUM_IN" -gt 0 ]; then
+          i=1
+          while [ $i -le $NUM_IN ]; do
+            src_in="$TMP_DIR/input/$(printf 'frame_%06d.png' $i)"
+            if [ -f "$src_in" ]; then
+              dst="$ASMDIR/$(printf 'frame_%06d.png' $idx)"
+              cp -f "$src_in" "$dst" || true
+              idx=$((idx+1))
+            fi
+            midf="$TMP_DIR/output/$(printf 'frame_%06d_mid.png' $i)"
+            if [ -f "$midf" ]; then
+              dst="$ASMDIR/$(printf 'frame_%06d.png' $idx)"
+              cp -f "$midf" "$dst" || true
+              idx=$((idx+1))
+            fi
+            i=$((i+1))
+          done
+        fi
+        IN_PATTERN="$ASMDIR/frame_%06d.png"
+        log "Using assembled interleaved pattern: frame_%06d.png"
+        # Compute assembled framerate to preserve duration: frames_per_input = assembled_count / NUM_IN
+        ASSEMBLED_COUNT=$(ls -1 "$ASMDIR"/*.png 2>/dev/null | wc -l || true)
+        # Compute expected assembled count approx: NUM_IN * FACTOR (close to N + (N-1)*(factor-1))
+        if [ -n "$NUM_IN" ] && [ "$NUM_IN" -gt 0 ] && [ -n "$ASSEMBLED_COUNT" ] && [ "$ASSEMBLED_COUNT" -gt 0 ]; then
+          EXPECTED_APPROX=$(awk -v N="$NUM_IN" -v F="$FACTOR" 'BEGIN{printf("%.0f", N*F)}')
+          TOL=2
+          LOW=$((EXPECTED_APPROX - TOL))
+          HIGH=$((EXPECTED_APPROX + TOL))
+          if [ "$ASSEMBLED_COUNT" -ge "$LOW" ] && [ "$ASSEMBLED_COUNT" -le "$HIGH" ]; then
+            FRAMERATE="$TARGET_FPS"
+          else
+            FRAMERATE=$(awk "BEGIN{printf '%.6f', $ORIG_FPS * ($ASSEMBLED_COUNT / $NUM_IN)}")
+          fi
+        else
+          FRAMERATE="$TARGET_FPS"
+        fi
         if [ -f "$TMP_DIR/audio.aac" ]; then
           ffmpeg -v warning -y -framerate "$FRAMERATE" -i "$IN_PATTERN" -i "$TMP_DIR/audio.aac" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p -c:a aac -shortest "$OUTPUT_VIDEO_PATH"
         else
