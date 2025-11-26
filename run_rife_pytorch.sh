@@ -57,6 +57,7 @@ ffmpeg -version | head -n 3 || true
 
 # Compute pad sizes (next multiple of 32) using ffprobe to avoid ffmpeg expression parsing issues
 WH=$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0:s=x "$INFILE" 2>/dev/null || true)
+ROT=$(ffprobe -v error -select_streams v:0 -show_entries stream_tags=rotate -of default=nw=1:nk=1 "$INFILE" 2>/dev/null || true)
 if [ -z "$WH" ]; then
   log "WARNING: failed to read input width/height, falling back to no-pad extraction"
   PAD_W=""
@@ -64,9 +65,26 @@ if [ -z "$WH" ]; then
 else
   WIDTH=$(echo "$WH" | cut -d'x' -f1)
   HEIGHT=$(echo "$WH" | cut -d'x' -f2)
+  # If rotation is 90 or 270, swap width/height for display-oriented pad
+  ROT_N=$(echo "${ROT:-}" | tr -d '\r\n')
+  if [ -n "$ROT_N" ]; then
+    case "$ROT_N" in
+      90|270|-90|-270)
+        log "Detected rotation=$ROT_N; swapping width/height for pad calculation"
+        tmp="$WIDTH"; WIDTH="$HEIGHT"; HEIGHT="$tmp"
+        ;;
+    esac
+  fi
   PAD_W=$(( ( (WIDTH + 31) / 32 ) * 32 ))
   PAD_H=$(( ( (HEIGHT + 31) / 32 ) * 32 ))
-  log "input_w=$WIDTH input_h=$HEIGHT pad_w=$PAD_W pad_h=$PAD_H"
+  # ensure pad is not smaller than input (safety check for odd probe results)
+  if [ "$PAD_W" -lt "$WIDTH" ] || [ "$PAD_H" -lt "$HEIGHT" ]; then
+    log "Computed pad (w=$PAD_W,h=$PAD_H) is smaller than input (w=$WIDTH,h=$HEIGHT); disabling pad"
+    PAD_W=""
+    PAD_H=""
+  else
+    log "input_w=$WIDTH input_h=$HEIGHT pad_w=$PAD_W pad_h=$PAD_H"
+  fi
 fi
 
 # Try a simple PNG extraction first (no progress pipe). Save full log for debugging.
