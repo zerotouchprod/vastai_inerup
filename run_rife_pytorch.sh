@@ -177,29 +177,6 @@ if [ -f "$REPO_DIR/inference_img.py" ] || [ -f "/workspace/project/rife_interpol
     exit 4
   fi
 
-  # Try persistent/batch runner to avoid reloading model for each pair
-  PERSIST_SCRIPT="/workspace/project/scripts/rife_persistent.py"
-  if [ -f "$PERSIST_SCRIPT" ]; then
-    log "Attempting persistent RIFE runner: $PERSIST_SCRIPT"
-    python3 "$PERSIST_SCRIPT" --repo-dir "$REPO_DIR" --input "$TMP_DIR/input" --output "$TMP_DIR/output" --factor "$FACTOR" 2>&1 | tee -a "$TMP_DIR/rife.log"
-    PERR=$?
-    if [ $PERR -eq 0 ]; then
-      log "Persistent runner completed successfully — skipping per-pair fallback"
-      # skip per-pair fallback by setting RC=0 and jumping to reassembly
-      RC=0
-      # jump by setting a flag
-      PERSISTED=1
-    elif [ $PERR -eq 2 ]; then
-      log "Persistent runner not supported for this RIFE fork (exit 2) — falling back to per-pair calls"
-      PERSISTED=0
-    else
-      log "Persistent runner failed with exit code $PERR — will fallback to per-pair method"
-      PERSISTED=0
-    fi
-  else
-    PERSISTED=0
-  fi
-
   # Count frames
   FRAME_COUNT=$(ls -1 "$TMP_DIR/input"/*.png 2>/dev/null | wc -l)
   log "Extracted $FRAME_COUNT frames"
@@ -278,13 +255,10 @@ if [ -f "$REPO_DIR/inference_img.py" ] || [ -f "/workspace/project/rife_interpol
   # Attempt to run known RIFE entrypoints in order of preference. These are best-effort
   # invocations because different RIFE forks may expose different CLI arguments.
   RC=2
-  if [ "$PERSISTED" = "1" ]; then
-    log "Persistent mode already processed frames — skipping per-pair inference steps"
-    RC=0
-  elif [ -f "/workspace/project/rife_interpolate_direct.py" ]; then
-     log "Found /workspace/project/rife_interpolate_direct.py — attempting direct interpolation"
-     python3 "/workspace/project/rife_interpolate_direct.py" "$TMP_DIR/input" "$TMP_DIR/output" "$FACTOR" 2>&1 | tee "$TMP_DIR/rife.log"
-     RC=${PIPESTATUS[0]:-0}
+  if [ -f "/workspace/project/rife_interpolate_direct.py" ]; then
+    log "Found /workspace/project/rife_interpolate_direct.py — attempting direct interpolation"
+    python3 "/workspace/project/rife_interpolate_direct.py" "$TMP_DIR/input" "$TMP_DIR/output" "$FACTOR" 2>&1 | tee "$TMP_DIR/rife.log"
+    RC=${PIPESTATUS[0]:-0}
   elif [ -f "$REPO_DIR/inference_img.py" ]; then
     log "Found $REPO_DIR/inference_img.py — attempting frame-by-frame inference"
     # inference_img.py expects two image paths: --img <imgA> <imgB>
@@ -404,17 +378,9 @@ if [ -f "$REPO_DIR/inference_img.py" ] || [ -f "/workspace/project/rife_interpol
   fi
 
   if [ $RC -ne 0 ]; then
-    log "ERROR: RIFE interpolation step failed (exit code: $RC)."
-    # If a rife.log exists in the temp dir, print a helpful tail for debugging
-    if [ -n "${TMP_DIR:-}" ] && [ -f "$TMP_DIR/rife.log" ]; then
-      log "----- BEGIN RIFE LOG ($TMP_DIR/rife.log) (last 500 lines) -----"
-      tail -n 500 "$TMP_DIR/rife.log" || true
-      log "-----  END RIFE LOG -----"
-    else
-      log "No $TMP_DIR/rife.log file found to display"
-    fi
-    # Cleanup (respect KEEP_TMP for debugging)
-    [ "${KEEP_TMP:-0}" = "1" ] || rm -rf "$TMP_DIR"
+    log "ERROR: RIFE interpolation step failed (exit code: $RC). See $TMP_DIR/rife.log for details."
+    # Cleanup and exit with non-zero so callers can fall back to CPU methods
+    rm -rf "$TMP_DIR"
     exit $RC
   fi
 
