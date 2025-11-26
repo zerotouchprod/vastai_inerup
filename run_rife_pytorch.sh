@@ -53,9 +53,27 @@ log "orig_fps=$ORIG_FPS target_fps=$TARGET_FPS"
 
 # extract frames padded to 32
 log "Extracting frames to $TMP_DIR/input"
-ffmpeg -hide_banner -loglevel info -progress pipe:1 -nostats -i "$INFILE" -map 0:v:0 -vsync 0 -start_number 1 \
+ffmpeg -version | head -n 3 || true
+
+# Try a simple PNG extraction first (no progress pipe). Save full log for debugging.
+ffmpeg -y -hide_banner -loglevel info -i "$INFILE" -map 0:v:0 -vsync 0 -start_number 1 \
   -vf "pad=if(mod(iw\,32),iw+(32-mod(iw\,32)),iw):if(mod(ih\,32),ih+(32-mod(ih\,32)),ih)" \
-  -pix_fmt rgb24 -f image2 -vcodec png "$TMP_DIR/input/frame_%06d.png" 2>&1 | progress_collapse | tee "$TMP_DIR/ff_extract.log"
+  -f image2 -vcodec png "$TMP_DIR/input/frame_%06d.png" >"$TMP_DIR/ff_extract.log" 2>&1 || true
+RC=${PIPESTATUS[0]:-1}
+log "png extract rc=$RC; tail ff_extract.log (head 40):"
+sed -n '1,40p' "$TMP_DIR/ff_extract.log" 2>/dev/null || true
+
+# Diagnostic listing
+log "Post-extract listing of $TMP_DIR/input (first 200 entries):"
+ls -la "$TMP_DIR/input" | head -n 200 || true
+FIRST_IMG=$(find "$TMP_DIR/input" -type f \( -iname '*.png' -o -iname '*.jpg' \) -print | head -n1 || true)
+if [ -n "$FIRST_IMG" ]; then
+  log "First frame: $FIRST_IMG"
+  command -v file >/dev/null 2>&1 && file "$FIRST_IMG" || true
+  command -v hexdump >/dev/null 2>&1 && hexdump -C -n 128 "$FIRST_IMG" | sed -n '1,20p' || true
+else
+  log "No image files found in $TMP_DIR/input"
+fi
 
 # wait for frames
 for i in 1 2 3 4 5; do
@@ -68,9 +86,29 @@ done
 COUNT=$(ls -1 "$TMP_DIR/input"/*.png 2>/dev/null | wc -l || true)
 log "extracted_frames=$COUNT"
 if [ "$COUNT" -eq 0 ]; then
-  log "No frames found; aborting"
-  tail -n 200 "$TMP_DIR/ff_extract.log" 2>/dev/null || true
-  exit 4
+  log "No frames found from PNG extraction; attempting single-frame extraction test"
+  ffmpeg -hide_banner -loglevel info -i "$INFILE" -frames:v 1 -f image2 -vcodec png "$TMP_DIR/input/frame_test_000001.png" 2>&1 | progress_collapse | tee "$TMP_DIR/ff_test_extract.log"
+  RC2=${PIPESTATUS[0]:-1}
+  log "single-frame extract rc=$RC2"
+  if [ -f "$TMP_DIR/input/frame_test_000001.png" ]; then
+    log "Single test frame created; showing head:"; if command -v hexdump >/dev/null 2>&1; then hexdump -C -n 128 "$TMP_DIR/input/frame_test_000001.png" | sed -n '1,20p' || true; fi
+  else
+    log "Single-frame test did NOT create a PNG (rc=$RC2); tail of test log:"; tail -n 200 "$TMP_DIR/ff_test_extract.log" 2>/dev/null || true
+  fi
+
+  log "Attempting JPEG re-extraction (mjpeg) to avoid PNG decoder issues"
+  rm -f "$TMP_DIR/input"/* || true
+  ffmpeg -hide_banner -loglevel info -progress pipe:1 -nostats -i "$INFILE" -map 0:v:0 -vsync 0 -start_number 1 -vf "pad=if(mod(iw\,32),iw+(32-mod(iw\,32)),iw):if(mod(ih\,32),ih+(32-mod(ih\,32)),ih)" -pix_fmt yuvj420p -f image2 -vcodec mjpeg "$TMP_DIR/input/frame_%06d.jpg" 2>&1 | progress_collapse | tee "$TMP_DIR/ff_extract_jpg.log"
+  RC3=${PIPESTATUS[0]:-1}
+  log "jpeg extract rc=$RC3; tail of jpeg extract log:"; tail -n 200 "$TMP_DIR/ff_extract_jpg.log" 2>/dev/null || true
+  COUNT=$(ls -1 "$TMP_DIR/input"/*.jpg 2>/dev/null | wc -l || true)
+  log "jpeg_extracted_frames=$COUNT"
+  if [ "$COUNT" -eq 0 ]; then
+    log "JPEG re-extraction also produced zero files; aborting"
+    tail -n 400 "$TMP_DIR/ff_extract.log" 2>/dev/null || true
+    tail -n 400 "$TMP_DIR/ff_extract_jpg.log" 2>/dev/null || true
+    exit 4
+  fi
 fi
 
 # extract audio (optional)
