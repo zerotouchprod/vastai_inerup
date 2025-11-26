@@ -440,12 +440,37 @@ for i in range(len(imgs)-1):
             t0 = t0.float() / 255.0
         if t1.dtype == torch.uint8:
             t1 = t1.float() / 255.0
+        # Pad to multiples of 32 (same padding as inference_img.py) to avoid mismatched tensor sizes inside the model
+        try:
+            from torch.nn import functional as F
+        except Exception:
+            import torch.nn.functional as F
+        n,c,h,w = t0.shape
+        ph = ((h - 1) // 32 + 1) * 32
+        pw = ((w - 1) // 32 + 1) * 32
+        pad = (0, pw - w, 0, ph - h)
+        if pad[1] != 0 or pad[3] != 0:
+            t0 = F.pad(t0, pad)
+            t1 = F.pad(t1, pad)
         t0 = t0.to(device)
         t1 = t1.to(device)
+        # debug: print shapes so remote logs can capture them
+        print(f"DEBUG: input shapes after pad t0={tuple(t0.shape)} t1={tuple(t1.shape)} mids_per_pair={mids_per_pair}")
+        sys.stdout.flush()
 
         if mids_per_pair <= 0:
-            with torch.no_grad():
-                mid = model.inference(t0, t1)
+            try:
+                with torch.no_grad():
+                    mid = model.inference(t0, t1)
+            except Exception:
+                print('ERROR: inference call failed; tensor shapes:')
+                try:
+                    print(f"t0.shape={tuple(t0.shape)} t1.shape={tuple(t1.shape)}")
+                except Exception:
+                    pass
+                traceback.print_exc()
+                sys.stdout.flush()
+                raise
             # save as single mid for compatibility
             try:
                 out_np = (mid[0] * 255.0).clamp(0,255).byte().cpu().numpy().transpose(1,2,0)
