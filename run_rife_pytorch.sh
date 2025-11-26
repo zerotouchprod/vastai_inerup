@@ -201,3 +201,4 @@ if [ -f "$REPO_DIR/inference_img.py" ] || [ -f "/workspace/project/rife_interpol
   log "Testing interpolation methods..."
   echo ""
 
+fi

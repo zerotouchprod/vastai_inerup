@@ -351,4 +351,4 @@ if [ -f "$REPO_DIR/inference_realesrgan_video.py" ]; then
     exit 4
   fi
 
-
+fi
