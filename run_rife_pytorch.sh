@@ -211,82 +211,9 @@ if [ -f "$REPO_DIR/inference_img.py" ] || [ -f "/workspace/project/rife_interpol
     RC=${PIPESTATUS[0]:-0}
   elif [ -f "$REPO_DIR/inference_img.py" ]; then
     log "Found $REPO_DIR/inference_img.py — attempting frame-by-frame inference"
-    # inference_img.py expects two image paths: --img <imgA> <imgB>
-    # We'll call it for each consecutive frame pair and run it from the output directory
-    log "Running inference_img.py on each adjacent frame pair (this may take some time)"
-    mkdir -p "$TMP_DIR/output"
-    # collect sorted frames
-    mapfile -t FRAMES < <(ls -1 "$TMP_DIR/input"/*.png 2>/dev/null | sort)
-    if [ ${#FRAMES[@]} -lt 2 ]; then
-      log "ERROR: Not enough frames for frame-pair inference (${#FRAMES[@]} found)"
-      RC=5
-    else
-      RC=0
-      # start output sequence counter
-      OUT_SEQ=1
-      # ensure output dir empty for predictable diffs
-      rm -f "$TMP_DIR/output"/*.png >/dev/null 2>&1 || true
-      for idx in "${!FRAMES[@]}"; do
-        if [ "$idx" -ge $((${#FRAMES[@]} - 1)) ]; then
-          break
-        fi
-        A=${FRAMES[$idx]}
-        B=${FRAMES[$((idx+1))]}
-        log "Processing pair: $(basename "$A") + $(basename "$B")"
-
-        # Basic sanity checks: files exist and non-empty
-        if [ ! -f "$A" ] || [ ! -s "$A" ]; then
-          log "ERROR: Frame missing or empty: $A"
-          RC=6
-          break
-        fi
-        if [ ! -f "$B" ] || [ ! -s "$B" ]; then
-          log "ERROR: Frame missing or empty: $B"
-          RC=6
-          break
-        fi
-
-        # Snapshot existing outputs (may be empty)
-        pre_list=$(ls -1 "$TMP_DIR/output"/*.png 2>/dev/null || true)
-
-        # Run inference_img.py from the output dir so outputs are written there
-        (cd "$TMP_DIR/output" && python3 -u "$REPO_DIR/inference_img.py" --img "$A" "$B" --exp 1 --ratio "$FACTOR" 2>&1) | tee -a "$TMP_DIR/rife.log"
-        RC_CUR=${PIPESTATUS[0]:-0}
-        if [ $RC_CUR -ne 0 ]; then
-          log "ERROR: inference_img.py failed for pair $(basename "$A")/$(basename "$B") (exit $RC_CUR)"
-          RC=$RC_CUR
-          break
-        fi
-
-        # Find newly created files
-        post_list=$(ls -1 "$TMP_DIR/output"/*.png 2>/dev/null || true)
-        # compute difference: lines present in post_list but not in pre_list
-        new_files=""
-        if [ -n "$post_list" ]; then
-          for f in $post_list; do
-            case " $pre_list " in
-              *" $f "*) ;;
-              *) new_files="$new_files $f";;
-            esac
-          done
-        fi
-
-        if [ -z "$new_files" ]; then
-          # Some forks may write to stdout or different locations — treat as error
-          log "ERROR: inference_img.py did not produce any new output files for pair $(basename "$A")/$(basename "$B")"
-          RC=7
-          break
-        fi
-
-        # Move/rename each new file into sequential frame_%06d_out.png names
-        for nf in $new_files; do
-          target="$TMP_DIR/output/frame_$(printf "%06d" $OUT_SEQ)_out.png"
-          mv "$nf" "$target" 2>/dev/null || cp "$nf" "$target" 2>/dev/null || true
-          log "Saved interpolated frame: $(basename "$target")"
-          OUT_SEQ=$((OUT_SEQ + 1))
-        done
-      done
-    fi
+    # inference_img.py expects: --img <input_dir> <output_dir> and optionally --exp and --ratio
+    (cd "$REPO_DIR" && python3 -u inference_img.py --img "$TMP_DIR/input" "$TMP_DIR/output" --exp 1 --ratio "$FACTOR" 2>&1) | tee "$TMP_DIR/rife.log"
+    RC=${PIPESTATUS[0]:-0}
   elif [ -f "$REPO_DIR/inference_video.py" ]; then
     log "Found $REPO_DIR/inference_video.py — attempting video inference (may require scikit-video)"
     (cd "$REPO_DIR" && python3 -u inference_video.py -i "$INPUT_VIDEO_PATH" -o "$OUTPUT_VIDEO_PATH" -f "$FACTOR" 2>&1) | tee "$TMP_DIR/rife.log"
