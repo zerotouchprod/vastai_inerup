@@ -643,14 +643,63 @@ def run_pipeline(input_path: str, output_dir: str, config: dict) -> str:
 
     # Find output file
     import glob
+    # First try top-level .mp4 files
     output_files = glob.glob(f"{output_dir}/*.mp4")
 
+    # If nothing found, try recursive search and other common video extensions
     if not output_files:
-        print(f"ERROR: No output .mp4 found in {output_dir}")
-        sys.exit(2)
+        print(f"WARNING: No top-level .mp4 found in {output_dir}. Attempting recursive search and alternate extensions...")
+        # recursive search for .mp4 (case-insensitive)
+        recursive_mp4 = glob.glob(f"{output_dir}/**/*.mp4", recursive=True)
+        recursive_MP4 = glob.glob(f"{output_dir}/**/*.MP4", recursive=True)
+        candidates = recursive_mp4 + recursive_MP4
 
-    output_file = output_files[0]
-    print(f"✓ Found output: {output_file}")
+        # Try common other extensions
+        for ext in ['mkv','mov','avi','webm','mpeg','mpg']:
+            candidates += glob.glob(f"{output_dir}/**/*.{ext}", recursive=True)
+            candidates += glob.glob(f"{output_dir}/**/*.{ext.upper()}", recursive=True)
+
+        # Deduplicate while preserving order
+        seen = set()
+        candidates_uniq = []
+        for c in candidates:
+            if c not in seen:
+                seen.add(c)
+                candidates_uniq.append(c)
+
+        if candidates_uniq:
+            # Prefer largest file (likely the rendered video)
+            candidates_uniq.sort(key=lambda p: (os.path.getsize(p) if os.path.exists(p) else 0), reverse=True)
+            output_file = candidates_uniq[0]
+            print(f"Found candidate output file by recursive search: {output_file}")
+            print("Listing top-level output directory (ls -la):")
+            try:
+                subprocess.run(['ls', '-la', output_dir], check=False)
+            except Exception:
+                pass
+            print("Listing recursive tree (find):")
+            try:
+                subprocess.run(['find', output_dir, '-maxdepth', '3', '-type', 'f', '-ls'], check=False)
+            except Exception:
+                pass
+            print(f"Using {output_file} as the output file for upload")
+        else:
+            # No candidates found - print diagnostics and fail
+            print(f"ERROR: No output .mp4 found in {output_dir}")
+            print("Diagnostic: top-level listing:")
+            try:
+                subprocess.run(['ls', '-la', output_dir], check=False)
+            except Exception:
+                pass
+            print("Diagnostic: recursive listing (up to depth 3):")
+            try:
+                subprocess.run(['find', output_dir, '-maxdepth', '3', '-type', 'f', '-ls'], check=False)
+            except Exception:
+                pass
+            sys.exit(2)
+    else:
+        output_file = output_files[0]
+        print(f"✓ Found output: {output_file}")
 
     return output_file
 
