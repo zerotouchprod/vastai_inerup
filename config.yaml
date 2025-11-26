@@ -122,7 +122,7 @@ vast:
   gpu_blacklist: []
   gpu_required: false        # false = модели в whitelist будут предпочтением; true = только эти модели
   gpu_priority: true         # true = использовать whitelist как фактор сортировки (кроме строгого требования)
-  min_vram: 24
+  min_vram: 12
   # Цена
   min_price: 0.05
   max_price: 0.1
@@ -161,6 +161,7 @@ vast:
     - 160473 #2cpu
   # Blacklist of host IDs to ignore when searching offers (vasts.host_blacklist)
   host_blacklist:
+    - 34742 #$0.23/hr
     - 124072 #$0.198/hr
     - 155386
     - 319870

@@ -35,7 +35,86 @@ else
   echo "[entrypoint] Project not cloned yet (first run)"
 fi
 
+# --- New: fetch remote config_url (if present in config.yaml) on every start ---
+# This ensures a remote config specified by 'config_url' is downloaded and applied
+CONFIG_PATH="/workspace/project/config.yaml"
+if [ -f "$CONFIG_PATH" ]; then
+  echo "[entrypoint] Checking for remote config_url in $CONFIG_PATH"
+  REMOTE_URL=$(python3 - <<'PY' 2>/dev/null
+import yaml,sys
+p='/workspace/project/config.yaml'
+try:
+    cfg=yaml.safe_load(open(p))
+    if isinstance(cfg,dict):
+        for k,v in cfg.items():
+            if isinstance(k,str):
+                k2=k.replace('\u0441','c').strip().lower()
+                if k2=='config_url' and isinstance(v,str) and v.strip():
+                    print(v.strip())
+                    sys.exit(0)
+    print('')
+except Exception:
+    print('')
+PY
+)
+  if [ -n "$REMOTE_URL" ]; then
+    echo "[entrypoint] Found remote config_url: $REMOTE_URL"
+    TMP_REMOTE=$(mktemp /tmp/remote_config.XXXXXX)
+    if curl -fsSL "$REMOTE_URL" -o "$TMP_REMOTE"; then
+      echo "[entrypoint] Remote config downloaded to $TMP_REMOTE — attempting to parse and write as YAML to $CONFIG_PATH"
+      # Validate and write remote config using a small Python snippet
+      if python3 - "$TMP_REMOTE" "$CONFIG_PATH" 2>/tmp/entrypoint_config_parse.log <<'PY'
+import sys, json
+import yaml
+src = sys.argv[1]
+dst = sys.argv[2]
+try:
+    raw = open(src, 'rb').read()
+    text = raw.decode('utf-8')
+except Exception as e:
+    print(f'Failed to read downloaded remote config: {e}', file=sys.stderr)
+    sys.exit(2)
+parsed = None
+# Try JSON first
+try:
+    parsed = json.loads(text)
+except Exception:
+    try:
+        parsed = yaml.safe_load(text)
+    except Exception as e:
+        print(f'Failed to parse remote config as JSON or YAML: {e}', file=sys.stderr)
+        sys.exit(2)
+if not isinstance(parsed, dict):
+    print('Remote config is not a mapping/object (expected dict)', file=sys.stderr)
+    sys.exit(2)
+# Write parsed config back as YAML to ensure consistent format
+try:
+    with open(dst, 'w', encoding='utf-8') as f:
+        yaml.safe_dump(parsed, f, sort_keys=False, allow_unicode=True)
+except Exception as e:
+    print(f'Failed to write parsed config to destination: {e}', file=sys.stderr)
+    sys.exit(2)
+sys.exit(0)
+PY
+      then
+        echo "[entrypoint] Remote config parsed and wrote to $CONFIG_PATH"
+      else
+        echo "[entrypoint] Failed to parse remote config (see /tmp/entrypoint_config_parse.log). Keeping existing $CONFIG_PATH"
+        echo "[entrypoint] Parse log (tail):"; tail -n 50 /tmp/entrypoint_config_parse.log || true
+      fi
+     rm -f "$TMP_REMOTE" || true
+     else
+       echo "[entrypoint] ERROR: Failed to download remote config from $REMOTE_URL"
+       rm -f "$TMP_REMOTE" || true
+     fi
+  else
+    echo "[entrypoint] No remote config_url found in $CONFIG_PATH"
+  fi
+else
+  echo "[entrypoint] No $CONFIG_PATH present to check for remote config_url"
+fi
+# --- End remote config fetch ---
+
 # Execute the command passed to the container (if not skipped above)
 echo "[entrypoint] Executing: $@"
 exec "$@"
-
