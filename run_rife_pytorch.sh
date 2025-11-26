@@ -178,32 +178,23 @@ if [ -f "$REPO_DIR/inference_img.py" ] || [ -f "/workspace/project/rife_interpol
   fi
 
   # Try persistent/batch runner to avoid reloading model for each pair
-  PERSIST_SCRIPT="/workspace/project/scripts/_rife_persistent_local.py"
+  PERSIST_SCRIPT="/workspace/project/scripts/rife_persistent.py"
   if [ -f "$PERSIST_SCRIPT" ]; then
     log "Attempting persistent RIFE runner: $PERSIST_SCRIPT"
     python3 "$PERSIST_SCRIPT" --repo-dir "$REPO_DIR" --input "$TMP_DIR/input" --output "$TMP_DIR/output" --factor "$FACTOR" 2>&1 | tee -a "$TMP_DIR/rife.log"
-    PERR=${PIPESTATUS[0]:-0}
-    # Validate that persistent runner produced output files (non-empty PNGs)
-    OUT_COUNT=$(find "$TMP_DIR/output" -maxdepth 1 -type f -name '*.png' -size +0c 2>/dev/null | wc -l)
-    if [ $PERR -eq 0 ] && [ "$OUT_COUNT" -gt 0 ]; then
-      log "Persistent runner completed successfully and produced $OUT_COUNT output frames — skipping per-pair fallback"
+    PERR=$?
+    if [ $PERR -eq 0 ]; then
+      log "Persistent runner completed successfully — skipping per-pair fallback"
+      # skip per-pair fallback by setting RC=0 and jumping to reassembly
       RC=0
+      # jump by setting a flag
       PERSISTED=1
-    else
-      if [ $PERR -eq 2 ]; then
-        log "Persistent runner not supported for this RIFE fork (exit 2) — falling back to per-pair calls"
-      else
-        log "Persistent runner exit code: $PERR, output frames: $OUT_COUNT — falling back to per-pair method"
-        # print tail of rife.log for debugging if present
-        if [ -f "$TMP_DIR/rife.log" ]; then
-          log "--- persistent rife.log (last 200 lines) ---"
-          tail -n 200 "$TMP_DIR/rife.log" || true
-          log "--- end persistent rife.log ---"
-        fi
-      fi
+    elif [ $PERR -eq 2 ]; then
+      log "Persistent runner not supported for this RIFE fork (exit 2) — falling back to per-pair calls"
       PERSISTED=0
-      # if the persistent run created some garbage files, remove them to ensure clean per-pair run
-      rm -f "$TMP_DIR/output"/*.png >/dev/null 2>&1 || true
+    else
+      log "Persistent runner failed with exit code $PERR — will fallback to per-pair method"
+      PERSISTED=0
     fi
   else
     PERSISTED=0
@@ -443,45 +434,18 @@ if [ -f "$REPO_DIR/inference_img.py" ] || [ -f "/workspace/project/rife_interpol
     exit 5
   fi
 
-  # To make ffmpeg assembly robust, create a sequentially numbered set in assembled/
-  ASSEMBLE_DIR="$TMP_DIR/assembled"
-  mkdir -p "$ASSEMBLE_DIR"
-  IDX=1
-  # Use a stable sort (version sort) if available, otherwise plain sort
-  if ls "$TMP_DIR/output"/*.png >/dev/null 2>&1; then
-    # generate list of files in natural order
-    FILE_LIST=$(ls -1v "$TMP_DIR/output"/*.png 2>/dev/null || true)
-    if [ -z "$FILE_LIST" ]; then
-      FILE_LIST=$(printf "%s\n" "$TMP_DIR/output"/*.png | sort -V 2>/dev/null || true)
-    fi
-    for f in $FILE_LIST; do
-      if [ -f "$f" ] && [ -s "$f" ]; then
-        cp -f "$f" "$ASSEMBLE_DIR/frame_$(printf "%06d" $IDX).png" || cp -f "$f" "$ASSEMBLE_DIR/frame_$(printf "%06d" $IDX).png" 2>/dev/null || true
-        IDX=$((IDX+1))
-      fi
-    done
-  fi
-  ASSEMBLED_COUNT=$(ls -1 "$ASSEMBLE_DIR"/*.png 2>/dev/null | wc -l)
-  if [ $ASSEMBLED_COUNT -eq 0 ]; then
-    log "ERROR: No valid assembled frames found in $ASSEMBLE_DIR — cannot reassemble video"
-    [ "${KEEP_TMP:-0}" = "1" ] || rm -rf "$TMP_DIR"
-    exit 5
-  fi
-  # We'll use assembled/frame_%06d.png for ffmpeg
-  ASSEMBLED_PATTERN="frame_%06d.png"
-
-  # Reassemble into final video using assembled set
-  log "Reassembling interpolated frames into video (FPS: ${TARGET_FPS}) using $ASSEMBLE_DIR"
+  # Reassemble into final video
+  log "Reassembling interpolated frames into video (FPS: ${TARGET_FPS})"
   if [ -f "$TMP_DIR/audio.aac" ]; then
-    ffmpeg -y -v warning -stats -framerate "$TARGET_FPS" -start_number 1 -i "$ASSEMBLE_DIR/$ASSEMBLED_PATTERN" -i "$TMP_DIR/audio.aac" -c:v libx264 -crf 18 -pix_fmt yuv420p -c:a aac -shortest "$OUTPUT_VIDEO_PATH"
+    ffmpeg -y -v warning -stats -framerate "$TARGET_FPS" -start_number 1 -i "$TMP_DIR/output/$OUT_PATTERN" -i "$TMP_DIR/audio.aac" -c:v libx264 -crf 18 -pix_fmt yuv420p -c:a aac -shortest "$OUTPUT_VIDEO_PATH"
   else
-    ffmpeg -y -v warning -stats -framerate "$TARGET_FPS" -start_number 1 -i "$ASSEMBLE_DIR/$ASSEMBLED_PATTERN" -c:v libx264 -crf 18 -pix_fmt yuv420p "$OUTPUT_VIDEO_PATH"
+    ffmpeg -y -v warning -stats -framerate "$TARGET_FPS" -start_number 1 -i "$TMP_DIR/output/$OUT_PATTERN" -c:v libx264 -crf 18 -pix_fmt yuv420p "$OUTPUT_VIDEO_PATH"
   fi
   FFMPEG_RC=$?
 
-  # If ffmpeg failed with assembled set, try glob fallback directly on output (edge cases)
+  # If ffmpeg could not find the pattern (some builds/OS), try pattern_type glob as a fallback
   if [ $FFMPEG_RC -ne 0 ]; then
-    log "ffmpeg failed with $FFMPEG_RC on assembled set; attempting glob-based reassembly as fallback"
+    log "ffmpeg failed with $FFMPEG_RC; attempting glob-based reassembly as fallback"
     if [ -f "$TMP_DIR/audio.aac" ]; then
       ffmpeg -y -v warning -stats -framerate "$TARGET_FPS" -pattern_type glob -i "$TMP_DIR/output/*.png" -i "$TMP_DIR/audio.aac" -c:v libx264 -crf 18 -pix_fmt yuv420p -c:a aac -shortest "$OUTPUT_VIDEO_PATH"
     else
