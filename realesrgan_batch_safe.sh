@@ -37,7 +37,36 @@ done
 
 if [ "$HAS_BATCH" -eq 0 ]; then
   echo "No explicit --batch-size provided; running fast GPU probe for tile_size=$TILE_SIZE to estimate safe batch..."
-  SUGGEST_BATCH=$(python3 - "$TILE_SIZE" <<'PY'
+  # If SKIP_PROBE=1, only compute an estimate from VRAM (no allocations/tests)
+  if [ "${SKIP_PROBE:-0}" = "1" ]; then
+    SUGGEST_BATCH=$(python3 - <<'PY'
+import sys,os
+try:
+    import torch
+    tile=int(sys.argv[1])
+    bytes_per_sample = tile * tile * 3 * 2
+    prop_safe = float(os.environ.get('PROBE_SAFE_FACTOR','4.0'))
+    try:
+        prop = torch.cuda.get_device_properties(0)
+        total_bytes = prop.total_memory
+    except Exception:
+        total_bytes = None
+    if total_bytes is None:
+        est = 1
+    else:
+        est = int(total_bytes / (bytes_per_sample * prop_safe))
+    if est < 1:
+        est = 1
+    est = min(est, 512)
+    print(est)
+except Exception:
+    print(1)
+PY
+"$TILE_SIZE")
+    echo "VRAM-only mode: suggested batch_size=$SUGGEST_BATCH"
+    EXTRA_ARGS=("--batch-size" "$SUGGEST_BATCH" "${EXTRA_ARGS[@]}")
+  else
+    SUGGEST_BATCH=$(python3 - "$TILE_SIZE" <<'PY'
 import sys
 try:
     import torch
@@ -87,11 +116,12 @@ try:
 except Exception:
     print(1)
 PY
-)
-  if [ -n "$SUGGEST_BATCH" ]; then
-    echo "Probe suggests batch_size=$SUGGEST_BATCH";
-    # Prepend suggested batch into EXTRA_ARGS for the run
-    EXTRA_ARGS=("--batch-size" "$SUGGEST_BATCH" "${EXTRA_ARGS[@]}")
+"$TILE_SIZE")
+    if [ -n "$SUGGEST_BATCH" ]; then
+      echo "Probe suggests batch_size=$SUGGEST_BATCH";
+      # Prepend suggested batch into EXTRA_ARGS for the run
+      EXTRA_ARGS=("--batch-size" "$SUGGEST_BATCH" "${EXTRA_ARGS[@]}")
+    fi
   fi
 fi
 
