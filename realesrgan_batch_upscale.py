@@ -768,14 +768,17 @@ def auto_tune(device='cuda'):
         batch_size = 32
         tile_size = 512
         save_workers = 16
+        auto_compile = True
     elif total_gb >= 24:
         batch_size = 16
         tile_size = 512
         save_workers = 8
+        auto_compile = True
     elif total_gb >= 12:
         batch_size = 8
         tile_size = 400
         save_workers = 6
+        auto_compile = True
     elif total_gb >= 8:
         batch_size = 4
         tile_size = 400
@@ -785,6 +788,7 @@ def auto_tune(device='cuda'):
         tile_size = 256
         save_workers = 2
         half = False
+        auto_compile = False
 
     # Slight adjustments by GPU family
     if 'a100' in name or 'a6000' in name:
@@ -799,12 +803,19 @@ def auto_tune(device='cuda'):
         batch_size = min(batch_size, 4)
         half = False
 
+    # Ensure auto_compile local variable exists
+    try:
+        _auto_compile = bool(auto_compile)
+    except NameError:
+        _auto_compile = False
+
     return {
         'batch_size': int(batch_size),
         'tile_size': int(tile_size),
         'save_workers': int(save_workers),
         'use_local_temp': bool(use_local_temp),
-        'half': bool(half)
+        'half': bool(half),
+        'auto_compile': _auto_compile
     }
 
 
@@ -929,7 +940,8 @@ def main():
         half = tuned_params.get('half', True) if tuned_params else True
     out_format = args.out_format
     jpeg_quality = max(1, min(100, args.jpeg_quality))
-    do_torch_compile = bool(args.torch_compile)
+    # If user explicitly requested torch_compile via CLI, honor it; otherwise use auto_tune hint
+    do_torch_compile = bool(args.torch_compile) or bool(tuned_params.get('auto_compile', False))
 
     _append_log(f'Final parameters: batch_size={batch_size}, tile_size={tile_size}, save_workers={save_workers}, use_local_temp={use_local_temp}, half={half}, out_format={out_format}, jpeg_quality={jpeg_quality}, torch_compile={do_torch_compile}')
     print(f"Parameters:")
@@ -1136,6 +1148,46 @@ def main():
                     batch_size = determined
                 else:
                     print(f"Quick probe OK: batch_size={batch_size}")
+                # Micro-sweep: try to increase batch_size (1.5x, 2x) if possible to improve throughput
+                try:
+                    ups_candidates = []
+                    # propose 1.5x and 2x
+                    cand1 = int(max(1, batch_size * 3 // 2))
+                    cand2 = int(max(1, batch_size * 2))
+                    if cand1 > batch_size:
+                        ups_candidates.append(cand1)
+                    if cand2 > batch_size and cand2 != cand1:
+                        ups_candidates.append(cand2)
+                    best_up = batch_size
+                    for uc in ups_candidates:
+                        try:
+                            print(f"Micro-sweep: testing larger batch_size={uc} (quick synthetic forward)...")
+                            dtype = torch.half if half else torch.float
+                            # Use smaller probe dims to speed up the test but still detect OOMs
+                            probe_h2 = min(256, probe_h)
+                            probe_w2 = min(256, probe_w)
+                            x = torch.randn(uc, 3, probe_h2, probe_w2, dtype=dtype, device='cuda')
+                            with torch.no_grad():
+                                t0 = time.time()
+                                _ = upsampler.model(x)
+                                torch.cuda.synchronize()
+                            # success
+                            best_up = uc
+                            print(f"Micro-sweep: candidate {uc} OK")
+                        except Exception as e:
+                            msg = str(e).lower()
+                            _append_log(f'Micro-sweep candidate {uc} failed: {e}')
+                            try:
+                                torch.cuda.empty_cache()
+                            except Exception:
+                                pass
+                            print(f"Micro-sweep: candidate {uc} failed: {e}")
+                    if best_up > batch_size:
+                        print(f"Micro-sweep: increasing batch_size -> {best_up}")
+                        batch_size = best_up
+                except Exception as e:
+                    _append_log(f'Micro-sweep aborted: {e}')
+                    print(f"Micro-sweep aborted: {e}")
         except Exception as e:
             _append_log(f'Quick probe aborted: {e}')
             # non-fatal: proceed with tuned batch_size
@@ -1169,7 +1221,7 @@ def main():
          use_local_temp=use_local_temp,
          out_format=out_format,
          jpeg_quality=jpeg_quality
-     )
+      )
 
     elapsed = time.time() - start_time
     print()

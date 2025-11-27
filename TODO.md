@@ -180,3 +180,16 @@ Low (опционально):
 ---
 
 Если хотите, я могу сейчас: (а) автоматически внести A1 (печать use_cuda & memory) и A2 (ETA/rate) в `batch_rife.py`, (б) сделать WAIT_SECS конфигурируемым — скажите «внедри A1/A2», и я применю правки и запущу быструю проверку синтаксиса/логов.
+
+
+raceback (most recent call last):
+  File "/workspace/project/external/Real-ESRGAN/inference_realesrgan_video.py", line 398, in <module>
+  File "/workspace/project/external/Real-ESRGAN/inference_realesrgan_video.py", line 390, in main
+  File "/workspace/project/external/Real-ESRGAN/inference_realesrgan_video.py", line 292, in run
+    inference_video(args, video_save_path)
+  File "/workspace/project/external/Real-ESRGAN/inference_realesrgan_video.py", line 249, in inference_video
+  File "/workspace/project/external/Real-ESRGAN/inference_realesrgan_video.py", line 72, in __init__
+  File "/workspace/project/external/Real-ESRGAN/inference_realesrgan_video.py", line 35, in get_video_meta_info
+    ret['nb_frames'] = int(video_streams[0]['nb_frames'])
+KeyError: 'nb_frames'
+av_interleaved_write_frame(): Broken pipe
