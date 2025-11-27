@@ -178,7 +178,6 @@ do_frame_by_frame_upscale() {
       # Fallback to old method
       # Start progress monitor
       (
-        PREV_COUNT=0
         START_TIME=$(date +%s)
         while sleep 5; do
           CURR_COUNT=$(ls -1 "$TMP_DIR/output"/*.png 2>/dev/null | wc -l)
@@ -198,7 +197,6 @@ do_frame_by_frame_upscale() {
               echo "[$(date '+%H:%M:%S')] 📊 Progress: $CURR_COUNT/$FRAME_COUNT frames ($PERCENT%)"
             fi
           fi
-          PREV_COUNT=$CURR_COUNT
         done
       ) &
       PROGRESS_PID=$!
@@ -220,7 +218,6 @@ do_frame_by_frame_upscale() {
 
     # Start progress monitor
     (
-      PREV_COUNT=0
       START_TIME=$(date +%s)
       while sleep 5; do
         CURR_COUNT=$(ls -1 "$TMP_DIR/output"/*.png 2>/dev/null | wc -l)
@@ -240,7 +237,6 @@ do_frame_by_frame_upscale() {
             echo "[$(date '+%H:%M:%S')] 📊 Progress: $CURR_COUNT/$FRAME_COUNT frames ($PERCENT%)"
           fi
         fi
-        PREV_COUNT=$CURR_COUNT
       done
     ) &
     PROGRESS_PID=$!
@@ -331,6 +327,48 @@ do_frame_by_frame_upscale() {
   exit 0
 }
 
+# helper: write assembly info (frames, duration, size) and perform upload+sentinel
+finalize_success() {
+  local file="$1"
+  local info_json="/workspace/realesrgan_assembly_info.json"
+  local frames="unknown"
+  local duration="unknown"
+  local size="unknown"
+  if command -v ffprobe >/dev/null 2>&1; then
+    # attempt to read exact frame count
+    frames=$(ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of default=nokey=1:noprint_wrappers=1 "$file" 2>/dev/null || true)
+    if [ -z "$frames" ] || [ "$frames" = "N/A" ]; then
+      # fallback to estimating via ffprobe format nb_frames or default
+      frames=$(ffprobe -v error -select_streams v:0 -show_entries stream=nb_frames -of default=nokey=1:noprint_wrappers=1 "$file" 2>/dev/null || true)
+    fi
+    duration=$(ffprobe -v error -show_entries format=duration -of default=nokey=1:noprint_wrappers=1 "$file" 2>/dev/null || true)
+  fi
+  size=$(ls -l "$file" 2>/dev/null | awk '{print $5}' || true)
+  # sanitize empty
+  frames=${frames:-unknown}
+  duration=${duration:-unknown}
+  size=${size:-unknown}
+  # Write JSON-ish info (no dependency on jq)
+  printf '{\n  "file": "%s",\n  "frames": "%s",\n  "duration": "%s",\n  "size": "%s"\n}\n' "$file" "$frames" "$duration" "$size" > "$info_json" || true
+  echo "Assembly info saved to $info_json"
+  echo "Assembly summary: frames=$frames duration=$duration size=$size"
+  # attempt upload if enabled
+  if [ "${AUTO_UPLOAD_B2:-0}" = "1" ]; then
+    maybe_upload_b2 "$file"
+    rc=$?
+    if [ $rc -ne 0 ]; then
+      echo "AUTO_UPLOAD_B2: upload failed (rc=$rc). See $UPLOAD_RESULT_JSON and $info_json for details"
+    else
+      echo "AUTO_UPLOAD_B2: upload succeeded"
+    fi
+  else
+    echo "AUTO_UPLOAD_B2 not enabled; skipping upload"
+  fi
+  # final sentinel
+  echo "VASTAI_PIPELINE_COMPLETED_SUCCESSFULLY"
+  touch /workspace/VASTAI_PIPELINE_COMPLETED_SUCCESSFULLY 2>/dev/null || true
+}
+
 # Try BATCH upscaling first (10x faster!)
 BATCH_SCRIPT="/workspace/project/realesrgan_batch_upscale.py"
 if [ -f "$BATCH_SCRIPT" ]; then
@@ -412,63 +450,55 @@ if [ -f "$BATCH_SCRIPT" ]; then
     if [ $? -eq 0 ] && [ -n "$(ls -A $TMP_DIR/output 2>/dev/null)" ]; then
       echo ""
       echo "Reassembling video from upscaled frames..."
-      # Prefer explicit filelist concat assembly to control order and support JPG
-      FILELIST="$TMP_DIR/output/filelist.txt"
-      (for f in $(ls -1v "$TMP_DIR/output"/*.{png,jpg,jpeg} 2>/dev/null); do echo "file '$f'"; done) > "$FILELIST" || true
-      if [ -s "$FILELIST" ]; then
-        echo "Using filelist assembly (first lines):"
-        head -n 20 "$FILELIST"
-        ffmpeg -y -safe 0 -f concat -i "$FILELIST" -framerate "$FPS" -c:v libx264 -crf 18 -pix_fmt yuv420p "$OUTFILE" >/dev/null 2>&1 || true
-        if [ -f "$OUTFILE" ]; then
-          echo "✓ Assembled from filelist: $OUTFILE"
-          # Optional upload first (if enabled), then write sentinel
-          if [ "${AUTO_UPLOAD_B2:-0}" = "1" ]; then
-            maybe_upload_b2 "$OUTFILE"
-            rc=$?
-            if [ $rc -ne 0 ]; then
-              echo "AUTO_UPLOAD_B2: upload failed (rc=$rc). Continuing without upload. See $UPLOAD_RESULT_JSON for details"
-            else
-              echo "AUTO_UPLOAD_B2: upload succeeded"
-            fi
-          else
-            echo "AUTO_UPLOAD_B2 not enabled; skipping upload"
-          fi
-          echo "VASTAI_PIPELINE_COMPLETED_SUCCESSFULLY"
-          touch /workspace/VASTAI_PIPELINE_COMPLETED_SUCCESSFULLY 2>/dev/null || true
-          rm -rf "$TMP_DIR"
-          exit 0
+      # Assemble from image sequence using predictable pattern (more robust than concat filelist)
+      first_file=$(ls -1v "$TMP_DIR/output"/*.{png,jpg,jpeg} 2>/dev/null | head -n1 || true)
+      if [ -n "$first_file" ]; then
+        ext="${first_file##*.}"
+        pattern="frame_%06d.$ext"
+        # Count output images and assemble with explicit frame count to avoid ffmpeg stopping early
+        OUT_IMG_COUNT=$(ls -1 "$TMP_DIR/output"/*."$ext" 2>/dev/null | wc -l || true)
+        if [ -z "$OUT_IMG_COUNT" ] || [ "$OUT_IMG_COUNT" -le 0 ]; then
+          echo "ERROR: no images with extension .$ext found in output"
         else
-          echo "filelist assembly failed, falling back to pattern-based assembly"
+          echo "Assembling video using image2 pattern: $pattern (framerate=$FPS, frames=$OUT_IMG_COUNT)"
+          # Determine start number from first file name (handles frame_000000.png vs frame_000001.png)
+          base=$(basename "$first_file")
+          # extract numeric group: last contiguous digits before the extension
+          start_num=$(echo "$base" | sed -E 's/.*_([0-9]+)\..*/\1/')
+          # convert to decimal (strip leading zeros)
+          start_num=$((10#$start_num))
+          echo "Detected start_number=$start_num"
+          ffmpeg -y -start_number "$start_num" -framerate "$FPS" -i "$TMP_DIR/output/$pattern" -frames:v "$OUT_IMG_COUNT" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p "$OUTFILE" >/dev/null 2>&1 || true
+          if [ -f "$OUTFILE" ]; then
+            echo "✓ Assembled: $OUTFILE"
+            finalize_success "$OUTFILE"
+            rm -rf "$TMP_DIR"
+            exit 0
+          else
+            echo "ERROR: assembly from pattern failed; attempting concat fallback"
+          fi
         fi
       else
-        echo "No filelist could be created (no images found); falling back to pattern-based assembly"
+        echo "ERROR: no images found in $TMP_DIR/output to assemble"
       fi
-
-      # Fallback: pattern-based assembly (previous behavior)
-      ffmpeg -y -framerate "$FPS" -i "$TMP_DIR/output/frame_%06d.png" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p "$OUTFILE" >/dev/null 2>&1
-
-      if [ -f "$OUTFILE" ]; then
-        echo "✓ Batch upscaling completed successfully!"
-        if [ "${AUTO_UPLOAD_B2:-0}" = "1" ]; then
-          maybe_upload_b2 "$OUTFILE"
-          rc=$?
-          if [ $rc -ne 0 ]; then
-            echo "AUTO_UPLOAD_B2: upload failed (rc=$rc). Continuing without upload. See $UPLOAD_RESULT_JSON for details"
-          else
-            echo "AUTO_UPLOAD_B2: upload succeeded"
-          fi
-        else
-          echo "AUTO_UPLOAD_B2 not enabled; skipping upload"
+      # Fallback: try concat filelist as last resort
+      FILELIST="$TMP_DIR/output/filelist.txt"
+      : > "$FILELIST" 2>/dev/null || true
+      for f in "$TMP_DIR/output"/*.{png,jpg,jpeg}; do
+        [ -f "$f" ] && echo "file '$f'" >> "$FILELIST"
+      done
+      if [ -s "$FILELIST" ]; then
+        echo "Trying concat fallback (filelist)"
+        ffmpeg -y -safe 0 -f concat -i "$FILELIST" -framerate "$FPS" -c:v libx264 -crf 18 -pix_fmt yuv420p "$OUTFILE" >/dev/null 2>&1 || true
+        if [ -f "$OUTFILE" ]; then
+          echo "✓ Assembled (concat fallback): $OUTFILE"
+          finalize_success "$OUTFILE"
+          rm -rf "$TMP_DIR"
+          exit 0
         fi
-        echo "VASTAI_PIPELINE_COMPLETED_SUCCESSFULLY"
-        touch /workspace/VASTAI_PIPELINE_COMPLETED_SUCCESSFULLY 2>/dev/null || true
-        rm -rf "$TMP_DIR"
-        exit 0
       fi
-    fi
-
-    echo "⚠️ Batch upscaling failed, falling back to video method..."
-    rm -rf "$TMP_DIR"
+      echo "ERROR: failed to assemble video from upscaled frames"
+       fi
   fi
 fi
 
