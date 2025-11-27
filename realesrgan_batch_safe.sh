@@ -45,16 +45,44 @@ try:
     import torch
     tile=int(sys.argv[1])
     bytes_per_sample = tile * tile * 3 * 2
-    prop_safe = float(os.environ.get('PROBE_SAFE_FACTOR','4.0'))
+    # Determine safety factor: prefer explicit env, otherwise autotune by total VRAM
+    pf = os.environ.get('PROBE_SAFE_FACTOR')
+    prop_safe = None
     try:
         prop = torch.cuda.get_device_properties(0)
         total_bytes = prop.total_memory
     except Exception:
         total_bytes = None
-    if total_bytes is None:
+    if pf is not None:
+        try:
+            prop_safe = float(pf)
+        except Exception:
+            prop_safe = None
+    if prop_safe is None:
+        # autotune safety factor by total VRAM (conservative defaults)
+        if total_bytes is None:
+            prop_safe = 4.0
+        else:
+            gb = total_bytes / (1024**3)
+            if gb < 10:
+                prop_safe = 10.0
+            elif gb < 16:
+                prop_safe = 8.0
+            elif gb < 24:
+                prop_safe = 5.0
+            else:
+                prop_safe = 3.0
+    # prefer free memory if available
+    free_bytes = None
+    try:
+        free_bytes = torch.cuda.mem_get_info(0)[0]
+    except Exception:
+        free_bytes = None
+    use_bytes = free_bytes if (free_bytes is not None and free_bytes>0) else total_bytes
+    if use_bytes is None:
         est = 1
     else:
-        est = int(total_bytes / (bytes_per_sample * prop_safe))
+        est = int(use_bytes / (bytes_per_sample * prop_safe))
     if est < 1:
         est = 1
     est = min(est, 512)
@@ -67,36 +95,52 @@ PY
     EXTRA_ARGS=("--batch-size" "$SUGGEST_BATCH" "${EXTRA_ARGS[@]}")
   else
     SUGGEST_BATCH=$(python3 - "$TILE_SIZE" <<'PY'
-import sys
+import sys,os
 try:
     import torch
     tile=int(sys.argv[1])
-    # bytes per element for float16 = 2, channels=3
     bytes_per_sample = tile * tile * 3 * 2
-    # allow tuning via env var PROBE_SAFE_FACTOR (default 4)
-    import os
-    try:
-        prop_safe = float(os.environ.get('PROBE_SAFE_FACTOR', '4.0'))
-    except Exception:
-        prop_safe = 4.0
-    # get total GPU memory in bytes
+    # Determine safety factor: prefer explicit env, otherwise autotune by total VRAM
+    pf = os.environ.get('PROBE_SAFE_FACTOR')
+    prop_safe = None
     try:
         prop = torch.cuda.get_device_properties(0)
         total_bytes = prop.total_memory
     except Exception:
         total_bytes = None
-    if total_bytes is None:
-        # fallback conservative cap
+    if pf is not None:
+        try:
+            prop_safe = float(pf)
+        except Exception:
+            prop_safe = None
+    if prop_safe is None:
+        if total_bytes is None:
+            prop_safe = 4.0
+        else:
+            gb = total_bytes / (1024**3)
+            if gb < 10:
+                prop_safe = 10.0
+            elif gb < 16:
+                prop_safe = 8.0
+            elif gb < 24:
+                prop_safe = 5.0
+            else:
+                prop_safe = 3.0
+    # prefer free memory for testing
+    try:
+        free_bytes = torch.cuda.mem_get_info(0)[0]
+    except Exception:
+        free_bytes = None
+    use_bytes = free_bytes if (free_bytes is not None and free_bytes>0) else total_bytes
+    if use_bytes is None:
         est = 1
     else:
-        est = int(total_bytes / (bytes_per_sample * prop_safe))
-    # clamp estimate
+        est = int(use_bytes / (bytes_per_sample * prop_safe))
     if est < 1:
         est = 1
     est = min(est, 512)
     dtype = torch.float16
     torch.cuda.empty_cache()
-    # Try the full estimate once; if it OOMs, geometric halve until success (max 6 tries)
     candidate = est
     success = 1
     for _ in range(6):
@@ -119,7 +163,6 @@ PY
 "$TILE_SIZE")
     if [ -n "$SUGGEST_BATCH" ]; then
       echo "Probe suggests batch_size=$SUGGEST_BATCH";
-      # Prepend suggested batch into EXTRA_ARGS for the run
       EXTRA_ARGS=("--batch-size" "$SUGGEST_BATCH" "${EXTRA_ARGS[@]}")
     fi
   fi
