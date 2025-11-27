@@ -274,6 +274,9 @@ do_frame_by_frame_upscale() {
   OUTPUT_SIZE=$(ls -lh "$OUTPUT" 2>/dev/null | awk '{print $5}')
   echo "Output file: $OUTPUT ($OUTPUT_SIZE)"
   echo "=========================================="
+  # Write sentinel for external pipeline consumers (frame-by-frame path)
+  echo "VASTAI_PIPELINE_COMPLETED_SUCCESSFULLY"
+  touch /workspace/VASTAI_PIPELINE_COMPLETED_SUCCESSFULLY 2>/dev/null || true
   echo ""
   return 0
 }
@@ -368,6 +371,9 @@ if [ -f "$BATCH_SCRIPT" ]; then
         ffmpeg -y -safe 0 -f concat -i "$FILELIST" -framerate "$FPS" -c:v libx264 -crf 18 -pix_fmt yuv420p "$OUTFILE" >/dev/null 2>&1 || true
         if [ -f "$OUTFILE" ]; then
           echo "✓ Assembled from filelist: $OUTFILE"
+          # Write sentinel for external pipeline consumers
+          echo "VASTAI_PIPELINE_COMPLETED_SUCCESSFULLY"
+          touch /workspace/VASTAI_PIPELINE_COMPLETED_SUCCESSFULLY 2>/dev/null || true
           rm -rf "$TMP_DIR"
           exit 0
         else
@@ -382,6 +388,9 @@ if [ -f "$BATCH_SCRIPT" ]; then
 
       if [ -f "$OUTFILE" ]; then
         echo "✓ Batch upscaling completed successfully!"
+        # Write sentinel for external pipeline consumers
+        echo "VASTAI_PIPELINE_COMPLETED_SUCCESSFULLY"
+        touch /workspace/VASTAI_PIPELINE_COMPLETED_SUCCESSFULLY 2>/dev/null || true
         rm -rf "$TMP_DIR"
         exit 0
       fi
@@ -473,4 +482,8 @@ if [ -f "$REPO_DIR/inference_realesrgan_video.py" ]; then
     exit 4
   fi
 
+  # Success — write sentinel so external monitors/pipelines can detect completion
+  echo "VASTAI_PIPELINE_COMPLETED_SUCCESSFULLY"
+  touch /workspace/VASTAI_PIPELINE_COMPLETED_SUCCESSFULLY 2>/dev/null || true
++
 fi
