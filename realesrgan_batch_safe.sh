@@ -17,6 +17,87 @@ LOGFILE="/tmp/realesrgan_batch_safe_$(date +%s).log"
 echo "Running batch script (first attempt). Log: $LOGFILE"
 # Ensure TORCH_COMPILE_DISABLE is exported; child processes inherit it
 : ${TORCH_COMPILE_DISABLE:=1}
+
+# If user didn't specify --batch-size, attempt a very quick GPU probe to estimate a safe batch for given tile size
+HAS_BATCH=0
+TILE_SIZE=256
+for ((i=0;i<${#EXTRA_ARGS[@]};i++)); do
+  a="${EXTRA_ARGS[$i]}"
+  if [ "$a" = "--batch-size" ] || [ "$a" = "-b" ]; then
+    HAS_BATCH=1
+  fi
+  if [ "$a" = "--tile-size" ]; then
+    # next arg is tile size
+    nextidx=$((i+1))
+    if [ $nextidx -lt ${#EXTRA_ARGS[@]} ]; then
+      TILE_SIZE="${EXTRA_ARGS[$nextidx]}"
+    fi
+  fi
+done
+
+if [ "$HAS_BATCH" -eq 0 ]; then
+  echo "No explicit --batch-size provided; running fast GPU probe for tile_size=$TILE_SIZE to estimate safe batch..."
+  SUGGEST_BATCH=$(python3 - <<PY
+import sys
+try:
+    import torch
+    tile=int(sys.argv[1])
+    # compute a conservative upper bound for number of tile-shaped samples that could fit in GPU RAM
+    # bytes per element for float16 = 2, channels=3
+    bytes_per_sample = tile * tile * 3 * 2
+    prop_safe = 4.0  # conservative factor to account for activations/overhead
+    # get total GPU memory in bytes
+    total_bytes = None
+    try:
+        prop = torch.cuda.get_device_properties(0)
+        total_bytes = prop.total_memory
+    except Exception:
+        total_bytes = None
+    if total_bytes is None:
+        max_try = 64
+    else:
+        est = int(total_bytes / (bytes_per_sample * prop_safe))
+        # clamp to reasonable bounds
+        if est < 1:
+            max_try = 1
+        else:
+            max_try = min(max(est,1), 512)
+    dtype=torch.float16
+    torch.cuda.empty_cache()
+    lo=0; hi=1
+    # cap hi to max_try
+    max_try_val = max_try
+    while hi<=max_try_val:
+        try:
+            t = torch.empty((hi,3,tile,tile), device='cuda', dtype=dtype)
+            del t
+            torch.cuda.empty_cache()
+            lo = hi
+            hi = hi*2
+        except Exception:
+            break
+    left=lo; right=min(hi, max_try_val)
+    while left+1<right:
+        mid=(left+right)//2
+        try:
+            t = torch.empty((mid,3,tile,tile), device='cuda', dtype=dtype)
+            del t
+            torch.cuda.empty_cache()
+            left = mid
+        except Exception:
+            right = mid
+    print(left if left>0 else 1)
+except Exception:
+    print(1)
+PY
+"$TILE_SIZE")
+  if [ -n "$SUGGEST_BATCH" ]; then
+    echo "Probe suggests batch_size=$SUGGEST_BATCH";
+    # Prepend suggested batch into EXTRA_ARGS for the run
+    EXTRA_ARGS=("--batch-size" "$SUGGEST_BATCH" "${EXTRA_ARGS[@]}")
+  fi
+fi
+
 # Run the batch script and capture all output
 python3 "$BATCH_PY" "$IN_DIR" "$OUT_DIR" "${EXTRA_ARGS[@]}" > "$LOGFILE" 2>&1 || true
 
