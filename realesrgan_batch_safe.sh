@@ -42,51 +42,48 @@ import sys
 try:
     import torch
     tile=int(sys.argv[1])
-    # compute a conservative upper bound for number of tile-shaped samples that could fit in GPU RAM
     # bytes per element for float16 = 2, channels=3
     bytes_per_sample = tile * tile * 3 * 2
-    prop_safe = 4.0  # conservative factor to account for activations/overhead
+    # allow tuning via env var PROBE_SAFE_FACTOR (default 4)
+    import os
+    try:
+        prop_safe = float(os.environ.get('PROBE_SAFE_FACTOR', '4.0'))
+    except Exception:
+        prop_safe = 4.0
     # get total GPU memory in bytes
-    total_bytes = None
     try:
         prop = torch.cuda.get_device_properties(0)
         total_bytes = prop.total_memory
     except Exception:
         total_bytes = None
     if total_bytes is None:
-        max_try = 64
+        # fallback conservative cap
+        est = 1
     else:
         est = int(total_bytes / (bytes_per_sample * prop_safe))
-        # clamp to reasonable bounds
-        if est < 1:
-            max_try = 1
-        else:
-            max_try = min(max(est,1), 512)
-    dtype=torch.float16
+    # clamp estimate
+    if est < 1:
+        est = 1
+    est = min(est, 512)
+    dtype = torch.float16
     torch.cuda.empty_cache()
-    lo=0; hi=1
-    # cap hi to max_try
-    max_try_val = max_try
-    while hi<=max_try_val:
+    # Try the full estimate once; if it OOMs, geometric halve until success (max 6 tries)
+    candidate = est
+    success = 1
+    for _ in range(6):
         try:
-            t = torch.empty((hi,3,tile,tile), device='cuda', dtype=dtype)
+            t = torch.empty((candidate,3,tile,tile), device='cuda', dtype=dtype)
             del t
             torch.cuda.empty_cache()
-            lo = hi
-            hi = hi*2
-        except Exception:
+            print(candidate)
+            success = 1
             break
-    left=lo; right=min(hi, max_try_val)
-    while left+1<right:
-        mid=(left+right)//2
-        try:
-            t = torch.empty((mid,3,tile,tile), device='cuda', dtype=dtype)
-            del t
-            torch.cuda.empty_cache()
-            left = mid
         except Exception:
-            right = mid
-    print(left if left>0 else 1)
+            success = 0
+            candidate = max(1, candidate // 2)
+            continue
+    if not success:
+        print(1)
 except Exception:
     print(1)
 PY
