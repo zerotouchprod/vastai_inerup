@@ -398,7 +398,7 @@ def _img_from_tensor(tensor):
     return img
 
 
-def batch_upscale(upsampler, input_frames, output_dir, batch_size=4, progress_callback=None, save_workers=4, use_local_temp=False):
+def batch_upscale(upsampler, input_frames, output_dir, batch_size=4, progress_callback=None, save_workers=4, use_local_temp=False, out_format='png', jpeg_quality=90):
     """
     Batch upscale frames with optimized GPU processing
 
@@ -587,7 +587,12 @@ def batch_upscale(upsampler, input_frames, output_dir, batch_size=4, progress_ca
                         out_path.parent.mkdir(parents=True, exist_ok=True)
                         # Use lower PNG compression to speed up writes (1 = fastest)
                         try:
-                            cv2.imwrite(str(out_path), out_img, [cv2.IMWRITE_PNG_COMPRESSION, 1])
+                            if out_format == 'jpg':
+                                # JPEG save (faster, lossy)
+                                cv2.imwrite(str(out_path), out_img, [cv2.IMWRITE_JPEG_QUALITY, jpeg_quality])
+                            else:
+                                # PNG save (lossless)
+                                cv2.imwrite(str(out_path), out_img, [cv2.IMWRITE_PNG_COMPRESSION, 1])
                         except Exception:
                             cv2.imwrite(str(out_path), out_img)
                     return True
@@ -848,6 +853,9 @@ def main():
     parser.add_argument('--target-height', type=int, default=None, help='Target height (e.g., 2160 for 4K, 1080 for Full HD)')
     parser.add_argument('--model', default='RealESRGAN_x4plus', help='Model name')
     parser.add_argument('--batch-size', type=int, default=4, help='Frames to process at once')
+    parser.add_argument('--out-format', choices=['png','jpg'], default='png', help='Intermediate frame format to write (png=lossless, jpg=faster)')
+    parser.add_argument('--jpeg-quality', type=int, default=90, help='JPEG quality for intermediate JPG files (1-100)')
+    parser.add_argument('--torch-compile', action='store_true', help='Attempt to torch.compile the model for faster forward (safe fallback to uncompiled)')
     parser.add_argument('--tile-size', type=int, default=None, help='Tile size to use (override auto selection). Use 0 for no tiling')
     parser.add_argument('--no-half', action='store_true', help='Disable FP16 (use FP32)')
     parser.add_argument('--device', default='cuda', choices=['cuda', 'cpu'], help='Device to use')
@@ -919,14 +927,19 @@ def main():
         half = False
     else:
         half = tuned_params.get('half', True) if tuned_params else True
+    out_format = args.out_format
+    jpeg_quality = max(1, min(100, args.jpeg_quality))
+    do_torch_compile = bool(args.torch_compile)
 
-    _append_log(f'Final parameters: batch_size={batch_size}, tile_size={tile_size}, save_workers={save_workers}, use_local_temp={use_local_temp}, half={half}')
+    _append_log(f'Final parameters: batch_size={batch_size}, tile_size={tile_size}, save_workers={save_workers}, use_local_temp={use_local_temp}, half={half}, out_format={out_format}, jpeg_quality={jpeg_quality}, torch_compile={do_torch_compile}')
     print(f"Parameters:")
     print(f"  Batch size: {batch_size}")
     print(f"  Tile size: {tile_size}")
     print(f"  Save workers: {save_workers}")
     print(f"  Use local temp: {use_local_temp}")
     print(f"  Half precision: {half}")
+    print(f"  Out format: {out_format} (jpeg_quality={jpeg_quality})")
+    print(f"  Torch compile: {do_torch_compile}")
 
     # If user asked for selftest, load model and run a larger dummy forward to measure GPU usage
     if args.selftest:
@@ -1057,6 +1070,25 @@ def main():
         upsampler = load_model(args.model, scale, args.device, tile_size=tile_size, half=half, allow_data_parallel=True, gpu_id=0)
         print("✓ Model loaded")
 
+        # Optionally attempt torch.compile to speed up forward (safe fallback)
+        if do_torch_compile and args.device == 'cuda':
+            try:
+                import torch
+                print('Attempting torch.compile(...) for model (may take a moment)...')
+                t0 = time.time()
+                try:
+                    upsampler.model = torch.compile(upsampler.model)
+                    torch.cuda.synchronize()
+                    dt = time.time() - t0
+                    print(f'torch.compile succeeded in {dt:.2f}s')
+                    _append_log(f'torch.compile succeeded in {dt:.2f}s')
+                except Exception as e:
+                    print(f'torch.compile failed, continuing without compile: {e}')
+                    _append_log(f'torch.compile failed: {e}')
+            except Exception as e:
+                print(f'Could not attempt torch.compile: {e}')
+                _append_log(f'Could not attempt torch.compile: {e}')
+
         # Quick runtime probe: if user didn't explicitly set batch_size (left as default)
         # then validate the auto-tuned batch_size with a small synthetic forward.
         # This is a fast check to avoid OOM on unknown Vast.ai instances.
@@ -1135,7 +1167,9 @@ def main():
          batch_size=batch_size,
          progress_callback=progress_callback,
          save_workers=save_workers,
-         use_local_temp=use_local_temp
+         use_local_temp=use_local_temp,
+         out_format=out_format,
+         jpeg_quality=jpeg_quality
      )
 
     elapsed = time.time() - start_time

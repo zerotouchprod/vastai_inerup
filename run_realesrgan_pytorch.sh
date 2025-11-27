@@ -74,14 +74,27 @@ do_frame_by_frame_upscale() {
         # collapse multiple spaces
         CLEANED_BATCH_ARGS=$(echo "$CLEANED_BATCH_ARGS" | tr -s ' ')
         echo "Using BATCH_ARGS (auto-tune enabled; stripped --batch-size if present): $CLEANED_BATCH_ARGS"
-        python3 "$BATCH_SCRIPT" "$TMP_DIR/input" "$TMP_DIR/output" $CLEANED_BATCH_ARGS --scale $SCALE_FACTOR --device cuda
+        # Append torch-compile flag if requested via env
+        if [ "${FAST_COMPILE:-false}" = "1" ] || [ "${FAST_COMPILE:-false}" = "true" ]; then
+          python3 "$BATCH_SCRIPT" "$TMP_DIR/input" "$TMP_DIR/output" $CLEANED_BATCH_ARGS --scale $SCALE_FACTOR --device cuda --torch-compile
+        else
+          python3 "$BATCH_SCRIPT" "$TMP_DIR/input" "$TMP_DIR/output" $CLEANED_BATCH_ARGS --scale $SCALE_FACTOR --device cuda
+        fi
       else
         echo "Using BATCH_ARGS: $BATCH_ARGS"
-        python3 "$BATCH_SCRIPT" "$TMP_DIR/input" "$TMP_DIR/output" $BATCH_ARGS --scale $SCALE_FACTOR --device cuda
+        if [ "${FAST_COMPILE:-false}" = "1" ] || [ "${FAST_COMPILE:-false}" = "true" ]; then
+          python3 "$BATCH_SCRIPT" "$TMP_DIR/input" "$TMP_DIR/output" $BATCH_ARGS --scale $SCALE_FACTOR --device cuda --torch-compile
+        else
+          python3 "$BATCH_SCRIPT" "$TMP_DIR/input" "$TMP_DIR/output" $BATCH_ARGS --scale $SCALE_FACTOR --device cuda
+        fi
       fi
     else
       # No explicit batch args -> let batch script auto-tune for this GPU
-      python3 "$BATCH_SCRIPT" "$TMP_DIR/input" "$TMP_DIR/output" --scale $SCALE_FACTOR --device cuda
+      if [ "${FAST_COMPILE:-false}" = "1" ] || [ "${FAST_COMPILE:-false}" = "true" ]; then
+        python3 "$BATCH_SCRIPT" "$TMP_DIR/input" "$TMP_DIR/output" --scale $SCALE_FACTOR --device cuda --torch-compile
+      else
+        python3 "$BATCH_SCRIPT" "$TMP_DIR/input" "$TMP_DIR/output" --scale $SCALE_FACTOR --device cuda
+      fi
     fi
 
     if [ $? -ne 0 ]; then
@@ -265,10 +278,18 @@ if [ -f "$BATCH_SCRIPT" ]; then
           CLEANED_BATCH_ARGS=$(echo "$BATCH_ARGS" | sed -E "s/--batch-size(=|[[:space:]]+)[0-9]+//g")
           CLEANED_BATCH_ARGS=$(echo "$CLEANED_BATCH_ARGS" | tr -s ' ')
           echo "Using BATCH_ARGS (auto-tune enabled; stripped --batch-size if present): $CLEANED_BATCH_ARGS"
-          python3 "$BATCH_SCRIPT" "$TMP_DIR/input" "$TMP_DIR/output" $CLEANED_BATCH_ARGS --scale $SCALE --device cuda
+          if [ "${FAST_COMPILE:-false}" = "1" ] || [ "${FAST_COMPILE:-false}" = "true" ]; then
+            python3 "$BATCH_SCRIPT" "$TMP_DIR/input" "$TMP_DIR/output" $CLEANED_BATCH_ARGS --scale $SCALE --device cuda --torch-compile
+          else
+            python3 "$BATCH_SCRIPT" "$TMP_DIR/input" "$TMP_DIR/output" $CLEANED_BATCH_ARGS --scale $SCALE --device cuda
+          fi
         else
           echo "Using BATCH_ARGS: $BATCH_ARGS"
-          python3 "$BATCH_SCRIPT" "$TMP_DIR/input" "$TMP_DIR/output" $BATCH_ARGS --scale $SCALE --device cuda
+          if [ "${FAST_COMPILE:-false}" = "1" ] || [ "${FAST_COMPILE:-false}" = "true" ]; then
+            python3 "$BATCH_SCRIPT" "$TMP_DIR/input" "$TMP_DIR/output" $BATCH_ARGS --scale $SCALE --device cuda --torch-compile
+          else
+            python3 "$BATCH_SCRIPT" "$TMP_DIR/input" "$TMP_DIR/output" $BATCH_ARGS --scale $SCALE --device cuda
+          fi
         fi
       else
         python3 "$BATCH_SCRIPT" "$TMP_DIR/input" "$TMP_DIR/output" --scale $SCALE --device cuda
@@ -281,10 +302,18 @@ if [ -f "$BATCH_SCRIPT" ]; then
           CLEANED_BATCH_ARGS=$(echo "$BATCH_ARGS" | sed -E "s/--batch-size(=|[[:space:]]+)[0-9]+//g")
           CLEANED_BATCH_ARGS=$(echo "$CLEANED_BATCH_ARGS" | tr -s ' ')
           echo "Using BATCH_ARGS (auto-tune enabled; stripped --batch-size if present): $CLEANED_BATCH_ARGS"
-          python3 "$BATCH_SCRIPT" "$TMP_DIR/input" "$TMP_DIR/output" $CLEANED_BATCH_ARGS --target-height 2160 --device cuda
+          if [ "${FAST_COMPILE:-false}" = "1" ] || [ "${FAST_COMPILE:-false}" = "true" ]; then
+            python3 "$BATCH_SCRIPT" "$TMP_DIR/input" "$TMP_DIR/output" $CLEANED_BATCH_ARGS --target-height 2160 --device cuda --torch-compile
+          else
+            python3 "$BATCH_SCRIPT" "$TMP_DIR/input" "$TMP_DIR/output" $CLEANED_BATCH_ARGS --target-height 2160 --device cuda
+          fi
         else
           echo "Using BATCH_ARGS: $BATCH_ARGS"
-          python3 "$BATCH_SCRIPT" "$TMP_DIR/input" "$TMP_DIR/output" $BATCH_ARGS --target-height 2160 --device cuda
+          if [ "${FAST_COMPILE:-false}" = "1" ] || [ "${FAST_COMPILE:-false}" = "true" ]; then
+            python3 "$BATCH_SCRIPT" "$TMP_DIR/input" "$TMP_DIR/output" $BATCH_ARGS --target-height 2160 --device cuda --torch-compile
+          else
+            python3 "$BATCH_SCRIPT" "$TMP_DIR/input" "$TMP_DIR/output" $BATCH_ARGS --target-height 2160 --device cuda
+          fi
         fi
       else
         python3 "$BATCH_SCRIPT" "$TMP_DIR/input" "$TMP_DIR/output" --target-height 2160 --device cuda
@@ -294,6 +323,25 @@ if [ -f "$BATCH_SCRIPT" ]; then
     if [ $? -eq 0 ] && [ -n "$(ls -A $TMP_DIR/output 2>/dev/null)" ]; then
       echo ""
       echo "Reassembling video from upscaled frames..."
+      # Prefer explicit filelist concat assembly to control order and support JPG
+      FILELIST="$TMP_DIR/output/filelist.txt"
+      (for f in $(ls -1v "$TMP_DIR/output"/*.{png,jpg,jpeg} 2>/dev/null); do echo "file '$f'"; done) > "$FILELIST" || true
+      if [ -s "$FILELIST" ]; then
+        echo "Using filelist assembly (first lines):"
+        head -n 20 "$FILELIST"
+        ffmpeg -y -safe 0 -f concat -i "$FILELIST" -framerate "$FPS" -c:v libx264 -crf 18 -pix_fmt yuv420p "$OUTFILE" >/dev/null 2>&1 || true
+        if [ -f "$OUTFILE" ]; then
+          echo "✓ Assembled from filelist: $OUTFILE"
+          rm -rf "$TMP_DIR"
+          exit 0
+        else
+          echo "filelist assembly failed, falling back to pattern-based assembly"
+        fi
+      else
+        echo "No filelist could be created (no images found); falling back to pattern-based assembly"
+      fi
+
+      # Fallback: pattern-based assembly (previous behavior)
       ffmpeg -y -framerate "$FPS" -i "$TMP_DIR/output/frame_%06d.png" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p "$OUTFILE" >/dev/null 2>&1
 
       if [ -f "$OUTFILE" ]; then

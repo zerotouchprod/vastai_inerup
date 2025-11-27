@@ -225,6 +225,10 @@ def build_container_command(input_url: str, mode: str, scale: int, target_fps: i
     else:
         batch_args = '--batch-size 2 --use-local-temp --save-workers 2 --tile-size 256'
 
+    # Prefer JPEG intermediate frames for faster I/O; remote probe will remove explicit --batch-size if AUTO_TUNE_BATCH
+    # Add out-format and jpeg-quality flags passed to batch script
+    batch_args += ' --out-format jpg --jpeg-quality 90'
+
     # Allow automatic tuning in remote container: if AUTO_TUNE_BATCH is not set to false,
     # strip any explicit --batch-size N from batch_args so remote probe can decide safely.
     auto_tune_batch = os.environ.get('AUTO_TUNE_BATCH', 'true').lower()
@@ -235,6 +239,19 @@ def build_container_command(input_url: str, mode: str, scale: int, target_fps: i
         env_vars.append(f'BATCH_ARGS="{cleaned}"')
     else:
         env_vars.append(f'BATCH_ARGS="{batch_args}"')
+
+    # Allow enabling torch.compile remotely via FAST_COMPILE env var
+    fast_compile = os.environ.get('FAST_COMPILE', 'false').lower()
+    if fast_compile in ('1', 'true', 'yes'):
+        env_vars.append('FAST_COMPILE=1')
+    else:
+        # Heuristic: enable FAST_COMPILE automatically for GPUs with >=12GB VRAM
+        try:
+            if min_vram_hint >= 12:
+                env_vars.append('FAST_COMPILE=1')
+                print('Enabling FAST_COMPILE=1 (min_vram_hint >= 12)')
+        except Exception:
+            pass
 
     runner_cmd = '/workspace/project/scripts/remote_runner.sh'
     # Build final command as: env VARS bash /workspace/project/scripts/remote_runner.sh
