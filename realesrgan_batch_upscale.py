@@ -1073,7 +1073,6 @@ def main():
         # Optionally attempt torch.compile to speed up forward (safe fallback)
         if do_torch_compile and args.device == 'cuda':
             try:
-                import torch
                 print('Attempting torch.compile(...) for model (may take a moment)...')
                 t0 = time.time()
                 try:
