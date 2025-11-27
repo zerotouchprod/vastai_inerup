@@ -545,7 +545,10 @@ def batch_upscale(upsampler, input_frames, output_dir, batch_size=4, progress_ca
                         with torch.no_grad():
                             out_batch = upsampler.model(batch_tensor)
                             if getattr(upsampler, 'device', None) == 'cuda':
-                                torch.cuda.synchronize()
+                                try:
+                                    torch.cuda.synchronize()
+                                except Exception:
+                                    pass
 
                     t1 = time.time()
                     model_time = t1 - t0
@@ -554,6 +557,53 @@ def batch_upscale(upsampler, input_frames, output_dir, batch_size=4, progress_ca
                     for k in range(out_batch.size(0)):
                         outputs.append(_img_from_tensor(out_batch[k:k+1]))
                     did_batch_forward = True
+                except RuntimeError as e:
+                    msg = str(e).lower()
+                    _append_log(f'Batched forward failed (RuntimeError): {e}')
+                    # If OOM, try progressive fallback: smaller sub-batches, then per-image
+                    if 'out of memory' in msg or 'cuda' in msg:
+                        print('Batched forward OOM or CUDA error; attempting smaller sub-batches')
+                        _append_log('Batched forward OOM: attempting smaller sub-batches')
+                        try:
+                            torch.cuda.empty_cache()
+                        except Exception:
+                            pass
+                        n = batch_tensor.size(0)
+                        # choose starting sub-batch size as half, but at least 1
+                        sub_bs = max(1, n // 2)
+                        start_idx = 0
+                        while start_idx < n:
+                            end_idx = min(n, start_idx + sub_bs)
+                            sub = batch_tensor[start_idx:end_idx]
+                            try:
+                                with _suppress_prints():
+                                    with torch.no_grad():
+                                        out_sub = upsampler.model(sub)
+                                        if getattr(upsampler, 'device', None) == 'cuda':
+                                            try:
+                                                torch.cuda.synchronize()
+                                            except Exception:
+                                                pass
+                                for k in range(out_sub.size(0)):
+                                    outputs.append(_img_from_tensor(out_sub[k:k+1]))
+                            except Exception as e2:
+                                _append_log(f'Sub-batch forward failed: {e2}')
+                                # If sub-batch still fails, process frames individually
+                                for idx in range(start_idx, end_idx):
+                                    img = imgs[idx]
+                                    try:
+                                        with _suppress_prints():
+                                            out_img, _ = upsampler.enhance(img, outscale=outscale)
+                                        outputs.append(out_img)
+                                    except Exception as e3:
+                                        _append_log(f'Per-frame enhance failed during OOM fallback: {e3}')
+                                        outputs.append(None)
+                            # move to next sub-batch
+                            start_idx = end_idx
+                        did_batch_forward = True
+                    else:
+                        _append_log(f'Batched forward failed: {e}')
+                        # let fallback per-image run below
                 except Exception as e:
                     _append_log(f'Batched forward failed: {e}')
                     # fallback per-image below
