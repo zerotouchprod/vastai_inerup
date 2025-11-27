@@ -1167,13 +1167,37 @@ def main():
                             probe_h2 = min(256, probe_h)
                             probe_w2 = min(256, probe_w)
                             x = torch.randn(uc, 3, probe_h2, probe_w2, dtype=dtype, device='cuda')
-                            with torch.no_grad():
-                                t0 = time.time()
-                                _ = upsampler.model(x)
-                                torch.cuda.synchronize()
-                            # success
-                            best_up = uc
-                            print(f"Micro-sweep: candidate {uc} OK")
+                            # Temporarily suppress torch._dynamo errors so Inductor backend failures fall back to eager
+                            _dyn = None
+                            prev_suppress = None
+                            try:
+                                try:
+                                    import torch._dynamo as _tmpdyn
+                                    _dyn = _tmpdyn
+                                    prev_suppress = getattr(_dyn.config, 'suppress_errors', None)
+                                    _dyn.config.suppress_errors = True
+                                except Exception:
+                                    _dyn = None
+                                    prev_suppress = None
+
+                                with torch.no_grad():
+                                    t0 = time.time()
+                                    _ = upsampler.model(x)
+                                    if getattr(upsampler, 'device', None) == 'cuda':
+                                        try:
+                                            torch.cuda.synchronize()
+                                        except Exception:
+                                            pass
+                                # success
+                                best_up = uc
+                                print(f"Micro-sweep: candidate {uc} OK")
+                            finally:
+                                # restore previous dynamo config
+                                try:
+                                    if _dyn is not None and prev_suppress is not None:
+                                        _dyn.config.suppress_errors = prev_suppress
+                                except Exception:
+                                    pass
                         except Exception as e:
                             msg = str(e).lower()
                             _append_log(f'Micro-sweep candidate {uc} failed: {e}')
