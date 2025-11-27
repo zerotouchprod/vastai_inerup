@@ -22,12 +22,84 @@ fi
 export TORCH_COMPILE_DISABLE=${TORCH_COMPILE_DISABLE:-1}
 # FAST_COMPILE enables --torch-compile; default OFF for stability
 export FAST_COMPILE=${FAST_COMPILE:-0}
-# Conservative BATCH_ARGS tuned for safety: batch-size 1, small tile, fp16, single save-worker
-export BATCH_ARGS=${BATCH_ARGS:-"--use-local-temp --batch-size 1 --save-workers 1 --tile-size 256 --half --out-format jpg --jpeg-quality 90"}
+# Conservative BATCH_ARGS tuned for safety: small tile, fp16, single save-worker (batch-size will be set via VRAM mapping unless explicitly provided)
+export BATCH_ARGS=${BATCH_ARGS:-"--use-local-temp --save-workers 1 --tile-size 256 --half --out-format jpg --jpeg-quality 90"}
 # Disable auto-tuning by default to avoid long micro-sweeps on startup
 export AUTO_TUNE_BATCH=${AUTO_TUNE_BATCH:-false}
 # Skip live allocation probing by default (use VRAM-only estimate) to fast-start on varied machines
 export SKIP_PROBE=${SKIP_PROBE:-1}
+
+# Ensure Python outputs are unbuffered so progress prints appear in real time
+export PYTHONUNBUFFERED=1
+
+## VRAM -> batch mapping helpers
+vram_to_batch() {
+  # Try nvidia-smi first (returns MiB)
+  local mem_mb=0
+  if command -v nvidia-smi >/dev/null 2>&1; then
+    mem_mb=$(nvidia-smi --query-gpu=memory.total --format=csv,nounits,noheader -i 0 2>/dev/null | head -n1 | tr -d '\r' || echo 0)
+  fi
+  if [ -z "$mem_mb" ] || [ "$mem_mb" = "0" ]; then
+    # fallback to Python torch if available (returns bytes)
+    if command -v python3 >/dev/null 2>&1; then
+      pyout=$(python3 - <<'PY' 2>/dev/null || true
+import sys
+try:
+    import torch
+    if torch.cuda.is_available():
+        print(torch.cuda.get_device_properties(0).total_memory)
+    else:
+        print(0)
+except Exception:
+    print(0)
+PY
+)
+      if [ -n "$pyout" ] && [ "$pyout" -ne 0 ] 2>/dev/null; then
+        # convert bytes to MiB
+        mem_mb=$(( (pyout / 1024) / 1024 ))
+      fi
+    fi
+  fi
+
+  # convert to GB (rounded down)
+  if [ -z "$mem_mb" ] || [ "$mem_mb" -eq 0 ] 2>/dev/null; then
+    echo 1
+    return
+  fi
+  gb=$((mem_mb / 1024))
+
+  # Mapping (empirical): increase batch with more VRAM
+  if [ $gb -lt 8 ]; then
+    echo 1
+  elif [ $gb -lt 12 ]; then
+    echo 2
+  elif [ $gb -lt 16 ]; then
+    echo 4
+  elif [ $gb -lt 24 ]; then
+    echo 8
+  else
+    echo 16
+  fi
+}
+
+apply_vram_batch_mapping() {
+  # Only apply when AUTO_TUNE_BATCH is disabled (we don't want to override tuning)
+  if [ "${AUTO_TUNE_BATCH:-false}" = "true" ]; then
+    return 0
+  fi
+  # If BATCH_ARGS already contains --batch-size, do nothing
+  if echo "$BATCH_ARGS" | grep -qE "--batch-size(=|\s)"; then
+    echo "BATCH_ARGS already contains --batch-size; skipping VRAM mapping"
+    return 0
+  fi
+  suggested=$(vram_to_batch)
+  echo "VRAM->batch mapping: detected GPU ~${suggested} batch (suggested based on VRAM)"
+  # Append to BATCH_ARGS
+  BATCH_ARGS="$BATCH_ARGS --batch-size $suggested"
+}
+
+# Apply VRAM->batch mapping early so downstream code sees proper BATCH_ARGS
+apply_vram_batch_mapping
 
 # Ensure Python outputs are unbuffered so progress prints appear in real time
 export PYTHONUNBUFFERED=1
