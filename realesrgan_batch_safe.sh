@@ -13,6 +13,9 @@ shift 2 || true
 EXTRA_ARGS=("$@")
 LOGFILE="/tmp/realesrgan_batch_safe_$(date +%s).log"
 
+# allow overriding maximum sensible batch via env (default 64)
+export MAX_BATCH=${MAX_BATCH:-32}
+
 # Run once and capture logs
 echo "Running batch script (first attempt). Log: $LOGFILE"
 # Ensure TORCH_COMPILE_DISABLE is exported; child processes inherit it
@@ -44,49 +47,47 @@ import sys,os
 try:
     import torch
     tile=int(sys.argv[1])
-    bytes_per_sample = tile * tile * 3 * 2
-    # Determine safety factor: prefer explicit env, otherwise autotune by total VRAM
-    pf = os.environ.get('PROBE_SAFE_FACTOR')
-    prop_safe = None
+    # Prefer free memory if available, otherwise use total
     try:
-        prop = torch.cuda.get_device_properties(0)
-        total_bytes = prop.total_memory
+        free = torch.cuda.mem_get_info(0)[0]
     except Exception:
-        total_bytes = None
-    if pf is not None:
-        try:
-            prop_safe = float(pf)
-        except Exception:
-            prop_safe = None
-    if prop_safe is None:
-        # autotune safety factor by total VRAM (conservative defaults)
-        if total_bytes is None:
-            prop_safe = 4.0
-        else:
-            gb = total_bytes / (1024**3)
-            if gb < 10:
-                prop_safe = 10.0
-            elif gb < 16:
-                prop_safe = 8.0
-            elif gb < 24:
-                prop_safe = 5.0
-            else:
-                prop_safe = 3.0
-    # prefer free memory if available
-    free_bytes = None
+        free = None
     try:
-        free_bytes = torch.cuda.mem_get_info(0)[0]
+        total = torch.cuda.get_device_properties(0).total_memory
     except Exception:
-        free_bytes = None
-    use_bytes = free_bytes if (free_bytes is not None and free_bytes>0) else total_bytes
-    if use_bytes is None:
-        est = 1
-    else:
-        est = int(use_bytes / (bytes_per_sample * prop_safe))
-    if est < 1:
-        est = 1
-    est = min(est, 512)
-    print(est)
+        total = None
+    use_bytes = free if (free is not None and free>0) else total
+    vram_gb = (use_bytes or 0) / (1024.0**3)
+    # table mapping (tile -> vram ranges -> suggested batch)
+    def map_batch(tile, gb):
+        if tile >= 512:
+            # For large tiles prefer small batches; allow batch=2 for 12-24GB
+            if gb < 8: return 1
+            if gb < 12: return 1
+            if gb < 24: return 2
+            return 4
+        if tile >= 256:
+            if gb < 8: return 1
+            if gb < 12: return 2
+            if gb < 16: return 3
+            if gb < 24: return 4
+            return 8
+        # tile < 256 -> treat as 128
+        if gb < 8: return 2
+        if gb < 12: return 4
+        if gb < 16: return 8
+        if gb < 24: return 12
+        return 16
+    suggested = map_batch(tile, vram_gb)
+    # apply MAX_BATCH clamp
+    try:
+        max_batch_env = int(os.environ.get('MAX_BATCH','32'))
+    except Exception:
+        max_batch_env = 32
+    suggested = min(suggested, max_batch_env)
+    if suggested < 1:
+        suggested = 1
+    print(suggested)
 except Exception:
     print(1)
 PY
@@ -99,64 +100,64 @@ import sys,os
 try:
     import torch
     tile=int(sys.argv[1])
-    bytes_per_sample = tile * tile * 3 * 2
-    # Determine safety factor: prefer explicit env, otherwise autotune by total VRAM
-    pf = os.environ.get('PROBE_SAFE_FACTOR')
-    prop_safe = None
+    # Prefer free memory if available, otherwise use total
     try:
-        prop = torch.cuda.get_device_properties(0)
-        total_bytes = prop.total_memory
+        free = torch.cuda.mem_get_info(0)[0]
     except Exception:
-        total_bytes = None
-    if pf is not None:
-        try:
-            prop_safe = float(pf)
-        except Exception:
-            prop_safe = None
-    if prop_safe is None:
-        if total_bytes is None:
-            prop_safe = 4.0
-        else:
-            gb = total_bytes / (1024**3)
-            if gb < 10:
-                prop_safe = 10.0
-            elif gb < 16:
-                prop_safe = 8.0
-            elif gb < 24:
-                prop_safe = 5.0
-            else:
-                prop_safe = 3.0
-    # prefer free memory for testing
+        free = None
     try:
-        free_bytes = torch.cuda.mem_get_info(0)[0]
+        total = torch.cuda.get_device_properties(0).total_memory
     except Exception:
-        free_bytes = None
-    use_bytes = free_bytes if (free_bytes is not None and free_bytes>0) else total_bytes
-    if use_bytes is None:
-        est = 1
-    else:
-        est = int(use_bytes / (bytes_per_sample * prop_safe))
-    if est < 1:
-        est = 1
-    est = min(est, 512)
+        total = None
+    use_bytes = free if (free is not None and free>0) else total
+    vram_gb = (use_bytes or 0) / (1024.0**3)
+    # deterministic table mapping
+    def map_batch(tile, gb):
+        if tile >= 512:
+            # For large tiles prefer small batches; allow batch=2 for 12-24GB
+            if gb < 8: return 1
+            if gb < 12: return 1
+            if gb < 24: return 2
+            return 4
+        if tile >= 256:
+            if gb < 8: return 1
+            if gb < 12: return 2
+            if gb < 16: return 3
+            if gb < 24: return 4
+            return 8
+        # tile < 256 -> treat as 128
+        if gb < 8: return 2
+        if gb < 12: return 4
+        if gb < 16: return 8
+        if gb < 24: return 12
+        return 16
+    suggested = map_batch(tile, vram_gb)
+    # clamp by MAX_BATCH
+    try:
+        max_batch_env = int(os.environ.get('MAX_BATCH','32'))
+    except Exception:
+        max_batch_env = 32
+    suggested = min(suggested, max_batch_env)
+    if suggested < 1:
+        suggested = 1
+    # quick empirical test: try allocating FP16 tensor at suggested batch; if OOM, halve until success
     dtype = torch.float16
     torch.cuda.empty_cache()
-    candidate = est
-    success = 1
+    candidate = suggested
+    success = False
     for _ in range(6):
         try:
             t = torch.empty((candidate,3,tile,tile), device='cuda', dtype=dtype)
             del t
             torch.cuda.empty_cache()
-            print(candidate)
-            success = 1
+            success = True
             break
         except Exception:
-            success = 0
             candidate = max(1, candidate // 2)
             continue
     if not success:
-        print(1)
+        candidate = 1
+    print(candidate)
 except Exception:
     print(1)
 PY
@@ -194,6 +195,8 @@ done
 EXTRA_ARGS=("${CLEAN_EXTRA[@]}")
 # Log sanitized args
 printf 'Sanitized EXTRA_ARGS: %s\n' "${EXTRA_ARGS[*]}" >> "$LOGFILE"
+# Log MAX_BATCH as well
+printf 'MAX_BATCH: %s\n' "${MAX_BATCH}" >> "$LOGFILE"
 
 # Run the batch script and capture all output
 # Build command array so quoting/arrays are preserved and we can log what we actually run
