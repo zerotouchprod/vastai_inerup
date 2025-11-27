@@ -23,7 +23,7 @@ export TORCH_COMPILE_DISABLE=${TORCH_COMPILE_DISABLE:-1}
 # FAST_COMPILE enables --torch-compile; default OFF for stability
 export FAST_COMPILE=${FAST_COMPILE:-0}
 # Conservative BATCH_ARGS tuned for safety: small tile, fp16, single save-worker (batch-size will be set via VRAM mapping unless explicitly provided)
-export BATCH_ARGS=${BATCH_ARGS:-"--use-local-temp --save-workers 1 --tile-size 256 --half --out-format jpg --jpeg-quality 90"}
+export BATCH_ARGS=${BATCH_ARGS:-"--use-local-temp --save-workers 1 --tile-size 256 --half --out-format png"}
 # Disable auto-tuning by default to avoid long micro-sweeps on startup
 export AUTO_TUNE_BATCH=${AUTO_TUNE_BATCH:-false}
 # Skip live allocation probing by default (use VRAM-only estimate) to fast-start on varied machines
@@ -34,57 +34,90 @@ export PYTHONUNBUFFERED=1
 
 ## VRAM -> batch mapping helpers
 vram_to_batch() {
-  # Try nvidia-smi first (returns MiB)
-  local mem_mb=0
+  # Multi-GPU aware: collect memory for all GPUs and use the minimum (conservative)
+  local mem_list=""
+  local count=0
+
   if command -v nvidia-smi >/dev/null 2>&1; then
-    mem_mb=$(nvidia-smi --query-gpu=memory.total --format=csv,nounits,noheader -i 0 2>/dev/null | head -n1 | tr -d '\r' || echo 0)
+    # produce list of memory totals (MiB), one per GPU
+    mem_list=$(nvidia-smi --query-gpu=memory.total --format=csv,nounits,noheader 2>/dev/null | tr -d '\r' || true)
+    # normalize whitespace
+    mem_list=$(echo "$mem_list" | tr '\n' ' ' | sed -E 's/^ +| +$//g')
   fi
-  if [ -z "$mem_mb" ] || [ "$mem_mb" = "0" ]; then
-    # fallback to Python torch if available (returns bytes)
+
+  if [ -z "$mem_list" ]; then
+    # fallback to Python torch if available (gives bytes per device)
     if command -v python3 >/dev/null 2>&1; then
       pyout=$(python3 - <<'PY' 2>/dev/null || true
 import sys
+out=[]
 try:
     import torch
     if torch.cuda.is_available():
-        print(torch.cuda.get_device_properties(0).total_memory)
+        for i in range(torch.cuda.device_count()):
+            out.append(str(torch.cuda.get_device_properties(i).total_memory))
     else:
-        print(0)
+        out=[]
 except Exception:
-    print(0)
+    out=[]
+print('\n'.join(out))
 PY
 )
-      if [ -n "$pyout" ] && [ "$pyout" -ne 0 ] 2>/dev/null; then
-        # convert bytes to MiB
-        mem_mb=$(( (pyout / 1024) / 1024 ))
-      fi
+      mem_list=$(echo "$pyout" | awk '{ if ($1) printf "%d\n", ($1/1024/1024); }' | tr -d '\r' | tr '\n' ' ' | sed -E 's/^ +| +$//g')
     fi
   fi
 
-  # convert to GB (rounded down)
-  if [ -z "$mem_mb" ] || [ "$mem_mb" -eq 0 ] 2>/dev/null; then
+  # If still empty, return 1 as safe default
+  if [ -z "$mem_list" ]; then
     echo 1
     return
   fi
-  gb=$((mem_mb / 1024))
 
-  # Mapping (empirical): increase batch with more VRAM
-  if [ $gb -lt 8 ]; then
+  # Build array and compute min and count
+  read -r -a arr <<< "$mem_list"
+  count=${#arr[@]}
+  min_mb=0
+  for x in "${arr[@]}"; do
+    # ensure integer
+    val=$(echo "$x" | tr -cd '0-9')
+    if [ -z "$val" ]; then
+      continue
+    fi
+    if [ $min_mb -eq 0 ] || [ $val -lt $min_mb ]; then
+      min_mb=$val
+    fi
+  done
+
+  if [ -z "$min_mb" ] || [ "$min_mb" -eq 0 ]; then
     echo 1
-  elif [ $gb -lt 12 ]; then
-    echo 2
-  elif [ $gb -lt 16 ]; then
-    echo 4
-  elif [ $gb -lt 24 ]; then
-    echo 8
-  else
-    echo 16
+    return
   fi
+
+  gb=$((min_mb / 1024))
+
+  # More conservative mapping (empirical) using minimum per-GPU memory
+  # <12GB => batch 1; 12-16 => 2; 16-24 => 4; 24-32 => 8; >=32 => 16
+  if [ $gb -lt 12 ]; then
+    batch=1
+  elif [ $gb -lt 16 ]; then
+    batch=2
+  elif [ $gb -lt 24 ]; then
+    batch=4
+  elif [ $gb -lt 32 ]; then
+    batch=8
+  else
+    batch=16
+  fi
+
+  # Log details: count and per-GPU sizes and chosen batch
+  echo "gpu_mem_list_mb=${mem_list} gpu_count=${count} min_gpu_gb=${gb} chosen_batch=${batch}"
+  echo "$batch"
 }
 
 apply_vram_batch_mapping() {
   # Only apply when AUTO_TUNE_BATCH is disabled (we don't want to override tuning)
   if [ "${AUTO_TUNE_BATCH:-false}" = "true" ]; then
+    echo "AUTO_TUNE_BATCH=true -> skipping VRAM mapping"
     return 0
   fi
   # If BATCH_ARGS already contains --batch-size, do nothing
@@ -92,9 +125,19 @@ apply_vram_batch_mapping() {
     echo "BATCH_ARGS already contains --batch-size; skipping VRAM mapping"
     return 0
   fi
-  suggested=$(vram_to_batch)
-  echo "VRAM->batch mapping: detected GPU ~${suggested} batch (suggested based on VRAM)"
-  # Append to BATCH_ARGS
+  # Call vram_to_batch which prints a diagnostic line then the batch number
+  vinfo=$(vram_to_batch)
+  # vinfo may contain two lines: diagnostic and batch. Extract last token as batch
+  suggested=$(echo "$vinfo" | tail -n1 | tr -d '\r')
+  diag=$(echo "$vinfo" | sed '
+$ d')
+  if [ -n "$diag" ]; then
+    echo "VRAM info: $diag"
+  fi
+  if [ -z "$suggested" ]; then
+    suggested=1
+  fi
+  echo "VRAM->batch mapping: applying suggested batch_size=$suggested"
   BATCH_ARGS="$BATCH_ARGS --batch-size $suggested"
 }
 
@@ -183,7 +226,8 @@ do_frame_by_frame_upscale() {
   # Extract frames
   echo "Extracting frames from input video..."
   mkdir -p "$TMP_DIR/input" "$TMP_DIR/output"
-  ffmpeg -v warning -i "$INPUT" -qscale:v 1 "$TMP_DIR/input/frame_%06d.png"
+  # Extract frames as 8-bit RGB to avoid 10-bit -> 8-bit misinterpretation by downstream tools
+  ffmpeg -v warning -i "$INPUT" -pix_fmt rgb24 -qscale:v 1 "$TMP_DIR/input/frame_%06d.png"
 
   if [ $? -ne 0 ]; then
     echo "ERROR: Failed to extract frames"
@@ -455,7 +499,8 @@ if [ -f "$BATCH_SCRIPT" ]; then
   echo "Extracting frames to $TMP_DIR..."
   mkdir -p "$TMP_DIR/input" "$TMP_DIR/output"
 
-  ffmpeg -v warning -i "$INFILE" -qscale:v 1 "$TMP_DIR/input/frame_%06d.png"
+  # Extract frames as 8-bit RGB to avoid 10-bit -> 8-bit misinterpretation by downstream tools
+  ffmpeg -v warning -i "$INFILE" -pix_fmt rgb24 -qscale:v 1 "$TMP_DIR/input/frame_%06d.png"
 
   if [ $? -eq 0 ]; then
     FRAME_COUNT=$(ls -1 "$TMP_DIR/input"/*.png 2>/dev/null | wc -l)
