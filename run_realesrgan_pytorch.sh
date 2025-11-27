@@ -32,29 +32,42 @@ export SKIP_PROBE=${SKIP_PROBE:-1}
 # Ensure Python outputs are unbuffered so progress prints appear in real time
 export PYTHONUNBUFFERED=1
 
+# Enable automatic upload to Backblaze B2 by default; can be disabled by setting AUTO_UPLOAD_B2=0
+export AUTO_UPLOAD_B2=${AUTO_UPLOAD_B2:-1}
+
+# upload result path (preserved across runs)
+export UPLOAD_RESULT_JSON=${UPLOAD_RESULT_JSON:-/workspace/realesrgan_upload_result.json}
+
 # Optional automatic upload to Backblaze B2 (S3-compatible). Enable by setting AUTO_UPLOAD_B2=1 and B2_BUCKET env.
 maybe_upload_b2() {
   local file_path="$1"
   if [ "${AUTO_UPLOAD_B2:-0}" != "1" ]; then
+    echo "AUTO_UPLOAD_B2 disabled; skipping upload"
     return 0
   fi
   if [ -z "${B2_BUCKET:-}" ]; then
-    echo "AUTO_UPLOAD_B2=1 but B2_BUCKET not set; skipping upload"
+    echo "AUTO_UPLOAD_B2=1 but B2_BUCKET not set; skipping upload (no bucket configured)"
     return 0
   fi
-  # Default object key: use provided B2_KEY if set, otherwise basename of file
-  local key="${B2_KEY:-$(basename "$file_path") }"
-  echo "AUTO_UPLOAD_B2: uploading $file_path -> s3://${B2_BUCKET}/${key} (endpoint=${B2_ENDPOINT:-})"
   if [ ! -f "$file_path" ]; then
     echo "AUTO_UPLOAD_B2: file not found: $file_path"
     return 1
   fi
-  # Call upload script (it picks creds from env if not passed)
-  python3 /workspace/project/upload_b2.py --file "$file_path" --bucket "${B2_BUCKET}" --key "$key" --endpoint "${B2_ENDPOINT:-}" || {
-    echo "AUTO_UPLOAD_B2: upload script failed (exit $?)"
-    return 1
-  }
-  echo "AUTO_UPLOAD_B2: upload finished"
+  # Default object key: use provided B2_KEY if set, otherwise basename of file
+  local key="${B2_KEY:-$(basename "$file_path") }"
+  echo "AUTO_UPLOAD_B2: uploading $file_path -> s3://${B2_BUCKET}/${key} (endpoint=${B2_ENDPOINT:-})"
+  # Ensure directory for result exists
+  mkdir -p "$(dirname "$UPLOAD_RESULT_JSON")" 2>/dev/null || true
+  # Run upload script and capture stdout/stderr to result json (may contain error text if failed)
+  python3 /workspace/project/upload_b2.py --file "$file_path" --bucket "${B2_BUCKET}" --key "$key" --endpoint "${B2_ENDPOINT:-}" > "$UPLOAD_RESULT_JSON" 2>&1
+  local rc=$?
+  if [ $rc -ne 0 ]; then
+    echo "AUTO_UPLOAD_B2: upload script failed (exit $rc). See $UPLOAD_RESULT_JSON for details"
+    return $rc
+  fi
+  echo "AUTO_UPLOAD_B2: upload succeeded; result saved to $UPLOAD_RESULT_JSON"
+  # print brief summary (first lines)
+  head -n 30 "$UPLOAD_RESULT_JSON" || true
   return 0
 }
 
@@ -303,17 +316,19 @@ do_frame_by_frame_upscale() {
   # Optional upload first (if enabled), then write sentinel
   if [ "${AUTO_UPLOAD_B2:-0}" = "1" ]; then
     maybe_upload_b2 "$OUTPUT"
-    if [ $? -eq 0 ]; then
-      echo "AUTO_UPLOAD_B2: upload succeeded"
+    rc=$?
+    if [ $rc -ne 0 ]; then
+      echo "AUTO_UPLOAD_B2: upload failed (rc=$rc). Continuing without upload. See $UPLOAD_RESULT_JSON for details"
     else
-      echo "AUTO_UPLOAD_B2: upload failed (check logs)"
+      echo "AUTO_UPLOAD_B2: upload succeeded"
     fi
   else
     echo "AUTO_UPLOAD_B2 not enabled; skipping upload"
   fi
   echo "VASTAI_PIPELINE_COMPLETED_SUCCESSFULLY"
   touch /workspace/VASTAI_PIPELINE_COMPLETED_SUCCESSFULLY 2>/dev/null || true
-  return 0
+  rm -rf "$TMP_DIR"
+  exit 0
 }
 
 # Try BATCH upscaling first (10x faster!)
@@ -409,10 +424,11 @@ if [ -f "$BATCH_SCRIPT" ]; then
           # Optional upload first (if enabled), then write sentinel
           if [ "${AUTO_UPLOAD_B2:-0}" = "1" ]; then
             maybe_upload_b2 "$OUTFILE"
-            if [ $? -eq 0 ]; then
-              echo "AUTO_UPLOAD_B2: upload succeeded"
+            rc=$?
+            if [ $rc -ne 0 ]; then
+              echo "AUTO_UPLOAD_B2: upload failed (rc=$rc). Continuing without upload. See $UPLOAD_RESULT_JSON for details"
             else
-              echo "AUTO_UPLOAD_B2: upload failed (check logs)"
+              echo "AUTO_UPLOAD_B2: upload succeeded"
             fi
           else
             echo "AUTO_UPLOAD_B2 not enabled; skipping upload"
@@ -435,10 +451,11 @@ if [ -f "$BATCH_SCRIPT" ]; then
         echo "✓ Batch upscaling completed successfully!"
         if [ "${AUTO_UPLOAD_B2:-0}" = "1" ]; then
           maybe_upload_b2 "$OUTFILE"
-          if [ $? -eq 0 ]; then
-            echo "AUTO_UPLOAD_B2: upload succeeded"
+          rc=$?
+          if [ $rc -ne 0 ]; then
+            echo "AUTO_UPLOAD_B2: upload failed (rc=$rc). Continuing without upload. See $UPLOAD_RESULT_JSON for details"
           else
-            echo "AUTO_UPLOAD_B2: upload failed (check logs)"
+            echo "AUTO_UPLOAD_B2: upload succeeded"
           fi
         else
           echo "AUTO_UPLOAD_B2 not enabled; skipping upload"
@@ -540,10 +557,11 @@ if [ -f "$REPO_DIR/inference_realesrgan_video.py" ]; then
   # Optional upload first (if enabled), then write sentinel
   if [ "${AUTO_UPLOAD_B2:-0}" = "1" ]; then
     maybe_upload_b2 "$OUTFILE"
-    if [ $? -eq 0 ]; then
-      echo "AUTO_UPLOAD_B2: upload succeeded"
+    rc=$?
+    if [ $rc -ne 0 ]; then
+      echo "AUTO_UPLOAD_B2: upload failed (rc=$rc). Continuing without upload. See $UPLOAD_RESULT_JSON for details"
     else
-      echo "AUTO_UPLOAD_B2: upload failed (check logs)"
+      echo "AUTO_UPLOAD_B2: upload succeeded"
     fi
   else
     echo "AUTO_UPLOAD_B2 not enabled; skipping upload"
