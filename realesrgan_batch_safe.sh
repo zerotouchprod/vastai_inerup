@@ -39,7 +39,7 @@ if [ "$HAS_BATCH" -eq 0 ]; then
   echo "No explicit --batch-size provided; running fast GPU probe for tile_size=$TILE_SIZE to estimate safe batch..."
   # If SKIP_PROBE=1, only compute an estimate from VRAM (no allocations/tests)
   if [ "${SKIP_PROBE:-0}" = "1" ]; then
-    SUGGEST_BATCH=$(python3 - <<'PY'
+    SUGGEST_BATCH=$(python3 - "$TILE_SIZE" <<'PY'
 import sys,os
 try:
     import torch
@@ -90,7 +90,7 @@ try:
 except Exception:
     print(1)
 PY
-"$TILE_SIZE")
+)
     echo "VRAM-only mode: suggested batch_size=$SUGGEST_BATCH"
     EXTRA_ARGS=("--batch-size" "$SUGGEST_BATCH" "${EXTRA_ARGS[@]}")
   else
@@ -160,7 +160,7 @@ try:
 except Exception:
     print(1)
 PY
-"$TILE_SIZE")
+)
     if [ -n "$SUGGEST_BATCH" ]; then
       echo "Probe suggests batch_size=$SUGGEST_BATCH";
       EXTRA_ARGS=("--batch-size" "$SUGGEST_BATCH" "${EXTRA_ARGS[@]}")
