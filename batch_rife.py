@@ -30,6 +30,7 @@ import torch
 from torch.nn import functional as F
 import cv2
 import numpy as np
+import time
 
 # instantiate and load weights
 try:
@@ -57,6 +58,18 @@ except Exception:
 
 use_cuda = torch.cuda.is_available()
 device = torch.device('cuda' if use_cuda else 'cpu')
+
+# --- A1: print diagnostics about torch/CUDA for remote debugging ---
+print(f"DEBUG: REPO_DIR={repo} model_dir={model_dir}")
+print(f"DEBUG: torch_version={getattr(torch, '__version__', 'n/a')} cuda_available={use_cuda} device={device}")
+if use_cuda:
+    try:
+        dev = torch.cuda.get_device_properties(0)
+        print(f"DEBUG: cuda_device_name={dev.name} total_memory_MB={dev.total_memory//1024**2} sm={dev.major}.{dev.minor}")
+        # show initial reserved/allocated (may be 0 before any tensors allocated)
+        print(f"DEBUG: cuda_reserved_MB={(torch.cuda.memory_reserved(0)//1024**2) if hasattr(torch.cuda, 'memory_reserved' ) else 'n/a'} allocated_MB={(torch.cuda.memory_allocated(0)//1024**2) if hasattr(torch.cuda, 'memory_allocated') else 'n/a'}")
+    except Exception as _e:
+        print('DEBUG: failed to query cuda device props:', _e)
 
 # helper: bisection-style inference for arbitrary ratio (copied logic from inference_img.py)
 def inference_with_ratio(model, img0, img1, ratio, rthreshold=0.02, rmaxcycles=12):
@@ -125,6 +138,9 @@ mids_per_pair = max(0, int(round(factor)) - 1)
 total_pairs = max(0, len(imgs)-1)
 print(f"Batch-runner: {len(imgs)} frames -> {total_pairs} pairs to process")
 sys.stdout.flush()
+
+# --- A2: start timing for ETA/rate reporting ---
+start_time = time.time()
 
 for i in range(len(imgs)-1):
     a_path = os.path.join(in_dir, imgs[i])
@@ -257,6 +273,23 @@ for i in range(len(imgs)-1):
             # progress
             print(f"Batch-runner: pair {i+1}/{total_pairs} done (single mid)")
             sys.stdout.flush()
+
+            # --- A2: periodic rate/ETA and memory report ---
+            processed = i+1
+            if processed % 5 == 0 or processed == total_pairs:
+                elapsed = time.time() - start_time if start_time else 0.0
+                fps = (processed / elapsed) if elapsed > 0 else 0.0
+                eta = int((total_pairs - processed) / fps) if fps > 0 else -1
+                if use_cuda:
+                    try:
+                        reserved = torch.cuda.memory_reserved(0)//1024**2 if hasattr(torch.cuda, 'memory_reserved') else None
+                        allocated = torch.cuda.memory_allocated(0)//1024**2 if hasattr(torch.cuda, 'memory_allocated') else None
+                        print(f"RATE: processed={processed}/{total_pairs} elapsed_s={int(elapsed)} fps={fps:.2f} ETA_s={eta} reserved_MB={reserved} allocated_MB={allocated}")
+                    except Exception as _e:
+                        print(f"RATE: processed={processed}/{total_pairs} elapsed_s={int(elapsed)} fps={fps:.2f} ETA_s={eta} (cuda mem query failed: {_e})")
+                else:
+                    print(f"RATE: processed={processed}/{total_pairs} elapsed_s={int(elapsed)} fps={fps:.2f} ETA_s={eta} (no-cuda)")
+                sys.stdout.flush()
         else:
             # generate mids at ratios k/(mids_per_pair+1)
             for k in range(1, mids_per_pair+1):
@@ -275,6 +308,23 @@ for i in range(len(imgs)-1):
             # progress for multi-mid case
             print(f"Batch-runner: pair {i+1}/{total_pairs} done ({mids_per_pair} mids)")
             sys.stdout.flush()
+
+            # --- A2: periodic rate/ETA and memory report ---
+            processed = i+1
+            if processed % 5 == 0 or processed == total_pairs:
+                elapsed = time.time() - start_time if start_time else 0.0
+                fps = (processed / elapsed) if elapsed > 0 else 0.0
+                eta = int((total_pairs - processed) / fps) if fps > 0 else -1
+                if use_cuda:
+                    try:
+                        reserved = torch.cuda.memory_reserved(0)//1024**2 if hasattr(torch.cuda, 'memory_reserved') else None
+                        allocated = torch.cuda.memory_allocated(0)//1024**2 if hasattr(torch.cuda, 'memory_allocated') else None
+                        print(f"RATE: processed={processed}/{total_pairs} elapsed_s={int(elapsed)} fps={fps:.2f} ETA_s={eta} reserved_MB={reserved} allocated_MB={allocated}")
+                    except Exception as _e:
+                        print(f"RATE: processed={processed}/{total_pairs} elapsed_s={int(elapsed)} fps={fps:.2f} ETA_s={eta} (cuda mem query failed: {_e})")
+                else:
+                    print(f"RATE: processed={processed}/{total_pairs} elapsed_s={int(elapsed)} fps={fps:.2f} ETA_s={eta} (no-cuda)")
+                sys.stdout.flush()
 
         # free per-pair tensors
         del t0, t1, im0, im1

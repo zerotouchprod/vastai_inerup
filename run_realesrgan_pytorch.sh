@@ -369,6 +369,20 @@ if [ -f "$REPO_DIR/inference_realesrgan_video.py" ]; then
     ffprobe -v error -show_entries format=duration,size,bit_rate -show_entries stream=width,height,nb_frames,r_frame_rate -of default=noprint_wrappers=1 "$INFILE" 2>&1 | head -10
     echo "=========================================="
     echo ""
+
+    # Check nb_frames presence; if missing, prefer frame-by-frame fallback to avoid KeyError in external script
+    NB_FRAMES=$(ffprobe -v error -select_streams v:0 -show_entries stream=nb_frames -of default=noprint_wrappers=1:nokey=1 "$INFILE" 2>/dev/null | tr -d '\n') || true
+    if [ -z "$NB_FRAMES" ] || [ "$NB_FRAMES" = "N/A" ]; then
+      echo "WARNING: ffprobe did not return nb_frames (nb_frames='$NB_FRAMES'), using frame-by-frame fallback to avoid external KeyError"
+      do_frame_by_frame_upscale "$INFILE" "$OUTFILE" "$SCALE"
+      RESULT=$?
+      if [ $RESULT -ne 0 ]; then
+        echo "ERROR: frame-by-frame fallback failed"
+        exit 4
+      else
+        exit 0
+      fi
+    fi
   fi
 
   # Run Real-ESRGAN with output monitoring
