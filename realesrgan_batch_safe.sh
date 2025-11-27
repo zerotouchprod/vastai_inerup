@@ -168,8 +168,56 @@ PY
   fi
 fi
 
+# Sanitize EXTRA_ARGS: remove any explicit --batch-size or -b flags so our suggested/default will be enforced
+CLEAN_EXTRA=()
+skip_next=0
+for a in "${EXTRA_ARGS[@]}"; do
+  if [ "$skip_next" -eq 1 ]; then
+    skip_next=0
+    continue
+  fi
+  case "$a" in
+    --batch-size=*)
+      # skip explicit key=value form
+      continue
+      ;;
+    --batch-size|-b)
+      # skip this flag and its value
+      skip_next=1
+      continue
+      ;;
+    *)
+      CLEAN_EXTRA+=("$a")
+      ;;
+  esac
+done
+EXTRA_ARGS=("${CLEAN_EXTRA[@]}")
+# Log sanitized args
+printf 'Sanitized EXTRA_ARGS: %s\n' "${EXTRA_ARGS[*]}" >> "$LOGFILE"
+
 # Run the batch script and capture all output
-python3 "$BATCH_PY" "$IN_DIR" "$OUT_DIR" "${EXTRA_ARGS[@]}" > "$LOGFILE" 2>&1 || true
+# Build command array so quoting/arrays are preserved and we can log what we actually run
+CMD=(python3 "$BATCH_PY" "$IN_DIR" "$OUT_DIR" "${EXTRA_ARGS[@]}")
+# Ensure --batch-size is present; if not, prepend a conservative default
+HAS_BFLAG=0
+for a in "${CMD[@]}"; do
+  if [ "$a" = "--batch-size" ] || [ "$a" = "-b" ]; then
+    HAS_BFLAG=1
+    break
+  fi
+done
+if [ $HAS_BFLAG -eq 0 ]; then
+  # prepend default batch-size 1
+  CMD=(python3 "$BATCH_PY" "$IN_DIR" "$OUT_DIR" --batch-size 1 "${EXTRA_ARGS[@]}")
+fi
+
+# Log the exact command to the logfile for debugging
+# Use printf with CMD[*] to avoid 'argument mixes string and array' shellcheck-like warnings
+printf 'Running command: %s\n' "${CMD[*]}" >> "$LOGFILE"
+# Also log environment of interest
+echo "ENV: TORCH_COMPILE_DISABLE=${TORCH_COMPILE_DISABLE:-}, SKIP_PROBE=${SKIP_PROBE:-}, AUTO_TUNE_BATCH=${AUTO_TUNE_BATCH:-}, PROBE_SAFE_FACTOR=${PROBE_SAFE_FACTOR:-}" >> "$LOGFILE"
+
+"${CMD[@]}" > "$LOGFILE" 2>&1 || true
 
 # Inspect log for known problematic signatures
 LOG_CONTENT=$(cat "$LOGFILE" 2>/dev/null || true)
