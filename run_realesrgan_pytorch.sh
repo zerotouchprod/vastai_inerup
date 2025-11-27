@@ -27,6 +27,9 @@ export BATCH_ARGS=${BATCH_ARGS:-"--use-local-temp --save-workers 1 --tile-size 2
 # Allow auto-tune by default
 export AUTO_TUNE_BATCH=${AUTO_TUNE_BATCH:-true}
 
+# Ensure Python outputs are unbuffered so progress prints appear in real time
+export PYTHONUNBUFFERED=1
+
 # Try to ensure libcuda.so is visible via a plain symlink; some PyTorch/Inductor code expects libcuda.so
 if ! ldconfig -p | grep -q "libcuda.so" 2>/dev/null; then
   echo "NOTICE: libcuda not visible via ldconfig; searching for libcuda.so.* files..."
@@ -159,7 +162,7 @@ do_frame_by_frame_upscale() {
       ) &
       PROGRESS_PID=$!
 
-      cd "$REPO_DIR" && python3 inference_realesrgan.py -i "$TMP_DIR/input" -o "$TMP_DIR/output" -n RealESRGAN_x4plus -s $SCALE_FACTOR --tile 256 2>&1 | while IFS= read -r line; do
+      cd "$REPO_DIR" && python3 -u inference_realesrgan.py -i "$TMP_DIR/input" -o "$TMP_DIR/output" -n RealESRGAN_x4plus -s $SCALE_FACTOR --tile 256 2>&1 | sed -u 's/\r/\\n/g' | while IFS= read -r line; do
         # Show progress lines but filter out excessive warnings
         if echo "$line" | grep -qE "Processing|Progress|%|\[.*\]|frame|Upscaling"; then
           echo "$line"
@@ -201,7 +204,7 @@ do_frame_by_frame_upscale() {
     ) &
     PROGRESS_PID=$!
 
-    cd "$REPO_DIR" && python3 inference_realesrgan.py -i "$TMP_DIR/input" -o "$TMP_DIR/output" -n RealESRGAN_x4plus -s $SCALE_FACTOR --tile 256 2>&1 | while IFS= read -r line; do
+    cd "$REPO_DIR" && python3 -u inference_realesrgan.py -i "$TMP_DIR/input" -o "$TMP_DIR/output" -n RealESRGAN_x4plus -s $SCALE_FACTOR --tile 256 2>&1 | sed -u 's/\r/\\n/g' | while IFS= read -r line; do
       # Show progress lines but filter out excessive warnings
       if echo "$line" | grep -qE "Processing|Progress|%|\[.*\]|frame|Upscaling"; then
         echo "$line"
