@@ -162,7 +162,7 @@ do_frame_by_frame_upscale() {
       ) &
       PROGRESS_PID=$!
 
-      cd "$REPO_DIR" && python3 -u inference_realesrgan.py -i "$TMP_DIR/input" -o "$TMP_DIR/output" -n RealESRGAN_x4plus -s $SCALE_FACTOR --tile 256 2>&1 | sed -u 's/\r/\\n/g' | while IFS= read -r line; do
+      cd "$REPO_DIR" && python3 -u inference_realesrgan.py -i "$TMP_DIR/input" -o "$TMP_DIR/output" -n RealESRGAN_x4plus -s $SCALE_FACTOR --tile 256 2>&1 | tr '\r' '\n' | while IFS= read -r line; do
         # Show progress lines but filter out excessive warnings
         if echo "$line" | grep -qE "Processing|Progress|%|\[.*\]|frame|Upscaling"; then
           echo "$line"
@@ -204,7 +204,7 @@ do_frame_by_frame_upscale() {
     ) &
     PROGRESS_PID=$!
 
-    cd "$REPO_DIR" && python3 -u inference_realesrgan.py -i "$TMP_DIR/input" -o "$TMP_DIR/output" -n RealESRGAN_x4plus -s $SCALE_FACTOR --tile 256 2>&1 | sed -u 's/\r/\\n/g' | while IFS= read -r line; do
+    cd "$REPO_DIR" && python3 -u inference_realesrgan.py -i "$TMP_DIR/input" -o "$TMP_DIR/output" -n RealESRGAN_x4plus -s $SCALE_FACTOR --tile 256 2>&1 | tr '\r' '\n' | while IFS= read -r line; do
       # Show progress lines but filter out excessive warnings
       if echo "$line" | grep -qE "Processing|Progress|%|\[.*\]|frame|Upscaling"; then
         echo "$line"

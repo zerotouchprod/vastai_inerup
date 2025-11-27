@@ -37,7 +37,7 @@ done
 
 if [ "$HAS_BATCH" -eq 0 ]; then
   echo "No explicit --batch-size provided; running fast GPU probe for tile_size=$TILE_SIZE to estimate safe batch..."
-  SUGGEST_BATCH=$(python3 - <<PY
+  SUGGEST_BATCH=$(python3 - "$TILE_SIZE" <<'PY'
 import sys
 try:
     import torch
@@ -87,7 +87,7 @@ try:
 except Exception:
     print(1)
 PY
-"$TILE_SIZE")
+)
   if [ -n "$SUGGEST_BATCH" ]; then
     echo "Probe suggests batch_size=$SUGGEST_BATCH";
     # Prepend suggested batch into EXTRA_ARGS for the run
