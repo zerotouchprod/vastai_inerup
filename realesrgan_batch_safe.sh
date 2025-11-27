@@ -198,6 +198,80 @@ printf 'Sanitized EXTRA_ARGS: %s\n' "${EXTRA_ARGS[*]}" >> "$LOGFILE"
 # Log MAX_BATCH as well
 printf 'MAX_BATCH: %s\n' "${MAX_BATCH}" >> "$LOGFILE"
 
+# --- Progress watcher (background) ---
+# Configurable interval (seconds)
+: ${PROGRESS_INTERVAL:=10}
+# Count input frames (if IN_DIR exists)
+INPUT_COUNT=0
+if [ -d "$IN_DIR" ]; then
+  INPUT_COUNT=$(find "$IN_DIR" -maxdepth 1 -type f \( -iname '*.png' -o -iname '*.jpg' -o -iname '*.jpeg' \) | wc -l || true)
+fi
+
+start_progress_watcher() {
+  local outdir="$1"; local logfile="$2"; local interval="$3"; local total="$4"
+  # ensure outdir exists (may be created by batch script)
+  local waited=0
+  # wait up to 60s for outdir to appear
+  while [ ! -d "$outdir" ] && [ $waited -lt 120 ]; do
+    sleep 0.5; waited=$((waited+1))
+  done
+  START_TS=$(date +%s)
+  LAST_COUNT=0
+  # log watcher start
+  echo "Starting progress watcher (interval ${interval}s) for $outdir (total frames: $total)" | tee -a "$logfile"
+  while true; do
+    CURR_COUNT=0
+    if [ -d "$outdir" ]; then
+      CURR_COUNT=$(find "$outdir" -maxdepth 1 -type f \( -iname '*.png' -o -iname '*.jpg' -o -iname '*.jpeg' \) | wc -l || true)
+    fi
+    NOW_TS=$(date +%s)
+    ELAPSED=$((NOW_TS - START_TS))
+    if [ "$ELAPSED" -le 0 ]; then ELAPSED=1; fi
+    # average FPS since start
+    if [ "$CURR_COUNT" -gt 0 ]; then
+      AVG_FPS=$(awk "BEGIN{printf \"%.2f\", $CURR_COUNT/$ELAPSED}")
+    else
+      AVG_FPS="0.00"
+    fi
+    # instantaneous FPS over the last interval
+    DELTA=$((CURR_COUNT - LAST_COUNT))
+    if [ $DELTA -lt 0 ]; then DELTA=0; fi
+    if [ "$interval" -gt 0 ]; then
+      INST_FPS=$(awk "BEGIN{printf \"%.2f\", $DELTA/$interval}")
+    else
+      INST_FPS="0.00"
+    fi
+    REMAINING=0
+    ETA_STR="?s"
+    if [ "$total" -gt 0 ]; then
+      REMAINING=$((total - CURR_COUNT))
+      if [ "$CURR_COUNT" -gt 0 ] && [ "$ELAPSED" -gt 0 ]; then
+        ETA_SEC=$(awk "BEGIN{printf \"%.0f\", $REMAINING / ($AVG_FPS+0) }")
+        ETA_MIN=$((ETA_SEC/60))
+        ETA_STR="~${ETA_MIN}m"
+      fi
+    fi
+    PERCENT="0"
+    if [ "$total" -gt 0 ]; then
+      PERCENT=$(( CURR_COUNT * 100 / total )) 2>/dev/null || PERCENT=0
+    fi
+    TS="$(date '+%H:%M:%S')"
+    MSG="[$TS] Progress: ${CURR_COUNT}/${total} frames (${PERCENT}%) | avg: ${AVG_FPS} fps | inst: ${INST_FPS} fps | ETA: ${ETA_STR}"
+    echo "$MSG"
+    printf '%s\n' "$MSG" >> "$logfile"
+    LAST_COUNT=$CURR_COUNT
+    # exit if done
+    if [ "$total" -gt 0 ] && [ "$CURR_COUNT" -ge "$total" ]; then
+      break
+    fi
+    sleep "$interval"
+  done
+}
+
+# Start watcher in background; will be killed after CMD finishes
+start_progress_watcher "$OUT_DIR" "$LOGFILE" "$PROGRESS_INTERVAL" "$INPUT_COUNT" &
+PROGRESS_WATCHER_PID=$!
+
 # Run the batch script and capture all output
 # Build command array so quoting/arrays are preserved and we can log what we actually run
 CMD=(python3 "$BATCH_PY" "$IN_DIR" "$OUT_DIR" "${EXTRA_ARGS[@]}")
@@ -217,10 +291,33 @@ fi
 # Log the exact command to the logfile for debugging
 # Use printf with CMD[*] to avoid 'argument mixes string and array' shellcheck-like warnings
 printf 'Running command: %s\n' "${CMD[*]}" >> "$LOGFILE"
+# Also print the running command to stdout so progress is visible immediately
+echo "Running command: ${CMD[*]}" | tee -a "$LOGFILE"
 # Also log environment of interest
 echo "ENV: TORCH_COMPILE_DISABLE=${TORCH_COMPILE_DISABLE:-}, SKIP_PROBE=${SKIP_PROBE:-}, AUTO_TUNE_BATCH=${AUTO_TUNE_BATCH:-}, PROBE_SAFE_FACTOR=${PROBE_SAFE_FACTOR:-}" >> "$LOGFILE"
 
-"${CMD[@]}" > "$LOGFILE" 2>&1 || true
+# Start a live logfile monitor to surface progress lines to stdout
+# Use tail -n0 -F so we only see new lines appended after this point
+( tail -n0 -F "$LOGFILE" 2>/dev/null | while IFS= read -r line; do
+    # filter likely progress lines to avoid flooding
+    if echo "$line" | grep -qE "Processed|Processing|Processing first frame|frames|fps|Progress|%|ETA|Saving|Batched forward OOM|OOM|ERROR|WARN|Traceback|Model loaded|Dummy forward|Loading Real-ESRGAN|Attempting torch.compile|torch.compile succeeded|torch._dynamo"; then
+      echo "$line"
+    fi
+  done
+) &
+LOG_MONITOR_PID=$!
+
+# Run the batch process and append output to logfile
+"${CMD[@]}" >> "$LOGFILE" 2>&1 || true
+
+# After command completes, stop watcher if running
+if ps -p $PROGRESS_WATCHER_PID > /dev/null 2>&1; then
+  kill $PROGRESS_WATCHER_PID 2>/dev/null || true
+fi
+# stop live logfile monitor
+if ps -p $LOG_MONITOR_PID > /dev/null 2>&1; then
+  kill $LOG_MONITOR_PID 2>/dev/null || true
+fi
 
 # Inspect log for known problematic signatures
 LOG_CONTENT=$(cat "$LOGFILE" 2>/dev/null || true)
