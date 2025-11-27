@@ -459,14 +459,39 @@ def batch_upscale(upsampler, input_frames, output_dir, batch_size=4, progress_ca
             t0 = time.time()
             imgs = []
             valid_paths = []
-            for frame_path in batch_frames:
-                img = cv2.imread(str(frame_path), cv2.IMREAD_UNCHANGED)
-                if img is None:
-                    print(f"ERROR: Failed to load {frame_path}")
-                    _append_log(f"ERROR: Failed to load {frame_path}")
-                    continue
-                imgs.append(img)
-                valid_paths.append(frame_path)
+            # Parallelize image loading to utilize multiple CPU cores and reduce read latency
+            try:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, len(batch_frames))) as read_exec:
+                    futures = {read_exec.submit(cv2.imread, str(p), cv2.IMREAD_UNCHANGED): p for p in batch_frames}
+                    # preserve original order: iterate batch_frames and fetch corresponding future result
+                    for p in batch_frames:
+                        fut = None
+                        # find the matching future
+                        for f,q in futures.items():
+                            if q == p:
+                                fut = f
+                                break
+                        img = None
+                        try:
+                            img = fut.result(timeout=30) if fut is not None else None
+                        except Exception as e:
+                            img = None
+                        if img is None:
+                            print(f"ERROR: Failed to load {p}")
+                            _append_log(f"ERROR: Failed to load {p}: {e if 'e' in locals() else ''}")
+                            continue
+                        imgs.append(img)
+                        valid_paths.append(p)
+            except Exception as e:
+                # fallback to sequential read on unexpected errors
+                for frame_path in batch_frames:
+                    img = cv2.imread(str(frame_path), cv2.IMREAD_UNCHANGED)
+                    if img is None:
+                        print(f"ERROR: Failed to load {frame_path}")
+                        _append_log(f"ERROR: Failed to load {frame_path}")
+                        continue
+                    imgs.append(img)
+                    valid_paths.append(frame_path)
             t1 = time.time()
             read_time = t1 - t0
             total_read_time += read_time
@@ -1031,6 +1056,58 @@ def main():
         print(f"Loading Real-ESRGAN model ({args.model}) for {scale}x upscaling...")
         upsampler = load_model(args.model, scale, args.device, tile_size=tile_size, half=half, allow_data_parallel=True, gpu_id=0)
         print("✓ Model loaded")
+
+        # Quick runtime probe: if user didn't explicitly set batch_size (left as default)
+        # then validate the auto-tuned batch_size with a small synthetic forward.
+        # This is a fast check to avoid OOM on unknown Vast.ai instances.
+        try:
+            if args.batch_size == default_batch and args.device == 'cuda' and not args.no_auto:
+                print("Running quick batch-size probe to validate auto-tuned batch_size...")
+                probe_h = min(512, input_height)
+                probe_w = min(512, input_width)
+                # candidates: start from tuned batch_size and step down
+                cand = []
+                b = batch_size
+                while b >= 1 and len(cand) < 5:
+                    cand.append(int(b))
+                    b = max(1, b // 2)
+                    if b in cand:
+                        break
+                cand = sorted(set(cand), reverse=True)
+                determined = None
+                for c in cand:
+                    try:
+                        dtype = torch.half if half else torch.float
+                        x = torch.randn(c, 3, probe_h, probe_w, dtype=dtype, device='cuda')
+                        with torch.no_grad():
+                            t0 = time.time()
+                            _ = upsampler.model(x)
+                            torch.cuda.synchronize()
+                        determined = c
+                        break
+                    except RuntimeError as e:
+                        msg = str(e).lower()
+                        _append_log(f'Quick probe candidate {c} failed: {e}')
+                        try:
+                            torch.cuda.empty_cache()
+                        except Exception:
+                            pass
+                        if 'out of memory' in msg:
+                            continue
+                        else:
+                            # Unexpected error, break and keep tuned value
+                            determined = batch_size
+                            break
+                if determined is None:
+                    determined = 1
+                if determined != batch_size:
+                    print(f"Quick probe suggests batch_size={determined} (was {batch_size}) — using {determined}")
+                    batch_size = determined
+                else:
+                    print(f"Quick probe OK: batch_size={batch_size}")
+        except Exception as e:
+            _append_log(f'Quick probe aborted: {e}')
+            # non-fatal: proceed with tuned batch_size
 
     print(f"Found {len(frames)} input frames")
     print(f"Upscale factor: {scale}x")
