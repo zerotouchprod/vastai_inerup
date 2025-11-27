@@ -129,8 +129,22 @@ if [ "${SMOKE_SECONDS_VAL}" != "0" ] && [ -n "${SMOKE_SECONDS_VAL}" ]; then
   if command -v ffmpeg >/dev/null 2>&1; then
     echo "[smoke] Downloading and trimming first ${SMOKE_SECONDS_VAL}s to ${SMOKE_IN}"
     if [ -n "$INPUT_URL" ]; then
-      # Use ffmpeg to stream and cut
-      timeout ${SMOKE_TIMEOUT_VAL} ffmpeg -y -i "$INPUT_URL" -t ${SMOKE_SECONDS_VAL} -c copy "$SMOKE_IN" 2>/workspace/smoke_ffmpeg.log || true
+      # Try direct frame extraction from the remote URL (avoid writing intermediate file)
+      # This helps with .mkv inputs and remote URLs that ffmpeg can read directly.
+      timeout ${SMOKE_TIMEOUT_VAL} ffmpeg -y -i "$INPUT_URL" -t ${SMOKE_SECONDS_VAL} -vf "select=not(mod(n\\,10))" -vframes 2 "$SMOKE_DIR/frame_%02d.png" >/workspace/smoke_ff_extract.log 2>&1 || true
+      # If direct extraction produced frames, we are done; else try safer fallback
+      if [ -f "$SMOKE_DIR/frame_01.png" ] || [ -f "$SMOKE_DIR/frame_1.png" ]; then
+        echo "[smoke] Direct frame extraction succeeded"
+      else
+        echo "[smoke] Direct extraction failed; attempting to trim to ${SMOKE_IN} (re-encode) and extract frames"
+        # Re-encode trimmed clip to MP4 to improve compatibility for exotic containers like MKV
+        timeout ${SMOKE_TIMEOUT_VAL} ffmpeg -y -i "$INPUT_URL" -t ${SMOKE_SECONDS_VAL} -c:v libx264 -c:a aac -strict experimental "$SMOKE_IN" >/workspace/smoke_ffmpeg.log 2>&1 || true
+        if [ -f "$SMOKE_IN" ]; then
+          timeout ${SMOKE_TIMEOUT_VAL} ffmpeg -y -i "$SMOKE_IN" -vf "select=not(mod(n\\,10))" -vframes 2 "$SMOKE_DIR/frame_%02d.png" >/workspace/smoke_ff_extract.log 2>&1 || true
+        else
+          echo "[smoke] Failed to produce ${SMOKE_IN}; see /workspace/smoke_ffmpeg.log"
+        fi
+      fi
     else
       echo "[smoke] No INPUT_URL for smoke-test; skipping smoke-test"
       SMOKE_SECONDS_VAL=0
@@ -141,56 +155,106 @@ if [ "${SMOKE_SECONDS_VAL}" != "0" ] && [ -n "${SMOKE_SECONDS_VAL}" ]; then
       wget -O "/workspace/smoke_input_full.mp4" "$INPUT_URL" || true
       if command -v ffmpeg >/dev/null 2>&1; then
         timeout ${SMOKE_TIMEOUT_VAL} ffmpeg -y -i /workspace/smoke_input_full.mp4 -t ${SMOKE_SECONDS_VAL} -c copy "$SMOKE_IN" || true
+        # Try direct extraction from downloaded file
+        timeout ${SMOKE_TIMEOUT_VAL} ffmpeg -y -i "$SMOKE_IN" -vf "select=not(mod(n\\,10))" -vframes 2 "$SMOKE_DIR/frame_%02d.png" >/workspace/smoke_ff_extract.log 2>&1 || true
       fi
     fi
   fi
 
-  if [ -f "$SMOKE_IN" ]; then
-    echo "[smoke] Extracting two frames for RIFE test"
-    ffmpeg -y -i "$SMOKE_IN" -vf "select=not(mod(n\,10))" -vframes 2 "$SMOKE_DIR/frame_%02d.png" >/dev/null 2>&1 || true
+  # Report what we found for debugging
+  echo "[smoke] Post-extract listing of ${SMOKE_DIR} (first 20 entries):"
+  ls -la "$SMOKE_DIR" 2>/dev/null | sed -n '1,20p' || true
+  echo "[smoke] tail of smoke_ff_extract.log (if present):"
+  tail -n 50 /workspace/smoke_ff_extract.log 2>/dev/null || true
 
-    # RIFE test: run inference on the two frames using RIFE inference_img.py if available
-    if [ -d "/workspace/project/external/RIFE" ] && [ -f "/workspace/project/external/RIFE/inference_img.py" ]; then
-      echo "[smoke] Running RIFE inference on two frames"
+  # Normalize frame filename detection for downstream steps — prefer frame_01.png but accept frame_1.png
+  FOUND_FRAME=""
+  if [ -f "$SMOKE_DIR/frame_01.png" ]; then
+    FOUND_FRAME="$SMOKE_DIR/frame_01.png"
+  elif [ -f "$SMOKE_DIR/frame_1.png" ]; then
+    FOUND_FRAME="$SMOKE_DIR/frame_1.png"
+  else
+    # try any frame_*.png
+    FOUND_FRAME=$(ls "$SMOKE_DIR"/frame_*.png 2>/dev/null | head -n1 || true)
+  fi
 
-      # Check if models were copied successfully
-      if [ ! -f "/workspace/project/external/RIFE/train_log/flownet.pkl" ]; then
-        echo "[smoke] WARNING: RIFE models not found in /workspace/project/external/RIFE/train_log/"
-        echo "[smoke] Smoke-test will likely fail, but continuing to show actual error..."
-      fi
+  if [ -n "$FOUND_FRAME" ]; then
+    echo "[smoke] Using frame: $FOUND_FRAME"
+  else
+    echo "[smoke] No extracted frames found in $SMOKE_DIR"
+  fi
 
-      cd /workspace/project/external/RIFE || true
-      # Set PYTHONPATH to include RIFE directory for module imports
-      PYTHONPATH=/workspace/project/external/RIFE:$PYTHONPATH python3 /workspace/project/external/RIFE/inference_img.py --img "$SMOKE_DIR/frame_01.png" "$SMOKE_DIR/frame_02.png" --ratio 0.5 --model train_log >/workspace/smoke_rife.log 2>&1 || true
+  # RIFE test: run inference on the two frames using RIFE inference_img.py if available
+  if [ -d "/workspace/project/external/RIFE" ] && [ -f "/workspace/project/external/RIFE/inference_img.py" ]; then
+    echo "[smoke] Running RIFE inference on two frames"
 
-      # Check for output file existence or success markers
-      if [ -f "output.png" ] || [ -f "$SMOKE_DIR/frame_01_02_mid.png" ] || grep -qi "Loaded v3.x HD model" /workspace/smoke_rife.log 2>/dev/null; then
-        echo "[smoke] ✓ RIFE smoke-test passed"
-      else
-        echo "[smoke] ✗ RIFE smoke-test failed - showing log:"
-        echo "--- smoke_rife.log ---"
-        cat /workspace/smoke_rife.log 2>/dev/null || echo "Log file not found"
-        echo "--- end log ---"
-        echo ""
-        echo "⚠️  SMOKE-TEST FAILED (RIFE)"
-        echo "This usually means models are missing in /opt/rife_models/train_log/"
-        echo "The main pipeline will likely fail. Consider:"
-        echo "  1. Rebuild image with models included"
-        echo "  2. Set RIFE_MODEL_URL in config to auto-download"
-        echo "  3. Set advanced.strict: false to allow fallback"
-        echo ""
-        echo "Continuing anyway to see full pipeline error..."
-        # Don't exit - let pipeline try and show full error
-      fi
-    else
-      echo "[smoke] RIFE inference script not available; skipping RIFE step"
+    # Check if models were copied successfully
+    if [ ! -f "/workspace/project/external/RIFE/train_log/flownet.pkl" ]; then
+      echo "[smoke] WARNING: RIFE models not found in /workspace/project/external/RIFE/train_log/"
+      echo "[smoke] Smoke-test will likely fail, but continuing to show actual error..."
     fi
 
-    # Real-ESRGAN test: use batch upscale script for single frame
-    if [ -f "/workspace/project/realesrgan_batch_upscale.py" ]; then
-      echo "[smoke] Running Real-ESRGAN batch upscale on one frame"
-      mkdir -p "$SMOKE_DIR/esr_input" "$SMOKE_DIR/esr_output"
-      cp "$SMOKE_DIR/frame_01.png" "$SMOKE_DIR/esr_input/frame_000001.png"
+    cd /workspace/project/external/RIFE || true
+    # Set PYTHONPATH to include RIFE directory for module imports
+    # Build args for inference_img.py based on detected frames
+    FRAME_A="$FOUND_FRAME"
+    # pick a second frame if available
+    if [ -f "$SMOKE_DIR/frame_02.png" ]; then
+      FRAME_B="$SMOKE_DIR/frame_02.png"
+    elif [ -f "$SMOKE_DIR/frame_2.png" ]; then
+      FRAME_B="$SMOKE_DIR/frame_2.png"
+    else
+      # try to find any second frame
+      FRAME_B=$(ls "$SMOKE_DIR"/frame_*.png 2>/dev/null | sed -n '2p' || true)
+    fi
+
+    if [ -n "$FRAME_A" ] && [ -n "$FRAME_B" ]; then
+      PYTHONPATH=/workspace/project/external/RIFE:$PYTHONPATH python3 /workspace/project/external/RIFE/inference_img.py --img "$FRAME_A" "$FRAME_B" --ratio 0.5 --model train_log >/workspace/smoke_rife.log 2>&1 || true
+    else
+      echo "[smoke] Not enough frames for RIFE smoke-test; skipping RIFE step"
+    fi
+
+    # Check for output file existence or success markers
+    if [ -f "output.png" ] || [ -f "$SMOKE_DIR/frame_01_02_mid.png" ] || grep -qi "Loaded v3.x HD model" /workspace/smoke_rife.log 2>/dev/null; then
+      echo "[smoke] ✓ RIFE smoke-test passed"
+    else
+      echo "[smoke] ✗ RIFE smoke-test failed - showing log:"
+      echo "--- smoke_rife.log ---"
+      cat /workspace/smoke_rife.log 2>/dev/null || echo "Log file not found"
+      echo "--- end log ---"
+      echo ""
+      echo "⚠️  SMOKE-TEST FAILED (RIFE)"
+      echo "This usually means models are missing in /opt/rife_models/train_log/"
+      echo "The main pipeline will likely fail. Consider:"
+      echo "  1. Rebuild image with models included"
+      echo "  2. Set RIFE_MODEL_URL in config to auto-download"
+      echo "  3. Set advanced.strict: false to allow fallback"
+      echo ""
+      echo "Continuing anyway to see full pipeline error..."
+    fi
+  else
+    echo "[smoke] RIFE inference script not available; skipping RIFE step"
+  fi
+
+  # Real-ESRGAN test: use batch upscale script for single frame
+  if [ -f "/workspace/project/realesrgan_batch_upscale.py" ]; then
+    echo "[smoke] Running Real-ESRGAN batch upscale on one frame"
+    mkdir -p "$SMOKE_DIR/esr_input" "$SMOKE_DIR/esr_output"
+
+    # choose the frame to use for Real-ESRGAN
+    ESR_SRC=""
+    if [ -n "$FOUND_FRAME" ]; then
+      ESR_SRC="$FOUND_FRAME"
+    elif [ -f "$SMOKE_DIR/frame_01.png" ]; then
+      ESR_SRC="$SMOKE_DIR/frame_01.png"
+    elif [ -f "$SMOKE_DIR/frame_1.png" ]; then
+      ESR_SRC="$SMOKE_DIR/frame_1.png"
+    else
+      ESR_SRC=$(ls "$SMOKE_DIR"/frame_*.png 2>/dev/null | head -n1 || true)
+    fi
+
+    if [ -n "$ESR_SRC" ] && [ -f "$ESR_SRC" ]; then
+      cp "$ESR_SRC" "$SMOKE_DIR/esr_input/frame_000001.png" || true
 
       timeout ${SMOKE_TIMEOUT_VAL} python3 /workspace/project/realesrgan_batch_upscale.py \
         "$SMOKE_DIR/esr_input" "$SMOKE_DIR/esr_output" \
@@ -212,20 +276,18 @@ if [ "${SMOKE_SECONDS_VAL}" != "0" ] && [ -n "${SMOKE_SECONDS_VAL}" ]; then
         echo "  3. Out of memory"
         echo ""
         echo "📝 Continuing anyway - main pipeline will show detailed error if Real-ESRGAN truly broken..."
-        # Don't exit - let pipeline try
       fi
-    elif [ -x "/workspace/project/run_realesrgan_pytorch.sh" ]; then
-      echo "[smoke] ⚠️  Skipping Real-ESRGAN smoke-test (requires video, not single frame)"
-      echo "[smoke] Will test Real-ESRGAN during main pipeline processing"
     else
-      echo "[smoke] Real-ESRGAN scripts not available; skipping Real-ESRGAN test"
+      echo "[smoke] No frame available for Real-ESRGAN smoke-test; skipping"
     fi
-
-    echo "=== SMOKE-TEST COMPLETE ==="
+  elif [ -x "/workspace/project/run_realesrgan_pytorch.sh" ]; then
+    echo "[smoke] ⚠️  Skipping Real-ESRGAN smoke-test (requires video, not single frame)"
+    echo "[smoke] Will test Real-ESRGAN during main pipeline processing"
   else
-    echo "[smoke] No smoke input produced; skipping smoke-test"
+    echo "[smoke] Real-ESRGAN scripts not available; skipping Real-ESRGAN test"
   fi
-  set +o pipefail
+
+  echo "=== SMOKE-TEST COMPLETE ==="
 fi
 
 # Run pipeline - CONFIG-DRIVEN or ENV-DRIVEN
