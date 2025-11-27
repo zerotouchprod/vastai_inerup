@@ -17,6 +17,37 @@ if [ ! -d "$REPO_DIR" ]; then
   exit 3
 fi
 
+# --- Runtime safety defaults (no image rebuild required) ---
+# Disable torch.compile by default to avoid increased peak memory / libcuda inductor issues
+export TORCH_COMPILE_DISABLE=${TORCH_COMPILE_DISABLE:-1}
+# FAST_COMPILE enables --torch-compile; default OFF for stability
+export FAST_COMPILE=${FAST_COMPILE:-0}
+# Conservative BATCH_ARGS tuned for ~15-16GB GPUs (RTX A4000): small tile, fp16, few save-workers
+export BATCH_ARGS=${BATCH_ARGS:-"--use-local-temp --save-workers 1 --tile-size 256 --out-format jpg --jpeg-quality 90 --half"}
+# Allow auto-tune by default
+export AUTO_TUNE_BATCH=${AUTO_TUNE_BATCH:-true}
+
+# Try to ensure libcuda.so is visible via a plain symlink; some PyTorch/Inductor code expects libcuda.so
+if ! ldconfig -p | grep -q "libcuda.so" 2>/dev/null; then
+  echo "NOTICE: libcuda not visible via ldconfig; searching for libcuda.so.* files..."
+  FOUND=$(find /lib* /usr/lib* -maxdepth 3 -name 'libcuda.so*' 2>/dev/null | head -n 1 || true)
+  if [ -n "$FOUND" ]; then
+    echo "Found libcuda candidate: $FOUND"
+    if [ ! -e "/usr/lib/libcuda.so" ]; then
+      echo "Creating symlink /usr/lib/libcuda.so -> $FOUND"
+      mkdir -p /usr/lib 2>/dev/null || true
+      ln -sf "$FOUND" /usr/lib/libcuda.so 2>/dev/null || echo "Warning: failed to create symlink /usr/lib/libcuda.so (insufficient permissions?)" >&2
+      ldconfig || true
+    else
+      echo "/usr/lib/libcuda.so already exists"
+    fi
+  else
+    echo "WARNING: libcuda.so not found anywhere inside container. Ensure the host driver is exposed (mount libcuda or use --gpus)" >&2
+  fi
+else
+  echo "libcuda is already visible via ldconfig"
+fi
+
 # Function to perform frame-by-frame upscaling (used as fallback)
 do_frame_by_frame_upscale() {
   local INPUT="$1"
@@ -76,24 +107,24 @@ do_frame_by_frame_upscale() {
         echo "Using BATCH_ARGS (auto-tune enabled; stripped --batch-size if present): $CLEANED_BATCH_ARGS"
         # Append torch-compile flag if requested via env
         if [ "${FAST_COMPILE:-false}" = "1" ] || [ "${FAST_COMPILE:-false}" = "true" ]; then
-          python3 "$BATCH_SCRIPT" "$TMP_DIR/input" "$TMP_DIR/output" $CLEANED_BATCH_ARGS --scale $SCALE_FACTOR --device cuda --torch-compile
+          bash /workspace/project/realesrgan_batch_safe.sh "$TMP_DIR/input" "$TMP_DIR/output" $CLEANED_BATCH_ARGS --scale $SCALE_FACTOR --device cuda --torch-compile
         else
-          python3 "$BATCH_SCRIPT" "$TMP_DIR/input" "$TMP_DIR/output" $CLEANED_BATCH_ARGS --scale $SCALE_FACTOR --device cuda
+          bash /workspace/project/realesrgan_batch_safe.sh "$TMP_DIR/input" "$TMP_DIR/output" $CLEANED_BATCH_ARGS --scale $SCALE_FACTOR --device cuda
         fi
       else
         echo "Using BATCH_ARGS: $BATCH_ARGS"
         if [ "${FAST_COMPILE:-false}" = "1" ] || [ "${FAST_COMPILE:-false}" = "true" ]; then
-          python3 "$BATCH_SCRIPT" "$TMP_DIR/input" "$TMP_DIR/output" $BATCH_ARGS --scale $SCALE_FACTOR --device cuda --torch-compile
+          bash /workspace/project/realesrgan_batch_safe.sh "$TMP_DIR/input" "$TMP_DIR/output" $BATCH_ARGS --scale $SCALE_FACTOR --device cuda --torch-compile
         else
-          python3 "$BATCH_SCRIPT" "$TMP_DIR/input" "$TMP_DIR/output" $BATCH_ARGS --scale $SCALE_FACTOR --device cuda
+          bash /workspace/project/realesrgan_batch_safe.sh "$TMP_DIR/input" "$TMP_DIR/output" $BATCH_ARGS --scale $SCALE_FACTOR --device cuda
         fi
       fi
     else
       # No explicit batch args -> let batch script auto-tune for this GPU
       if [ "${FAST_COMPILE:-false}" = "1" ] || [ "${FAST_COMPILE:-false}" = "true" ]; then
-        python3 "$BATCH_SCRIPT" "$TMP_DIR/input" "$TMP_DIR/output" --scale $SCALE_FACTOR --device cuda --torch-compile
+        bash /workspace/project/realesrgan_batch_safe.sh "$TMP_DIR/input" "$TMP_DIR/output" --scale $SCALE_FACTOR --device cuda --torch-compile
       else
-        python3 "$BATCH_SCRIPT" "$TMP_DIR/input" "$TMP_DIR/output" --scale $SCALE_FACTOR --device cuda
+        bash /workspace/project/realesrgan_batch_safe.sh "$TMP_DIR/input" "$TMP_DIR/output" --scale $SCALE_FACTOR --device cuda
       fi
     fi
 
@@ -279,20 +310,20 @@ if [ -f "$BATCH_SCRIPT" ]; then
           CLEANED_BATCH_ARGS=$(echo "$CLEANED_BATCH_ARGS" | tr -s ' ')
           echo "Using BATCH_ARGS (auto-tune enabled; stripped --batch-size if present): $CLEANED_BATCH_ARGS"
           if [ "${FAST_COMPILE:-false}" = "1" ] || [ "${FAST_COMPILE:-false}" = "true" ]; then
-            python3 "$BATCH_SCRIPT" "$TMP_DIR/input" "$TMP_DIR/output" $CLEANED_BATCH_ARGS --scale $SCALE --device cuda --torch-compile
+            bash /workspace/project/realesrgan_batch_safe.sh "$TMP_DIR/input" "$TMP_DIR/output" $CLEANED_BATCH_ARGS --scale $SCALE --device cuda --torch-compile
           else
-            python3 "$BATCH_SCRIPT" "$TMP_DIR/input" "$TMP_DIR/output" $CLEANED_BATCH_ARGS --scale $SCALE --device cuda
+            bash /workspace/project/realesrgan_batch_safe.sh "$TMP_DIR/input" "$TMP_DIR/output" $CLEANED_BATCH_ARGS --scale $SCALE --device cuda
           fi
         else
           echo "Using BATCH_ARGS: $BATCH_ARGS"
           if [ "${FAST_COMPILE:-false}" = "1" ] || [ "${FAST_COMPILE:-false}" = "true" ]; then
-            python3 "$BATCH_SCRIPT" "$TMP_DIR/input" "$TMP_DIR/output" $BATCH_ARGS --scale $SCALE --device cuda --torch-compile
+            bash /workspace/project/realesrgan_batch_safe.sh "$TMP_DIR/input" "$TMP_DIR/output" $BATCH_ARGS --scale $SCALE --device cuda --torch-compile
           else
-            python3 "$BATCH_SCRIPT" "$TMP_DIR/input" "$TMP_DIR/output" $BATCH_ARGS --scale $SCALE --device cuda
+            bash /workspace/project/realesrgan_batch_safe.sh "$TMP_DIR/input" "$TMP_DIR/output" $BATCH_ARGS --scale $SCALE --device cuda
           fi
         fi
       else
-        python3 "$BATCH_SCRIPT" "$TMP_DIR/input" "$TMP_DIR/output" --scale $SCALE --device cuda
+        bash /workspace/project/realesrgan_batch_safe.sh "$TMP_DIR/input" "$TMP_DIR/output" --scale $SCALE --device cuda
       fi
     else
       # Auto-mode: target 4K (2160p) height
@@ -303,20 +334,20 @@ if [ -f "$BATCH_SCRIPT" ]; then
           CLEANED_BATCH_ARGS=$(echo "$CLEANED_BATCH_ARGS" | tr -s ' ')
           echo "Using BATCH_ARGS (auto-tune enabled; stripped --batch-size if present): $CLEANED_BATCH_ARGS"
           if [ "${FAST_COMPILE:-false}" = "1" ] || [ "${FAST_COMPILE:-false}" = "true" ]; then
-            python3 "$BATCH_SCRIPT" "$TMP_DIR/input" "$TMP_DIR/output" $CLEANED_BATCH_ARGS --target-height 2160 --device cuda --torch-compile
+            bash /workspace/project/realesrgan_batch_safe.sh "$TMP_DIR/input" "$TMP_DIR/output" $CLEANED_BATCH_ARGS --target-height 2160 --device cuda --torch-compile
           else
-            python3 "$BATCH_SCRIPT" "$TMP_DIR/input" "$TMP_DIR/output" $CLEANED_BATCH_ARGS --target-height 2160 --device cuda
+            bash /workspace/project/realesrgan_batch_safe.sh "$TMP_DIR/input" "$TMP_DIR/output" $CLEANED_BATCH_ARGS --target-height 2160 --device cuda
           fi
         else
           echo "Using BATCH_ARGS: $BATCH_ARGS"
           if [ "${FAST_COMPILE:-false}" = "1" ] || [ "${FAST_COMPILE:-false}" = "true" ]; then
-            python3 "$BATCH_SCRIPT" "$TMP_DIR/input" "$TMP_DIR/output" $BATCH_ARGS --target-height 2160 --device cuda --torch-compile
+            bash /workspace/project/realesrgan_batch_safe.sh "$TMP_DIR/input" "$TMP_DIR/output" $BATCH_ARGS --target-height 2160 --device cuda --torch-compile
           else
-            python3 "$BATCH_SCRIPT" "$TMP_DIR/input" "$TMP_DIR/output" $BATCH_ARGS --target-height 2160 --device cuda
+            bash /workspace/project/realesrgan_batch_safe.sh "$TMP_DIR/input" "$TMP_DIR/output" $BATCH_ARGS --target-height 2160 --device cuda
           fi
         fi
       else
-        python3 "$BATCH_SCRIPT" "$TMP_DIR/input" "$TMP_DIR/output" --target-height 2160 --device cuda
+        bash /workspace/project/realesrgan_batch_safe.sh "$TMP_DIR/input" "$TMP_DIR/output" --target-height 2160 --device cuda
       fi
     fi
 
