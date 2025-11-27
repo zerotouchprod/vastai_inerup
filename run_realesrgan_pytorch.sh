@@ -67,8 +67,18 @@ do_frame_by_frame_upscale() {
 
     # Allow overriding batch args via BATCH_ARGS env var (e.g. "--batch-size 16 --use-local-temp --save-workers 8")
     if [ -n "$BATCH_ARGS" ]; then
-      echo "Using BATCH_ARGS: $BATCH_ARGS"
-      python3 "$BATCH_SCRIPT" "$TMP_DIR/input" "$TMP_DIR/output" $BATCH_ARGS --scale $SCALE_FACTOR --device cuda
+      # If AUTO_TUNE_BATCH is unset or true, strip any explicit --batch-size N from BATCH_ARGS
+      if [ "${AUTO_TUNE_BATCH:-true}" = "true" ]; then
+        # remove occurrences of '--batch-size <num>' from BATCH_ARGS (simple grep/sed)
+        CLEANED_BATCH_ARGS=$(echo "$BATCH_ARGS" | sed -E "s/--batch-size(=|[[:space:]]+)[0-9]+//g")
+        # collapse multiple spaces
+        CLEANED_BATCH_ARGS=$(echo "$CLEANED_BATCH_ARGS" | tr -s ' ')
+        echo "Using BATCH_ARGS (auto-tune enabled; stripped --batch-size if present): $CLEANED_BATCH_ARGS"
+        python3 "$BATCH_SCRIPT" "$TMP_DIR/input" "$TMP_DIR/output" $CLEANED_BATCH_ARGS --scale $SCALE_FACTOR --device cuda
+      else
+        echo "Using BATCH_ARGS: $BATCH_ARGS"
+        python3 "$BATCH_SCRIPT" "$TMP_DIR/input" "$TMP_DIR/output" $BATCH_ARGS --scale $SCALE_FACTOR --device cuda
+      fi
     else
       # No explicit batch args -> let batch script auto-tune for this GPU
       python3 "$BATCH_SCRIPT" "$TMP_DIR/input" "$TMP_DIR/output" --scale $SCALE_FACTOR --device cuda
@@ -251,8 +261,15 @@ if [ -f "$BATCH_SCRIPT" ]; then
       echo "Using explicit scale: ${SCALE}x"
       # Allow BATCH_ARGS override; otherwise let batch script auto-tune
       if [ -n "$BATCH_ARGS" ]; then
-        echo "Using BATCH_ARGS: $BATCH_ARGS"
-        python3 "$BATCH_SCRIPT" "$TMP_DIR/input" "$TMP_DIR/output" $BATCH_ARGS --scale $SCALE --device cuda
+        if [ "${AUTO_TUNE_BATCH:-true}" = "true" ]; then
+          CLEANED_BATCH_ARGS=$(echo "$BATCH_ARGS" | sed -E "s/--batch-size(=|[[:space:]]+)[0-9]+//g")
+          CLEANED_BATCH_ARGS=$(echo "$CLEANED_BATCH_ARGS" | tr -s ' ')
+          echo "Using BATCH_ARGS (auto-tune enabled; stripped --batch-size if present): $CLEANED_BATCH_ARGS"
+          python3 "$BATCH_SCRIPT" "$TMP_DIR/input" "$TMP_DIR/output" $CLEANED_BATCH_ARGS --scale $SCALE --device cuda
+        else
+          echo "Using BATCH_ARGS: $BATCH_ARGS"
+          python3 "$BATCH_SCRIPT" "$TMP_DIR/input" "$TMP_DIR/output" $BATCH_ARGS --scale $SCALE --device cuda
+        fi
       else
         python3 "$BATCH_SCRIPT" "$TMP_DIR/input" "$TMP_DIR/output" --scale $SCALE --device cuda
       fi
@@ -260,8 +277,15 @@ if [ -f "$BATCH_SCRIPT" ]; then
       # Auto-mode: target 4K (2160p) height
       echo "Auto-detecting best scale for 4K target..."
       if [ -n "$BATCH_ARGS" ]; then
-        echo "Using BATCH_ARGS: $BATCH_ARGS"
-        python3 "$BATCH_SCRIPT" "$TMP_DIR/input" "$TMP_DIR/output" $BATCH_ARGS --target-height 2160 --device cuda
+        if [ "${AUTO_TUNE_BATCH:-true}" = "true" ]; then
+          CLEANED_BATCH_ARGS=$(echo "$BATCH_ARGS" | sed -E "s/--batch-size(=|[[:space:]]+)[0-9]+//g")
+          CLEANED_BATCH_ARGS=$(echo "$CLEANED_BATCH_ARGS" | tr -s ' ')
+          echo "Using BATCH_ARGS (auto-tune enabled; stripped --batch-size if present): $CLEANED_BATCH_ARGS"
+          python3 "$BATCH_SCRIPT" "$TMP_DIR/input" "$TMP_DIR/output" $CLEANED_BATCH_ARGS --target-height 2160 --device cuda
+        else
+          echo "Using BATCH_ARGS: $BATCH_ARGS"
+          python3 "$BATCH_SCRIPT" "$TMP_DIR/input" "$TMP_DIR/output" $BATCH_ARGS --target-height 2160 --device cuda
+        fi
       else
         python3 "$BATCH_SCRIPT" "$TMP_DIR/input" "$TMP_DIR/output" --target-height 2160 --device cuda
       fi

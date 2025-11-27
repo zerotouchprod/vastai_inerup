@@ -225,7 +225,16 @@ def build_container_command(input_url: str, mode: str, scale: int, target_fps: i
     else:
         batch_args = '--batch-size 2 --use-local-temp --save-workers 2 --tile-size 256'
 
-    env_vars.append(f'BATCH_ARGS="{batch_args}"')
+    # Allow automatic tuning in remote container: if AUTO_TUNE_BATCH is not set to false,
+    # strip any explicit --batch-size N from batch_args so remote probe can decide safely.
+    auto_tune_batch = os.environ.get('AUTO_TUNE_BATCH', 'true').lower()
+    if auto_tune_batch in ('', '1', 'true', 'yes'):
+        import re
+        cleaned = re.sub(r'--batch-size\s+\d+', '', batch_args)
+        cleaned = ' '.join(cleaned.split())
+        env_vars.append(f'BATCH_ARGS="{cleaned}"')
+    else:
+        env_vars.append(f'BATCH_ARGS="{batch_args}"')
 
     runner_cmd = '/workspace/project/scripts/remote_runner.sh'
     # Build final command as: env VARS bash /workspace/project/scripts/remote_runner.sh
