@@ -481,13 +481,27 @@ def batch_upscale(upsampler, input_frames, output_dir, batch_size=4, progress_ca
             tensors = None
             if getattr(upsampler, 'device', None) == 'cuda' and torch.cuda.is_available():
                 try:
-                    tensors = [ _tensor_from_img(im, device='cuda', half=getattr(upsampler, 'half', False)) for im in imgs ]
-                    batch_tensor = torch.cat(tensors, dim=0)
+                    # Optimize: avoid N separate .to(device) memcpys by stacking on CPU and moving once
+                    import numpy as _np
+                    cpu_arrs = []
+                    for im in imgs:
+                        # convert BGR->RGB and normalize to float32 on CPU
+                        arr = im[:, :, ::-1].astype('float32') / 255.0
+                        # shape C,H,W
+                        cpu_arrs.append(arr.transpose(2, 0, 1))
+                    batch_np = _np.stack(cpu_arrs, axis=0)  # N,C,H,W
+                    batch_tensor = torch.from_numpy(batch_np).to('cuda')
+                    if getattr(upsampler, 'half', False):
+                        batch_tensor = batch_tensor.half()
                 except Exception as e:
-                    # fallback
-                    tensors = None
-                    batch_tensor = None
-                    _append_log(f'Preproc failed: {e}')
+                    # fallback to original per-image path (may be slower)
+                    try:
+                        tensors = [ _tensor_from_img(im, device='cuda', half=getattr(upsampler, 'half', False)) for im in imgs ]
+                        batch_tensor = torch.cat(tensors, dim=0)
+                    except Exception as e2:
+                        tensors = None
+                        batch_tensor = None
+                        _append_log(f'Preproc failed: {e} / {e2}')
             else:
                 batch_tensor = None
             t1 = time.time()
@@ -546,7 +560,11 @@ def batch_upscale(upsampler, input_frames, output_dir, batch_size=4, progress_ca
                     else:
                         # ensure parent exists
                         out_path.parent.mkdir(parents=True, exist_ok=True)
-                        cv2.imwrite(str(out_path), out_img)
+                        # Use lower PNG compression to speed up writes (1 = fastest)
+                        try:
+                            cv2.imwrite(str(out_path), out_img, [cv2.IMWRITE_PNG_COMPRESSION, 1])
+                        except Exception:
+                            cv2.imwrite(str(out_path), out_img)
                     return True
                 except Exception as e:
                     _append_log(f'ERROR saving {out_path}: {e}')
