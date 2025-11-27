@@ -391,6 +391,10 @@ def main():
         # Set B2_OUTPUT_KEY env so entrypoint/container will upload to s3://{bucket}/output/{output_name}
         env_override = os.environ.copy()
         env_override['B2_OUTPUT_KEY'] = f"output/{output_name}"
+        # Ensure child Python uses UTF-8 stdout/stderr to avoid UnicodeEncodeError on Windows
+        # PYTHONUTF8=1 is supported on Python 3.7+; PYTHONIOENCODING provides a fallback encoding specification
+        env_override.setdefault('PYTHONUTF8', '1')
+        env_override.setdefault('PYTHONIOENCODING', 'utf-8:replace')
 
         print(f"\n--- Processing file {idx}/{len(video_files)}: {key}")
         print(f"    Input URL: {input_url}")

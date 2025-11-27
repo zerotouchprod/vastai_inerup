@@ -16,6 +16,24 @@ import yaml
 from pathlib import Path
 from datetime import datetime
 
+# Ensure UTF-8 console output on Windows to avoid UnicodeEncodeError when printing emoji
+if sys.platform.startswith("win"):
+    try:
+        # Python 3.7+ supports reconfigure
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        try:
+            # Fallback: wrap underlying buffer
+            import io
+            if hasattr(sys.stdout, 'buffer'):
+                sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace', line_buffering=True)
+            if hasattr(sys.stderr, 'buffer'):
+                sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace', line_buffering=True)
+        except Exception:
+            # If even fallback fails, continue without raising — prints may still fail but we avoid crashing here
+            pass
+
 # Add parent dir to path to import local modules
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
