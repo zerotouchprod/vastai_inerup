@@ -32,6 +32,32 @@ export SKIP_PROBE=${SKIP_PROBE:-1}
 # Ensure Python outputs are unbuffered so progress prints appear in real time
 export PYTHONUNBUFFERED=1
 
+# Optional automatic upload to Backblaze B2 (S3-compatible). Enable by setting AUTO_UPLOAD_B2=1 and B2_BUCKET env.
+maybe_upload_b2() {
+  local file_path="$1"
+  if [ "${AUTO_UPLOAD_B2:-0}" != "1" ]; then
+    return 0
+  fi
+  if [ -z "${B2_BUCKET:-}" ]; then
+    echo "AUTO_UPLOAD_B2=1 but B2_BUCKET not set; skipping upload"
+    return 0
+  fi
+  # Default object key: use provided B2_KEY if set, otherwise basename of file
+  local key="${B2_KEY:-$(basename "$file_path") }"
+  echo "AUTO_UPLOAD_B2: uploading $file_path -> s3://${B2_BUCKET}/${key} (endpoint=${B2_ENDPOINT:-})"
+  if [ ! -f "$file_path" ]; then
+    echo "AUTO_UPLOAD_B2: file not found: $file_path"
+    return 1
+  fi
+  # Call upload script (it picks creds from env if not passed)
+  python3 /workspace/project/upload_b2.py --file "$file_path" --bucket "${B2_BUCKET}" --key "$key" --endpoint "${B2_ENDPOINT:-}" || {
+    echo "AUTO_UPLOAD_B2: upload script failed (exit $?)"
+    return 1
+  }
+  echo "AUTO_UPLOAD_B2: upload finished"
+  return 0
+}
+
 # Try to ensure libcuda.so is visible via a plain symlink; some PyTorch/Inductor code expects libcuda.so
 if ! ldconfig -p | grep -q "libcuda.so" 2>/dev/null; then
   echo "NOTICE: libcuda not visible via ldconfig; searching for libcuda.so.* files..."
@@ -274,10 +300,19 @@ do_frame_by_frame_upscale() {
   OUTPUT_SIZE=$(ls -lh "$OUTPUT" 2>/dev/null | awk '{print $5}')
   echo "Output file: $OUTPUT ($OUTPUT_SIZE)"
   echo "=========================================="
-  # Write sentinel for external pipeline consumers (frame-by-frame path)
+  # Optional upload first (if enabled), then write sentinel
+  if [ "${AUTO_UPLOAD_B2:-0}" = "1" ]; then
+    maybe_upload_b2 "$OUTPUT"
+    if [ $? -eq 0 ]; then
+      echo "AUTO_UPLOAD_B2: upload succeeded"
+    else
+      echo "AUTO_UPLOAD_B2: upload failed (check logs)"
+    fi
+  else
+    echo "AUTO_UPLOAD_B2 not enabled; skipping upload"
+  fi
   echo "VASTAI_PIPELINE_COMPLETED_SUCCESSFULLY"
   touch /workspace/VASTAI_PIPELINE_COMPLETED_SUCCESSFULLY 2>/dev/null || true
-  echo ""
   return 0
 }
 
@@ -371,7 +406,17 @@ if [ -f "$BATCH_SCRIPT" ]; then
         ffmpeg -y -safe 0 -f concat -i "$FILELIST" -framerate "$FPS" -c:v libx264 -crf 18 -pix_fmt yuv420p "$OUTFILE" >/dev/null 2>&1 || true
         if [ -f "$OUTFILE" ]; then
           echo "✓ Assembled from filelist: $OUTFILE"
-          # Write sentinel for external pipeline consumers
+          # Optional upload first (if enabled), then write sentinel
+          if [ "${AUTO_UPLOAD_B2:-0}" = "1" ]; then
+            maybe_upload_b2 "$OUTFILE"
+            if [ $? -eq 0 ]; then
+              echo "AUTO_UPLOAD_B2: upload succeeded"
+            else
+              echo "AUTO_UPLOAD_B2: upload failed (check logs)"
+            fi
+          else
+            echo "AUTO_UPLOAD_B2 not enabled; skipping upload"
+          fi
           echo "VASTAI_PIPELINE_COMPLETED_SUCCESSFULLY"
           touch /workspace/VASTAI_PIPELINE_COMPLETED_SUCCESSFULLY 2>/dev/null || true
           rm -rf "$TMP_DIR"
@@ -388,7 +433,16 @@ if [ -f "$BATCH_SCRIPT" ]; then
 
       if [ -f "$OUTFILE" ]; then
         echo "✓ Batch upscaling completed successfully!"
-        # Write sentinel for external pipeline consumers
+        if [ "${AUTO_UPLOAD_B2:-0}" = "1" ]; then
+          maybe_upload_b2 "$OUTFILE"
+          if [ $? -eq 0 ]; then
+            echo "AUTO_UPLOAD_B2: upload succeeded"
+          else
+            echo "AUTO_UPLOAD_B2: upload failed (check logs)"
+          fi
+        else
+          echo "AUTO_UPLOAD_B2 not enabled; skipping upload"
+        fi
         echo "VASTAI_PIPELINE_COMPLETED_SUCCESSFULLY"
         touch /workspace/VASTAI_PIPELINE_COMPLETED_SUCCESSFULLY 2>/dev/null || true
         rm -rf "$TMP_DIR"
@@ -483,7 +537,17 @@ if [ -f "$REPO_DIR/inference_realesrgan_video.py" ]; then
   fi
 
   # Success — write sentinel so external monitors/pipelines can detect completion
+  # Optional upload first (if enabled), then write sentinel
+  if [ "${AUTO_UPLOAD_B2:-0}" = "1" ]; then
+    maybe_upload_b2 "$OUTFILE"
+    if [ $? -eq 0 ]; then
+      echo "AUTO_UPLOAD_B2: upload succeeded"
+    else
+      echo "AUTO_UPLOAD_B2: upload failed (check logs)"
+    fi
+  else
+    echo "AUTO_UPLOAD_B2 not enabled; skipping upload"
+  fi
   echo "VASTAI_PIPELINE_COMPLETED_SUCCESSFULLY"
   touch /workspace/VASTAI_PIPELINE_COMPLETED_SUCCESSFULLY 2>/dev/null || true
-+
 fi
