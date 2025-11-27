@@ -22,10 +22,12 @@ fi
 export TORCH_COMPILE_DISABLE=${TORCH_COMPILE_DISABLE:-1}
 # FAST_COMPILE enables --torch-compile; default OFF for stability
 export FAST_COMPILE=${FAST_COMPILE:-0}
-# Conservative BATCH_ARGS tuned for ~15-16GB GPUs (RTX A4000): small tile, fp16, few save-workers
-export BATCH_ARGS=${BATCH_ARGS:-"--use-local-temp --save-workers 1 --tile-size 256 --out-format jpg --jpeg-quality 90 --half"}
-# Allow auto-tune by default
-export AUTO_TUNE_BATCH=${AUTO_TUNE_BATCH:-true}
+# Conservative BATCH_ARGS tuned for safety: batch-size 1, small tile, fp16, single save-worker
+export BATCH_ARGS=${BATCH_ARGS:-"--use-local-temp --batch-size 1 --save-workers 1 --tile-size 256 --half --out-format jpg --jpeg-quality 90"}
+# Disable auto-tuning by default to avoid long micro-sweeps on startup
+export AUTO_TUNE_BATCH=${AUTO_TUNE_BATCH:-false}
+# Skip live allocation probing by default (use VRAM-only estimate) to fast-start on varied machines
+export SKIP_PROBE=${SKIP_PROBE:-1}
 
 # Ensure Python outputs are unbuffered so progress prints appear in real time
 export PYTHONUNBUFFERED=1
