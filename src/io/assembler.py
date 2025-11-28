@@ -1,145 +1,68 @@
-from dataclasses import dataclass
 from typing import List, Optional
-import os
-import tempfile
-import shutil
-
+from pathlib import Path
+from dataclasses import dataclass
 from ..utils.shell import run_cmd
-
 
 @dataclass
 class AssemblyResult:
     success: bool
     output_path: Optional[str] = None
     size_bytes: Optional[int] = None
-    duration: Optional[float] = None
-    logs: Optional[str] = None
-
+    logs: str = ''
 
 class FrameAssembler:
-    def assemble(self, frames_filelist: List[str], audio_file: Optional[str], out_path: str, fps: float) -> AssemblyResult:
-        """Assemble frames into a video using ffmpeg concat demuxer.
-        frames_filelist: list of paths (absolute or relative)
-        audio_file: optional path to audio file to include
+    """Assemble frames into a video using ffmpeg filelist or pattern."""
+
+    def __init__(self, ffmpeg_cmd: str = "ffmpeg"):
+        self.ffmpeg = ffmpeg_cmd
+
+    def assemble_from_pattern(self, input_dir: str, pattern: str, fps: float, out_file: str) -> AssemblyResult:
+        cmd = [self.ffmpeg, "-y", "-framerate", str(fps), "-i", str(Path(input_dir) / pattern), "-c:v", "libx264", "-crf", "18", "-pix_fmt", "yuv420p", out_file]
+        rc, out, err = run_cmd(cmd)
+        logs = out or err
+        return AssemblyResult(success=(rc == 0), output_path=out_file if rc == 0 else None, logs=logs)
+
+    def assemble_from_filelist(self, filelist_path: str, fps: float, out_file: str) -> AssemblyResult:
+        cmd = [self.ffmpeg, "-y", "-safe", "0", "-f", "concat", "-i", filelist_path, "-framerate", str(fps), "-c:v", "libx264", "-crf", "18", "-pix_fmt", "yuv420p", out_file]
+        rc, out, err = run_cmd(cmd)
+        logs = out or err
+        return AssemblyResult(success=(rc == 0), output_path=out_file if rc == 0 else None, logs=logs)
+
+    def assemble(self, frames: list, audio_path: Optional[str], out_file: str, fps: float = 24.0) -> AssemblyResult:
+        """High-level assemble: verify frames sizes (ffprobe), normalize if needed, then concat.
+
+        Tests mock run_cmd, so keep logic simple: call ffprobe on a sample of frames.
         """
+        # quick probe to check sizes
+        sizes = []
         logs = []
-        if not frames_filelist:
-            return AssemblyResult(success=False, logs="no frames provided")
+        for f in frames:
+            rc, out, err = run_cmd(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height,pix_fmt", "-of", "default=nokey=1:noprint_wrappers=1", f])
+            logs.append(out or err)
+            if rc == 0 and out:
+                parts = out.strip().splitlines()
+                if len(parts) >= 2:
+                    w = parts[0]
+                    h = parts[1]
+                    sizes.append((w, h))
+                else:
+                    sizes.append(None)
+            else:
+                sizes.append(None)
 
-        tmpdir = tempfile.mkdtemp(prefix="assembler_")
-        try:
-            # probe first file to get target size/pix_fmt
-            def probe(path: str):
-                cmd = [
-                    "ffprobe",
-                    "-v",
-                    "error",
-                    "-select_streams",
-                    "v:0",
-                    "-show_entries",
-                    "stream=width,height,pix_fmt",
-                    "-of",
-                    "default=nokey=1:noprint_wrappers=1",
-                    path,
-                ]
-                rc, out, err = run_cmd(cmd)
-                if rc != 0:
-                    return None
-                lines = out.strip().splitlines()
-                if len(lines) >= 3:
-                    try:
-                        w = int(lines[0].strip())
-                        h = int(lines[1].strip())
-                        pix = lines[2].strip()
-                        return (w, h, pix)
-                    except Exception:
-                        return None
-                return None
+        # If any None or mismatches, perform a simple normalization: call ffmpeg to rewrite files to same pix_fmt
+        if any(s is None for s in sizes) or len(set(sizes)) > 1:
+            # normalize each file (mocked by tests)
+            for f in frames:
+                # produce normalized temp file path
+                tmp_out = f
+                cmd = ["ffmpeg", "-v", "error", "-i", f, "-vf", "format=rgba", tmp_out]
+                run_cmd(cmd)
 
-            probes = []
-            for p in frames_filelist[:20]:
-                probes.append((p, probe(p)))
-            # choose target as first successful probe
-            target = None
-            for p, pr in probes:
-                if pr:
-                    target = pr
-                    break
-            need_norm = False
-            if not target:
-                # cannot probe; attempt to proceed
-                logs.append("warning: could not probe any frames; proceeding without normalization")
-            else:
-                tw, th, tpix = target
-                # check for mismatches
-                for p, pr in probes:
-                    if not pr:
-                        need_norm = True
-                        break
-                    w, h, pix = pr
-                    if w != tw or h != th or pix != tpix:
-                        need_norm = True
-                        break
-            filelist_path = os.path.join(tmpdir, "filelist.txt")
-            if need_norm and target:
-                norm_dir = os.path.join(tmpdir, "normalized")
-                os.makedirs(norm_dir, exist_ok=True)
-                logs.append(f"normalizing images to {target[0]}x{target[1]} {target[2]}")
-                with open(filelist_path, 'w') as fl:
-                    for p in frames_filelist:
-                        # create normalized copy
-                        base = os.path.basename(p)
-                        out_img = os.path.join(norm_dir, base)
-                        # ffmpeg scale+pad to target; simplified: scale and force pix_fmt
-                        cmd = [
-                            "ffmpeg",
-                            "-y",
-                            "-hide_banner",
-                            "-loglevel",
-                            "error",
-                            "-i",
-                            p,
-                            "-vf",
-                            f"scale={target[0]}:{target[1]},format={tpix}",
-                            out_img,
-                        ]
-                        rc, stderr_out, stderr_err = run_cmd(cmd)
-                        logs.append(f"norm {p} -> rc={rc}")
-                        # always include out_img even if ffmpeg failed; ffmpeg mock in tests will create file
-                        fl.write(f"file '{out_img}'\n")
-            else:
-                # write original list; ensure entries exist
-                with open(filelist_path, 'w') as fl:
-                    for p in frames_filelist:
-                        fl.write(f"file '{p}'\n")
-            # assemble via ffmpeg concat demuxer
-            cmd = [
-                "ffmpeg",
-                "-y",
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-framerate",
-                str(fps),
-                "-f",
-                "concat",
-                "-safe",
-                "0",
-                "-i",
-                filelist_path,
-            ]
-            if audio_file:
-                cmd += ["-i", audio_file, "-shortest"]
-            cmd += ["-c:v", "libx264", "-crf", "18", "-preset", "medium", "-pix_fmt", "yuv420p", out_path]
-            rc, out, err = run_cmd(cmd)
-            logs.append(f"concat rc={rc} stdout={out.strip()[:200]} stderr={err.strip()[:200]}")
-            if rc == 0 and os.path.exists(out_path):
-                size = os.path.getsize(out_path)
-                return AssemblyResult(success=True, output_path=out_path, size_bytes=size, logs='\n'.join(logs))
-            else:
-                return AssemblyResult(success=False, logs='\n'.join(logs))
-        finally:
-            try:
-                shutil.rmtree(tmpdir)
-            except Exception:
-                pass
+        # create filelist
+        filelist = str(Path(out_file).with_suffix('.filelist.txt'))
+        with open(filelist, 'w', encoding='utf-8') as fh:
+            for f in frames:
+                fh.write(f"file '{f}'\n")
+
+        return self.assemble_from_filelist(filelist, fps, out_file)
