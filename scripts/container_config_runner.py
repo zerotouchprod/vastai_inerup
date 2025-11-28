@@ -607,20 +607,9 @@ def run_pipeline(input_path: str, output_dir: str, config: dict) -> str:
     # Run pipeline with unbuffered output (PYTHONUNBUFFERED=1)
     env = os.environ.copy()
     env['PYTHONUNBUFFERED'] = '1'  # Force unbuffered output
-    # Default to enabling in-container auto-upload unless explicitly disabled by parent env
-    env.setdefault('AUTO_UPLOAD_B2', '1')
-
-    # Export B2_OUTPUT_KEY to subprocess so in-container uploaders can use the orchestration-provided key.
-    # Prefer an existing env override, otherwise derive from config.video.output
-    try:
-        env_key = env.get('B2_OUTPUT_KEY')
-        output_name = video.get('output') or 'output.mp4'
-        if not env_key:
-            env_key = f"output/{output_name}"
-            env['B2_OUTPUT_KEY'] = env_key
-        print(f"[{ts()}] DEBUG: Passing B2_OUTPUT_KEY to pipeline subprocess: {env_key}", flush=True)
-    except Exception:
-        pass
+    # For centralized uploads we prefer the orchestrator to perform uploads; disable in-container auto-upload by default.
+    env.setdefault('AUTO_UPLOAD_B2', '0')
+    # Do not inject B2_OUTPUT_KEY here for centralized mode; upload will be handled by the orchestrator.
 
     try:
         # Use Popen instead of run to stream output in real-time
@@ -976,7 +965,16 @@ def process_batch_input_dir(input_dir: str, config: dict) -> bool:
         # Compute expected output name and upload target
         original_name = Path(original_key).stem
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        expected_output_name = f"{original_name}_{timestamp}.mp4"
+        # include mode in output filename for clarity
+        video_mode = (config.get('video', {}) or {}).get('mode', 'result')
+        case_mode='result'
+        if video_mode in ('upscale','upscaled','upscal'):
+            case_mode='upscaled'
+        elif video_mode in ('interp','interpolate','interpolated'):
+            case_mode='interpolated'
+        elif video_mode == 'both':
+            case_mode='both'
+        expected_output_name = f"{original_name}_{case_mode}_{timestamp}.mp4"
         upload_bucket = os.environ.get('B2_BUCKET', config.get('b2', {}).get('bucket', bucket)) if isinstance(config, dict) else bucket
         upload_key = f"output/{expected_output_name}"
 
@@ -998,6 +996,8 @@ def process_batch_input_dir(input_dir: str, config: dict) -> bool:
 
         # Create temp config for this file
         temp_config = dict(config)
+        if 'video' not in temp_config or not isinstance(temp_config['video'], dict):
+            temp_config['video'] = {}
         temp_config['video']['input'] = input_url
         temp_config['video']['output'] = expected_output_name
 
@@ -1035,18 +1035,17 @@ def process_batch_input_dir(input_dir: str, config: dict) -> bool:
             input_path = download_input(input_url, temp_config)
 
             log_stage("Starting pipeline", obj['key'])
-            # To prevent pipeline's internal AUTO upload from using a stale B2_OUTPUT_KEY
-            # (leftover from previous single-file runs on this host), temporarily
-            # set the env for this subprocess so it will NOT auto-upload (we'll upload
-            # from the orchestrator with the intended upload_key).
+            # For centralized upload, ensure the in-container pipeline does NOT auto-upload.
+            # We avoid setting B2_OUTPUT_KEY inside the container subprocess (so it won't
+            # attempt uploads). Instead the orchestrator will perform upload_output(...)
+            # after pipeline completes (using upload_key).
             old_b2 = os.environ.get('B2_OUTPUT_KEY')
             old_auto = os.environ.get('AUTO_UPLOAD_B2')
             try:
-                # In batch runs we want the in-container runner to upload directly with the
-                # per-file upload_key (so the uploader runs close to the data and reports progress).
-                os.environ['B2_OUTPUT_KEY'] = upload_key
-                # Ensure auto-upload is enabled inside container for this run
-                os.environ['AUTO_UPLOAD_B2'] = '1'
+                # Remove any B2_OUTPUT_KEY so the container won't accidentally upload with a stale key
+                os.environ.pop('B2_OUTPUT_KEY', None)
+                # Force container to NOT auto-upload
+                os.environ['AUTO_UPLOAD_B2'] = '0'
                 output_file = run_pipeline(input_path, output_dir, temp_config)
             finally:
                 # restore previous env values
@@ -1157,6 +1156,26 @@ def main(argv=None):
         return
 
     print(f"Single-file mode: downloading and processing: {input_url}")
+    # ensure output filename includes mode and timestamp for clarity
+    try:
+        orig_base = os.path.basename(input_url.split('?')[0])
+        orig_stem = orig_base.rsplit('.',1)[0]
+    except Exception:
+        orig_stem = 'input'
+    video_mode = (video or {}).get('mode','result')
+    if video_mode in ('upscale','upscaled','upscal'):
+        case_mode='upscaled'
+    elif video_mode in ('interp','interpolate','interpolated'):
+        case_mode='interpolated'
+    elif video_mode == 'both':
+        case_mode='both'
+    else:
+        case_mode='result'
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    out_name = f"{orig_stem}_{case_mode}_{timestamp}.mp4"
+    if 'video' not in config or not isinstance(config['video'], dict):
+        config['video'] = {}
+    config['video']['output'] = out_name
     inp = download_input(input_url, config)
     outdir = '/workspace/output'
     os.makedirs(outdir, exist_ok=True)
