@@ -186,8 +186,8 @@ if [ -f "$BATCH_PY" ]; then
   log "Found external batch runner: $BATCH_PY"
   (export PYTHONUNBUFFERED=1; export REPO_DIR="$REPO_DIR"; python3 "$BATCH_PY" "$TMP_DIR/input" "$TMP_DIR/output" "$FACTOR") >"$TMP_DIR/batch_rife_run.log" 2>&1 &
   BATCH_PID=$!
-  log "batch_rife.py started (pid=$BATCH_PID), waiting up to 600s for completion"
-  WAIT_SECS=600
+  log "batch_rife.py started (pid=$BATCH_PID), waiting up to 6000s for completion"
+  WAIT_SECS=6000
   for waited in $(seq 1 $WAIT_SECS); do
     sleep 1
     if ! kill -0 $BATCH_PID 2>/dev/null; then
@@ -318,7 +318,7 @@ build_interleaved_filelist(){
     TGT_W=$PAD_W; TGT_H=$PAD_H
   else
     # probe first frame in list
-    FIRST=$(head -n1 "$FL" | sed -E "s/^file '\''(.*)\''$/\1/" || true)
+    FIRST=$(head -n1 "$FL" | sed -E "s/^file '\''(.*)'\''$/\1/" || true)
     if [ -n "$FIRST" ] && [ -f "$FIRST" ]; then
       read pw ph < <(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "$FIRST" 2>/dev/null | awk -Fx '{print $1, $2}') || true
       TGT_W=${pw:-0}; TGT_H=${ph:-0}
@@ -332,91 +332,179 @@ build_interleaved_filelist(){
     FL_NORM="$TMP_DIR/filelist_normalized.txt"
     rm -f "$FL_NORM" || true
     while IFS= read -r line; do
-      # extract path
-      fpath=$(echo "$line" | sed -E "s/^file '\''(.*)\''$/\1/")
+      # Robustly sanitize: iteratively strip leading 'file ' tokens and surrounding quotes until stable
+      fpath="$line"
+      while :; do
+        new=$(echo "$fpath" | sed -E "s/^[[:space:]]*(file[[:space:]]+)+//I")
+        new=$(echo "$new" | sed -E "s/^(['\"])(.*)\1$/\2/")
+        if [ "$new" = "$fpath" ]; then break; fi
+        fpath="$new"
+      done
+      # Trim any remaining leading/trailing whitespace
+      fpath=$(echo "$fpath" | awk '{$1=$1;print}')
       if [ ! -f "$fpath" ]; then
         echo "file '$fpath'" >>"$FL_NORM"; continue
       fi
-      base=$(basename "$fpath")
-      target="$NORM_DIR/$base"
-      # probe current size
-      curwh=$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "$fpath" 2>/dev/null || true)
-      if [ -z "$curwh" ]; then
-        # cannot probe, copy as-is
-        cp -f "$fpath" "$target"
-      else
-        curw=$(echo "$curwh" | cut -d'x' -f1)
-        curh=$(echo "$curwh" | cut -d'x' -f2)
-        if [ "$curw" -eq "$TGT_W" ] && [ "$curh" -eq "$TGT_H" ]; then
-          # same size — ensure pix_fmt is rgb24 by re-encoding lightly
-          ffmpeg -y -hide_banner -loglevel error -i "$fpath" -vf "scale=${TGT_W}:${TGT_H}" -pix_fmt rgb24 "$target" || cp -f "$fpath" "$target"
-        else
-          # scale/pad to target to preserve aspect (centered)
-          ffmpeg -y -hide_banner -loglevel error -i "$fpath" -vf "scale='if(gt(a,${TGT_W}/${TGT_H}),${TGT_W},-2)':'if(gt(a,${TGT_W}/${TGT_H}),-2,${TGT_H})',pad=${TGT_W}:${TGT_H}:(ow-iw)/2:(oh-ih)/2" -pix_fmt rgb24 "$target" || cp -f "$fpath" "$target"
-        fi
-      fi
-      echo "file '$target'" >>"$FL_NORM"
-    done <"$FL"
-    # replace FL with normalized list
-    mv -f "$FL_NORM" "$FL"
-    log "Normalized filelist head:"; head -n 40 "$FL" || true
-  else
-    log "Skipping normalization: unknown target size (TGT_W=$TGT_W TGT_H=$TGT_H)"
+     base=$(basename "$fpath")
+     target="$NORM_DIR/$base"
+     # probe current size
+     curwh=$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "$fpath" 2>/dev/null || true)
+     if [ -z "$curwh" ]; then
+       log "ffprobe failed on $fpath"; continue
+     fi
+     curw=$(echo "$curwh" | cut -d',' -f1)
+     curh=$(echo "$curwh" | cut -d',' -f2)
+     # skip if already target size
+     if [ "$curw" -eq "$TGT_W" ] && [ "$curh" -eq "$TGT_H" ]; then
+       echo "file '$target'" >>"$FL_NORM"
+       continue
+     fi
+     # convert with scaling and pix_fmt
+     log "Converting $fpath -> $target (was ${curw}x${curh}, target ${TGT_W}x${TGT_H})"
+     ffmpeg -v warning -hide_banner -i "$fpath" -vf "scale=${TGT_W}:${TGT_H},format=rgb24" -c:v png -compression_level 3 -f image2 "$target" 2>/dev/null || log "ffmpeg norm failed on $fpath"
+     echo "file '$target'" >>"$FL_NORM"
+    done
+    FL="$FL_NORM"
   fi
-  return 0
+  log "final filelist for assembly: $FL"
+  if [ -f "$TMP_DIR/audio.aac" ]; then
+    ffmpeg -hide_banner -loglevel info -y -framerate "$TARGET_FPS" -f concat -safe 0 -i "$FL" -i "$TMP_DIR/audio.aac" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p -shortest "$OUTFILE" 2>&1 | progress_collapse | tee "$TMP_DIR/ff_assemble_norm.log"
+  else
+    ffmpeg -hide_banner -loglevel info -y -framerate "$TARGET_FPS" -f concat -safe 0 -i "$FL" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p "$OUTFILE" 2>&1 | progress_collapse | tee "$TMP_DIR/ff_assemble_norm.log"
+  fi
+  return ${PIPESTATUS[0]:-1}
 }
 
-# Try interleaved assembly (preferred when both input frames and mids exist)
-if build_interleaved_filelist; then
-  FL="$TMP_DIR/filelist.txt"
+# If there's a batch runner that wrote to TMP_DIR/output, try filelist assembly
+if try_filelist; then
+  log "assembled via filelist"
+  [ -s "$OUTFILE" ] && { log "OK $OUTFILE"; exit 0; }
+fi
+
+# Try assembling mids pattern
+if ls "$TMP_DIR/output"/frame_*_mid*.png 1>/dev/null 2>&1; then
+  log "Assembling from mids"
   if [ -f "$TMP_DIR/audio.aac" ]; then
-    ffmpeg -hide_banner -loglevel info -y -framerate "$TARGET_FPS" -f concat -safe 0 -i "$FL" -i "$TMP_DIR/audio.aac" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p -shortest "$OUTFILE" 2>&1 | progress_collapse | tee "$TMP_DIR/ff_assemble_interleaved.log"
+    ffmpeg -hide_banner -loglevel info -y -framerate "$TARGET_FPS" -i "$TMP_DIR/output/frame_%06d_mid.png" -i "$TMP_DIR/audio.aac" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p -shortest "$OUTFILE" 2>&1 | progress_collapse | tee "$TMP_DIR/ff_assemble_mid.log"
   else
-    ffmpeg -hide_banner -loglevel info -y -framerate "$TARGET_FPS" -f concat -safe 0 -i "$FL" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p "$OUTFILE" 2>&1 | progress_collapse | tee "$TMP_DIR/ff_assemble_interleaved.log"
+    ffmpeg -hide_banner -loglevel info -y -framerate "$TARGET_FPS" -i "$TMP_DIR/output/frame_%06d_mid.png" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p "$OUTFILE" 2>&1 | progress_collapse | tee "$TMP_DIR/ff_assemble_mid.log"
   fi
-  if [ -s "$OUTFILE" ]; then
-    log "assembled via interleaved filelist"
-    log "OK $OUTFILE"
-    exit 0
-  else
-    log "interleaved assembly failed, falling back to other methods"
-    # Diagnostic: show ffmpeg assembly log and filelist head for debugging
-    log "--- interleaved assembly diagnostics ---"
-    if [ -f "$TMP_DIR/ff_assemble_interleaved.log" ]; then
-      log "ffmpeg interleaved assemble log (tail 200):"
-      tail -n 200 "$TMP_DIR/ff_assemble_interleaved.log" 2>/dev/null || true
+  [ -s "$OUTFILE" ] && { log "OK $OUTFILE"; exit 0; }
+fi
+
+# Build interleaved filelist from input frames and mids (handles multiple mids per pair)
+build_interleaved_filelist(){
+  FL="$TMP_DIR/filelist.txt"
+  rm -f "$FL" || true
+  # collect input frames (absolute paths)
+  mapfile -t IN_FRAMES < <(find "$TMP_DIR/input" -maxdepth 1 -type f \( -iname 'frame_*.png' -o -iname 'frame_*.jpg' \) -printf '%f\n' | sort)
+  if [ ${#IN_FRAMES[@]} -eq 0 ]; then
+    return 1
+  fi
+  # for each input frame, append the input frame then any mids for that pair
+  for f in "${IN_FRAMES[@]}"; do
+    # get the numeric index from name (assumes frame_000001.png)
+    idx=$(echo "$f" | sed -E 's/[^0-9]*([0-9]{1,}).*/\1/')
+    # canonical padded name
+    inpath="$TMP_DIR/input/$(printf "frame_%06d" "$idx").png"
+    if [ -f "$inpath" ]; then
+      echo "file '$inpath'" >>"$FL"
     else
-      log "No ffmpeg interleaved log found: $TMP_DIR/ff_assemble_interleaved.log"
+      # try jpg
+      inpath_jpg="$TMP_DIR/input/$(printf "frame_%06d" "$idx").jpg"
+      if [ -f "$inpath_jpg" ]; then
+        echo "file '$inpath_jpg'" >>"$FL"
+      fi
     fi
-    if [ -f "$TMP_DIR/filelist.txt" ]; then
-      log "filelist head (first 60 lines):"
-      head -n 60 "$TMP_DIR/filelist.txt" 2>/dev/null || true
-      log "Probing first 20 files from filelist (ffprobe width,height,pix_fmt):"
-      head -n 20 "$TMP_DIR/filelist.txt" | sed -E "s/^file '\''(.*)\''$/\1/" | while read -r f; do
-        if [ -f "$f" ]; then
-          echo "-- $f --"
-          ffprobe -v error -select_streams v:0 -show_entries stream=width,height,pix_fmt -of default=nokey=1:noprint_wrappers=1 "$f" 2>/dev/null || echo "ffprobe failed for $f"
-        else
-          echo "-- missing $f --"
-        fi
+    # find mids for this index, sort by suffix to ensure correct order
+    mapfile -t MIDS < <(ls -1 "$TMP_DIR/output"/frame_$(printf "%06d" "$idx")_mid*.png 2>/dev/null | sort || true)
+    for m in "${MIDS[@]}"; do
+      [ -f "$m" ] || continue
+      echo "file '$m'" >>"$FL"
+    done
+  done
+  [ -s "$FL" ] || return 1
+  log "interleaved filelist head:"; head -n 40 "$FL" || true
+  # Normalize images if needed: ensure consistent dimensions and pix_fmt for ffmpeg concat
+  NORM_DIR="$TMP_DIR/normalized"
+  mkdir -p "$NORM_DIR"
+  # determine target size: prefer PAD_W/PAD_H computed earlier, else probe first input frame
+  if [ -n "${PAD_W:-}" ] && [ -n "${PAD_H:-}" ]; then
+    TGT_W=$PAD_W; TGT_H=$PAD_H
+  else
+    # probe first frame in list
+    FIRST=$(head -n1 "$FL" | sed -E "s/^file '\''(.*)'\''$/\1/" || true)
+    if [ -n "$FIRST" ] && [ -f "$FIRST" ]; then
+      read pw ph < <(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "$FIRST" 2>/dev/null | awk -Fx '{print $1, $2}') || true
+      TGT_W=${pw:-0}; TGT_H=${ph:-0}
+    else
+      TGT_W=0; TGT_H=0
+    fi
+  fi
+  # if we lack a sensible target, skip normalization
+  if [ "$TGT_W" -gt 0 ] && [ "$TGT_H" -gt 0 ]; then
+    log "Normalizing images to ${TGT_W}x${TGT_H} (png, rgb24) into $NORM_DIR"
+    FL_NORM="$TMP_DIR/filelist_normalized.txt"
+    rm -f "$FL_NORM" || true
+    while IFS= read -r line; do
+      # Robustly sanitize input line into plain path (see diagnostics sanitization above)
+      fpath="$line"
+      while :; do
+        new=$(echo "$fpath" | sed -E "s/^[[:space:]]*(file[[:space:]]+)+//I")
+        new=$(echo "$new" | sed -E "s/^(['\"])(.*)\1$/\2/")
+        if [ "$new" = "$fpath" ]; then break; fi
+        fpath="$new"
       done
-    else
-      log "No filelist.txt to inspect"
-    fi
-    log "--- end interleaved diagnostics ---"
+      fpath=$(echo "$fpath" | awk '{$1=$1;print}')
+      if [ ! -f "$fpath" ]; then
+        echo "file '$fpath'" >>"$FL_NORM"; continue
+      fi
+     base=$(basename "$fpath")
+     target="$NORM_DIR/$base"
+     # probe current size
+     curwh=$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "$fpath" 2>/dev/null || true)
+     if [ -z "$curwh" ]; then
+       log "ffprobe failed on $fpath"; continue
+     fi
+     curw=$(echo "$curwh" | cut -d',' -f1)
+     curh=$(echo "$curwh" | cut -d',' -f2)
+     # skip if already target size
+     if [ "$curw" -eq "$TGT_W" ] && [ "$curh" -eq "$TGT_H" ]; then
+       echo "file '$target'" >>"$FL_NORM"
+       continue
+     fi
+     # convert with scaling and pix_fmt
+     log "Converting $fpath -> $target (was ${curw}x${curh}, target ${TGT_W}x${TGT_H})"
+     ffmpeg -v warning -hide_banner -i "$fpath" -vf "scale=${TGT_W}:${TGT_H},format=rgb24" -c:v png -compression_level 3 -f image2 "$target" 2>/dev/null || log "ffmpeg norm failed on $fpath"
+     echo "file '$target'" >>"$FL_NORM"
+    done
+    FL="$FL_NORM"
   fi
+  log "final filelist for assembly: $FL"
+  if [ -f "$TMP_DIR/audio.aac" ]; then
+    ffmpeg -hide_banner -loglevel info -y -framerate "$TARGET_FPS" -f concat -safe 0 -i "$FL" -i "$TMP_DIR/audio.aac" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p -shortest "$OUTFILE" 2>&1 | progress_collapse | tee "$TMP_DIR/ff_assemble_norm.log"
+  else
+    ffmpeg -hide_banner -loglevel info -y -framerate "$TARGET_FPS" -f concat -safe 0 -i "$FL" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p "$OUTFILE" 2>&1 | progress_collapse | tee "$TMP_DIR/ff_assemble_norm.log"
+  fi
+  return ${PIPESTATUS[0]:-1}
+}
+
+# If there's a batch runner that wrote to TMP_DIR/output, try filelist assembly
+if try_filelist; then
+  log "assembled via filelist"
+  [ -s "$OUTFILE" ] && { log "OK $OUTFILE"; exit 0; }
 fi
 
-# Fallback: ffmpeg minterpolate CPU
-log "FALLBACK: ffmpeg minterpolate -> $OUTFILE"
-ffmpeg -hide_banner -loglevel info -y -i "$INFILE" -vf "minterpolate=fps=$TARGET_FPS:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1" -pix_fmt yuv420p -c:v libx264 -crf 18 -preset medium "$OUTFILE" 2>&1 | progress_collapse | tee "$TMP_DIR/ff_fallback.log"
-
-if [ -s "$OUTFILE" ]; then
-  log "Success: $OUTFILE"
-  exit 0
-else
-  log "Failed to produce output"
-  tail -n 200 "$TMP_DIR/ff_fallback.log" 2>/dev/null || true
-  exit 5
+# Try assembling mids pattern
+if ls "$TMP_DIR/output"/frame_*_mid*.png 1>/dev/null 2>&1; then
+  log "Assembling from mids"
+  if [ -f "$TMP_DIR/audio.aac" ]; then
+    ffmpeg -hide_banner -loglevel info -y -framerate "$TARGET_FPS" -i "$TMP_DIR/output/frame_%06d_mid.png" -i "$TMP_DIR/audio.aac" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p -shortest "$OUTFILE" 2>&1 | progress_collapse | tee "$TMP_DIR/ff_assemble_mid.log"
+  else
+    ffmpeg -hide_banner -loglevel info -y -framerate "$TARGET_FPS" -i "$TMP_DIR/output/frame_%06d_mid.png" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p "$OUTFILE" 2>&1 | progress_collapse | tee "$TMP_DIR/ff_assemble_mid.log"
+  fi
+  [ -s "$OUTFILE" ] && { log "OK $OUTFILE"; exit 0; }
 fi
 
+log "ERROR: Failed to assemble video; see logs in $TMP_DIR"
+exit 1
