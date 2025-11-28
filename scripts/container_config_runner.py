@@ -18,7 +18,7 @@ from pathlib import Path
 from datetime import datetime
 
 # Final marker printed when container finished all work (used by external monitor to auto-stop instances)
-FINAL_PIPELINE_MARKER = "=== VASTAI_PIPELINE_COMPLETED_SUCCESSFULLY ==="
+FINAL_PIPELINE_MARKER = "=== VASTAI_PIPELINE COMPLETED SUCCESSFULLY ==="
 
 # Load .env file manually if present
 # env_path = Path('/workspace/project/.env')
@@ -1033,7 +1033,27 @@ def process_batch_input_dir(input_dir: str, config: dict) -> bool:
             input_path = download_input(input_url, temp_config)
 
             log_stage("Starting pipeline", obj['key'])
-            output_file = run_pipeline(input_path, output_dir, temp_config)
+            # To prevent pipeline's internal AUTO upload from using a stale B2_OUTPUT_KEY
+            # (leftover from previous single-file runs on this host), temporarily
+            # set the env for this subprocess so it will NOT auto-upload (we'll upload
+            # from the orchestrator with the intended upload_key).
+            old_b2 = os.environ.get('B2_OUTPUT_KEY')
+            old_auto = os.environ.get('AUTO_UPLOAD_B2')
+            try:
+                os.environ['B2_OUTPUT_KEY'] = upload_key
+                # disable in-container auto upload so we control upload via upload_output()
+                os.environ['AUTO_UPLOAD_B2'] = '0'
+                output_file = run_pipeline(input_path, output_dir, temp_config)
+            finally:
+                # restore previous env values
+                if old_b2 is None:
+                    os.environ.pop('B2_OUTPUT_KEY', None)
+                else:
+                    os.environ['B2_OUTPUT_KEY'] = old_b2
+                if old_auto is None:
+                    os.environ.pop('AUTO_UPLOAD_B2', None)
+                else:
+                    os.environ['AUTO_UPLOAD_B2'] = old_auto
 
             log_stage("Uploading result", expected_output_name)
             upload_output(output_file, temp_config, upload_key)
@@ -1068,6 +1088,14 @@ def main(argv=None):
         print(f"\n=== RUN START: job_id={job_id} start={job_start} ===\n")
     except Exception:
         pass
+
+    # Defensive: clear any stale B2_OUTPUT_KEY leftover in container environment from previous runs
+    if 'B2_OUTPUT_KEY' in os.environ:
+        try:
+            prev_key = os.environ.pop('B2_OUTPUT_KEY')
+            print(f"[{ts()}] WARN: cleared stale B2_OUTPUT_KEY from environment: {prev_key}", flush=True)
+        except Exception:
+            pass
 
     # Prefer env-driven input for containers (set by run_with_config.py when creating instance)
     video = config.get('video', {})
