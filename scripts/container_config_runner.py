@@ -607,9 +607,11 @@ def run_pipeline(input_path: str, output_dir: str, config: dict) -> str:
     # Run pipeline with unbuffered output (PYTHONUNBUFFERED=1)
     env = os.environ.copy()
     env['PYTHONUNBUFFERED'] = '1'  # Force unbuffered output
-    # For centralized uploads we prefer the orchestrator to perform uploads; disable in-container auto-upload by default.
-    env.setdefault('AUTO_UPLOAD_B2', '0')
-    # Do not inject B2_OUTPUT_KEY here for centralized mode; upload will be handled by the orchestrator.
+    # NOTE: do NOT force AUTO_UPLOAD_B2=0 here. We removed the forced suppression so in-container
+    # upload logic can run and provide clearer logs. The orchestrator still performs a centralized
+    # upload afterwards (upload_output), but upload_output will detect if the pipeline already
+    # uploaded the file and skip duplicate uploads. This avoids the confusing "AUTO_UPLOAD_B2 not enabled; skipping upload" message.
+    # Do not inject B2_OUTPUT_KEY here for centralized mode; upload will be handled by the orchestrator if needed.
 
     try:
         # Use Popen instead of run to stream output in real-time
@@ -709,6 +711,30 @@ def run_pipeline(input_path: str, output_dir: str, config: dict) -> str:
 
 def upload_output(output_file: str, config: dict, b2_output_key: str = None):
     """Upload output to B2 using container_upload.py"""
+    # If the in-container pipeline already uploaded the result, detect it and skip centralized upload.
+    # Common upload-result filenames produced by scripts:
+    #  - /workspace/realesrgan_upload_result.json
+    #  - /workspace/realesrgan_upload_result.json
+    #  - /workspace/single_upload_result.json
+    #  - /workspace/realesrgan_upload_result.json
+    try:
+        import json, glob
+        candidates = glob.glob('/workspace/*upload*result*.json') + glob.glob('/workspace/*upload*.json')
+        for c in sorted(set(candidates)):
+            try:
+                with open(c, 'r') as fh:
+                    data = json.load(fh)
+                # if JSON contains get_url/key/bucket assume upload succeeded
+                if isinstance(data, dict) and (data.get('get_url') or data.get('key') or data.get('bucket') or data.get('status') == 'ok'):
+                    print(f"Detected existing upload result file {c}; assuming pipeline already uploaded. Skipping centralized upload.")
+                    print("Upload result summary:", data)
+                    return
+            except Exception:
+                # not valid JSON or unreadable; ignore
+                pass
+    except Exception:
+        pass
+
     video = config.get('video', {})
     output_name = video.get('output', 'output.mp4')
 
@@ -1167,8 +1193,6 @@ def process_batch_input_dir(input_dir: str, config: dict) -> bool:
             try:
                 # Remove any B2_OUTPUT_KEY so the container won't accidentally upload with a stale key
                 os.environ.pop('B2_OUTPUT_KEY', None)
-                # Force container to NOT auto-upload
-                os.environ['AUTO_UPLOAD_B2'] = '0'
                 output_file = run_pipeline(input_path, output_dir, temp_config)
             finally:
                 # restore previous env values
