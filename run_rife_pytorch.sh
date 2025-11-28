@@ -310,6 +310,59 @@ build_interleaved_filelist(){
   done
   [ -s "$FL" ] || return 1
   log "interleaved filelist head:"; head -n 40 "$FL" || true
+  # Normalize images if needed: ensure consistent dimensions and pix_fmt for ffmpeg concat
+  NORM_DIR="$TMP_DIR/normalized"
+  mkdir -p "$NORM_DIR"
+  # determine target size: prefer PAD_W/PAD_H computed earlier, else probe first input frame
+  if [ -n "${PAD_W:-}" ] && [ -n "${PAD_H:-}" ]; then
+    TGT_W=$PAD_W; TGT_H=$PAD_H
+  else
+    # probe first frame in list
+    FIRST=$(head -n1 "$FL" | sed -E "s/^file '\''(.*)\''$/\1/" || true)
+    if [ -n "$FIRST" ] && [ -f "$FIRST" ]; then
+      read pw ph < <(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "$FIRST" 2>/dev/null | awk -Fx '{print $1, $2}') || true
+      TGT_W=${pw:-0}; TGT_H=${ph:-0}
+    else
+      TGT_W=0; TGT_H=0
+    fi
+  fi
+  # if we lack a sensible target, skip normalization
+  if [ "$TGT_W" -gt 0 ] && [ "$TGT_H" -gt 0 ]; then
+    log "Normalizing images to ${TGT_W}x${TGT_H} (png, rgb24) into $NORM_DIR"
+    FL_NORM="$TMP_DIR/filelist_normalized.txt"
+    rm -f "$FL_NORM" || true
+    while IFS= read -r line; do
+      # extract path
+      fpath=$(echo "$line" | sed -E "s/^file '\''(.*)\''$/\1/")
+      if [ ! -f "$fpath" ]; then
+        echo "file '$fpath'" >>"$FL_NORM"; continue
+      fi
+      base=$(basename "$fpath")
+      target="$NORM_DIR/$base"
+      # probe current size
+      curwh=$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "$fpath" 2>/dev/null || true)
+      if [ -z "$curwh" ]; then
+        # cannot probe, copy as-is
+        cp -f "$fpath" "$target"
+      else
+        curw=$(echo "$curwh" | cut -d'x' -f1)
+        curh=$(echo "$curwh" | cut -d'x' -f2)
+        if [ "$curw" -eq "$TGT_W" ] && [ "$curh" -eq "$TGT_H" ]; then
+          # same size — ensure pix_fmt is rgb24 by re-encoding lightly
+          ffmpeg -y -hide_banner -loglevel error -i "$fpath" -vf "scale=${TGT_W}:${TGT_H}" -pix_fmt rgb24 "$target" || cp -f "$fpath" "$target"
+        else
+          # scale/pad to target to preserve aspect (centered)
+          ffmpeg -y -hide_banner -loglevel error -i "$fpath" -vf "scale='if(gt(a,${TGT_W}/${TGT_H}),${TGT_W},-2)':'if(gt(a,${TGT_W}/${TGT_H}),-2,${TGT_H})',pad=${TGT_W}:${TGT_H}:(ow-iw)/2:(oh-ih)/2" -pix_fmt rgb24 "$target" || cp -f "$fpath" "$target"
+        fi
+      fi
+      echo "file '$target'" >>"$FL_NORM"
+    done <"$FL"
+    # replace FL with normalized list
+    mv -f "$FL_NORM" "$FL"
+    log "Normalized filelist head:"; head -n 40 "$FL" || true
+  else
+    log "Skipping normalization: unknown target size (TGT_W=$TGT_W TGT_H=$TGT_H)"
+  fi
   return 0
 }
 
@@ -327,6 +380,30 @@ if build_interleaved_filelist; then
     exit 0
   else
     log "interleaved assembly failed, falling back to other methods"
+    # Diagnostic: show ffmpeg assembly log and filelist head for debugging
+    log "--- interleaved assembly diagnostics ---"
+    if [ -f "$TMP_DIR/ff_assemble_interleaved.log" ]; then
+      log "ffmpeg interleaved assemble log (tail 200):"
+      tail -n 200 "$TMP_DIR/ff_assemble_interleaved.log" 2>/dev/null || true
+    else
+      log "No ffmpeg interleaved log found: $TMP_DIR/ff_assemble_interleaved.log"
+    fi
+    if [ -f "$TMP_DIR/filelist.txt" ]; then
+      log "filelist head (first 60 lines):"
+      head -n 60 "$TMP_DIR/filelist.txt" 2>/dev/null || true
+      log "Probing first 20 files from filelist (ffprobe width,height,pix_fmt):"
+      head -n 20 "$TMP_DIR/filelist.txt" | sed -E "s/^file '\''(.*)\''$/\1/" | while read -r f; do
+        if [ -f "$f" ]; then
+          echo "-- $f --"
+          ffprobe -v error -select_streams v:0 -show_entries stream=width,height,pix_fmt -of default=nokey=1:noprint_wrappers=1 "$f" 2>/dev/null || echo "ffprobe failed for $f"
+        else
+          echo "-- missing $f --"
+        fi
+      done
+    else
+      log "No filelist.txt to inspect"
+    fi
+    log "--- end interleaved diagnostics ---"
   fi
 fi
 
