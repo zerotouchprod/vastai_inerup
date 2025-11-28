@@ -253,9 +253,9 @@ try_filelist(){
   [ -s "$FL" ] || return 1
   log "filelist head:"; head -n 20 "$FL" || true
   if [ -f "$TMP_DIR/audio.aac" ]; then
-    ffmpeg -hide_banner -loglevel info -y -f concat -safe 0 -i "$FL" -framerate "$TARGET_FPS" -i "$TMP_DIR/audio.aac" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p -shortest "$OUTFILE" 2>&1 | progress_collapse | tee "$TMP_DIR/ff_assemble.log"
+    ffmpeg -hide_banner -loglevel info -y -framerate "$TARGET_FPS" -f concat -safe 0 -i "$FL" -i "$TMP_DIR/audio.aac" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p -shortest "$OUTFILE" 2>&1 | progress_collapse | tee "$TMP_DIR/ff_assemble.log"
   else
-    ffmpeg -hide_banner -loglevel info -y -f concat -safe 0 -i "$FL" -framerate "$TARGET_FPS" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p "$OUTFILE" 2>&1 | progress_collapse | tee "$TMP_DIR/ff_assemble.log"
+    ffmpeg -hide_banner -loglevel info -y -framerate "$TARGET_FPS" -f concat -safe 0 -i "$FL" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p "$OUTFILE" 2>&1 | progress_collapse | tee "$TMP_DIR/ff_assemble.log"
   fi
   return ${PIPESTATUS[0]:-1}
 }
@@ -275,6 +275,59 @@ if ls "$TMP_DIR/output"/frame_*_mid*.png 1>/dev/null 2>&1; then
     ffmpeg -hide_banner -loglevel info -y -framerate "$TARGET_FPS" -i "$TMP_DIR/output/frame_%06d_mid.png" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p "$OUTFILE" 2>&1 | progress_collapse | tee "$TMP_DIR/ff_assemble_mid.log"
   fi
   [ -s "$OUTFILE" ] && { log "OK $OUTFILE"; exit 0; }
+fi
+
+# Build interleaved filelist from input frames and mids (handles multiple mids per pair)
+build_interleaved_filelist(){
+  FL="$TMP_DIR/filelist.txt"
+  rm -f "$FL" || true
+  # collect input frames (absolute paths)
+  mapfile -t IN_FRAMES < <(find "$TMP_DIR/input" -maxdepth 1 -type f \( -iname 'frame_*.png' -o -iname 'frame_*.jpg' \) -printf '%f\n' | sort)
+  if [ ${#IN_FRAMES[@]} -eq 0 ]; then
+    return 1
+  fi
+  # for each input frame, append the input frame then any mids for that pair
+  for f in "${IN_FRAMES[@]}"; do
+    # get the numeric index from name (assumes frame_000001.png)
+    idx=$(echo "$f" | sed -E 's/[^0-9]*([0-9]{1,}).*/\1/')
+    # canonical padded name
+    inpath="$TMP_DIR/input/$(printf "frame_%06d" "$idx").png"
+    if [ -f "$inpath" ]; then
+      echo "file '$inpath'" >>"$FL"
+    else
+      # try jpg
+      inpath_jpg="$TMP_DIR/input/$(printf "frame_%06d" "$idx").jpg"
+      if [ -f "$inpath_jpg" ]; then
+        echo "file '$inpath_jpg'" >>"$FL"
+      fi
+    fi
+    # find mids for this index, sort by suffix to ensure correct order
+    mapfile -t MIDS < <(ls -1 "$TMP_DIR/output"/frame_$(printf "%06d" "$idx")_mid*.png 2>/dev/null | sort || true)
+    for m in "${MIDS[@]}"; do
+      [ -f "$m" ] || continue
+      echo "file '$m'" >>"$FL"
+    done
+  done
+  [ -s "$FL" ] || return 1
+  log "interleaved filelist head:"; head -n 40 "$FL" || true
+  return 0
+}
+
+# Try interleaved assembly (preferred when both input frames and mids exist)
+if build_interleaved_filelist; then
+  FL="$TMP_DIR/filelist.txt"
+  if [ -f "$TMP_DIR/audio.aac" ]; then
+    ffmpeg -hide_banner -loglevel info -y -framerate "$TARGET_FPS" -f concat -safe 0 -i "$FL" -i "$TMP_DIR/audio.aac" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p -shortest "$OUTFILE" 2>&1 | progress_collapse | tee "$TMP_DIR/ff_assemble_interleaved.log"
+  else
+    ffmpeg -hide_banner -loglevel info -y -framerate "$TARGET_FPS" -f concat -safe 0 -i "$FL" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p "$OUTFILE" 2>&1 | progress_collapse | tee "$TMP_DIR/ff_assemble_interleaved.log"
+  fi
+  if [ -s "$OUTFILE" ]; then
+    log "assembled via interleaved filelist"
+    log "OK $OUTFILE"
+    exit 0
+  else
+    log "interleaved assembly failed, falling back to other methods"
+  fi
 fi
 
 # Fallback: ffmpeg minterpolate CPU
