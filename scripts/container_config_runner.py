@@ -768,14 +768,66 @@ def upload_output(output_file: str, config: dict, b2_output_key: str = None):
         print('\n'.join(res.stderr.splitlines()[:200]))
 
     if res.returncode != 0:
-        raise RuntimeError(f"container_upload.py failed (rc={res.returncode}). See uploader logs above.")
+        print(f"Warning: container_upload.py failed (rc={res.returncode}). Attempting direct boto3 fallback...")
+        # Attempt direct boto3 upload as a fallback using credentials from ENV or config
+        try:
+            # Try to import boto3 here
+            import boto3
+            from botocore.client import Config
+            from boto3.s3.transfer import TransferConfig
+        except Exception as e:
+            print(f"Fallback: boto3 not available: {e}")
+            raise RuntimeError(f"container_upload.py failed (rc={res.returncode}) and boto3 fallback unavailable")
 
-    print("")
-    print("✓ Upload completed successfully")
-    try:
-        print(f"Uploaded to s3://{b2_bucket}/{b2_output_key}")
-    except Exception:
-        pass
+        # Resolve credentials: prefer env, then config['b2']
+        ak = os.environ.get('B2_KEY') or os.environ.get('AWS_ACCESS_KEY_ID')
+        sk = os.environ.get('B2_SECRET') or os.environ.get('AWS_SECRET_ACCESS_KEY')
+        if (not ak or not sk) and isinstance(config, dict):
+            b2cfg = config.get('b2', {})
+            ak = ak or b2cfg.get('key') or b2cfg.get('access_key') or b2cfg.get('B2_KEY')
+            sk = sk or b2cfg.get('secret') or b2cfg.get('secret_key') or b2cfg.get('B2_SECRET')
+
+        if not ak or not sk:
+            print("Fallback: credentials missing for direct boto3 upload (B2_KEY/B2_SECRET)")
+            raise RuntimeError(f"container_upload.py failed (rc={res.returncode}) and no credentials for boto3 fallback")
+
+        print("Fallback: attempting direct boto3 upload (may take a while)...")
+        try:
+            cfg = Config(s3={'addressing_style': 'virtual'})
+            s3 = boto3.client('s3', aws_access_key_id=ak, aws_secret_access_key=sk, endpoint_url=b2_endpoint, config=cfg)
+            file_size = os.path.getsize(final_output)
+            transfer_cfg = TransferConfig(multipart_threshold=1024*25, max_concurrency=10, multipart_chunksize=1024*25, use_threads=True)
+            # Progress callback
+            class _CB:
+                def __init__(self, f):
+                    self._size = os.path.getsize(f)
+                    self._seen = 0
+                def __call__(self, bytes_amount):
+                    self._seen += bytes_amount
+                    pct = (self._seen/self._size)*100 if self._size else 0
+                    print(f"Fallback upload progress: {self._seen}/{self._size} bytes ({pct:.1f}%)", flush=True)
+
+            s3.upload_file(final_output, b2_bucket, b2_output_key, Config=transfer_cfg, Callback=_CB(final_output))
+            # verify
+            for attempt in range(3):
+                try:
+                    s3.head_object(Bucket=b2_bucket, Key=b2_output_key)
+                    print("Fallback: head_object verification passed")
+                    break
+                except Exception as e:
+                    print(f"Fallback: head_object attempt {attempt+1} failed: {e}")
+                    import time; time.sleep(1)
+            else:
+                print("Fallback: head_object verification failed after retries")
+                raise RuntimeError("Fallback upload head_object failed")
+
+            url = s3.generate_presigned_url('get_object', Params={'Bucket': b2_bucket, 'Key': b2_output_key}, ExpiresIn=604800)
+            print("Fallback presigned GET:", url)
+            print("✅ Fallback boto3 upload successful")
+            return
+        except Exception as e:
+            print(f"Fallback boto3 upload failed: {e}")
+            raise RuntimeError(f"container_upload.py failed (rc={res.returncode}) and boto3 fallback failed: {e}")
 
 
 def process_batch_input_dir(input_dir: str, config: dict) -> bool:
@@ -1219,7 +1271,7 @@ def main(argv=None):
         # record success sentinel
         try:
             import json
-            res = {"bucket": os.environ.get('B2_BUCKET', config.get('b2', {}).get('bucket','noxfvr-videos')), "key": config.get('video', {}).get('output'), "status": "ok"}
+            res = {"bucket": os.environ.get('B2_BUCKET', config.get('b2', {}).get('bucket', 'noxfvr-videos')), "key": config.get('video', {}).get('output'), "status": "ok"}
             with open('/workspace/single_upload_result.json','w') as f:
                 json.dump(res, f)
             print("Wrote /workspace/single_upload_result.json")
@@ -1230,7 +1282,7 @@ def main(argv=None):
         print(f"ERROR: centralized upload failed for single-file: {e}")
         traceback.print_exc()
         try:
-            res = {"bucket": os.environ.get('B2_BUCKET', config.get('b2', {}).get('bucket','noxfvr-videos')), "key": config.get('video', {}).get('output'), "status": "failed", "error": str(e)}
+            res = {"bucket": os.environ.get('B2_BUCKET', config.get('b2', {}).get('bucket', 'noxfvr-videos')), "key": config.get('video', {}).get('output'), "status": "failed", "error": str(e)}
             with open('/workspace/single_upload_result.json','w') as f:
                 json.dump(res, f)
             print("Wrote /workspace/single_upload_result.json")
