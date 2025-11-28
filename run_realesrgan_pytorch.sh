@@ -168,8 +168,46 @@ maybe_upload_b2() {
     echo "AUTO_UPLOAD_B2: file not found: $file_path"
     return 1
   fi
-  # Default object key: use provided B2_KEY if set, otherwise basename of file
-  local key="${B2_KEY:-$(basename "$file_path") }"
+
+  # If user explicitly provided B2_KEY, use it unchanged. Otherwise construct a descriptive key:
+  # <orig_basename>_<mode>_<YYYYmmdd_HHMMSS>.<ext>
+  if [ -n "${B2_KEY:-}" ]; then
+    local key="$B2_KEY"
+  else
+    # derive original basename (without extension) from INFILE if available, otherwise from file_path
+    local orig_base
+    if [ -n "${INFILE:-}" ]; then
+      orig_base=$(basename "${INFILE}")
+    else
+      orig_base=$(basename "$file_path")
+    fi
+    orig_base="${orig_base%.*}"
+
+    # determine mode: priority - UPLOAD_MODE env, then guess from file name
+    local mode
+    if [ -n "${UPLOAD_MODE:-}" ]; then
+      mode="${UPLOAD_MODE}"
+    else
+      case "$(basename "$file_path")" in
+        *upscal*|*upscaled*|*upscale*) mode="upscaled" ;;
+        *interp*|*interpol*|*interpolate*) mode="interpolated" ;;
+        *both*) mode="both" ;;
+        *) mode="result" ;;
+      esac
+    fi
+
+    # timestamp in UTC (safe for filenames)
+    ts=$(date -u +%Y%m%d_%H%M%S)
+
+    # extension
+    ext="${file_path##*.}"
+    # sanitize orig_base and mode to remove problematic chars
+    safe_base=$(echo "$orig_base" | tr ' /\\' '_' | tr -cd '[:alnum:]_.-')
+    safe_mode=$(echo "$mode" | tr ' /\\' '_' | tr -cd '[:alnum:]_.-')
+
+    local key="${safe_base}_${safe_mode}_${ts}.${ext}"
+  fi
+
   echo "AUTO_UPLOAD_B2: uploading $file_path -> s3://${B2_BUCKET}/${key} (endpoint=${B2_ENDPOINT:-})"
   # Ensure directory for result exists
   mkdir -p "$(dirname "$UPLOAD_RESULT_JSON")" 2>/dev/null || true

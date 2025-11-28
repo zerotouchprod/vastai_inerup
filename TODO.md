@@ -1,195 +1,103 @@
-TODO: Краткий контекст и план для нового AI
-=========================================
+TODO — контекст и планы (сводка работы 2025-11-26/27)
+=====================================
 
-1) Короткая цель этого файла
+Краткая цель
+------------
+Репозиторий запускает пайплайн по апскейлу и интерполяции видео (Real-ESRGAN + RIFE) в контейнере на vast.ai. Важные сценарии: автоматический запуск внутри контейнера, GPU-ускорение, сборка кадров, создание итогового .mp4 и автозагрузка результата на Backblaze B2 (S3-совместимый API).
+
+Что сделано сегодня (сводка)
 ---------------------------
-Этот файл — краткий дневник и TODO по изменениям, которые были сделаны сегодня в репозитории, и организованный список следующих шагов / улучшений. Его можно дать новому AI или разработчику для быстрой экранной подготовки к работе над pipeline.
+- Диагностика множества запусков: обнаружены баги и flaky-места в `run_rife_pytorch.sh` и `run_realesrgan_pytorch.sh`.
+- Добавлен/улучшен batch-runner для RIFE (используется `batch_rife.py` если доступен) — теперь модель загружается один раз и генерирует множественные промежуточные кадры.
+- В `run_realesrgan_pytorch.sh` реализовано более описательное имя объекта при автозагрузке на B2: если `B2_KEY` не задан, ключ формируется как <ориг_имя>_<mode>_<YYYYmmdd_HHMMSS>.<ext> (mode = upscaled/interpolated/both/result). Это пофиксил в `maybe_upload_b2()`.
+- Внедрён filelist (concat) сборщик и печать головы `filelist.txt` в лог при сборке (для отладки порядка кадров).
+- Добавил/отладил вывод прогресса (убрал буферизацию Python при запуске бэтч-скриптов: `PYTHONUNBUFFERED=1` / `export PYTHONUNBUFFERED=1`) и предложил использование `stdbuf`/`unbuffer` для недостающих оболочек; замечены случаи, где `stdbuf` было вызвано неправильно.
+- Добавлены диагностические логи: проверка размеров кадров после pad, печать образца первых 20 строк filelist, сбор метаданных ffprobe и aia.
 
-2) План (что я сделаю в этом файле)
-----------------------------------
-- Описать контекст сегодняшней работы.
-- Перечислить ключевые файлы и их роль.
-- Зафиксировать найденные проблемы и баги/их решения.
-- Сформулировать приоритетный список улучшений (технический TODO).
-- Привести команды для локального/контейнерного запуска и отладки.
+Наблюдаемые проблемы и причины
+-----------------------------
+1) Ошибки синтаксиса оболочки и heredoc в `run_rife_pytorch.sh` / `run_realesrgan_pytorch.sh` при редактировании — приводят к непредсказуемым падениям. Требуется `bash -n` проверка и коррекция блоков if/fi и here-docs.
+2) `batch_rife.py` / inlined heredoc версии иногда имеют indentation/syntax ошибки (Python `IndentationError`) — надо вынести в отдельный файл `batch_rife.py` (не heredoc) и `git`-контролировать.
+3) RIFE иногда падает с RuntimeError: "Sizes of tensors must match... Expected size 512 but got 480" — причина: несовпадение pad-логики между ffmpeg (pad->multiple of 32) и моделью (ожидает кратность 32 или 64 в некоторых слоях). Решение: унифицировать pad (в ffmpeg и в inference_pad) к 32 (уже обсуждали). Также добавил лог "DEBUG: input shapes after pad" для отлова таких пар.
+4) FFmpeg extraction падал из-за некорректного ffmpeg-фильтра (ошибка "No such filter: 'iw+(32-mod(iw,32))'") — проще вычислять pad заранее в bash и передавать фиксированное pad=<W>:<H> (мы это сделали в `run_rife_pytorch.sh`).
+5) Иногда CV2 не читает файлы (imread возвращает None) — это указывает на повреждение/неполную запись файла: добавлена проверка существования и hexdump первых байтов для удалённого дебага.
+6) Реал-ESRGAN batch авто-тюн и torch.compile микросвипы могут падать на некоторых образах/драйверах (libcuda.so симлинк/inductor проблемы). Для стабильности вынесены флаги `TORCH_COMPILE_DISABLE`, `FAST_COMPILE`, `AUTO_TUNE_BATCH`.
+7) `realesrgan_batch_upscale.py` в рабочем дереве имеет синтаксические ошибки (pycompile падает) — нужно исправить или заменить на проверенную версию; до этого включена логика fallback на video method.
+8) `monitor.py` — авто-стоп инстанса после загрузки на B2 не работает (нужно отладить механизм, который следит за result JSON / sentinel file). Это критично для экономии средств.
 
-3) Контекст — что сделано сегодня (кратко)
------------------------------------------
-- Исправлен и стабилизирован `run_rife_pytorch.sh` — много мелких исправлений по пайпам, here-docs и корректным использованию `ffmpeg`.
-- Добавлен numeric pad (вычисление pad_w/pad_h через `ffprobe`) вместо ffmpeg-фильтра с выражениями (устраняет ошибку парсинга фильтра).
-- Добавлен детальный вывод/диагностика после извлечения кадров (список файлов, hexdump первого кадра), логирование ffmpeg выдачи.
-- Добавлен поддерживаемый batch-runner: скрипт ищет `/workspace/project/batch_rife.py` и запускает его, чтобы загрузить модель единожды и генерировать средние кадры (mids) в `$TMP_DIR/output`.
-- Добавлен per-pair fallback: если batch не сработал, запускается `inference_img.py` по парам кадров (с таймаутом и логированием).
-- Добавлен filelist-конкат в сборку финального mp4 и fallback на ffmpeg minterpolate если RIFE не дал выходов.
-- Добавлены диагностические команды (nvidia-smi, torch.cuda info) и логирование batch_rife вывода.
-
-4) Ключевые логи / как воспроизвести проблему/проверку
------------------------------------------------------
-- Типичный запуск pipeline вызывает команду вида:
-
-```bash
-python3 /workspace/project/pipeline.py --input /workspace/input.mp4 --output /workspace/output --mode interp --prefer auto --target-fps 70
-```
-
-- Или вручную можно запустить wrapper:
-
-```bash
-bash -x /apps/PycharmProjects/vastai_interup_ztp/run_rife_pytorch.sh /workspace/input.mp4 /workspace/output/output_interpolated.mp4 3 2>&1 | tee /workspace/run_rife_full.log
-```
-
-- После прогона открыть TMP_DIR (скрипт печатает TMP_DIR, например /tmp/tmp.XYZ):
-
-```bash
-# заменить TMP на то, что напечатал скрипт
-TMP=/tmp/tmp.XYZ
-ls -la "$TMP/input"
-ls -la "$TMP/output"
-sed -n '1,200p' "$TMP/batch_rife_run.log"
-sed -n '1,200p' "$TMP/ff_extract.log"
-```
-
-5) Важные замечания и ошибки, найденные сегодня
------------------------------------------------
-- FFmpeg filter parsing: выражения вида pad=if(mod(iw\,32),iw+(32-mod(iw\,32)),iw) приводили к ошибке "No such filter" на некоторой сборке ffmpeg. Решение: вычислять pad значения в shell (через ffprobe) и передавать как pad=NUM:NUM.
-- Tensor size mismatch в RIFE: модель ожидает размеры, кратные определённому шагу (в RIFE v3.x встречалось требование кратности 64 в train_log). Для надежности в batch_rife.py мы pad'им входы к ближайшему кратному 64; в wrapper обходим pad вопросы при извлечении (кратность 32) — это согласие между ffmpeg и моделью.
-- Проблема: когда batch-runner не генерировал mids (ошибка/отсутствие скрипта), раньше wrapper мгновенно переключался на ffmpeg minterpolate. Теперь wrapper сначала попытается запустить batch_rife, затем per-pair inference, и только после этого — ffmpeg fallback.
-
-6) Структура репозитория (ключевые файлы и папки)
---------------------------------------------------
-Корневая структура (важные элементы):
-- `run_rife_pytorch.sh` — главный wrapper для шага интерполяции. Отвечает за извлечение кадров, запуск batch‑runner/per‑pair inference, и сборку финального видео.
-- `pipeline.py` — основной pipeline, который управляет шагами (interpolate, upscale, upload и т.д.). Вызывает `run_rife_pytorch.sh` для RIFE-интерполяции.
-- `batch_rife.py` — lightweight batch runner (в корне repo) — загружает модель RIFE, обрабатывает пары кадров, пишет промежуточные mids в каталог `output`. CLI: `python3 batch_rife.py <in_dir> <out_dir> <factor>`.
-- `external/RIFE/` — исходники RIFE (модель, inference_img.py, train_log/, etc.). Важные файлы здесь:
-  - `inference_img.py` — per-pair inference utility (из upstream RIFE).
-  - `train_log/` — подпапка с моделями (например `flownet.pkl`, `RIFE_HDv3.py`, `IFNet_HDv3.py`).
-- `external/Real-ESRGAN` — реализация Real-ESRGAN (для upscale).
-- `requirements.txt` — pip зависимости для контейнера/venv.
-- вспомогательные: `pipeline.py`, `run_realesrgan_pytorch.sh`, `run_rife_pytorch.sh`, `scripts/*`.
-
-6.1) Project entrypoint and monitor (important)
-----------------------------------------------
-- Important: the canonical single entrypoint used in production runs is `run_with_config_batch_sync.py` (this is the top-level runner invoked by the orchestration, not `pipeline.py` directly).
-- `monitor.py` (also referenced as `monitor_instance.py` in some scripts) is the instance watchdog: it should detect successful upload to Backblaze B2 (or S3-compatible endpoint) and automatically stop the VM/container once the final file is uploaded to avoid extra charges.
-- Current status: the automatic stop logic in `monitor.py` is not functioning reliably — the monitor does not consistently detect the completed B2 upload event and therefore does not trigger the instance shutdown. This needs to be fixed and tested.
-
-10.1) Add monitor fix to TODO (high priority)
----------------------------------------------
-- [ ] M1 — Fix automatic stop in `monitor.py`:
-  - Ensure monitor reliably detects successful upload completion to B2 (check upload manifest, returned ETag / file size, or use the same put result acknowledgement that uploader uses).
-  - If uploader uses a two-step (upload temp -> move/rename) flow, monitor must detect the final filename (or listen to uploader success hook).
-  - On detection, monitor should perform a safe shutdown API call (or call host agent) and log the event; it must also handle transient listing/latency issues (re-verify N times over a short window before stopping).
-  - Add diagnostics: log B2 keys, upload events, exact check used (size/sha1/etag), and a final "STOPPING INSTANCE" message with timestamp and reason.
-
-10.2) Tests for monitor fix
----------------------------
-- Add small smoke test that simulates uploader completing a file (e.g., write a marker file or call the same B2 API) and asserts that monitor triggers shutdown logic (for test: replace shutdown with writing a sentinel file or calling a dry-run endpoint).
-- Add steps to run monitor locally in "dry-run" mode to validate detection logic:
-  - `python3 monitor.py --dry-run --watch-dir /tmp/test_uploads --check-interval 5 --confirm 3`
-  - Then simulate uploader by copying the final file to `/tmp/test_uploads` and verify monitor prints final detection and sentinel creation.
-
-7) Интерфейс `batch_rife.py` (что он принимает/возвращает)
----------------------------------------------------------
-- Позиционные аргументы: `in_dir` `out_dir` `factor`
-- Environment: использует `REPO_DIR` (по умолчанию `/workspace/project/external/RIFE`) для поиска `train_log` с моделью.
-- Ведёт лог в stdout: прогресс для каждой пары `Batch-runner: pair i/N done (M mids)` и diagnostic lines `DEBUG: input shapes after pad t0=(...)`.
-- Output: файлы в `out_dir` с шаблоном `frame_%06d_mid[_XX].png`.
-
-8) Быстрая инструкция «как локально/контейнерно прогнать»
------------------------------------------------------
-- Запуск проекта (в контейнере на vast.ai контейнере с CUDA):
-
-```bash
-# пример вызова pipeline (как на vast.ai)
-python3 /workspace/project/pipeline.py --input /workspace/input.mp4 --output /workspace/output --mode interp --prefer auto --target-fps 70
-```
-
-- Запуск только RIFE wrapper (быстрый debug):
-
-```bash
-bash -x /apps/PycharmProjects/vastai_interup_ztp/run_rife_pytorch.sh /workspace/input.mp4 /workspace/output/output_interpolated.mp4 3 2>&1 | tee /workspace/run_rife_full.log
-```
-
-- Локальное тестирование batch_rife (на извлечённых кадрах):
-
-```bash
-# подготовьте каталоги
-mkdir -p /workspace/tmp_test/input /workspace/tmp_test/output
-# положите туда несколько frame_*.png
-python3 /apps/PycharmProjects/vastai_interup_ztp/batch_rife.py /workspace/tmp_test/input /workspace/tmp_test/output 3
-ls -la /workspace/tmp_test/output
-```
-
-9) Предложенные улучшения (приоритеты)
--------------------------------------
-High (сделать в ближайшие спринты):
-- A1: Добавить в `batch_rife.py` печать использования CUDA, текущую память GPU и версию torch (в логе). Сейчас wrapper печатает nvidia-smi и torch info, но полезно видеть это с контекста model loader.
-- A2: Добавить в `batch_rife.py` скорость обработки и ETA: каждые N пар печатать `rate`, `pairs_done/total` и ETA. Это даст полезный live‑progress.
-- A3: Сделать `BATCH_TIMEOUT` конфигурируемым (через env var) вместо жёстких 600s в wrapper.
-
-Medium (полезно, но риск/время):
-- B1: Перевести вызов batch_runner в синхронный режим (stdout/err напрямую в pipeline), чтобы не использовать фон и wait-kill loop — упрощает отладку, но чуть меняет логирование.
-- B2: Улучшить согласование паддинга между ffmpeg и моделью: возможно поддержать переменную `INFERENCE_PAD` (32 vs 64) и документировать требование к модели.
-- B3: Добавить unit tests / smoke tests для разных входов (2 кадра, N кадров, видео с отсутствующим аудио) и интеграционный тест для whole pipeline.
-
-Low (опционально):
-- C1: Сделать filelist сборку по нескольким шаблонам и опцию `--filelist` в wrapper.
-- C2: Переписать progress_collapse на небольшую C/Python утилиту в repo, более оптимальную.
-
-10) Детализованный TODO (конкретные задачи)
-------------------------------------------
-- [ ] A1 — Add CUDA / torch diagnostics to `batch_rife.py` logs (print `torch.cuda.is_available()`, `torch.cuda.device_count()`, `torch.cuda.get_device_name(0)`, memory_reserved/allocated).
-- [ ] A2 — Add ETA & rate to `batch_rife.py` (measure wall time per N pairs, compute ETA).
-- [ ] A3 — Replace hardcoded WAIT_SECS=600 in `run_rife_pytorch.sh` with `BATCH_TIMEOUT=${BATCH_TIMEOUT:-600}` and document.
-- [ ] B1 — Consider switching batch run to foreground (no & wait loop) for easier logs (configurable via env var RUN_BATCH_SYNC=1).
-- [ ] B2 — Add config option `INFERENCE_PAD=64` or `INFERENCE_PAD=32` and align tests to avoid tensor size mismatches.
-- [ ] B3 — Add smoke tests (GitHub Actions / local script) that run with 2‑3 frames and assert output exists.
-- [ ] C1 — Add option `--filelist` to enable/disable filelist assembly.
-- [ ] M1 — Fix automatic stop in `monitor.py`:
-  - Ensure monitor reliably detects successful upload completion to B2 (check upload manifest, returned ETag / file size, or use the same put result acknowledgement that uploader uses).
-  - If uploader uses a two-step (upload temp -> move/rename) flow, monitor must detect the final filename (or listen to uploader success hook).
-  - On detection, monitor should perform a safe shutdown API call (or call host agent) and log the event; it must also handle transient listing/latency issues (re-verify N times over a short window before stopping).
-  - Add diagnostics: log B2 keys, upload events, exact check used (size/sha1/etag), and a final "STOPPING INSTANCE" message with timestamp and reason.
-
-11) Длинное объяснение потоков (RIFE flow)
------------------------------------------
-- Pipeline вызывает `run_rife_pytorch.sh` для шага интерполяции.
-- Wrapper извлекает кадры в TMP_DIR/input (падирует до числа кратного 32 для корректной загрузки ffmpeg и базовой работы). Затем:
-  - пытается запустить `batch_rife.py` (если доступен) — это основной GPU путь: модель загружается на CUDA, парами обрабатываются кадры и записываются mids в TMP_DIR/output.
-  - если batch_rife отсутствует или не сгенерировал выходы, wrapper запускает per-pair `inference_img.py` (в репозитории RIFE) для каждой пары.
-  - если и per-pair не дал результатов, wrapper собирает видео с помощью ffmpeg minterpolate (CPU) как последний шанс.
-- После получения mids, wrapper собирает финальный файл либо через filelist concat (предпочтительно), либо по шаблону frame_%06d_mid.png и добавляет аудио, если оно есть.
-
-12) Полезные замечания для нового AI / разработчика
+Приоритетные улучшения (рекомендуемый список задач)
 -------------------------------------------------
-- Логи — ваш друг: внимательно смотрите `$TMP_DIR/ff_extract.log` и `$TMP_DIR/batch_rife_run.log`.
-- Частая причина падения RIFE — несовпадающие spatial dims. Если видите RuntimeError "Expected size 512 but got size 480" — подправьте padding (в batch_rife.py уже есть попытка pad/crop, но может понадобиться изменить кратность).
-- Проверьте версии PyTorch/CUDA и соответствие версий с пакетами (в логах: torch 2.x + cu121 — OK).
-- Для быстрого smoke‑теста достаточно 2 кадров; pipeline имеет disabled `inference_video.py` dependency (scikit-video) — поэтому мы используем pairwise inference.
+(краткий и понятный для передачи другому ИИ/разработчику)
 
-13) Что я ожидаю от вас/от следующего AI
---------------------------------------
-- Принять этот TODO, выполнить A1 и A2 в `batch_rife.py` (малые изменения). Я могу внести PR/патч сам при вашей команде "внедри A1/A2".
-- По завершении добавить smoke‑тест в репо и настроить CI, чтобы автоматически проверять, что RIFE path работает на GPU.
+1) Исправить `realesrgan_batch_upscale.py` синтаксис/отступы и прогнать unit/pycompile.
+   - Результат: batch-ускорение будет работоспособным на большинстве машин.
+2) Вынести `batch_rife.py` в отдельный файл (если ещё не сделано) и обеспечить корректную печать прогресса (использовать PYTHONUNBUFFERED=1 при запуске). Убедиться, что он печатает "Batch-runner: pair X/Y done" и статистику скорости/ETA.
+3) Унифицировать pad=32 повсеместно: в ffmpeg-extract и в inference padding (RIFE). Добавить sanity-check логирования для каждой пары (input shapes after pad). Если размер не совпадает — записывать offending pair в отдельный debug JSON и продолжать.
+4) Filelist concat: использовать явный filelist.txt и `ffmpeg -f concat -safe 0 -i filelist.txt ...` (это уже добавлено в сборщик). Добавить печать head(filelist.txt) (первые 20 строк) для удалённого дебага.
+5) Прогресс и логи:
+   - Запуск batch-скриптов с `PYTHONUNBUFFERED=1` (или `python3 -u`) — уже сделано для batch_rife.
+   - Убрать/сократить избыточные debug lines (например "inference_img.py found — showing head") — оставить только в нейковом DEBUG режиме.
+   - Форматировать ffmpeg progress в одну строку (user asked) — можно использовать progress pipe + small formatter (есть `progress_collapse` реализованный) — применить к всём ffmpeg вызовам.
+6) Автоматический подбор `--batch-size`: уже добавлена VRAM->batch mapping plus quick probe. Улучшить heurистику probe для широкого диапазона GPU (12GB..48GB) и сделать fallback быстрым (не больше 1–2 micro-sweeps).
+7) Monitor / auto-stop: починить `monitor_instance.py` (или `monitor.py`) чтобы при загрузке файла на B2 он корректно завершал/останавливал инстанс. Точки контроля:
+   - Создание `/workspace/VASTAI_PIPELINE_COMPLETED_SUCCESSFULLY` sentinel
+   - Сохранение upload result JSON (`realesrgan_upload_result.json`) — monitor должен чекать этот JSON or B2_HEAD и только после успешного upload вызывать shutdown.
+8) Поддержка разных контейнерных файлов-форматов (`.mkv`, `.mp4`): расширить входной парсинг и убедиться что ffmpeg-extract поддерживает все кодеки; исправить smoke-test, который ожидает `/workspace/smoke/frame_01.png` (возможно mismatch с именованием).
 
-14) Контакты/источники
----------------------
-- upstream RIFE repo (в `external/RIFE`) — прочитать `README.md` и `inference_img.py` для деталей API.
-- текущие изменения находятся в `run_rife_pytorch.sh` и `batch_rife.py`.
+Низко-рисковые улучшения (быстрые выигрыши)
+-------------------------------------------
+- Логическое имя для автозагрузки (выполнил в `run_realesrgan_pytorch.sh`).
+- Добавить head of filelist (внедрено) и печать первых 20 строк.
+- При ошибках RIFE (tensor size mismatch) — логировать пары и размеры в отдельный `rife_pad_errors.json` и пропускать пару или fallback к ffmpeg.
+- Добавить `--upload-mode` CLI/ENV (upscaled/interpolated/both) чтобы явно управлять режимом в автоматике.
+
+Структура проекта (коротко, для передачи новой модели)
+----------------------------------------------------
+(файлы и их роль)
+
+- pipeline.py — главный Python-пайплайн (запускает RIFE/Real-ESRGAN, управляет TMP и upload). Точка интеграции с vast.ai.
+- run_with_config_batch_sync.py — главный entry-point для запуска на vast.ai (ваша основная точка запуска)
+- monitor_instance.py (или monitor.py) — контролирует завершение и auto-stop инстанса после загрузки результатов (нужен фикс)
+- run_realesrgan_pytorch.sh — оболочка для запуска Real-ESRGAN (включает batch upscaler, pad/extract, reassembly, upload)
+- run_rife_pytorch.sh — оболочка для запуска RIFE (интерполяция + batch-runner integration + assembly + upload)
+- batch_rife.py — (batch runner) скрипт для парного inference RIFE (один запуск — много пар) — должен загружать модель один раз
+- realesrgan_batch_upscale.py — batch upscaler (на основании Real-ESRGAN). Требует синтаксической проверки и фиксов.
+- upload_b2.py — утилита на boto3 для загрузки в Backblaze B2 (S3-совместимый), генерирует presign URL
+- scripts/ — дополнительные утилиты: run_slim_vast.py, container_config_runner.py, utils.py и т.д.
+- external/Real-ESRGAN, external/RIFE — внешние репозитории (модели и inference scripts); модельные файлы обычно в /opt/* или в REPO_DIR/train_log
+
+Важные env vars и файлы
+-----------------------
+- B2_KEY / B2_SECRET / B2_ENDPOINT / B2_BUCKET — для автоматической загрузки
+- AUTO_UPLOAD_B2=1/0 — включить/отключить автоматическую загрузку
+- UPLOAD_RESULT_JSON (по умолчанию /workspace/realesrgan_upload_result.json)
+- VASTAI_PIPELINE_COMPLETED_SUCCESSFULLY — sentinel файл, используемый внешними мониторами
+
+How to run (typical)
+--------------------
+- Локально/контейнер: python3 /workspace/project/pipeline.py --input /workspace/input.mp4 --output /workspace/output --mode upscalе/interp/both
+- Или через entrypoint: run_with_config_batch_sync.py (конфиг в config.yaml)
+
+Рекомендации для следующего шага (порядок работ)
+-----------------------------------------------
+1) Исправить `realesrgan_batch_upscale.py` (pycompile) — high priority.
+2) Перенести/починить `batch_rife.py` (если ещё в heredoc) и добавить unit smoke tests: два кадра -> 1 mid-frame, и 16 кадров -> N mids.
+3) Протестировать полный pipeline на разных образцах: small (8s), medium (30s), large (several min). Проверить: pad一致ность, batch-runner outputs assemble correctly, filelist order correct, upload naming.
+4) Починить monitor auto-stop: trigger shutdown only after successful presigned URL appears in upload result JSON and sentinel exists.
+5) Документировать конфиг: env vars, expected model locations (/opt/rife_models, /opt/realesrgan_models).
+
+Appendix: полезные проверки (команды)
+------------------------------------
+- Быстрая синтакс-проверка bash: bash -n run_realesrgan_pytorch.sh
+- Python pycompile: python3 -m py_compile realesrgan_batch_upscale.py
+- Запустить smoke-test вручную: python3 /workspace/project/pipeline.py --input smoke_input.mp4 --output /workspace/output --mode both --target-fps 70
+
+Если хочешь, я могу:
+- Исправить `realesrgan_batch_upscale.py` (починить отступы и упавшие блоки try/except). Это займёт немного времени, но решит большинство падений.
+- Вынести/переписать `batch_rife.py` как отдельный проверенный модуль и добавить автоматическое логирование прогресса + ETA.
+- Починить `monitor_instance.py` авто-остановку и добавить unit-симуляцию (создание upload_result JSON и проверка поведения).
 
 ---
 
-Если хотите, я могу сейчас: (а) автоматически внести A1 (печать use_cuda & memory) и A2 (ETA/rate) в `batch_rife.py`, (б) сделать WAIT_SECS конфигурируемым — скажите «внедри A1/A2», и я применю правки и запущу быструю проверку синтаксиса/логов.
+Формат: если хочешь, я сразу применю исправления (например, поправлю `realesrgan_batch_upscale.py` и `batch_rife.py`) — скажи "почини realesrgan_batch_upscale.py" или "вынеси batch_rife.py", и я начну.
 
-
-raceback (most recent call last):
-  File "/workspace/project/external/Real-ESRGAN/inference_realesrgan_video.py", line 398, in <module>
-  File "/workspace/project/external/Real-ESRGAN/inference_realesrgan_video.py", line 390, in main
-  File "/workspace/project/external/Real-ESRGAN/inference_realesrgan_video.py", line 292, in run
-    inference_video(args, video_save_path)
-  File "/workspace/project/external/Real-ESRGAN/inference_realesrgan_video.py", line 249, in inference_video
-  File "/workspace/project/external/Real-ESRGAN/inference_realesrgan_video.py", line 72, in __init__
-  File "/workspace/project/external/Real-ESRGAN/inference_realesrgan_video.py", line 35, in get_video_meta_info
-    ret['nb_frames'] = int(video_streams[0]['nb_frames'])
-KeyError: 'nb_frames'
-av_interleaved_write_frame(): Broken pipe
