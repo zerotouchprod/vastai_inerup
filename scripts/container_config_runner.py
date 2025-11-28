@@ -746,28 +746,36 @@ def upload_output(output_file: str, config: dict, b2_output_key: str = None):
 
     # Copy to final location
     final_output = "/workspace/final_output.mp4"
-    subprocess.run(['cp', output_file, final_output], check=True)
-    subprocess.run(['ls', '-lh', final_output], check=True)
-
-    # Upload using container_upload.py
     try:
-        subprocess.run([
-            'python3', '/workspace/project/scripts/container_upload.py',
-            final_output,
-            b2_bucket,
-            b2_output_key,
-            b2_endpoint
-        ], check=True)
-        print("")
-        print("✓ Upload completed successfully")
-        # Echo exact S3 path for visibility in logs
-        try:
-            print(f"Uploaded to s3://{b2_bucket}/{b2_output_key}")
-        except Exception:
-            pass
-    except subprocess.CalledProcessError as e:
-        print(f"ERROR: Upload failed with exit code {e.returncode}")
-        sys.exit(1)
+        cp_res = subprocess.run(['cp', output_file, final_output], capture_output=True, text=True)
+        if cp_res.returncode != 0:
+            raise RuntimeError(f"cp failed: {cp_res.returncode} {cp_res.stdout} {cp_res.stderr}")
+        ls_res = subprocess.run(['ls', '-lh', final_output], capture_output=True, text=True)
+        print(ls_res.stdout)
+    except Exception as e:
+        raise RuntimeError(f"Failed to prepare final_output: {e}")
+
+    # Upload using container_upload.py and capture output for diagnostics
+    uploader = ['python3', '/workspace/project/scripts/container_upload.py', final_output, b2_bucket, b2_output_key, b2_endpoint]
+    print(f"Running uploader: {' '.join(uploader)}")
+    res = subprocess.run(uploader, capture_output=True, text=True)
+    # Print uploader logs (first/last lines)
+    if res.stdout:
+        print("-- uploader stdout (head 200 lines) --")
+        print('\n'.join(res.stdout.splitlines()[:200]))
+    if res.stderr:
+        print("-- uploader stderr (head 200 lines) --")
+        print('\n'.join(res.stderr.splitlines()[:200]))
+
+    if res.returncode != 0:
+        raise RuntimeError(f"container_upload.py failed (rc={res.returncode}). See uploader logs above.")
+
+    print("")
+    print("✓ Upload completed successfully")
+    try:
+        print(f"Uploaded to s3://{b2_bucket}/{b2_output_key}")
+    except Exception:
+        pass
 
 
 def process_batch_input_dir(input_dir: str, config: dict) -> bool:
@@ -1073,10 +1081,34 @@ def process_batch_input_dir(input_dir: str, config: dict) -> bool:
 
             # Attempt upload (container_upload will perform actual B2 upload). Catch exceptions so batch keeps going.
             try:
+                # If run_pipeline didn't return an output_file or file missing, try to auto-discover
+                if not output_file or not os.path.exists(output_file):
+                    print(f"WARNING: pipeline did not return an existing output file: {output_file}")
+                    import glob
+                    candidates = glob.glob(f"{output_dir}/*.mp4")
+                    candidates += glob.glob(f"{output_dir}/**/*.mp4", recursive=True)
+                    # Deduplicate and prefer largest
+                    candidates = sorted(set(candidates), key=lambda p: (os.path.getsize(p) if os.path.exists(p) else 0), reverse=True)
+                    if candidates:
+                        output_file = candidates[0]
+                        print(f"Recovered output_file by search: {output_file}")
+                    else:
+                        print("ERROR: Could not find output file to upload; printing diagnostics:")
+                        try:
+                            subprocess.run(['ls', '-la', output_dir], check=False)
+                            subprocess.run(['find', output_dir, '-maxdepth', '3', '-type', 'f', '-ls'], check=False)
+                        except Exception:
+                            pass
+                        # Skip upload for this file
+                        continue
+
+                print(f"INFO: Starting centralized upload for {original_name}, file={output_file}, key={upload_key}")
                 upload_output(output_file, temp_config, upload_key)
                 print(f"✅ Completed processing {original_name}")
             except Exception as e:
+                import traceback
                 print(f"ERROR: upload_output failed for {original_name}: {e}")
+                traceback.print_exc()
                 # Continue to next file
                 continue
         except Exception as e:
@@ -1180,7 +1212,30 @@ def main(argv=None):
     outdir = '/workspace/output'
     os.makedirs(outdir, exist_ok=True)
     out = run_pipeline(inp, outdir, config)
-    upload_output(out, config)
+    # Centralized upload for single-file runs: same as batch, but wrap in try/except
+    try:
+        print(f"DEBUG: single-file upload - output={out}")
+        upload_output(out, config)
+        # record success sentinel
+        try:
+            import json
+            res = {"bucket": os.environ.get('B2_BUCKET', config.get('b2', {}).get('bucket','noxfvr-videos')), "key": config.get('video', {}).get('output'), "status": "ok"}
+            with open('/workspace/single_upload_result.json','w') as f:
+                json.dump(res, f)
+            print("Wrote /workspace/single_upload_result.json")
+        except Exception:
+            pass
+    except Exception as e:
+        import traceback, json
+        print(f"ERROR: centralized upload failed for single-file: {e}")
+        traceback.print_exc()
+        try:
+            res = {"bucket": os.environ.get('B2_BUCKET', config.get('b2', {}).get('bucket','noxfvr-videos')), "key": config.get('video', {}).get('output'), "status": "failed", "error": str(e)}
+            with open('/workspace/single_upload_result.json','w') as f:
+                json.dump(res, f)
+            print("Wrote /workspace/single_upload_result.json")
+        except Exception:
+            pass
 
 
 if __name__ == '__main__':
