@@ -145,6 +145,22 @@ def main(argv=None):
     parser.add_argument('--expires', type=int, default=604800, help='Presigned GET expiry seconds (default: 1 week)')
     args = parser.parse_args(argv)
 
+    # Defensive fallback: if user accidentally passed credentials as key (common when env B2_KEY used both for creds and key),
+    # detect and replace with a generated descriptive key.
+    provided_key = args.key
+    cred_key = os.environ.get('B2_KEY') or os.environ.get('AWS_ACCESS_KEY_ID')
+    if provided_key and cred_key and provided_key == cred_key:
+        # generate a readable key: <basename>_<mode>_<YYYYmmdd_HHMMSS>.<ext>
+        fname = os.path.basename(args.file)
+        base = os.path.splitext(fname)[0]
+        mode = os.environ.get('UPLOAD_MODE') or os.environ.get('MODE') or 'result'
+        ts = __import__('datetime').datetime.utcnow().strftime('%Y%m%d_%H%M%S')
+        ext = os.path.splitext(fname)[1].lstrip('.') or 'mp4'
+        gen_key = f"{base}_{mode}_{ts}.{ext}"
+        print(f"Warning: provided key matches credential env; replacing key '{provided_key}' with generated key '{gen_key}'", file=sys.stderr)
+        provided_key = gen_key
+        args.key = provided_key
+
     try:
         url = upload_file(args.file, args.bucket, args.key, args.access_key, args.secret_key, args.endpoint, args.region, expires=args.expires, overwrite=args.overwrite)
     except Exception as e:

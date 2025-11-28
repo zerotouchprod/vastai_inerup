@@ -195,6 +195,19 @@ def main(argv=None):
         else os.environ.get("B2_ENDPOINT", "https://s3.us-west-004.backblazeb2.com")
     )
 
+    # Defensive: if the key accidentally equals credential env var (B2_KEY / AWS_ACCESS_KEY_ID), replace it
+    cred_key = os.environ.get('B2_KEY') or os.environ.get('AWS_ACCESS_KEY_ID')
+    if cred_key and key == cred_key:
+        # generate readable key: <basename>_<mode>_<YYYYmmdd_HHMMSS>.<ext>
+        fname = os.path.basename(filepath)
+        base = os.path.splitext(fname)[0]
+        mode = os.environ.get('UPLOAD_MODE') or os.environ.get('MODE') or 'result'
+        ts = __import__('datetime').datetime.utcnow().strftime('%Y%m%d_%H%M%S')
+        ext = os.path.splitext(fname)[1].lstrip('.') or 'mp4'
+        gen_key = f"{base}_{mode}_{ts}.{ext}"
+        print(f"Warning: provided key equals credential env; replacing key '{key}' with '{gen_key}'")
+        key = gen_key
+
     if not os.path.exists(filepath):
         print("File not found:", filepath)
         return 3

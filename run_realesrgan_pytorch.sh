@@ -169,10 +169,10 @@ maybe_upload_b2() {
     return 1
   fi
 
-  # If user explicitly provided B2_KEY, use it unchanged. Otherwise construct a descriptive key:
+  # If user explicitly provided B2_KEY_NAME (object key), use it unchanged. Otherwise construct a descriptive key:
   # <orig_basename>_<mode>_<YYYYmmdd_HHMMSS>.<ext>
-  if [ -n "${B2_KEY:-}" ]; then
-    local key="$B2_KEY"
+  if [ -n "${B2_KEY_NAME:-}" ]; then
+    local key="$B2_KEY_NAME"
   else
     # derive original basename (without extension) from INFILE if available, otherwise from file_path
     local orig_base
@@ -206,6 +206,21 @@ maybe_upload_b2() {
     safe_mode=$(echo "$mode" | tr ' /\\' '_' | tr -cd '[:alnum:]_.-')
 
     local key="${safe_base}_${safe_mode}_${ts}.${ext}"
+  fi
+
+  # If key accidentally equals credential environment (common when B2_KEY used as key/cred), replace it
+  cred_key_env="${B2_KEY:-}${AWS_ACCESS_KEY_ID:-}"
+  if [ -n "$cred_key_env" ]; then
+    # compare with first credential token only
+    if [ "${key}" = "${B2_KEY:-}" ] || [ "${key}" = "${AWS_ACCESS_KEY_ID:-}" ]; then
+      echo "Warning: object key equals credential B2_KEY/AWS_ACCESS_KEY_ID; generating safer key name"
+      # regenerate safe key from original base/mode/timestamp
+      base_name_local=$(echo "${orig_base:-$(basename "$file_path" .${ext})}" | tr ' /\\' '_' | tr -cd '[:alnum:]_.-')
+      mode_local="${mode:-result}"
+      ts_local=$(date -u +%Y%m%d_%H%M%S)
+      key="${base_name_local}_${mode_local}_${ts_local}.${ext}"
+      echo "AUTO_UPLOAD_B2: replaced key with $key"
+    fi
   fi
 
   echo "AUTO_UPLOAD_B2: uploading $file_path -> s3://${B2_BUCKET}/${key} (endpoint=${B2_ENDPOINT:-})"
@@ -243,6 +258,17 @@ if ! ldconfig -p | grep -q "libcuda.so" 2>/dev/null; then
   fi
 else
   echo "libcuda is already visible via ldconfig"
+fi
+
+# If B2_KEY_NAME (object key) not provided, create a default descriptive name to avoid accidental use of credential B2_KEY as object key
+if [ -z "${B2_KEY_NAME:-}" ]; then
+  base_name=$(basename "${INFILE:-$OUTFILE}" 2>/dev/null || true)
+  base_name="${base_name%.*}"
+  ts=$(date -u +%Y%m%d_%H%M%S)
+  # use mode 'upscaled' for this runner
+  B2_KEY_NAME="${base_name}_upscaled_${ts}.${OUTFILE##*.}"
+  export B2_KEY_NAME
+  echo "DEBUG: B2_KEY_NAME not set, defaulting to: $B2_KEY_NAME"
 fi
 
 # Function to perform frame-by-frame upscaling (used as fallback)
