@@ -1106,8 +1106,8 @@ def process_batch_input_dir(input_dir: str, config: dict) -> bool:
 
     print(f"Found {total} video files to process", flush=True)
 
-    output_dir = "/workspace/output"
-    os.makedirs(output_dir, exist_ok=True)
+    base_output_dir = "/workspace/output"
+    os.makedirs(base_output_dir, exist_ok=True)
 
     for i, obj in enumerate(video_files, 1):
         original_key = obj.get('key')
@@ -1184,16 +1184,22 @@ def process_batch_input_dir(input_dir: str, config: dict) -> bool:
             input_path = download_input(input_url, temp_config)
 
             log_stage("Starting pipeline", obj['key'])
+            # For each file, create a dedicated per-file output directory to avoid stale artifacts
+            per_outdir = os.path.join(base_output_dir, f"work_{original_name}_{timestamp}")
+            try:
+                # ensure clean per-file output dir
+                import shutil
+                shutil.rmtree(per_outdir, ignore_errors=True)
+                os.makedirs(per_outdir, exist_ok=True)
+            except Exception:
+                os.makedirs(per_outdir, exist_ok=True)
+
             # For centralized upload, ensure the in-container pipeline does NOT auto-upload.
-            # We avoid setting B2_OUTPUT_KEY inside the container subprocess (so it won't
-            # attempt uploads). Instead the orchestrator will perform upload_output(...)
-            # after pipeline completes (using upload_key).
             old_b2 = os.environ.get('B2_OUTPUT_KEY')
             old_auto = os.environ.get('AUTO_UPLOAD_B2')
             try:
-                # Remove any B2_OUTPUT_KEY so the container won't accidentally upload with a stale key
                 os.environ.pop('B2_OUTPUT_KEY', None)
-                output_file = run_pipeline(input_path, output_dir, temp_config)
+                output_file = run_pipeline(input_path, per_outdir, temp_config)
             finally:
                 # restore previous env values
                 if old_b2 is None:
@@ -1204,58 +1210,74 @@ def process_batch_input_dir(input_dir: str, config: dict) -> bool:
                     os.environ.pop('AUTO_UPLOAD_B2', None)
                 else:
                     os.environ['AUTO_UPLOAD_B2'] = old_auto
+        except Exception as e:
+            print(f"❌ Failed to process {original_name}: {e}")
+            continue
 
-            log_stage("Uploading result", expected_output_name)
-            # Pre-upload diagnostics for remote debugging
-            try:
-                print(f"DEBUG: AUTO_UPLOAD_B2={os.environ.get('AUTO_UPLOAD_B2')}")
-                print(f"DEBUG: B2_OUTPUT_KEY={os.environ.get('B2_OUTPUT_KEY')}")
-                print(f"DEBUG: B2_BUCKET={os.environ.get('B2_BUCKET')}")
-                if output_file and os.path.exists(output_file):
-                    print(f"DEBUG: output_file exists: {output_file} size={os.path.getsize(output_file)}")
+        log_stage("Uploading result", expected_output_name)
+        # Pre-upload diagnostics for remote debugging
+        try:
+            print(f"DEBUG: AUTO_UPLOAD_B2={os.environ.get('AUTO_UPLOAD_B2')}")
+            print(f"DEBUG: B2_OUTPUT_KEY={os.environ.get('B2_OUTPUT_KEY')}")
+            print(f"DEBUG: B2_BUCKET={os.environ.get('B2_BUCKET')}")
+            # prefer expected output path in base_output_dir
+            expected_path = os.path.join(base_output_dir, expected_output_name)
+            # If pipeline returned a path and it exists, use it; else search per-file outdir
+            if output_file and os.path.exists(output_file):
+                print(f"DEBUG: pipeline returned output_file: {output_file} size={os.path.getsize(output_file)}")
+            else:
+                print(f"DEBUG: pipeline did not return an output file or file missing in per-file outdir: {output_file}")
+        except Exception as _e:
+            print(f"DEBUG: pre-upload diagnostics failed: {_e}")
+
+        # Attempt upload (container_upload will perform actual B2 upload). Catch exceptions so batch keeps going.
+        try:
+            import glob, shutil
+            # If pipeline returned a file inside per-outdir, prefer it. Otherwise search per_outdir for mp4
+            if output_file and os.path.exists(output_file):
+                found = output_file
+            else:
+                candidates = glob.glob(f"{per_outdir}/*.mp4") + glob.glob(f"{per_outdir}/**/*.mp4", recursive=True)
+                candidates = sorted(set(candidates), key=lambda p: (os.path.getsize(p) if os.path.exists(p) else 0), reverse=True)
+                if candidates:
+                    found = candidates[0]
+                    print(f"Recovered output_file by per-file search: {found}")
                 else:
-                    print(f"DEBUG: output_file missing or empty: {output_file}")
-            except Exception as _e:
-                print(f"DEBUG: pre-upload diagnostics failed: {_e}")
-
-            # Attempt upload (container_upload will perform actual B2 upload). Catch exceptions so batch keeps going.
-            try:
-                # If run_pipeline didn't return an output_file or file missing, try to auto-discover
-                if not output_file or not os.path.exists(output_file):
-                    print(f"WARNING: pipeline did not return an existing output file: {output_file}")
-                    import glob
-                    candidates = glob.glob(f"{output_dir}/*.mp4")
-                    candidates += glob.glob(f"{output_dir}/**/*.mp4", recursive=True)
-                    # Deduplicate and prefer largest
+                    # no per-file output; as fallback try top-level base_output_dir (shouldn't normally be needed)
+                    candidates = glob.glob(f"{base_output_dir}/*.mp4") + glob.glob(f"{base_output_dir}/**/*.mp4", recursive=True)
                     candidates = sorted(set(candidates), key=lambda p: (os.path.getsize(p) if os.path.exists(p) else 0), reverse=True)
                     if candidates:
-                        output_file = candidates[0]
-                        print(f"Recovered output_file by search: {output_file}")
+                        found = candidates[0]
+                        print(f"Recovered output_file by base search: {found}")
                     else:
                         print("ERROR: Could not find output file to upload; printing diagnostics:")
                         try:
-                            subprocess.run(['ls', '-la', output_dir], check=False)
-                            subprocess.run(['find', output_dir, '-maxdepth', '3', '-type', 'f', '-ls'], check=False)
+                            subprocess.run(['ls', '-la', per_outdir], check=False)
+                            subprocess.run(['find', per_outdir, '-maxdepth', '3', '-type', 'f', '-ls'], check=False)
                         except Exception:
                             pass
                         # Skip upload for this file
                         continue
 
-                print(f"INFO: Starting centralized upload for {original_name}, file={output_file}, key={upload_key}")
-                upload_output(output_file, temp_config, upload_key)
-                print(f"✅ Completed processing {original_name}")
-            except Exception as e:
-                import traceback
-                print(f"ERROR: upload_output failed for {original_name}: {e}")
-                traceback.print_exc()
-                # Continue to next file
-                continue
-        except Exception as e:
-            print(f"❌ Failed to process {original_name}: {e}")
-            continue
+            # Copy/move found artifact to canonical expected path in base_output_dir
+            expected_path = os.path.join(base_output_dir, expected_output_name)
+            try:
+                shutil.copy2(found, expected_path)
+                output_file = expected_path
+                print(f"Copied final artifact to canonical path: {expected_path}")
+            except Exception as ecopy:
+                print(f"Warning: failed to copy final artifact to {expected_path}: {ecopy}; will use source {found}")
+                output_file = found
 
-    # Completed loop
-    return True
+            print(f"INFO: Starting centralized upload for {original_name}, file={output_file}, key={upload_key}")
+            upload_output(output_file, temp_config, upload_key)
+            print(f"✅ Completed processing {original_name}")
+        except Exception as e:
+            import traceback
+            print(f"ERROR: upload_output failed for {original_name}: {e}")
+            traceback.print_exc()
+            # Continue to next file
+            continue
 
 
 def main(argv=None):
