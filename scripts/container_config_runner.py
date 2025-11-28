@@ -607,6 +607,8 @@ def run_pipeline(input_path: str, output_dir: str, config: dict) -> str:
     # Run pipeline with unbuffered output (PYTHONUNBUFFERED=1)
     env = os.environ.copy()
     env['PYTHONUNBUFFERED'] = '1'  # Force unbuffered output
+    # Default to enabling in-container auto-upload unless explicitly disabled by parent env
+    env.setdefault('AUTO_UPLOAD_B2', '1')
 
     # Export B2_OUTPUT_KEY to subprocess so in-container uploaders can use the orchestration-provided key.
     # Prefer an existing env override, otherwise derive from config.video.output
@@ -1040,9 +1042,11 @@ def process_batch_input_dir(input_dir: str, config: dict) -> bool:
             old_b2 = os.environ.get('B2_OUTPUT_KEY')
             old_auto = os.environ.get('AUTO_UPLOAD_B2')
             try:
+                # In batch runs we want the in-container runner to upload directly with the
+                # per-file upload_key (so the uploader runs close to the data and reports progress).
                 os.environ['B2_OUTPUT_KEY'] = upload_key
-                # disable in-container auto upload so we control upload via upload_output()
-                os.environ['AUTO_UPLOAD_B2'] = '0'
+                # Ensure auto-upload is enabled inside container for this run
+                os.environ['AUTO_UPLOAD_B2'] = '1'
                 output_file = run_pipeline(input_path, output_dir, temp_config)
             finally:
                 # restore previous env values
@@ -1056,8 +1060,26 @@ def process_batch_input_dir(input_dir: str, config: dict) -> bool:
                     os.environ['AUTO_UPLOAD_B2'] = old_auto
 
             log_stage("Uploading result", expected_output_name)
-            upload_output(output_file, temp_config, upload_key)
-            print(f"✅ Completed processing {original_name}")
+            # Pre-upload diagnostics for remote debugging
+            try:
+                print(f"DEBUG: AUTO_UPLOAD_B2={os.environ.get('AUTO_UPLOAD_B2')}")
+                print(f"DEBUG: B2_OUTPUT_KEY={os.environ.get('B2_OUTPUT_KEY')}")
+                print(f"DEBUG: B2_BUCKET={os.environ.get('B2_BUCKET')}")
+                if output_file and os.path.exists(output_file):
+                    print(f"DEBUG: output_file exists: {output_file} size={os.path.getsize(output_file)}")
+                else:
+                    print(f"DEBUG: output_file missing or empty: {output_file}")
+            except Exception as _e:
+                print(f"DEBUG: pre-upload diagnostics failed: {_e}")
+
+            # Attempt upload (container_upload will perform actual B2 upload). Catch exceptions so batch keeps going.
+            try:
+                upload_output(output_file, temp_config, upload_key)
+                print(f"✅ Completed processing {original_name}")
+            except Exception as e:
+                print(f"ERROR: upload_output failed for {original_name}: {e}")
+                # Continue to next file
+                continue
         except Exception as e:
             print(f"❌ Failed to process {original_name}: {e}")
             continue
