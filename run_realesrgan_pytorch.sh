@@ -174,38 +174,46 @@ maybe_upload_b2() {
   if [ -n "${B2_KEY_NAME:-}" ]; then
     local key="$B2_KEY_NAME"
   else
-    # derive original basename (without extension) from INFILE if available, otherwise from file_path
-    local orig_base
-    if [ -n "${INFILE:-}" ]; then
-      orig_base=$(basename "${INFILE}")
+    # If caller provided explicit B2_OUTPUT_KEY (from orchestration), prefer that
+    if [ -n "${B2_OUTPUT_KEY:-}" ]; then
+      local key="$B2_OUTPUT_KEY"
+      echo "AUTO_UPLOAD_B2: Using B2_OUTPUT_KEY from environment: $key"
     else
-      orig_base=$(basename "$file_path")
+      # derive original basename (without extension) from INFILE if available, otherwise from file_path
+      local orig_base
+      if [ -n "${INFILE:-}" ]; then
+        orig_base=$(basename "${INFILE}")
+      else
+        orig_base=$(basename "$file_path")
+      fi
+      orig_base="${orig_base%.*}"
+
+      # determine mode: priority - UPLOAD_MODE env, then guess from file name
+      local mode
+      if [ -n "${UPLOAD_MODE:-}" ]; then
+        mode="${UPLOAD_MODE}"
+      else
+        case "$(basename "$file_path")" in
+          *upscal*|*upscaled*|*upscale*) mode="upscaled" ;;
+          *interp*|*interpol*|*interpolate*) mode="interpolated" ;;
+          *both*) mode="both" ;;
+          *) mode="result" ;;
+        esac
+      fi
+
+      # timestamp in UTC (safe for filenames)
+      ts=$(date -u +%Y%m%d_%H%M%S)
+
+      # extension
+      ext="${file_path##*.}"
+      # sanitize orig_base and mode to remove problematic chars
+      safe_base=$(echo "$orig_base" | tr ' /\\' '_' | tr -cd '[:alnum:]_.-')
+      safe_mode=$(echo "$mode" | tr ' /\\' '_' | tr -cd '[:alnum:]_.-')
+
+      local key="${safe_base}_${safe_mode}_${ts}.${ext}"
+      # default prefix for bucket: upload into output/ to match orchestration
+      key="output/${key}"
     fi
-    orig_base="${orig_base%.*}"
-
-    # determine mode: priority - UPLOAD_MODE env, then guess from file name
-    local mode
-    if [ -n "${UPLOAD_MODE:-}" ]; then
-      mode="${UPLOAD_MODE}"
-    else
-      case "$(basename "$file_path")" in
-        *upscal*|*upscaled*|*upscale*) mode="upscaled" ;;
-        *interp*|*interpol*|*interpolate*) mode="interpolated" ;;
-        *both*) mode="both" ;;
-        *) mode="result" ;;
-      esac
-    fi
-
-    # timestamp in UTC (safe for filenames)
-    ts=$(date -u +%Y%m%d_%H%M%S)
-
-    # extension
-    ext="${file_path##*.}"
-    # sanitize orig_base and mode to remove problematic chars
-    safe_base=$(echo "$orig_base" | tr ' /\\' '_' | tr -cd '[:alnum:]_.-')
-    safe_mode=$(echo "$mode" | tr ' /\\' '_' | tr -cd '[:alnum:]_.-')
-
-    local key="${safe_base}_${safe_mode}_${ts}.${ext}"
   fi
 
   # If key accidentally equals credential environment (common when B2_KEY used as key/cred), replace it
@@ -261,15 +269,9 @@ else
 fi
 
 # If B2_KEY_NAME (object key) not provided, create a default descriptive name to avoid accidental use of credential B2_KEY as object key
-if [ -z "${B2_KEY_NAME:-}" ]; then
-  base_name=$(basename "${INFILE:-$OUTFILE}" 2>/dev/null || true)
-  base_name="${base_name%.*}"
-  ts=$(date -u +%Y%m%d_%H%M%S)
-  # use mode 'upscaled' for this runner
-  B2_KEY_NAME="${base_name}_upscaled_${ts}.${OUTFILE##*.}"
-  export B2_KEY_NAME
-  echo "DEBUG: B2_KEY_NAME not set, defaulting to: $B2_KEY_NAME"
-fi
+# NOTE: do NOT set a global default B2_KEY_NAME here; leave generation to maybe_upload_b2()
+# so that orchestration-provided B2_OUTPUT_KEY (set by run_with_config_batch_sync.py) takes priority.
+# This avoids early overriding of B2_OUTPUT_KEY with an INFILE-derived name.
 
 # Function to perform frame-by-frame upscaling (used as fallback)
 do_frame_by_frame_upscale() {

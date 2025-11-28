@@ -608,6 +608,18 @@ def run_pipeline(input_path: str, output_dir: str, config: dict) -> str:
     env = os.environ.copy()
     env['PYTHONUNBUFFERED'] = '1'  # Force unbuffered output
 
+    # Export B2_OUTPUT_KEY to subprocess so in-container uploaders can use the orchestration-provided key.
+    # Prefer an existing env override, otherwise derive from config.video.output
+    try:
+        env_key = env.get('B2_OUTPUT_KEY')
+        output_name = video.get('output') or 'output.mp4'
+        if not env_key:
+            env_key = f"output/{output_name}"
+            env['B2_OUTPUT_KEY'] = env_key
+        print(f"[{ts()}] DEBUG: Passing B2_OUTPUT_KEY to pipeline subprocess: {env_key}", flush=True)
+    except Exception:
+        pass
+
     try:
         # Use Popen instead of run to stream output in real-time
         process = subprocess.Popen(
