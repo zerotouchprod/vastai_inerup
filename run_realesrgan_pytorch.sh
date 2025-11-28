@@ -48,7 +48,27 @@ vram_to_batch() {
   if [ -z "$mem_list" ]; then
     # fallback to Python torch if available (gives bytes per device)
     if command -v python3 >/dev/null 2>&1; then
-      pyout=$(python3 - <<'PY' 2>/dev/null || true
+      # Prefer using testable helper if available
+      if [ -f "$(dirname "$0")/scripts/batch_helper.py" ]; then
+        # try to call helper with no args -> it expects mem values; fall back to torch detection
+        pyout=$(python3 - <<'PY' 2>/dev/null || true
+import sys, os
+helper=os.path.join(os.path.dirname(__file__), 'scripts', 'batch_helper.py')
+try:
+    import torch
+    if torch.cuda.is_available():
+        out=[]
+        for i in range(torch.cuda.device_count()):
+            out.append(str(torch.cuda.get_device_properties(i).total_memory))
+        print('\n'.join(out))
+except Exception:
+    pass
+PY
+)
+        mem_list=$(echo "$pyout" | awk '{ if ($1) printf "%d\n", ($1/1024/1024); }' | tr -d '\r' | tr '\n' ' ' | sed -E 's/^ +| +$//g')
+      else
+        # fallback to inline torch probe
+        pyout=$(python3 - <<'PY' 2>/dev/null || true
 import sys
 out=[]
 try:
@@ -63,7 +83,8 @@ except Exception:
 print('\n'.join(out))
 PY
 )
-      mem_list=$(echo "$pyout" | awk '{ if ($1) printf "%d\n", ($1/1024/1024); }' | tr -d '\r' | tr '\n' ' ' | sed -E 's/^ +| +$//g')
+        mem_list=$(echo "$pyout" | awk '{ if ($1) printf "%d\n", ($1/1024/1024); }' | tr -d '\r' | tr '\n' ' ' | sed -E 's/^ +| +$//g')
+      fi
     fi
   fi
 
@@ -143,6 +164,35 @@ $ d')
 
 # Apply VRAM->batch mapping early so downstream code sees proper BATCH_ARGS
 apply_vram_batch_mapping
+
+# Determine python interpreter to run testable helpers (batch_runner, batch_helper).
+# Respect user-provided $PYTHON_CMD; otherwise prefer python3, python, or known venv path.
+PYTHON_CMD=${PYTHON_CMD:-}
+if [ -z "$PYTHON_CMD" ]; then
+  if command -v python3 >/dev/null 2>&1; then
+    PYTHON_CMD=python3
+  elif command -v python >/dev/null 2>&1; then
+    PYTHON_CMD=python
+  elif [ -x "/opt/venv/bin/python3" ]; then
+    PYTHON_CMD=/opt/venv/bin/python3
+  else
+    PYTHON_CMD=""
+  fi
+fi
+if [ -n "$PYTHON_CMD" ]; then
+  echo "Using Python interpreter: $PYTHON_CMD"
+else
+  echo "No Python interpreter detected (python3/python not found). Batch runner will fall back to bash implementation."
+fi
+
+# Provide a shell function named `python3` so existing invocations in this script work.
+# If a real interpreter was found, python3(...) forwards to it. Otherwise it returns 127
+# which existing callers treat as failure and the script will fall back where appropriate.
+if [ -n "$PYTHON_CMD" ]; then
+  python3() { "$PYTHON_CMD" "$@"; }
+else
+  python3() { echo "ERROR: python3 not available in container; attempted: $*" >&2; return 127; }
+fi
 
 # Ensure Python outputs are unbuffered so progress prints appear in real time
 export PYTHONUNBUFFERED=1
@@ -268,6 +318,94 @@ else
   echo "libcuda is already visible via ldconfig"
 fi
 
+# FFPROBE DIAGNOSTICS for input file
+ffprobe_diagnostics() {
+  local infile="$1"
+  echo "=== FFPROBE DIAGNOSTICS for: $infile ==="
+  if command -v ffprobe >/dev/null 2>&1; then
+    ffprobe -v error -show_entries format=duration,size,bit_rate -show_entries stream=width,height,nb_frames,r_frame_rate,pix_fmt,bit_depth,color_range -of default=noprint_wrappers=1 "$infile" 2>&1 | sed -E 's/^/  /'
+  else
+    echo "ffprobe not available"
+  fi
+}
+
+run_batch_with_retries() {
+  local input_dir="$1"
+  local output_dir="$2"
+  local extra_args="$3"
+  local scale_arg="$4"
+  local mode_arg="$5" # 'scale' (default) or 'target-height'
+  local max_retries=5
+
+  # extract current batch-size from BATCH_ARGS (if present) or use suggested
+  current_batch=$(echo "$BATCH_ARGS" | grep -oE "--batch-size(=|\s)[0-9]+" | head -n1 | grep -oE "[0-9]+" || true)
+  if [ -z "$current_batch" ]; then
+    # parse suggested from vram mapping if available
+    current_batch=$(echo "$BATCH_ARGS" | grep -oE "[0-9]+$" | tail -n1 || true)
+  fi
+  if [ -z "$current_batch" ] || [ "$current_batch" -le 0 ] 2>/dev/null; then
+    current_batch=1
+  fi
+
+  attempt=0
+  while [ $attempt -lt $max_retries ]; do
+    attempt=$((attempt+1))
+    echo "[batch] Attempt #$attempt with --batch-size $current_batch"
+    # ensure BATCH_ARGS contains the chosen batch
+    # remove any existing --batch-size and add the new one
+    local args_no_batch=$(echo "$BATCH_ARGS" | sed -E "s/--batch-size(=|[[:space:]]+)[0-9]+//g" | tr -s ' ')
+    call_args="$args_no_batch --batch-size $current_batch"
+    echo "[batch] Calling batch script with args: $call_args"
+    if [ "$mode_arg" = "target-height" ]; then
+      bash /workspace/project/realesrgan_batch_safe.sh "$input_dir" "$output_dir" $call_args --target-height $scale_arg --device cuda
+    else
+      bash /workspace/project/realesrgan_batch_safe.sh "$input_dir" "$output_dir" $call_args --scale $scale_arg --device cuda
+    fi
+    rc=$?
+    # inspect recent batch log for OOM indicators (batch_safe may echo OOM to stderr)
+    if [ $rc -eq 0 ] && [ -n "$(ls -A "$output_dir" 2>/dev/null)" ]; then
+      echo "[batch] Completed successfully"
+      return 0
+    fi
+    # look for known OOM or CUDA error strings in last few seconds of dmesg or logs
+    # If rc != 0 or outputs missing, consider it a failure; if OOM-like, reduce batch and retry
+    echo "[batch] Batch script failed (rc=$rc). Checking for OOM/CUDA indicators..."
+    # quick heuristic: search for 'OOM' or 'out of memory' in the last 200 lines of /var/log/messages or /tmp logs if present
+    oom_detected=0
+    # check tmp logs created by batch script
+    recent_log=$(ls -t /tmp/realesrgan_batch_safe_*.log 2>/dev/null | head -n1 || true)
+    if [ -n "$recent_log" ]; then
+      if grep -Eqi "OOM|out of memory|CUDA error|cuCtx|CUDA|out_of_memory" "$recent_log" 2>/dev/null; then
+        oom_detected=1
+      fi
+    fi
+    # fallback: check rc nonzero -> treat as potential OOM for retry logic (conservative)
+    if [ $rc -ne 0 ]; then
+      oom_detected=1
+    fi
+    if [ $oom_detected -eq 1 ]; then
+      # reduce batch by half, min 1
+      new_batch=$(( current_batch / 2 ))
+      if [ $new_batch -lt 1 ]; then
+        new_batch=1
+      fi
+      if [ $new_batch -ge $current_batch ]; then
+        echo "[batch] Cannot reduce batch further (current=$current_batch). Aborting retries."
+        break
+      fi
+      echo "[batch] Detected OOM-like failure; reducing batch from $current_batch -> $new_batch and retrying"
+      current_batch=$new_batch
+      # small cooldown before retry
+      sleep 1
+      continue
+    else
+      echo "[batch] Failure not recognized as OOM; not retrying"
+      break
+    fi
+  done
+  return 1
+}
+
 # If B2_KEY_NAME (object key) not provided, create a default descriptive name to avoid accidental use of credential B2_KEY as object key
 # NOTE: do NOT set a global default B2_KEY_NAME here; leave generation to maybe_upload_b2()
 # so that orchestration-provided B2_OUTPUT_KEY (set by run_with_config_batch_sync.py) takes priority.
@@ -333,24 +471,24 @@ do_frame_by_frame_upscale() {
         echo "Using BATCH_ARGS (auto-tune enabled; stripped --batch-size if present): $CLEANED_BATCH_ARGS"
         # Append torch-compile flag if requested via env
         if [ "${FAST_COMPILE:-false}" = "1" ] || [ "${FAST_COMPILE:-false}" = "true" ]; then
-          bash /workspace/project/realesrgan_batch_safe.sh "$TMP_DIR/input" "$TMP_DIR/output" $CLEANED_BATCH_ARGS --scale $SCALE_FACTOR --device cuda --torch-compile
+          python3 "$(dirname "$0")/scripts/batch_runner.py" "$TMP_DIR/input" "$TMP_DIR/output" "$CLEANED_BATCH_ARGS --torch-compile" "$SCALE" "scale"
         else
-          bash /workspace/project/realesrgan_batch_safe.sh "$TMP_DIR/input" "$TMP_DIR/output" $CLEANED_BATCH_ARGS --scale $SCALE_FACTOR --device cuda
+          python3 "$(dirname "$0")/scripts/batch_runner.py" "$TMP_DIR/input" "$TMP_DIR/output" "$CLEANED_BATCH_ARGS" "$SCALE" "scale"
         fi
       else
         echo "Using BATCH_ARGS: $BATCH_ARGS"
         if [ "${FAST_COMPILE:-false}" = "1" ] || [ "${FAST_COMPILE:-false}" = "true" ]; then
-          bash /workspace/project/realesrgan_batch_safe.sh "$TMP_DIR/input" "$TMP_DIR/output" $BATCH_ARGS --scale $SCALE_FACTOR --device cuda --torch-compile
+          python3 "$(dirname "$0")/scripts/batch_runner.py" "$TMP_DIR/input" "$TMP_DIR/output" "$BATCH_ARGS --torch-compile" "$SCALE" "scale"
         else
-          bash /workspace/project/realesrgan_batch_safe.sh "$TMP_DIR/input" "$TMP_DIR/output" $BATCH_ARGS --scale $SCALE_FACTOR --device cuda
+          python3 "$(dirname "$0")/scripts/batch_runner.py" "$TMP_DIR/input" "$TMP_DIR/output" "$BATCH_ARGS" "$SCALE" "scale"
         fi
       fi
     else
       # No explicit batch args -> let batch script auto-tune for this GPU
       if [ "${FAST_COMPILE:-false}" = "1" ] || [ "${FAST_COMPILE:-false}" = "true" ]; then
-        bash /workspace/project/realesrgan_batch_safe.sh "$TMP_DIR/input" "$TMP_DIR/output" --scale $SCALE_FACTOR --device cuda --torch-compile
+        python3 "$(dirname "$0")/scripts/batch_runner.py" "$TMP_DIR/input" "$TMP_DIR/output" "--scale $SCALE --device cuda --torch-compile"
       else
-        bash /workspace/project/realesrgan_batch_safe.sh "$TMP_DIR/input" "$TMP_DIR/output" --scale $SCALE_FACTOR --device cuda
+        python3 "$(dirname "$0")/scripts/batch_runner.py" "$TMP_DIR/input" "$TMP_DIR/output" "--scale $SCALE --device cuda"
       fi
     fi
 
@@ -551,6 +689,25 @@ finalize_success() {
   touch /workspace/VASTAI_PIPELINE_COMPLETED_SUCCESSFULLY 2>/dev/null || true
 }
 
+# Helper to invoke the batch runner: prefer Python helper when available, else fall back to bash implementation
+invoke_batch_runner() {
+  local in_dir="$1"
+  local out_dir="$2"
+  local batch_args="$3"
+  local scale_arg="$4"
+  local mode_arg="$5"
+  if [ -n "$PYTHON_CMD" ] && [ -f "$(dirname "$0")/scripts/batch_runner.py" ]; then
+    echo "Invoking Python batch_runner via $PYTHON_CMD"
+    # shellcheck disable=SC2086
+    $PYTHON_CMD "$(dirname "$0")/scripts/batch_runner.py" "$in_dir" "$out_dir" "$batch_args" "$scale_arg" "$mode_arg"
+    return $?
+  else
+    echo "Python helper not available; using internal bash retry function"
+    run_batch_with_retries "$in_dir" "$out_dir" "$batch_args" "$scale_arg" "$mode_arg"
+    return $?
+  fi
+}
+
 # Try BATCH upscaling first (10x faster!)
 BATCH_SCRIPT="/workspace/project/realesrgan_batch_upscale.py"
 if [ -f "$BATCH_SCRIPT" ]; then
@@ -562,6 +719,8 @@ if [ -f "$BATCH_SCRIPT" ]; then
 
   # Extract frames to temp dir
   TMP_DIR=$(mktemp -d)
+  # write ffprobe diagnostics to stdout (and into /tmp if available)
+  ffprobe_diagnostics "$INFILE" || true
   echo "Extracting frames to $TMP_DIR..."
   mkdir -p "$TMP_DIR/input" "$TMP_DIR/output"
 
@@ -589,20 +748,20 @@ if [ -f "$BATCH_SCRIPT" ]; then
           CLEANED_BATCH_ARGS=$(echo "$CLEANED_BATCH_ARGS" | tr -s ' ')
           echo "Using BATCH_ARGS (auto-tune enabled; stripped --batch-size if present): $CLEANED_BATCH_ARGS"
           if [ "${FAST_COMPILE:-false}" = "1" ] || [ "${FAST_COMPILE:-false}" = "true" ]; then
-            bash /workspace/project/realesrgan_batch_safe.sh "$TMP_DIR/input" "$TMP_DIR/output" $CLEANED_BATCH_ARGS --scale $SCALE --device cuda --torch-compile
+            python3 "$(dirname "$0")/scripts/batch_runner.py" "$TMP_DIR/input" "$TMP_DIR/output" "$CLEANED_BATCH_ARGS --torch-compile" "$SCALE" "scale"
           else
-            bash /workspace/project/realesrgan_batch_safe.sh "$TMP_DIR/input" "$TMP_DIR/output" $CLEANED_BATCH_ARGS --scale $SCALE --device cuda
+            python3 "$(dirname "$0")/scripts/batch_runner.py" "$TMP_DIR/input" "$TMP_DIR/output" "$CLEANED_BATCH_ARGS" "$SCALE" "scale"
           fi
         else
           echo "Using BATCH_ARGS: $BATCH_ARGS"
           if [ "${FAST_COMPILE:-false}" = "1" ] || [ "${FAST_COMPILE:-false}" = "true" ]; then
-            bash /workspace/project/realesrgan_batch_safe.sh "$TMP_DIR/input" "$TMP_DIR/output" $BATCH_ARGS --scale $SCALE --device cuda --torch-compile
+            python3 "$(dirname "$0")/scripts/batch_runner.py" "$TMP_DIR/input" "$TMP_DIR/output" "$BATCH_ARGS --torch-compile" "$SCALE" "scale"
           else
-            bash /workspace/project/realesrgan_batch_safe.sh "$TMP_DIR/input" "$TMP_DIR/output" $BATCH_ARGS --scale $SCALE --device cuda
+            python3 "$(dirname "$0")/scripts/batch_runner.py" "$TMP_DIR/input" "$TMP_DIR/output" "$BATCH_ARGS" "$SCALE" "scale"
           fi
         fi
       else
-        bash /workspace/project/realesrgan_batch_safe.sh "$TMP_DIR/input" "$TMP_DIR/output" --scale $SCALE --device cuda
+        python3 "$(dirname "$0")/scripts/batch_runner.py" "$TMP_DIR/input" "$TMP_DIR/output" "--scale $SCALE --device cuda"
       fi
     else
       # Auto-mode: target 4K (2160p) height
@@ -613,20 +772,20 @@ if [ -f "$BATCH_SCRIPT" ]; then
           CLEANED_BATCH_ARGS=$(echo "$CLEANED_BATCH_ARGS" | tr -s ' ')
           echo "Using BATCH_ARGS (auto-tune enabled; stripped --batch-size if present): $CLEANED_BATCH_ARGS"
           if [ "${FAST_COMPILE:-false}" = "1" ] || [ "${FAST_COMPILE:-false}" = "true" ]; then
-            bash /workspace/project/realesrgan_batch_safe.sh "$TMP_DIR/input" "$TMP_DIR/output" $CLEANED_BATCH_ARGS --target-height 2160 --device cuda --torch-compile
+            python3 "$(dirname "$0")/scripts/batch_runner.py" "$TMP_DIR/input" "$TMP_DIR/output" "$CLEANED_BATCH_ARGS --torch-compile" "2160" "target-height"
           else
-            bash /workspace/project/realesrgan_batch_safe.sh "$TMP_DIR/input" "$TMP_DIR/output" $CLEANED_BATCH_ARGS --target-height 2160 --device cuda
+            python3 "$(dirname "$0")/scripts/batch_runner.py" "$TMP_DIR/input" "$TMP_DIR/output" "$CLEANED_BATCH_ARGS" "2160" "target-height"
           fi
         else
           echo "Using BATCH_ARGS: $BATCH_ARGS"
           if [ "${FAST_COMPILE:-false}" = "1" ] || [ "${FAST_COMPILE:-false}" = "true" ]; then
-            bash /workspace/project/realesrgan_batch_safe.sh "$TMP_DIR/input" "$TMP_DIR/output" $BATCH_ARGS --target-height 2160 --device cuda --torch-compile
+            python3 "$(dirname "$0")/scripts/batch_runner.py" "$TMP_DIR/input" "$TMP_DIR/output" "$BATCH_ARGS --torch-compile" "2160" "target-height"
           else
-            bash /workspace/project/realesrgan_batch_safe.sh "$TMP_DIR/input" "$TMP_DIR/output" $BATCH_ARGS --target-height 2160 --device cuda
+            python3 "$(dirname "$0")/scripts/batch_runner.py" "$TMP_DIR/input" "$TMP_DIR/output" "$BATCH_ARGS" "2160" "target-height"
           fi
         fi
       else
-        bash /workspace/project/realesrgan_batch_safe.sh "$TMP_DIR/input" "$TMP_DIR/output" --target-height 2160 --device cuda
+        python3 "$(dirname "$0")/scripts/batch_runner.py" "$TMP_DIR/input" "$TMP_DIR/output" "--target-height 2160 --device cuda"
       fi
     fi
 
@@ -644,7 +803,7 @@ if [ -f "$BATCH_SCRIPT" ]; then
           echo "ERROR: no images with extension .$ext found in output"
         else
           echo "Assembling video using image2 pattern: $pattern (framerate=$FPS, frames=$OUT_IMG_COUNT)"
-          # Determine start number from first file name (handles frame_000000.png vs frame_000001.png)
+          # Determine start number from first file name (handles frame_000000.png vs frame_000000.png)
           base=$(basename "$first_file")
           # extract numeric group: last contiguous digits before the extension
           start_num=$(echo "$base" | sed -E 's/.*_([0-9]+)\..*/\1/')

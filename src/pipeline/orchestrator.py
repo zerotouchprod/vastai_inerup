@@ -6,6 +6,7 @@ from ..io.extractor import FrameExtractor, ExtractResult
 from ..io.assembler import FrameAssembler, AssemblyResult
 from ..models.rife_adapter import RIFEAdapter
 from ..io.uploader import IUploader, UploadResult
+from ..utils.shell import run_cmd
 
 @dataclass
 class JobResult:
@@ -35,6 +36,27 @@ class PipelineOrchestrator:
         workdir.mkdir(parents=True, exist_ok=True)
         in_dir = workdir / 'input'
         out_dir = workdir / 'output'
+        # write ffprobe diagnostics for the input file (helps debugging color/bit-depth issues)
+        def ffprobe_diagnostics(infile: str) -> str:
+            if not infile:
+                return ''
+            cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration,size,bit_rate", "-show_entries", "stream=width,height,nb_frames,r_frame_rate,pix_fmt,bit_depth,color_range", "-of", "default=noprint_wrappers=1", infile]
+            rc, out, err = run_cmd(cmd)
+            content = out or err or f"ffprobe rc={rc}"
+            # write into workdir for diagnostics
+            diag_file = workdir / 'ffprobe_input.txt'
+            try:
+                diag_file.write_text(content, encoding='utf-8')
+            except Exception:
+                pass
+            return str(diag_file)
+
+        ffprobe_path = ffprobe_diagnostics(input_path)
+        echo_msg = f"FFPROBE diagnostics written to: {ffprobe_path}"
+        try:
+            print(echo_msg)
+        except Exception:
+            pass
         # extract frames
         extract_res: ExtractResult = self.extractor.extract_frames(input_path, str(in_dir))
         print(f"Extracted {extract_res.frames_count} frames -> pattern {extract_res.frame_pattern}")
