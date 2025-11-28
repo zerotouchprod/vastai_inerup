@@ -827,7 +827,70 @@ def upload_output(output_file: str, config: dict, b2_output_key: str = None):
             return
         except Exception as e:
             print(f"Fallback boto3 upload failed: {e}")
-            raise RuntimeError(f"container_upload.py failed (rc={res.returncode}) and boto3 fallback failed: {e}")
+            # Final fallback: try calling upload_b2.py (same as run_realesrgan's maybe_upload_b2), passing explicit creds
+            try:
+                ak = ak or os.environ.get('B2_KEY') or os.environ.get('AWS_ACCESS_KEY_ID')
+                sk = sk or os.environ.get('B2_SECRET') or os.environ.get('AWS_SECRET_ACCESS_KEY')
+                cmd = ['python3', '/workspace/project/upload_b2.py', '--file', final_output, '--bucket', b2_bucket, '--key', b2_output_key, '--endpoint', b2_endpoint]
+                if ak:
+                    cmd += ['--access-key', ak]
+                if sk:
+                    cmd += ['--secret-key', sk]
+                print(f"Final fallback: running upload_b2.py: {' '.join(cmd)}")
+                p = subprocess.run(cmd, capture_output=True, text=True)
+                if p.stdout:
+                    print("-- upload_b2.py stdout --")
+                    print('\n'.join(p.stdout.splitlines()[:200]))
+                if p.stderr:
+                    print("-- upload_b2.py stderr --")
+                    print('\n'.join(p.stderr.splitlines()[:200]))
+                if p.returncode == 0:
+                    print("✅ Final fallback upload_b2.py succeeded")
+                    return
+                else:
+                    print(f"upload_b2.py failed (rc={p.returncode})")
+            except Exception as e2:
+                print(f"upload_b2.py fallback exception: {e2}")
+
+            # Last resort: try transfer.sh via curl
+            try:
+                print("Final attempt: upload via transfer.sh (curl)")
+                tr = subprocess.run(['curl', '--upload-file', final_output, 'https://transfer.sh/'], capture_output=True, text=True, timeout=600)
+                if tr.returncode == 0 and tr.stdout.strip():
+                    print("✅ transfer.sh upload succeeded:")
+                    print(tr.stdout.strip())
+                    return
+                else:
+                    print("transfer.sh failed:", tr.returncode, tr.stdout, tr.stderr)
+            except Exception as e3:
+                print(f"transfer.sh exception: {e3}")
+
+            # All fallbacks exhausted — try in-container upload function maybe_upload_b2 by sourcing runner script
+            try:
+                runner = '/workspace/project/run_realesrgan_pytorch.sh'
+                if os.path.exists(runner):
+                    print(f"Attempting in-container upload by sourcing {runner} and calling maybe_upload_b2 {final_output}")
+                    # Run in a login shell to source the script and call function
+                    shcmd = f". {runner} >/dev/null 2>&1; maybe_upload_b2 '{final_output}'"
+                    p = subprocess.run(['bash', '-lc', shcmd], capture_output=True, text=True, env=os.environ)
+                    if p.stdout:
+                        print("-- in-container uploader stdout --")
+                        print('\n'.join(p.stdout.splitlines()[:200]))
+                    if p.stderr:
+                        print("-- in-container uploader stderr --")
+                        print('\n'.join(p.stderr.splitlines()[:200]))
+                    if p.returncode == 0:
+                        print("✅ In-container upload (maybe_upload_b2) succeeded")
+                        return
+                    else:
+                        print(f"In-container upload returned rc={p.returncode}")
+                else:
+                    print(f"Runner script not found for in-container fallback: {runner}")
+            except Exception as e4:
+                print(f"In-container upload fallback exception: {e4}")
+
+            # All fallbacks exhausted
+            raise RuntimeError(f"container_upload.py failed (rc={res.returncode}) and all fallbacks failed")
 
 
 def process_batch_input_dir(input_dir: str, config: dict) -> bool:
