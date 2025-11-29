@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Wrapper to run Real-ESRGAN (PyTorch) if available in /workspace/project/external/Real-ESRGAN
 # Note: NOT using set -e to allow proper error handling
-# Usage: run_realesrgan_pytorch.sh <input> <output> <scale>
+# Usage: run_realesrgan_pytorch.sh <input> <output> <scale:int (default 4)>
 INFILE=${1:-}
 OUTFILE=${2:-}
 SCALE=${3:-4}
@@ -207,6 +207,91 @@ else
   echo "libcuda is already visible via ldconfig"
 fi
 
+# --- FFmpeg encoder selection + progress helper
+# choose available encoder (prefer NVENC h264 then hevc, fallback libx264)
+choose_video_encoder() {
+  # Respect forced overrides from environment for testing/debug
+  # FORCE_SW_ENC=1 -> force software libx264
+  # FORCE_ENC=<encoder_name> -> force specific encoder string (e.g. h264_nvenc or hevc_nvenc)
+  if [ "${FORCE_SW_ENC:-0}" = "1" ]; then
+    echo "libx264";
+    return;
+  fi
+  if [ -n "${FORCE_ENC:-}" ]; then
+    echo "${FORCE_ENC}";
+    return;
+  fi
+  if command -v ffmpeg >/dev/null 2>&1 && ffmpeg -hide_banner -encoders 2>/dev/null | grep -qE "h264_nvenc"; then
+    echo "h264_nvenc"
+  elif command -v ffmpeg >/dev/null 2>&1 && ffmpeg -hide_banner -encoders 2>/dev/null | grep -qE "hevc_nvenc"; then
+    echo "hevc_nvenc"
+  else
+    echo "libx264"
+  fi
+}
+
+# determine output pixel format conservatively based on input file pix_fmt and encoder support
+choose_out_pix_fmt() {
+  local infile="$1"
+  local enc="$2"
+  local inp
+  inp=$(ffprobe -v error -select_streams v:0 -show_entries stream=pix_fmt -of default=nokey=1:noprint_wrappers=1 "$infile" 2>/dev/null | head -n1 || true)
+  echo "INPUT_PIX_FMT:${inp}"
+  # default safe 8-bit
+  local outpf="yuv420p"
+  # if input is 10-bit and encoder is hevc_nvenc, try 10-bit hevc
+  if echo "$inp" | grep -q "10" 2>/dev/null && [ "$enc" = "hevc_nvenc" ]; then
+    outpf="yuv420p10le"
+  fi
+  echo "$outpf"
+}
+
+# run ffmpeg with chosen encoder and emit machine-friendly progress lines prefixed with FFPROGRESS:
+# usage: run_ffmpeg_with_progress <outfile> -- <ffmpeg-args...>
+run_ffmpeg_with_progress() {
+  local outfile="$1"; shift
+  # consume '--' if present
+  if [ "$1" = "--" ]; then shift; fi
+  local enc
+  enc=$(choose_video_encoder)
+  echo "FFENCODER_CHOSEN:${enc}"
+  local pixfmt
+  if [ -n "$INFILE" ]; then
+    pixfmt=$(choose_out_pix_fmt "$INFILE" "$enc")
+  else
+    pixfmt="yuv420p"
+  fi
+  echo "FFOUT_PIX_FMT:${pixfmt}"
+
+  local enc_args=()
+  if [ "$enc" = "libx264" ]; then
+    enc_args=("-c:v" "libx264" "-crf" "18" "-preset" "medium" "-pix_fmt" "$pixfmt")
+  else
+    # NVENC args - conservative presets and quality tuned for good visual results
+    enc_args=("-c:v" "$enc" "-preset" "p6" "-rc" "vbr_hq" "-cq" "19" "-b:v" "0" "-pix_fmt" "$pixfmt")
+  fi
+
+  # Build full ffmpeg command: user-supplied args first, encoder args appended, add progress pipe
+  # We redirect ffmpeg stderr to a prefixed FFERR: stream and parse progress from stdout
+  # Use -progress pipe:1 -nostats to get machine-friendly progress lines on stdout
+  # Show a readable command preview (join user args and encoder args safely)
+  echo "FFCMD: ffmpeg -y $* ${enc_args[*]} -progress pipe:1 -nostats $outfile"
+
+  # Run ffmpeg; capture stdout(progress) and stderr
+  ffmpeg -y "$@" "${enc_args[@]}" -progress pipe:1 -nostats "$outfile" 2> >(while IFS= read -r el; do echo "FFERR:$el"; done) | while IFS= read -r pl; do
+    # progress lines are key=value
+    if echo "$pl" | grep -q '=' 2>/dev/null; then
+      k=$(echo "$pl" | cut -d'=' -f1)
+      v=$(echo "$pl" | cut -d'=' -f2-)
+      echo "FFPROGRESS:$k=$v"
+    else
+      echo "FFPROGRESS:$pl"
+    fi
+  done
+  local rc=${PIPESTATUS[0]:-0}
+  return $rc
+}
+
 # Function to perform frame-by-frame upscaling (used as fallback)
 do_frame_by_frame_upscale() {
   local INPUT="$1"
@@ -394,7 +479,21 @@ do_frame_by_frame_upscale() {
 
   # Extract audio
   echo "Extracting audio track from original video..."
-  ffmpeg -v warning -i "$INPUT" -vn -acodec copy "$TMP_DIR/audio.aac" 2>/dev/null && echo "✓ Audio extracted" || echo "No audio track found"
+  # Use ffprobe to determine audio codec/extension and extract using copy; report with prefix for watcher
+  if command -v ffprobe >/dev/null 2>&1; then
+    a_codec=$(ffprobe -v error -select_streams a:0 -show_entries stream=codec_name -of default=nokey=1:noprint_wrappers=1 "$INPUT" 2>/dev/null | head -n1 || true)
+  else
+    a_codec=""
+  fi
+  if [ -n "$a_codec" ]; then
+    echo "FFPROGRESS:audio_codec=$a_codec"
+  fi
+  run_ffmpeg_with_progress "$TMP_DIR/audio.aac" -- -i "$INPUT" -vn -acodec copy
+  if [ -f "$TMP_DIR/audio.aac" ]; then
+    echo "✓ Audio extracted"
+  else
+    echo "No audio track found"
+  fi
 
   # Reassemble video
   echo ""
@@ -405,9 +504,9 @@ do_frame_by_frame_upscale() {
   echo ""
 
   if [ -f "$TMP_DIR/audio.aac" ]; then
-    ffmpeg -v warning -stats -framerate "$FPS" -i "$TMP_DIR/output/frame_%06d_out.png" -i "$TMP_DIR/audio.aac" -c:v libx264 -crf 18 -pix_fmt yuv420p -c:a aac -shortest "$OUTPUT"
+    run_ffmpeg_with_progress "$OUTPUT" -- -framerate "$FPS" -i "$TMP_DIR/output/frame_%06d_out.png" -i "$TMP_DIR/audio.aac" -shortest
   else
-    ffmpeg -v warning -stats -framerate "$FPS" -i "$TMP_DIR/output/frame_%06d_out.png" -c:v libx264 -crf 18 -pix_fmt yuv420p "$OUTPUT"
+    run_ffmpeg_with_progress "$OUTPUT" -- -framerate "$FPS" -i "$TMP_DIR/output/frame_%06d_out.png"
   fi
 
   local RESULT=$?
@@ -585,7 +684,8 @@ if [ -f "$BATCH_SCRIPT" ]; then
           # convert to decimal (strip leading zeros)
           start_num=$((10#$start_num))
           echo "Detected start_number=$start_num"
-          ffmpeg -y -start_number "$start_num" -framerate "$FPS" -i "$TMP_DIR/output/$pattern" -frames:v "$OUT_IMG_COUNT" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p "$OUTFILE" >/dev/null 2>&1 || true
+          # Use run_ffmpeg_with_progress to choose encoder and emit progress for external watcher
+          run_ffmpeg_with_progress "$OUTFILE" -- -start_number "$start_num" -framerate "$FPS" -i "$TMP_DIR/output/$pattern" -frames:v "$OUT_IMG_COUNT"
           if [ -f "$OUTFILE" ]; then
             echo "✓ Assembled: $OUTFILE"
             finalize_success "$OUTFILE"
@@ -606,7 +706,7 @@ if [ -f "$BATCH_SCRIPT" ]; then
       done
       if [ -s "$FILELIST" ]; then
         echo "Trying concat fallback (filelist)"
-        ffmpeg -y -safe 0 -f concat -i "$FILELIST" -framerate "$FPS" -c:v libx264 -crf 18 -pix_fmt yuv420p "$OUTFILE" >/dev/null 2>&1 || true
+        run_ffmpeg_with_progress "$OUTFILE" -- -safe 0 -f concat -i "$FILELIST" -framerate "$FPS"
         if [ -f "$OUTFILE" ]; then
           echo "✓ Assembled (concat fallback): $OUTFILE"
           finalize_success "$OUTFILE"
@@ -634,7 +734,7 @@ if [ -f "$REPO_DIR/inference_realesrgan_video.py" ]; then
     echo ""
 
     # Check nb_frames presence; if missing, prefer frame-by-frame fallback to avoid KeyError in external script
-    NB_FRAMES=$(ffprobe -v error -select_streams v:0 -show_entries stream=nb_frames -of default=noprint_wrappers=1:nokey=1 "$INFILE" 2>/dev/null | tr -d '\n') || true
+    NB_FRAMES=$(ffprobe -v error -select_streams v:0 -show_entries stream=nb_frames -of default=nokey=1:noprint_wrappers=1 "$INFILE" 2>/dev/null | tr -d '\n') || true
     if [ -z "$NB_FRAMES" ] || [ "$NB_FRAMES" = "N/A" ]; then
       echo "WARNING: ffprobe did not return nb_frames (nb_frames='$NB_FRAMES'), using frame-by-frame fallback to avoid external KeyError"
       do_frame_by_frame_upscale "$INFILE" "$OUTFILE" "$SCALE"
