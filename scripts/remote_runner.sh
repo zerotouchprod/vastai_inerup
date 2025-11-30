@@ -20,6 +20,107 @@ echo "=== Remote Runner Starting ==="
 echo "Time: $(date)"
 echo ""
 
+# EARLY FORCE-UPLOAD: check for trigger or existing output mp4s and run one-shot uploader immediately.
+# This block is intentionally early so the upload occurs right after git fetch/entrypoint logs.
+{
+  echo "[FORCE_UPLOAD] PRECHECK START"
+  # presence of trigger files
+  if [ -f /workspace/project/.force_upload ]; then
+    echo "[FORCE_UPLOAD] project trigger present: /workspace/project/.force_upload"
+  else
+    echo "[FORCE_UPLOAD] project trigger NOT present"
+  fi
+  if [ -f /workspace/.force_upload ]; then
+    echo "[FORCE_UPLOAD] workspace trigger present: /workspace/.force_upload"
+  fi
+  if [ -f /workspace/force_upload_trigger ]; then
+    echo "[FORCE_UPLOAD] legacy trigger present: /workspace/force_upload_trigger"
+  fi
+
+  # find newest mp4 in /workspace/output
+  newest_mp4=$(ls -1t /workspace/output/*.mp4 2>/dev/null | head -n1 || true)
+  if [ -n "$newest_mp4" ] && [ -s "$newest_mp4" ]; then
+    echo "[FORCE_UPLOAD] found candidate mp4: $newest_mp4"
+
+    # prefer bucket/key from trigger JSON if present
+    TRIG_PATH="/workspace/project/.force_upload"
+    TRIG_BUCKET=""
+    TRIG_KEY=""
+    if [ -s "$TRIG_PATH" ]; then
+      TRIG_JSON=$(cat "$TRIG_PATH" 2>/dev/null || true)
+      if python3 - <<PY >/dev/null 2>&1
+import sys,json
+s=sys.stdin.read()
+try:
+    obj=json.loads(s)
+    if isinstance(obj,dict): print('OK')
+except Exception:
+    sys.exit(1)
+PY
+      then
+        TRIG_BUCKET=$(python3 - <<PY
+import json,sys
+try:
+    obj=json.load(sys.stdin)
+    print(obj.get('bucket',''))
+except Exception:
+    pass
+PY
+"$TRIG_JSON")
+        TRIG_KEY=$(python3 - <<PY
+import json,sys
+try:
+    obj=json.load(sys.stdin)
+    print(obj.get('key',''))
+except Exception:
+    pass
+PY
+"$TRIG_JSON")
+      fi
+    fi
+
+    BKT="${TRIG_BUCKET:-}"
+    if [ -z "$BKT" ]; then
+      BKT="${B2_BUCKET:-}"
+    fi
+    KEYV="${TRIG_KEY:-}"
+    if [ -z "$KEYV" ]; then
+      KEYV="${B2_OUTPUT_KEY:-${B2_KEY:-}}"
+    fi
+
+    if [ -z "$BKT" ]; then
+      echo "[FORCE_UPLOAD] No B2 bucket configured (trigger or env); skipping force upload"
+    else
+      echo "[FORCE_UPLOAD] Triggering upload of $newest_mp4 -> s3://$BKT/${KEYV:-auto}"
+      export FORCE_FILE="$newest_mp4"
+      export B2_BUCKET="$BKT"
+      export B2_KEY="$KEYV"
+      # mark ran so repeated restarts don't re-trigger (helper also writes marker)
+      touch /workspace/.force_upload_ran 2>/dev/null || true
+      HELPER="/workspace/project/scripts/force_upload_and_fail.sh"
+      if [ -f "$HELPER" ]; then
+        echo "[FORCE_UPLOAD] Invoking helper: $HELPER"
+        if [ -x "$HELPER" ]; then
+          "$HELPER"
+          rc=$?
+        else
+          # Fall back to running via bash so lack of executable bit doesn't block the upload
+          bash "$HELPER"
+          rc=$?
+        fi
+        echo "[FORCE_UPLOAD] force_upload_and_fail.sh exited with code=$rc"
+        # propagate the exit code from helper (often intentionally non-zero to signal one-shot)
+        exit $rc
+      else
+        echo "[FORCE_UPLOAD] ERROR: helper script not found: $HELPER"
+      fi
+    fi
+  else
+    echo "[FORCE_UPLOAD] No candidate mp4 found in /workspace/output"
+  fi
+  echo "[FORCE_UPLOAD] PRECHECK END"
+} || true
+
 # Check if config.yaml exists in repository (after Git pull by entrypoint.sh)
 CONFIG_FILE="/workspace/project/config.yaml"
 USE_CONFIG=false
