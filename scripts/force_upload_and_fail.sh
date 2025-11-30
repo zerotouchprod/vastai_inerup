@@ -9,6 +9,62 @@ B2_BUCKET=${B2_BUCKET:-}
 B2_KEY=${B2_KEY:-}
 B2_ENDPOINT=${B2_ENDPOINT:-https://s3.us-west-004.backblazeb2.com}
 MIN_SIZE=${MIN_SIZE:-51200} # 50KB minimum to consider a valid video
+PENDING_MARKER=/workspace/.pending_upload.json
+MAX_ATTEMPTS=${MAX_ATTEMPTS:-3}
+
+# If no explicit FORCE_FILE provided, check for a pending marker created by previous failed attempts
+if [ -z "${FORCE_FILE:-}" ] && [ -f "$PENDING_MARKER" ]; then
+  # Load fields from pending marker (file,bucket,key,endpoint,attempts)
+  if python3 - <<PY >/dev/null 2>&1
+import sys,json
+try:
+    obj=json.load(open('$PENDING_MARKER'))
+    print('OK')
+except Exception:
+    sys.exit(1)
+PY
+  then
+    PFILE=$(python3 - <<PY
+import json
+obj=json.load(open('$PENDING_MARKER'))
+print(obj.get('file',''))
+PY
+)
+    PBKT=$(python3 - <<PY
+import json
+obj=json.load(open('$PENDING_MARKER'))
+print(obj.get('bucket',''))
+PY
+)
+    PKEY=$(python3 - <<PY
+import json
+obj=json.load(open('$PENDING_MARKER'))
+print(obj.get('key',''))
+PY
+)
+    PEND=$(python3 - <<PY
+import json
+obj=json.load(open('$PENDING_MARKER'))
+print(obj.get('endpoint',''))
+PY
+)
+    PATT=$(python3 - <<PY
+import json
+obj=json.load(open('$PENDING_MARKER'))
+print(int(obj.get('attempts',0)))
+PY
+)
+    # Only use pending values if present
+    if [ -n "$PFILE" ]; then FILE="$PFILE"; fi
+    if [ -n "$PBKT" ]; then B2_BUCKET="$PBKT"; fi
+    if [ -n "$PKEY" ]; then B2_KEY="$PKEY"; fi
+    if [ -n "$PEND" ]; then B2_ENDPOINT="$PEND"; fi
+    # expose previous attempts for logging
+    PREV_ATTEMPTS="$PATT"
+  else
+    PREV_ATTEMPTS=0
+  fi
+fi
 
 # Allow override for forced small-file upload via env or marker file
 if [ "${FORCE_UPLOAD_ALLOW_SMALL:-0}" = "1" ] || [ -f /workspace/.force_upload_allow_small ]; then
@@ -91,6 +147,11 @@ PY
   # Echo used key for log parsing
   echo "B2_UPLOAD_KEY_USED: s3://$B2_BUCKET/$OBJ_KEY"
   log "Wrote /workspace/force_upload_result.json"
+  # Remove pending marker on success (if present)
+  if [ -f "$PENDING_MARKER" ]; then
+    rm -f "$PENDING_MARKER" || true
+    log "Removed pending upload marker: $PENDING_MARKER"
+  fi
   log "Now exiting with non-zero status as requested (intentional failure)"
   exit 42
 else
@@ -110,6 +171,8 @@ else
       log "transfer.sh succeeded: $url"
       echo "{\"status\":\"transfer_sh\", \"url\": \"$url\"}" > /workspace/force_upload_result.json || true
       log "Wrote /workspace/force_upload_result.json"
+      # remove pending marker if any
+      if [ -f "$PENDING_MARKER" ]; then rm -f "$PENDING_MARKER" || true; fi
       exit 42
     else
       log "transfer.sh failed: $(tail -n 5 $TRANS_LOG 2>/dev/null || true)"
@@ -126,5 +189,36 @@ else
   echo "{\"status\":\"upload_failed\", \"file\": \"$FILE\", \"size\": $size, \"saved_to\": \"$faildir\", \"upload_log\": \"$UPLOAD_LOG\"}" > /workspace/force_upload_result.json || true
   log "Upload failed by upload_b2.py and transfer.sh"
   log "File info: $FILE $size"
+  # Create or update persistent pending upload marker so next run will retry
+  python3 - <<PY > "$PENDING_MARKER" 2>/dev/null
+import json,sys
+try:
+    obj={'file': '%s', 'bucket': '%s', 'key': '%s', 'endpoint': '%s', 'attempts': %d}
+    print(json.dumps(obj))
+except Exception:
+    print(json.dumps({'file':'%s','bucket':'%s','key':'%s','endpoint':'%s','attempts':%d}))
+PY
+  # Use previous attempts if present
+  # If PREV_ATTEMPTS exists (loaded earlier), increment attempts; else start at 1
+  if [ -n "${PREV_ATTEMPTS:-}" ]; then
+    new_attempts=$((PREV_ATTEMPTS + 1))
+  else
+    new_attempts=1
+  fi
+  # Recreate marker with updated attempts
+  python3 - <<PY > "$PENDING_MARKER" 2>/dev/null
+import json
+obj={'file': '%s', 'bucket': '%s', 'key': '%s', 'endpoint': '%s', 'attempts': %d}
+print(json.dumps(obj))
+PY
+  # Actually substitute values by invoking python with formatted strings
+  python3 - <<PY > "$PENDING_MARKER" 2>/dev/null
+import json
+obj={'file': '%s', 'bucket': '%s', 'key': '%s', 'endpoint': '%s', 'attempts': %d}
+print(json.dumps(obj))
+PY
+  # The above heredoc will have placeholders replaced by shell; to be safe, write marker using a simple echo
+  echo "{\"file\": \"$FILE\", \"bucket\": \"$B2_BUCKET\", \"key\": \"$OBJ_KEY\", \"endpoint\": \"$B2_ENDPOINT\", \"attempts\": $new_attempts}" > "$PENDING_MARKER" || true
+  log "Wrote pending upload marker $PENDING_MARKER (attempts=$new_attempts)"
   exit 4
 fi

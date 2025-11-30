@@ -20,6 +20,30 @@ echo "=== Remote Runner Starting ==="
 echo "Time: $(date)"
 echo ""
 
+# If a persistent pending upload exists from a previous run, attempt it now (one-shot retry)
+PENDING_MARKER=/workspace/.pending_upload.json
+if [ -f "$PENDING_MARKER" ]; then
+  echo "[FORCE_UPLOAD] Found pending upload marker: $PENDING_MARKER -> will attempt retry now"
+  # The helper will read pending marker if FORCE_FILE not set
+  HELPER="/workspace/project/scripts/force_upload_and_fail.sh"
+  if [ -f "$HELPER" ]; then
+    echo "[FORCE_UPLOAD] Invoking helper for pending upload: $HELPER"
+    # allow small-file uploads for pending retries as previous run failed
+    export FORCE_UPLOAD_ALLOW_SMALL=1
+    if [ -x "$HELPER" ]; then
+      "$HELPER"
+      rc=$?
+    else
+      bash "$HELPER"
+      rc=$?
+    fi
+    echo "[FORCE_UPLOAD] pending upload helper exited with code=$rc"
+    # Do not exit the runner; log and continue
+  else
+    echo "[FORCE_UPLOAD] ERROR: helper script not found: $HELPER"
+  fi
+fi
+
 # Control flag: set ENABLE_EARLY_FORCE_UPLOAD=1 to enable the unconditional early upload check (disabled by default)
 if [ "${ENABLE_EARLY_FORCE_UPLOAD:-0}" != "1" ]; then
   echo "[FORCE_UPLOAD] Early unconditional upload disabled (ENABLE_EARLY_FORCE_UPLOAD!=1). To enable set ENABLE_EARLY_FORCE_UPLOAD=1 in job env."
