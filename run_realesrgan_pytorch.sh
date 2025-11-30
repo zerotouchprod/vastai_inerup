@@ -188,6 +188,8 @@ maybe_upload_b2() {
     return $rc
   fi
   echo "AUTO_UPLOAD_B2: upload succeeded; result saved to $UPLOAD_RESULT_JSON"
+  # Print a compact machine-friendly line with exact object path for log parsing
+  echo "B2_UPLOAD_KEY_USED: s3://${B2_BUCKET}/${key}"
   # print brief summary (first lines)
   head -n 30 "$UPLOAD_RESULT_JSON" || true
   return 0
@@ -582,6 +584,15 @@ finalize_success() {
       echo "AUTO_UPLOAD_B2: upload failed (rc=$rc). See $UPLOAD_RESULT_JSON and $info_json for details"
     else
       echo "AUTO_UPLOAD_B2: upload succeeded"
+      # Attempt to parse upload_result and echo the object path in a compact line
+      if [ -f "$UPLOAD_RESULT_JSON" ]; then
+        # Try to extract bucket/key from JSON (simple grep + sed for portability)
+        BUCKET=$(grep -oP '"bucket"\s*:\s*"\K[^"]+' "$UPLOAD_RESULT_JSON" 2>/dev/null || true)
+        KEY=$(grep -oP '"key"\s*:\s*"\K[^"]+' "$UPLOAD_RESULT_JSON" 2>/dev/null || true)
+        if [ -n "$BUCKET" ] && [ -n "$KEY" ]; then
+          echo "B2_UPLOAD_KEY_USED: s3://$BUCKET/$KEY"
+        fi
+      fi
     fi
   else
     echo "AUTO_UPLOAD_B2 not enabled; skipping upload"

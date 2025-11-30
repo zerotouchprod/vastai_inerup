@@ -298,8 +298,21 @@ def try_run_realesrgan_pytorch_wrapper(infile: str, outpath: str, scale: int) ->
 
         # Run wrapper and capture output so we can detect tmp dirs / assembly messages
         try:
+            # Prepare environment for wrapper so centralized upload uses a clear key name.
+            env = os.environ.copy()
+            try:
+                base = os.path.splitext(os.path.basename(infile))[0]
+                ts_now = datetime.now().strftime('%Y%m%d_%H%M%S')
+                env['B2_OUTPUT_KEY'] = f"upscales/{base}-{ts_now}.mp4"
+                # Also set legacy B2_KEY for compatibility (do not override if explicitly set by env)
+                if not env.get('B2_KEY'):
+                    env['B2_KEY'] = env['B2_OUTPUT_KEY']
+                print(f"INFO: setting B2_OUTPUT_KEY for Real-ESRGAN upload: {env['B2_OUTPUT_KEY']}", flush=True)
+            except Exception:
+                env = os.environ.copy()
+
             # Use Popen to stream stdout/stderr live so logs appear in real time
-            proc = subprocess.Popen([wrapper, infile, outpath, str(scale)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+            proc = subprocess.Popen([wrapper, infile, outpath, str(scale)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, env=env)
             wrapper_out_lines = []
             try:
                 # Iterate over stdout lines as they arrive
@@ -488,8 +501,21 @@ def try_run_rife_pytorch_wrapper(infile: str, outpath: str, factor: int) -> bool
         signal.alarm(1800)  # 30 minutes timeout (was 600 = 10 min)
 
         try:
+            # Prepare env so centralized uploader produces a predictable key for RIFE outputs.
+            env = os.environ.copy()
+            try:
+                base = os.path.splitext(os.path.basename(infile))[0]
+                ts_now = datetime.now().strftime('%Y%m%d_%H%M%S')
+                env['B2_OUTPUT_KEY'] = f"interp/{base}-{ts_now}.mp4"
+                # Also set legacy B2_KEY for compatibility
+                if not env.get('B2_KEY'):
+                    env['B2_KEY'] = env['B2_OUTPUT_KEY']
+                print(f"INFO: setting B2_OUTPUT_KEY for RIFE upload: {env['B2_OUTPUT_KEY']}", flush=True)
+            except Exception:
+                env = os.environ.copy()
+
             # Don't capture output - let it stream directly
-            res = subprocess.run([wrapper, infile, outpath, str(factor)], check=True, timeout=1800)
+            res = subprocess.run([wrapper, infile, outpath, str(factor)], check=True, timeout=1800, env=env)
             signal.alarm(0)  # Cancel timeout
             print(f"✓ RIFE completed at {__import__('datetime').datetime.now().strftime('%H:%M:%S')}", flush=True)
             return True
