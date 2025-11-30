@@ -187,6 +187,11 @@ if [ -f "$BATCH_PY" ]; then
   (export PYTHONUNBUFFERED=1; export REPO_DIR="$REPO_DIR"; python3 "$BATCH_PY" "$TMP_DIR/input" "$TMP_DIR/output" "$FACTOR") >"$TMP_DIR/batch_rife_run.log" 2>&1 &
   BATCH_PID=$!
   log "batch_rife.py started (pid=$BATCH_PID)"
+  # Stream the batch log to stdout in real time so remote logs show progress.
+  # Use tail -F to follow across rotations; prefix each line to make it clear in the central log.
+  touch "$TMP_DIR/batch_rife_run.log" 2>/dev/null || true
+  ( tail -n +1 -F "$TMP_DIR/batch_rife_run.log" 2>/dev/null | while IFS= read -r _line; do printf "[batch_rife] %s\n" "$_line"; done ) &
+  TAIL_PID=$!
   # Smart wait/monitor loop
   # RIFE_BATCH_MAX_WAIT: total seconds to allow before considering kill (default 3600)
   # RIFE_BATCH_STALL_TIMEOUT: if log hasn't been updated for this many seconds, consider it stalled (default 300)
@@ -243,6 +248,11 @@ PY
     kill -9 $BATCH_PID 2>/dev/null || true
   else
     log "batch_rife.py exited (monitor)"
+  fi
+  # Stop the tail log streamer if it was started
+  if [ -n "${TAIL_PID:-}" ]; then
+    kill $TAIL_PID 2>/dev/null || true
+    wait $TAIL_PID 2>/dev/null || true
   fi
   log "batch_rife log (tail 200):"
   tail -n 200 "$TMP_DIR/batch_rife_run.log" 2>/dev/null || true
