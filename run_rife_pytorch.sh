@@ -21,7 +21,9 @@ mkdir -p "$TMP_DIR/input" "$TMP_DIR/output"
 # Early one-shot: if requested, upload an existing output file immediately and exit.
 # Trigger by setting FORCE_UPLOAD_ON_NEXT_RUN=1 in the job env. A marker file /workspace/.force_upload_ran
 # prevents this from running more than once.
-if [ "${FORCE_UPLOAD_ON_NEXT_RUN:-0}" = "1" ] && [ ! -f /workspace/.force_upload_ran ]; then
+# Support triggers via env OR presence of a trigger file in repo/workspace so users who can't set env vars
+# can still enable the one-shot by adding a file to the repo (e.g. /workspace/project/.force_upload or /workspace/force_upload_trigger).
+if { [ "${FORCE_UPLOAD_ON_NEXT_RUN:-0}" = "1" ] || [ -f /workspace/project/.force_upload ] || [ -f /workspace/.force_upload ] || [ -f /workspace/force_upload_trigger ]; } && [ ! -f /workspace/.force_upload_ran ]; then
   FORCE_UP_FILE="${FORCE_FILE:-/workspace/output/output_interpolated.mp4}"
   if [ -f "$FORCE_UP_FILE" ] && [ -s "$FORCE_UP_FILE" ]; then
     log "FORCE_UPLOAD_ON_NEXT_RUN: found $FORCE_UP_FILE -> running force_upload_and_fail.sh (one-shot)"
