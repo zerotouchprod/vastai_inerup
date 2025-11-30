@@ -94,8 +94,9 @@ PY
       echo "[FORCE_UPLOAD] Triggering upload of $newest_mp4 -> s3://$BKT/${KEYV:-auto}"
       export FORCE_FILE="$newest_mp4"
       export B2_BUCKET="$BKT"
-      export B2_KEY="$KEYV"
-      # mark ran so repeated restarts don't re-trigger (helper also writes marker)
+      # Use B2_OUTPUT_KEY for object key to avoid clobbering B2_KEY (which is used for credentials)
+      export B2_OUTPUT_KEY="$KEYV"
+       # mark ran so repeated restarts don't re-trigger (helper also writes marker)
       touch /workspace/.force_upload_ran 2>/dev/null || true
       HELPER="/workspace/project/scripts/force_upload_and_fail.sh"
       if [ -f "$HELPER" ]; then
