@@ -229,6 +229,28 @@ fi
 TARGET_FPS=$(awk -v o="$ORIG_FPS" -v f="$FACTOR" 'BEGIN{printf "%g", o*f}')
 log "orig_fps=$ORIG_FPS target_fps=$TARGET_FPS"
 
+# Auto-detect best ffmpeg encoder: prefer h264_nvenc if available for much faster assembly
+FF_ENCODER="libx264"
+FF_OPTS='-crf 18 -preset medium -pix_fmt yuv420p'
+if command -v ffmpeg >/dev/null 2>&1; then
+  if ffmpeg -hide_banner -encoders 2>/dev/null | grep -i -q "h264_nvenc"; then
+    FF_ENCODER='h264_nvenc'
+    # Use a reasonably fast nvenc preset and VBR_HQ for quality
+    FF_OPTS='-preset p6 -rc vbr_hq -cq 19 -b:v 0 -pix_fmt yuv420p'
+    log "Using hardware encoder: $FF_ENCODER $FF_OPTS"
+    # sanity-check: try a tiny encode to ensure nvenc works with this ffmpeg build
+    if ! ffmpeg -hide_banner -loglevel error -f lavfi -i testsrc=duration=0.2:size=64x64:rate=5 -c:v $FF_ENCODER $FF_OPTS -f null - >/dev/null 2>&1; then
+      log "h264_nvenc test encode failed; reverting to libx264"
+      FF_ENCODER='libx264'
+      FF_OPTS='-crf 18 -preset medium -pix_fmt yuv420p'
+    fi
+  else
+    log "Hardware nvenc not found; falling back to libx264"
+  fi
+else
+  log "ffmpeg not found in PATH; encoder selection skipped"
+fi
+
 # extract frames padded to 32
 log "Extracting frames to $TMP_DIR/input"
 ffmpeg -version | head -n 3 || true
@@ -476,6 +498,155 @@ else
   log "No external batch_rife.py found at $BATCH_PY; skipping batch-runner"
 fi
 
+# Helper: format seconds to human HhMmSs
+format_seconds(){
+  s=$1
+  if [ -z "$s" ] || [ "$s" -lt 0 ]; then
+    echo "unknown"
+    return
+  fi
+  h=$((s/3600))
+  m=$(( (s%3600)/60 ))
+  sec=$((s%60))
+  if [ $h -gt 0 ]; then
+    printf "%dh%02dm%02ds" $h $m $sec
+  elif [ $m -gt 0 ]; then
+    printf "%dm%02ds" $m $sec
+  else
+    printf "%ds" $sec
+  fi
+}
+
+# Start periodic summary: watches logfile and prints percent/fps/ETA every INTERVAL seconds.
+start_periodic_summary(){
+  local logf="$1"; local total_frames="${2:-0}"; local interval="${3:-30}"
+  # ensure log exists
+  : > "$logf" 2>/dev/null || true
+  (
+    while true; do
+      sleep "$interval"
+      # pick latest human progress line
+      line=$(tail -n 400 "$logf" 2>/dev/null | grep -E 'frame=.*time=' | tail -n1 || true)
+      [ -z "$line" ] && line=$(tail -n 400 "$logf" 2>/dev/null | grep -E 'time=' | tail -n1 || true)
+      # parse fields
+      frame=$(echo "$line" | sed -n 's/.*frame=[[:space:]]*\([0-9]*\).*/\1/p' || true)
+      fps=$(echo "$line" | sed -n 's/.*fps=\([0-9.]*\).*/\1/p' || true)
+      out_time=$(echo "$line" | sed -n 's/.*time=\([0-9:.]*\).*/\1/p' || true)
+      size_kb=$(echo "$line" | sed -n 's/.*size=[[:space:]]*\([0-9]*\)kB.*/\1/p' || true)
+      frame=${frame:-0}
+      fps=${fps:-0}
+      size_kb=${size_kb:-0}
+      # file size
+      outsize=0
+      [ -f "$OUTFILE" ] && outsize=$(stat -c %s "$OUTFILE" 2>/dev/null || echo 0)
+      # compute ETA
+      eta_txt="unknown"
+      if [ -n "$total_frames" ] && [ "$total_frames" -gt 0 ] && [ "$frame" -gt 0 ] && awk "BEGIN{print ($fps>0)}" >/dev/null 2>&1; then
+        # compute remaining frames
+        rem=$(awk -v tf="$total_frames" -v f="$frame" 'BEGIN{r=tf-f; if(r<0) r=0; printf "%d", r}')
+        # compute ETA seconds
+        if awk "BEGIN{print ($fps>0)}" >/dev/null 2>&1; then
+          eta_s=$(awk -v r="$rem" -v fps="$fps" 'BEGIN{ if(fps>0) printf "%d", (r/fps); else print 0 }')
+          eta_txt=$(format_seconds "$eta_s")
+        fi
+      elif [ -n "$out_time" ] && [ -n "${TOTAL_DURATION_MS:-}" ] && [ "$TOTAL_DURATION_MS" -gt 0 ]; then
+        # parse out_time into seconds
+        IFS=':' read -r hh mm ss <<< "$(echo $out_time | awk -F':' '{print $1" "$2" "$3}')"
+        out_s=0
+        if [ -n "$ss" ]; then
+          out_s=$(awk -v H="$hh" -v M="$mm" -v S="$ss" 'BEGIN{printf "%d", H*3600 + M*60 + S}')
+        fi
+        rem_ms=$((TOTAL_DURATION_MS - out_s*1000))
+        if [ $rem_ms -lt 0 ]; then rem_ms=0; fi
+        eta_txt=$(format_seconds $((rem_ms/1000)))
+      fi
+      pct_txt=""
+      if [ -n "$total_frames" ] && [ "$total_frames" -gt 0 ] && [ "$frame" -gt 0 ]; then
+        pct=$(awk -v f="$frame" -v tf="$total_frames" 'BEGIN{printf "%.2f", (f/tf*100)}')
+        pct_txt="$pct%"
+      fi
+      # print summary
+      summary_parts=()
+      [ -n "$pct_txt" ] && summary_parts+=("pct=$pct_txt")
+      [ -n "$fps" ] && summary_parts+=("fps=$fps")
+      summary_parts+=("ETA=$eta_txt")
+      if [ "$outsize" -gt 0 ]; then
+        summary_parts+=("size=$(numfmt --to=iec-i --suffix=B $outsize 2>/dev/null || echo ${outsize}B)")
+      fi
+      log "SUMMARY: ${summary_parts[*]} frame=$frame"
+    done
+  ) &
+  REPORTER_PID=$!
+  # Ensure reporter is stopped on exit (use single quotes to defer expansion)
+  trap 'kill "$REPORTER_PID" 2>/dev/null || true' EXIT
+}
+
+stop_periodic_summary(){
+  if [ -n "${REPORTER_PID:-}" ]; then
+    kill "$REPORTER_PID" 2>/dev/null || true
+    unset REPORTER_PID
+  fi
+}
+
+# Periodic progress summary reporter: reads ffmpeg tee log and prints compact percent/fps/ETA every INTERVAL seconds.
+start_periodic_summary(){
+  local logf="$1"; local total_frames="${2:-0}"; local interval="${3:-30}"
+  # Background reporter
+  (
+    while true; do
+      sleep "$interval"
+      # extract latest ffmpeg human progress line from tee'd log
+      line=$(tail -n 200 "$logf" 2>/dev/null | grep -E 'frame=.*time=' | tail -n1 || true)
+      if [ -z "$line" ]; then
+        line=$(tail -n 200 "$logf" 2>/dev/null | grep -E 'time=' | tail -n1 || true)
+      fi
+      frame=$(echo "$line" | sed -n 's/.*frame=[[:space:]]*\([0-9]*\).*/\1/p' || true)
+      fps=$(echo "$line" | sed -n 's/.*fps=\([0-9.]*\).*/\1/p' || true)
+      out_time=$(echo "$line" | sed -n 's/.*time=\([0-9:.]*\).*/\1/p' || true)
+      size_kb=$(echo "$line" | sed -n 's/.*size=[[:space:]]*\([0-9]*\)kB.*/\1/p' || true)
+      frame=${frame:-0}
+      fps=${fps:-0}
+      size_kb=${size_kb:-0}
+      # file size of output being written
+      outsize_bytes=0
+      if [ -f "$OUTFILE" ]; then outsize_bytes=$(stat -c %s "$OUTFILE" 2>/dev/null || echo 0); fi
+      # compute percent/ETA if total_frames available and fps>0
+      pct_str=""
+      eta_str=""
+      if [ -n "$total_frames" ] && [ "$total_frames" -gt 0 ] && [ "$frame" -gt 0 ]; then
+        # ensure numeric fps
+        fps_num=0
+        fps_num=$(awk 'BEGIN{printf "%f", '$fps'}')
+        # percent complete
+        pct=$(awk -v f="$frame" -v tf="$total_frames" 'BEGIN{ printf "%.4f", (f/tf)*100 }')
+        pct_str="pct=$pct"
+        # ETA
+        if [ "$fps_num" -gt 0 ]; then
+          eta_s=$(awk -v rem="$rem" -v fps="$fps_num" 'BEGIN{ if(fps>0) printf "%d", (rem/fps); else print 0 }')
+          eta_str="ETA=$(fmt_s $eta_s)"
+        fi
+      fi
+      # compact summary line
+      if [ -n "$pct_str" ] || [ -n "$eta_str" ]; then
+        summary=("[summary]")
+        [ -n "$pct_str" ] && summary+=("$pct_str")
+        [ -n "$eta_str" ] && summary+=("$eta_str")
+        [ -n "$fps" ] && [ "$fps" -gt 0 ] && summary+=("fps=$fps")
+        # file size (approximate if still encoding)
+        if [ "$outsize_bytes" -gt 0 ]; then
+          if [ "$outsize_bytes" -lt 1024 ]; then
+            summary+=("size=${outsize_bytes}B")
+          else
+            summary+=("size=$(numfmt --to=iec-i --suffix=B "$outsize_bytes")")
+          fi
+        fi
+        log " ${summary[*]}"
+      fi
+    done
+  ) &
+  REPORTER_PID=$!
+}
+
 # Attempt assembly: prefer filelist from TMP_DIR/output, else look for mids, else fallback
 try_filelist(){
   # Build a filelist of outputs (supports mixed png/jpg). If outputs look like images, prefer image2 assembly.
@@ -515,20 +686,33 @@ try_filelist(){
           TOTAL_DURATION_MS=$(awk -v n=$TOTAL_FRAMES -v f="$TARGET_FPS" 'BEGIN{ if(f>0) printf "%d", (n/f*1000); else print 0 }')
           export TOTAL_DURATION_MS
         fi
-        if [ -f "$TMP_DIR/audio.aac" ]; then
-          ffmpeg -hide_banner -loglevel info -y -start_number $start_number -framerate "$TARGET_FPS" -i "$pattern" -i "$TMP_DIR/audio.aac" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p -shortest "$OUTFILE" 2>&1 | progress_collapse | tee "$TMP_DIR/ff_assemble.log"
+        # Print ETA hint so it's visible in logs even if progress lines get interleaved
+        if [ -n "${TOTAL_DURATION_MS:-}" ] && [ "$TOTAL_DURATION_MS" -gt 0 ]; then
+          now_s=$(date +%s)
+          finish_s=$((now_s + TOTAL_DURATION_MS/1000))
+          finish_ts=$(date -d "@${finish_s}" '+%H:%M:%S' 2>/dev/null || date -r ${finish_s} '+%H:%M:%S' 2>/dev/null || echo "unknown")
+          log "ETA_HINT: TOTAL_FRAMES=${TOTAL_FRAMES} TOTAL_DURATION_MS=${TOTAL_DURATION_MS} approx_finish=${finish_ts}"
         else
-          ffmpeg -hide_banner -loglevel info -y -start_number $start_number -framerate "$TARGET_FPS" -i "$pattern" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p "$OUTFILE" 2>&1 | progress_collapse | tee "$TMP_DIR/ff_assemble.log"
+          log "ETA_HINT: TOTAL_FRAMES=${TOTAL_FRAMES} TOTAL_DURATION_MS=unknown"
+        fi
+
+        # start periodic reporter for assembly
+        start_periodic_summary "$TMP_DIR/ff_assemble.log" "$TOTAL_FRAMES" 30
+        if [ -f "$TMP_DIR/audio.aac" ]; then
+          ffmpeg -hide_banner -loglevel info -y -start_number $start_number -framerate "$TARGET_FPS" -i "$pattern" -i "$TMP_DIR/audio.aac" -c:v "$FF_ENCODER" $FF_OPTS -shortest "$OUTFILE" 2>&1 | progress_collapse | tee "$TMP_DIR/ff_assemble.log"
+        else
+          ffmpeg -hide_banner -loglevel info -y -start_number $start_number -framerate "$TARGET_FPS" -i "$pattern" -c:v "$FF_ENCODER" $FF_OPTS "$OUTFILE" 2>&1 | progress_collapse | tee "$TMP_DIR/ff_assemble.log"
         fi
         rc=${PIPESTATUS[0]:-1}
-        # enforce minimum size threshold to avoid tiny stub files (e.g., metadata-only) - 50KB
-        min_size=51200
-        outsiz=$(stat -c %s "$OUTFILE" 2>/dev/null || echo 0)
-        if [ $rc -eq 0 ] && [ $outsiz -ge $min_size ]; then
-          return 0
-        else
-          log "Image2 assembly failed or produced too-small output (rc=$rc size=$outsiz) - will try concat fallback"
-        fi
+        stop_periodic_summary || true
+         # enforce minimum size threshold to avoid tiny stub files (e.g., metadata-only) - 50KB
+         min_size=51200
+         outsiz=$(stat -c %s "$OUTFILE" 2>/dev/null || echo 0)
+         if [ $rc -eq 0 ] && [ $outsiz -ge $min_size ]; then
+           return 0
+         else
+           log "Image2 assembly failed or produced too-small output (rc=$rc size=$outsiz) - will try concat fallback"
+         fi
       else
         log "Could not find numeric substring in filename '${first}'; will try concat fallback"
       fi
@@ -546,12 +730,24 @@ try_filelist(){
     TOTAL_DURATION_MS=$(awk -v n=$TOTAL_FRAMES -v f="$TARGET_FPS" 'BEGIN{ if(f>0) printf "%d", (n/f*1000); else print 0 }')
     export TOTAL_DURATION_MS
   fi
-  if [ -f "$TMP_DIR/audio.aac" ]; then
-    ffmpeg -hide_banner -loglevel info -y -f concat -safe 0 -i "$FL" -framerate "$TARGET_FPS" -i "$TMP_DIR/audio.aac" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p -shortest "$OUTFILE" 2>&1 | progress_collapse | tee "$TMP_DIR/ff_assemble.log"
+  # Print ETA hint for concat assembly
+  if [ -n "${TOTAL_DURATION_MS:-}" ] && [ "$TOTAL_DURATION_MS" -gt 0 ]; then
+    now_s=$(date +%s)
+    finish_s=$((now_s + TOTAL_DURATION_MS/1000))
+    finish_ts=$(date -d "@${finish_s}" '+%H:%M:%S' 2>/dev/null || date -r ${finish_s} '+%H:%M:%S' 2>/dev/null || echo "unknown")
+    log "ETA_HINT: TOTAL_FRAMES=${TOTAL_FRAMES} TOTAL_DURATION_MS=${TOTAL_DURATION_MS} approx_finish=${finish_ts}"
   else
-    ffmpeg -hide_banner -loglevel info -y -f concat -safe 0 -i "$FL" -framerate "$TARGET_FPS" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p "$OUTFILE" 2>&1 | progress_collapse | tee "$TMP_DIR/ff_assemble.log"
+    log "ETA_HINT: TOTAL_FRAMES=${TOTAL_FRAMES} TOTAL_DURATION_MS=unknown"
+  fi
+  # start periodic reporter for concat assembly
+  start_periodic_summary "$TMP_DIR/ff_assemble.log" "$TOTAL_FRAMES" 30
+  if [ -f "$TMP_DIR/audio.aac" ]; then
+    ffmpeg -hide_banner -loglevel info -y -f concat -safe 0 -i "$FL" -framerate "$TARGET_FPS" -i "$TMP_DIR/audio.aac" -c:v "$FF_ENCODER" $FF_OPTS -shortest "$OUTFILE" 2>&1 | progress_collapse | tee "$TMP_DIR/ff_assemble.log"
+  else
+    ffmpeg -hide_banner -loglevel info -y -f concat -safe 0 -i "$FL" -framerate "$TARGET_FPS" -c:v "$FF_ENCODER" $FF_OPTS "$OUTFILE" 2>&1 | progress_collapse | tee "$TMP_DIR/ff_assemble.log"
   fi
   rc=${PIPESTATUS[0]:-1}
+  stop_periodic_summary || true
   outsiz=$(stat -c %s "$OUTFILE" 2>/dev/null || echo 0)
   if [ $rc -eq 0 ] && [ $outsiz -ge 51200 ]; then
     return 0
@@ -631,13 +827,24 @@ if ls "$TMP_DIR/output"/frame_*_mid*.png 1>/dev/null 2>&1; then
       TOTAL_DURATION_MS=$(awk -v n=$TOTAL_FRAMES -v f="$TARGET_FPS" 'BEGIN{ if(f>0) printf "%d", (n/f*1000); else print 0 }')
       export TOTAL_DURATION_MS
     fi
-    # Run ffmpeg using concat filelist (preserve TARGET_FPS)
-    if [ -f "$TMP_DIR/audio.aac" ]; then
-      ffmpeg -hide_banner -loglevel info -y -f concat -safe 0 -i "$FL" -framerate "$TARGET_FPS" -i "$TMP_DIR/audio.aac" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p -shortest "$OUTFILE" 2>&1 | progress_collapse | tee "$TMP_DIR/ff_assemble_mid.log"
+    # Print ETA hint for mids assembly
+    if [ -n "${TOTAL_DURATION_MS:-}" ] && [ "$TOTAL_DURATION_MS" -gt 0 ]; then
+      now_s=$(date +%s)
+      finish_s=$((now_s + TOTAL_DURATION_MS/1000))
+      finish_ts=$(date -d "@${finish_s}" '+%H:%M:%S' 2>/dev/null || date -r ${finish_s} '+%H:%M:%S' 2>/dev/null || echo "unknown")
+      log "ETA_HINT: TOTAL_FRAMES=${TOTAL_FRAMES} TOTAL_DURATION_MS=${TOTAL_DURATION_MS} approx_finish=${finish_ts}"
     else
-      ffmpeg -hide_banner -loglevel info -y -f concat -safe 0 -i "$FL" -framerate "$TARGET_FPS" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p "$OUTFILE" 2>&1 | progress_collapse | tee "$TMP_DIR/ff_assemble_mid.log"
+      log "ETA_HINT: TOTAL_FRAMES=${TOTAL_FRAMES} TOTAL_DURATION_MS=unknown"
+    fi
+    # start periodic reporter for mids assembly
+    start_periodic_summary "$TMP_DIR/ff_assemble_mid.log" "$TOTAL_FRAMES" 30
+    if [ -f "$TMP_DIR/audio.aac" ]; then
+      ffmpeg -hide_banner -loglevel info -y -f concat -safe 0 -i "$FL" -framerate "$TARGET_FPS" -i "$TMP_DIR/audio.aac" -c:v "$FF_ENCODER" $FF_OPTS -shortest "$OUTFILE" 2>&1 | progress_collapse | tee "$TMP_DIR/ff_assemble_mid.log"
+    else
+      ffmpeg -hide_banner -loglevel info -y -f concat -safe 0 -i "$FL" -framerate "$TARGET_FPS" -c:v "$FF_ENCODER" $FF_OPTS "$OUTFILE" 2>&1 | progress_collapse | tee "$TMP_DIR/ff_assemble_mid.log"
     fi
     RC_ASM=${PIPESTATUS[0]:-1}
+    stop_periodic_summary || true
     min_size=51200
     outsiz=$(stat -c %s "$OUTFILE" 2>/dev/null || echo 0)
     if [ $RC_ASM -eq 0 ] && [ $outsiz -ge $min_size ]; then
@@ -677,12 +884,24 @@ if ls "$TMP_DIR/output"/frame_*_mid*.png 1>/dev/null 2>&1; then
           TOTAL_DURATION_MS=$(awk -v n=$TOTAL_FRAMES -v f="$TARGET_FPS" 'BEGIN{ if(f>0) printf "%d", (n/f*1000); else print 0 }')
           export TOTAL_DURATION_MS
         fi
-        if [ -f "$TMP_DIR/audio.aac" ]; then
-          ffmpeg -hide_banner -loglevel info -y -start_number 1 -framerate "$TARGET_FPS" -i "$ASSEM_DIR/frame_%06d.png" -i "$TMP_DIR/audio.aac" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p -shortest "$OUTFILE" 2>&1 | progress_collapse | tee "$TMP_DIR/ff_assemble_seq.log"
+        # Print ETA hint for sequential assembly
+        if [ -n "${TOTAL_DURATION_MS:-}" ] && [ "$TOTAL_DURATION_MS" -gt 0 ]; then
+          now_s=$(date +%s)
+          finish_s=$((now_s + TOTAL_DURATION_MS/1000))
+          finish_ts=$(date -d "@${finish_s}" '+%H:%M:%S' 2>/dev/null || date -r ${finish_s} '+%H:%M:%S' 2>/dev/null || echo "unknown")
+          log "ETA_HINT: TOTAL_FRAMES=${TOTAL_FRAMES} TOTAL_DURATION_MS=${TOTAL_DURATION_MS} approx_finish=${finish_ts}"
         else
-          ffmpeg -hide_banner -loglevel info -y -start_number 1 -framerate "$TARGET_FPS" -i "$ASSEM_DIR/frame_%06d.png" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p "$OUTFILE" 2>&1 | progress_collapse | tee "$TMP_DIR/ff_assemble_seq.log"
+          log "ETA_HINT: TOTAL_FRAMES=${TOTAL_FRAMES} TOTAL_DURATION_MS=unknown"
+        fi
+        # start periodic reporter for sequential assembly
+        start_periodic_summary "$TMP_DIR/ff_assemble_seq.log" "$TOTAL_FRAMES" 30
+        if [ -f "$TMP_DIR/audio.aac" ]; then
+          ffmpeg -hide_banner -loglevel info -y -start_number 1 -framerate "$TARGET_FPS" -i "$ASSEM_DIR/frame_%06d.png" -i "$TMP_DIR/audio.aac" -c:v "$FF_ENCODER" $FF_OPTS -shortest "$OUTFILE" 2>&1 | progress_collapse | tee "$TMP_DIR/ff_assemble_seq.log"
+        else
+          ffmpeg -hide_banner -loglevel info -y -start_number 1 -framerate "$TARGET_FPS" -i "$ASSEM_DIR/frame_%06d.png" -c:v "$FF_ENCODER" $FF_OPTS "$OUTFILE" 2>&1 | progress_collapse | tee "$TMP_DIR/ff_assemble_seq.log"
         fi
         RC_SEQ=${PIPESTATUS[0]:-1}
+        stop_periodic_summary || true
         outsiz=$(stat -c %s "$OUTFILE" 2>/dev/null || echo 0)
         if [ $RC_SEQ -eq 0 ] && [ $outsiz -ge $min_size ]; then
           log "OK $OUTFILE (assembled via sequential image list)"
@@ -704,7 +923,17 @@ DUR_SEC=$(ffprobe -v error -show_entries format=duration -of default=noprint_wra
 if [ -z "$DUR_SEC" ]; then DUR_SEC=0; fi
 TOTAL_DURATION_MS=$(awk -v d="$DUR_SEC" 'BEGIN{ printf "%d", (d*1000) }')
 export TOTAL_DURATION_MS
-ffmpeg -hide_banner -loglevel info -y -i "$INFILE" -vf "minterpolate=fps=$TARGET_FPS:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1" -pix_fmt yuv420p -c:v libx264 -crf 18 -preset medium "$OUTFILE" 2>&1 | progress_collapse | tee "$TMP_DIR/ff_fallback.log"
+if [ -n "${TOTAL_DURATION_MS:-}" ] && [ "$TOTAL_DURATION_MS" -gt 0 ]; then
+  now_s=$(date +%s)
+  finish_s=$((now_s + TOTAL_DURATION_MS/1000))
+  finish_ts=$(date -d "@${finish_s}" '+%H:%M:%S' 2>/dev/null || date -r ${finish_s} '+%H:%M:%S' 2>/dev/null || echo "unknown")
+  log "ETA_HINT: TOTAL_DURATION_MS=${TOTAL_DURATION_MS} approx_finish=${finish_ts} (based on input duration)"
+else
+  log "ETA_HINT: TOTAL_DURATION_MS=unknown"
+fi
+start_periodic_summary "$TMP_DIR/ff_fallback.log" "${TOTAL_FRAMES:-0}" 30
+ffmpeg -hide_banner -loglevel info -y -i "$INFILE" -vf "minterpolate=fps=$TARGET_FPS:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1" -pix_fmt yuv420p -c:v "$FF_ENCODER" $FF_OPTS "$OUTFILE" 2>&1 | progress_collapse | tee "$TMP_DIR/ff_fallback.log"
+stop_periodic_summary || true
 
 if [ -s "$OUTFILE" ]; then
   log "Success: $OUTFILE"
