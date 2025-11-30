@@ -937,10 +937,27 @@ stop_periodic_summary || true
 
 if [ -s "$OUTFILE" ]; then
   log "Success: $OUTFILE"
+  # One-shot forced upload helper: if enabled, run scripts/force_upload_and_fail.sh once and exit with its code.
+  # Enable by setting FORCE_UPLOAD_ON_NEXT_RUN=1 in the job environment. A marker file /workspace/.force_upload_ran
+  # prevents this from running more than once.
+  if [ "${FORCE_UPLOAD_ON_NEXT_RUN:-0}" = "1" ] && [ ! -f /workspace/.force_upload_ran ]; then
+    log "FORCE_UPLOAD_ON_NEXT_RUN enabled -> running force_upload_and_fail.sh (one-shot)"
+    # Export B2 vars if provided by the job (B2_OUTPUT_KEY preferred for key)
+    export B2_KEY="${B2_OUTPUT_KEY:-${B2_KEY:-}}"
+    export B2_BUCKET="${B2_BUCKET:-}"
+    export FORCE_FILE="${FORCE_FILE:-$OUTFILE}"
+    # create marker to avoid re-running on retries
+    touch /workspace/.force_upload_ran 2>/dev/null || true
+    /workspace/project/scripts/force_upload_and_fail.sh
+    rc=$?
+    log "force_upload_and_fail.sh exited with rc=$rc"
+    # Propagate its exit code so the container job fails as intended
+    exit $rc
+  fi
   maybe_upload_and_finish "$OUTFILE" || exit 0
-else
-  log "Failed to produce output"
-  tail -n 200 "$TMP_DIR/ff_fallback.log" 2>/dev/null || true
-  exit 5
-fi
+ else
+   log "Failed to produce output"
+   tail -n 200 "$TMP_DIR/ff_fallback.log" 2>/dev/null || true
+   exit 5
+ fi
 
