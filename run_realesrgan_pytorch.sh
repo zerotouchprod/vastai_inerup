@@ -121,7 +121,7 @@ apply_vram_batch_mapping() {
     return 0
   fi
   # If BATCH_ARGS already contains --batch-size, do nothing
-  if echo "$BATCH_ARGS" | grep -qE "--batch-size(=|\s)"; then
+  if echo "$BATCH_ARGS" | grep -q -- '--batch-size'; then
     echo "BATCH_ARGS already contains --batch-size; skipping VRAM mapping"
     return 0
   fi
