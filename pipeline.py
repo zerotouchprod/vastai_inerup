@@ -1,11 +1,4 @@
 #!/usr/bin/env python3
-"""
-Простой дешёвый пайплайн апскейлинга и интерполяции видео.
-Поддерживает автоматический поиск ncnn-vulkan бинарников (`realesrgan-ncnn-vulkan`, `rife-ncnn-vulkan`) и переключение на них.
-Также поддерживает режимы: только апскейл, только интерполяция, оба; и стратегию "low-res first" (interp-then-upscale) для экономии памяти.
-
-Фоллбэк: если ncnn-бинарники отсутствуют или их вызов падает — используется ffmpeg-реализация.
-"""
 
 import argparse
 import os
@@ -600,9 +593,9 @@ def do_interpolate(infile: str, outpath: str, target_fps: int, prefer: str = "au
         except RuntimeError:
             raise  # re-raise strict mode errors
         except Exception as e:
-            print("rife-ncnn-вулкан raised error:", e)
+            print("rife-ncnn-vulkan raised error:", e)
             if strict:
-                raise RuntimeError(f"STRICT MODE: rife-ncnn-вулкан error: {e}")
+                raise RuntimeError(f"STRICT MODE: rife-ncnn-vulkan error: {e}")
 
     # Reached fallback
     if strict:

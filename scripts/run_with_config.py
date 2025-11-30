@@ -2,9 +2,6 @@
 """
 run_with_config.py
 
-Запуск обработки видео на Vast.ai с использованием конфигурации из config.yaml
-Поддерживает три пресета: low, balanced, high
-
 Usage:
   python scripts/run_with_config.py [--config config.yaml] [--preset balanced]
 """
@@ -123,11 +120,6 @@ def extract_vast_params(vast_config: dict) -> dict:
 
 
 def select_vast_config(config: dict, cli_preset: str | None) -> dict:
-    """Выбрать и слить пресет из config['presets'] и явный блок config['vast'].
-
-    Преимущество: поля в config['vast'] переопределяют значения пресета.
-    Приоритет источников для имени пресета: cli_preset -> config['vast'].get('preset') -> 'balanced'
-    """
     presets = config.get('presets', {}) or {}
     explicit_vast = config.get('vast', {}) or {}
 
