@@ -168,14 +168,41 @@ maybe_upload_b2() {
     echo "AUTO_UPLOAD_B2: file not found: $file_path"
     return 1
   fi
-  # Default object key: prefer B2_OUTPUT_KEY (set by launcher) then B2_KEY (legacy), then basename
+  # Default object key: prefer B2_OUTPUT_KEY (set by launcher) then B2_KEY (legacy).
+  # If neither are present, derive a deterministic key from the original input filename (INFILE)
+  # so uploads are organized as upscales/<original-stem>-<timestamp>.mp4 instead of container-local names.
   local key
   if [ -n "${B2_OUTPUT_KEY:-}" ]; then
     key="${B2_OUTPUT_KEY}"
   elif [ -n "${B2_KEY:-}" ]; then
     key="${B2_KEY}"
   else
-    key="$(basename "$file_path")"
+    # Try to use original remote filename if present (INPUT_URL/VIDEO_INPUT_URL) or B2_INPUT_KEY;
+    # otherwise fall back to INFILE or container-local file path basename.
+    src_base=""
+    # Prefer INPUT_URL/VIDEO_INPUT_URL (strip query string)
+    if [ -n "${INPUT_URL:-}" ]; then
+      tmp="${INPUT_URL%%\?*}"
+      src_base="$(basename "$tmp")"
+    elif [ -n "${VIDEO_INPUT_URL:-}" ]; then
+      tmp="${VIDEO_INPUT_URL%%\?*}"
+      src_base="$(basename "$tmp")"
+    fi
+    # Next prefer explicit B2 input key if present
+    if [ -z "$src_base" ] && [ -n "${B2_INPUT_KEY:-}" ]; then
+      src_base="$(basename "${B2_INPUT_KEY}")"
+    fi
+    # Then prefer INFILE (original local input path passed to wrapper)
+    if [ -z "$src_base" ] && [ -n "${INFILE:-}" ]; then
+      src_base="$(basename "${INFILE}")"
+    fi
+    # Finally fallback to the provided file path
+    if [ -z "$src_base" ]; then
+      src_base="$(basename "$file_path")"
+    fi
+    stem="${src_base%.*}"
+    ts=$(date +%Y%m%d_%H%M%S)
+    key="upscales/${stem}-${ts}.mp4"
   fi
   echo "AUTO_UPLOAD_B2: uploading $file_path -> s3://${B2_BUCKET}/${key} (endpoint=${B2_ENDPOINT:-})"
   # Ensure directory for result exists
@@ -245,7 +272,10 @@ choose_out_pix_fmt() {
   local enc="$2"
   local inp
   inp=$(ffprobe -v error -select_streams v:0 -show_entries stream=pix_fmt -of default=nokey=1:noprint_wrappers=1 "$infile" 2>/dev/null | head -n1 || true)
-  echo "INPUT_PIX_FMT:${inp}"
+  # Emit detected input pix_fmt to stderr for debugging, but do not print it to stdout
+  if [ -n "$inp" ]; then
+    echo "INPUT_PIX_FMT:${inp}" >&2
+  fi
   # default safe 8-bit
   local outpf="yuv420p"
   # if input is 10-bit and encoder is hevc_nvenc, try 10-bit hevc
@@ -798,6 +828,32 @@ if [ -f "$REPO_DIR/inference_realesrgan_video.py" ]; then
     if [ -n "$ACTUAL_VIDEO" ] && [ -f "$ACTUAL_VIDEO" ]; then
       echo "Found video: $ACTUAL_VIDEO ($(ls -lh "$ACTUAL_VIDEO" | awk '{print $5}'))"
       echo "Moving to $OUTFILE..."
+
+      # If no explicit B2_OUTPUT_KEY provided, try to derive a meaningful key now.
+      if [ -z "${B2_OUTPUT_KEY:-}" ]; then
+        # Prefer INPUT_URL/VIDEO_INPUT_URL stripped of query, then B2_INPUT_KEY; else derive from actual video filename
+        derive_base=""
+        if [ -n "${INPUT_URL:-}" ]; then
+          tmpurl="${INPUT_URL%%\?*}"
+          derive_base="$(basename "$tmpurl")"
+        elif [ -n "${VIDEO_INPUT_URL:-}" ]; then
+          tmpurl="${VIDEO_INPUT_URL%%\?*}"
+          derive_base="$(basename "$tmpurl")"
+        elif [ -n "${B2_INPUT_KEY:-}" ]; then
+          derive_base="$(basename "${B2_INPUT_KEY}")"
+        else
+          derive_base="$(basename "$ACTUAL_VIDEO")"
+        fi
+        # Strip common suffixes added by external scripts (e.g., _out, _out.mp4, _in)
+        clean="${derive_base%.*}"
+        clean=$(echo "$clean" | sed -E 's/(_out|_out[0-9]*|_in|_outframe|_out_image)$//')
+        tsnow=$(date +%Y%m%d_%H%M%S)
+        B2_OUTPUT_KEY="upscales/${clean}-${tsnow}.mp4"
+        export B2_OUTPUT_KEY
+        echo "AUTO_DERIVED_B2_OUTPUT_KEY: ${B2_OUTPUT_KEY} (from ACTUAL_VIDEO basename or INPUT_URL)"
+      else
+        echo "Using existing B2_OUTPUT_KEY: ${B2_OUTPUT_KEY}"
+      fi
 
       # Copy the video file out first, then remove the directory
       TEMP_FILE="${OUTFILE}.tmp.mp4"

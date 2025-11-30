@@ -300,144 +300,144 @@ def try_run_realesrgan_pytorch_wrapper(infile: str, outpath: str, scale: int) ->
         try:
             # Prepare environment for wrapper so centralized upload uses a clear key name.
             env = os.environ.copy()
-            try:
-                base = os.path.splitext(os.path.basename(infile))[0]
-                ts_now = datetime.now().strftime('%Y%m%d_%H%M%S')
-                env['B2_OUTPUT_KEY'] = f"upscales/{base}-{ts_now}.mp4"
-                # Also set legacy B2_KEY for compatibility (do not override if explicitly set by env)
-                if not env.get('B2_KEY'):
-                    env['B2_KEY'] = env['B2_OUTPUT_KEY']
-                print(f"INFO: setting B2_OUTPUT_KEY for Real-ESRGAN upload: {env['B2_OUTPUT_KEY']}", flush=True)
-            except Exception:
-                env = os.environ.copy()
+            # Do NOT set B2_OUTPUT_KEY proactively here; let the wrapper decide the final object key
+            # This avoids mismatches when the wrapper assembles/moves files with different basenames.
+            env = os.environ.copy()
+            if env.get('B2_OUTPUT_KEY'):
+                print(f"INFO: Using pre-existing B2_OUTPUT_KEY from environment: {env.get('B2_OUTPUT_KEY')}", flush=True)
+            # Ensure legacy B2_KEY is set only if not present
+            if not env.get('B2_KEY') and env.get('B2_OUTPUT_KEY'):
+                env['B2_KEY'] = env['B2_OUTPUT_KEY']
+        except Exception:
+            env = os.environ.copy()
 
-            # Use Popen to stream stdout/stderr live so logs appear in real time
-            proc = subprocess.Popen([wrapper, infile, outpath, str(scale)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, env=env)
-            wrapper_out_lines = []
-            try:
-                # Iterate over stdout lines as they arrive
-                for line in iter(proc.stdout.readline, ''):
-                    if not line:
-                        break
-                    wrapper_out_lines.append(line)
-                    try:
-                        print(line.rstrip(), flush=True)
-                    except Exception:
-                        pass
-            finally:
+        # Use Popen to stream stdout/stderr live so logs appear in real time
+        proc = subprocess.Popen([wrapper, infile, outpath, str(scale)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, env=env)
+        wrapper_out_lines = []
+        try:
+            # Iterate over stdout lines as they arrive
+            for line in iter(proc.stdout.readline, ''):
+                if not line:
+                    break
+                wrapper_out_lines.append(line)
                 try:
-                    proc.stdout.close()
+                    print(line.rstrip(), flush=True)
                 except Exception:
                     pass
-            proc.wait()
-            wrapper_out = ''.join(wrapper_out_lines)
-            if proc.returncode != 0:
-                print(f"PyTorch Real-ESRGAN wrapper failed: returncode={proc.returncode}", flush=True)
-                return False
-        except Exception as e:
-            print(f"Error while running PyTorch Real-ESRGAN wrapper: {e}", flush=True)
-            return False
-
-        # If wrapper exited successfully, ensure the expected outpath exists; if not, try to assemble from frames
-        if outpath and os.path.isfile(outpath) and os.path.getsize(outpath) > 0:
-            print(f"✓ Real-ESRGAN completed and produced file: {outpath}", flush=True)
-            # Centralized upload is handled by the wrapper/script itself; do not duplicate uploads here.
-            return True
-
-        # Attempt to locate a temp frames dir from wrapper output
-        tmpdir = None
-        # common patterns printed by wrapper: "Extracting frames to /tmp/tmp.XXXXX" or "Created temp directory: /tmp/tmpXYZ"
-        import re
-        m = re.search(r"Extracting frames to ([^\s]+)", wrapper_out)
-        if not m:
-            m = re.search(r"Created temp directory: ([^\s]+)", wrapper_out)
-        if m:
-            tmpdir = m.group(1).strip()
-
-        # If we have a tmpdir, look for output frames inside it (common path: <tmpdir>/output)
-        candidate_dirs = []
-        if tmpdir:
-            candidate_dirs.append(os.path.join(tmpdir, 'output'))
-            candidate_dirs.append(os.path.join(tmpdir, 'out'))
-            candidate_dirs.append(os.path.join(tmpdir, 'out_frames'))
-        # also check common fallback location printed by safe script (/tmp/tmp.*)
-        # search wrapper_out for any /tmp/tmp.* tokens
-        if not tmpdir:
-            tokens = re.findall(r"(/tmp/tmp[\w\.\-_/]+)", wrapper_out)
-            for t in tokens:
-                candidate_dirs.append(os.path.join(t, 'output'))
-                candidate_dirs.append(os.path.join(t, 'out'))
-                candidate_dirs.append(os.path.join(t, 'out_frames'))
-
-        # Also check sibling directories under /tmp that might match run's prefix
-        if not candidate_dirs:
-            # try a passive scan for recent /tmp/realesrgan* dirs (best-effort)
+        finally:
             try:
-                for name in sorted(os.listdir('/tmp'), reverse=True):
-                    if name.startswith('tmp') or 'realesrgan' in name:
-                        candidate_dirs.append(os.path.join('/tmp', name, 'output'))
-                        candidate_dirs.append(os.path.join('/tmp', name))
+                proc.stdout.close()
             except Exception:
                 pass
-
-        found_dir = None
-        for d in candidate_dirs:
-            try:
-                if d and os.path.isdir(d):
-                    # check for image files inside
-                    items = [p for p in os.listdir(d) if p.lower().endswith(('.png', '.jpg', '.jpeg'))]
-                    if items:
-                        found_dir = d
-                        break
-            except Exception:
-                continue
-
-        if not found_dir:
-            print("Wrapper finished but no output video found and no frame directory detected; giving up.", flush=True)
+        proc.wait()
+        wrapper_out = ''.join(wrapper_out_lines)
+        if proc.returncode != 0:
+            print(f"PyTorch Real-ESRGAN wrapper failed: returncode={proc.returncode}", flush=True)
             return False
+    except Exception as e:
+        print(f"Error while running PyTorch Real-ESRGAN wrapper: {e}", flush=True)
+        return False
 
-        # We have frames; assemble into outpath using filelist concat (preserve order)
-        print(f"Detected produced frames in {found_dir}; attempting to assemble into {outpath}", flush=True)
+    # If wrapper exited successfully, ensure the expected outpath exists; if not, try to assemble from frames
+    if outpath and os.path.isfile(outpath) and os.path.getsize(outpath) > 0:
+        print(f"✓ Real-ESRGAN completed and produced file: {outpath}", flush=True)
+        # Centralized upload is handled by the wrapper/script itself; do not duplicate uploads here.
+        return True
+
+    # Attempt to locate a temp frames dir from wrapper output
+    tmpdir = None
+    # common patterns printed by wrapper: "Extracting frames to /tmp/tmp.XXXXX" or "Created temp directory: /tmp/tmpXYZ"
+    import re
+    m = re.search(r"Extracting frames to ([^\s]+)", wrapper_out)
+    if not m:
+        m = re.search(r"Created temp directory: ([^\s]+)", wrapper_out)
+    if m:
+        tmpdir = m.group(1).strip()
+
+    # If we have a tmpdir, look for output frames inside it (common path: <tmpdir>/output)
+    candidate_dirs = []
+    if tmpdir:
+        candidate_dirs.append(os.path.join(tmpdir, 'output'))
+        candidate_dirs.append(os.path.join(tmpdir, 'out'))
+        candidate_dirs.append(os.path.join(tmpdir, 'out_frames'))
+    # also check common fallback location printed by safe script (/tmp/tmp.*)
+    # search wrapper_out for any /tmp/tmp.* tokens
+    if not tmpdir:
+        tokens = re.findall(r"(/tmp/tmp[\w\.\-_/]+)", wrapper_out)
+        for t in tokens:
+            candidate_dirs.append(os.path.join(t, 'output'))
+            candidate_dirs.append(os.path.join(t, 'out'))
+            candidate_dirs.append(os.path.join(t, 'out_frames'))
+
+    # Also check sibling directories under /tmp that might match run's prefix
+    if not candidate_dirs:
+        # try a passive scan for recent /tmp/realesrgan* dirs (best-effort)
         try:
-            # determine framerate from original input
-            try:
-                fr = get_avg_fps(infile)
-            except Exception:
-                fr = None
+            for name in sorted(os.listdir('/tmp'), reverse=True):
+                if name.startswith('tmp') or 'realesrgan' in name:
+                    candidate_dirs.append(os.path.join('/tmp', name, 'output'))
+                    candidate_dirs.append(os.path.join('/tmp', name))
+        except Exception:
+            pass
 
-            filelist_path = os.path.join(found_dir, 'filelist_for_assembly.txt')
-            with open(filelist_path, 'w', encoding='utf-8') as fl:
-                for fn in sorted(os.listdir(found_dir)):
-                    if not fn.lower().endswith(('.png', '.jpg', '.jpeg')):
-                        continue
-                    fullp = os.path.join(found_dir, fn)
-                    fl.write(f"file '{fullp}'\n")
+    found_dir = None
+    for d in candidate_dirs:
+        try:
+            if d and os.path.isdir(d):
+                # check for image files inside
+                items = [p for p in os.listdir(d) if p.lower().endswith(('.png', '.jpg', '.jpeg'))]
+                if items:
+                    found_dir = d
+                    break
+        except Exception:
+            continue
 
-            ffmpeg_cmd = ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", filelist_path, "-c:v", "libx264", "-crf", "18", "-preset", "medium", outpath]
-            if fr is not None:
-                ffmpeg_cmd = ["ffmpeg", "-y", "-framerate", str(fr), "-f", "concat", "-safe", "0", "-i", filelist_path, "-c:v", "libx264", "-crf", "18", "-preset", "medium", outpath]
+    if not found_dir:
+        print("Wrapper finished but no output video found and no frame directory detected; giving up.", flush=True)
+        return False
 
-            # Print head of filelist for debugging before running ffmpeg
-            try:
-                print("filelist_for_assembly (first 20 lines):")
-                with open(filelist_path, 'r', encoding='utf-8') as _fl:
-                    for i, line in enumerate(_fl):
-                        if i >= 20:
-                            break
-                        print(line.rstrip())
-            except Exception:
-                pass
+    # We have frames; assemble into outpath using filelist concat (preserve order)
+    print(f"Detected produced frames in {found_dir}; attempting to assemble into {outpath}", flush=True)
+    try:
+        # determine framerate from original input
+        try:
+            fr = get_avg_fps(infile)
+        except Exception:
+            fr = None
 
-            run(ffmpeg_cmd)
-            if os.path.isfile(outpath) and os.path.getsize(outpath) > 0:
-                print(f"✓ Assembled frames into {outpath}", flush=True)
-                return True
-            else:
-                print(f"ERROR: Assembly produced no output at {outpath}", flush=True)
-                return False
-        except Exception as e:
-            print(f"Failed to assemble frames into video: {e}", flush=True)
+        filelist_path = os.path.join(found_dir, 'filelist_for_assembly.txt')
+        with open(filelist_path, 'w', encoding='utf-8') as fl:
+            for fn in sorted(os.listdir(found_dir)):
+                if not fn.lower().endswith(('.png', '.jpg', '.jpeg')):
+                    continue
+                fullp = os.path.join(found_dir, fn)
+                fl.write(f"file '{fullp}'\n")
+
+        ffmpeg_cmd = ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", filelist_path, "-c:v", "libx264", "-crf", "18", "-preset", "medium", outpath]
+        if fr is not None:
+            ffmpeg_cmd = ["ffmpeg", "-y", "-framerate", str(fr), "-f", "concat", "-safe", "0", "-i", filelist_path, "-c:v", "libx264", "-crf", "18", "-preset", "medium", outpath]
+
+        # Print head of filelist for debugging before running ffmpeg
+        try:
+            print("filelist_for_assembly (first 20 lines):")
+            with open(filelist_path, 'r', encoding='utf-8') as _fl:
+                for i, line in enumerate(_fl):
+                    if i >= 20:
+                        break
+                    print(line.rstrip())
+        except Exception:
+            pass
+
+        run(ffmpeg_cmd)
+        if os.path.isfile(outpath) and os.path.getsize(outpath) > 0:
+            print(f"✓ Assembled frames into {outpath}", flush=True)
+            return True
+        else:
+            print(f"ERROR: Assembly produced no output at {outpath}", flush=True)
             return False
+    except Exception as e:
+        print(f"Failed to assemble frames into video: {e}", flush=True)
+        return False
 
     except Exception as e:
         print(f"PyTorch Real-ESRGAN wrapper unexpected error: {e}", flush=True)
@@ -503,30 +503,27 @@ def try_run_rife_pytorch_wrapper(infile: str, outpath: str, factor: int) -> bool
         try:
             # Prepare env so centralized uploader produces a predictable key for RIFE outputs.
             env = os.environ.copy()
-            try:
-                base = os.path.splitext(os.path.basename(infile))[0]
-                ts_now = datetime.now().strftime('%Y%m%d_%H%M%S')
-                env['B2_OUTPUT_KEY'] = f"interp/{base}-{ts_now}.mp4"
-                # Also set legacy B2_KEY for compatibility
-                if not env.get('B2_KEY'):
-                    env['B2_KEY'] = env['B2_OUTPUT_KEY']
-                print(f"INFO: setting B2_OUTPUT_KEY for RIFE upload: {env['B2_OUTPUT_KEY']}", flush=True)
-            except Exception:
-                env = os.environ.copy()
+            # Do NOT set B2_OUTPUT_KEY proactively here; let the wrapper decide the final object key
+            env = os.environ.copy()
+            if env.get('B2_OUTPUT_KEY'):
+                print(f"INFO: Using pre-existing B2_OUTPUT_KEY from environment: {env.get('B2_OUTPUT_KEY')}", flush=True)
+            # leave legacy B2_KEY untouched if present
+        except Exception:
+            env = os.environ.copy()
 
-            # Don't capture output - let it stream directly
-            res = subprocess.run([wrapper, infile, outpath, str(factor)], check=True, timeout=1800, env=env)
-            signal.alarm(0)  # Cancel timeout
-            print(f"✓ RIFE completed at {__import__('datetime').datetime.now().strftime('%H:%M:%S')}", flush=True)
-            return True
-        except subprocess.TimeoutExpired:
-            signal.alarm(0)
-            print(f"ERROR: RIFE wrapper timeout after 30 minutes", flush=True)
-            return False
-        except subprocess.CalledProcessError as e:
-            signal.alarm(0)
-            print(f"PyTorch RIFE wrapper failed: returncode={e.returncode}", flush=True)
-            return False
+        # Don't capture output - let it stream directly
+        res = subprocess.run([wrapper, infile, outpath, str(factor)], check=True, timeout=1800, env=env)
+        signal.alarm(0)  # Cancel timeout
+        print(f"✓ RIFE completed at {__import__('datetime').datetime.now().strftime('%H:%M:%S')}", flush=True)
+        return True
+    except subprocess.TimeoutExpired:
+        signal.alarm(0)
+        print(f"ERROR: RIFE wrapper timeout after 30 minutes", flush=True)
+        return False
+    except subprocess.CalledProcessError as e:
+        signal.alarm(0)
+        print(f"PyTorch RIFE wrapper failed: returncode={e.returncode}", flush=True)
+        return False
     except Exception as e:
         print(f"PyTorch RIFE wrapper exception: {e}", flush=True)
         return False
