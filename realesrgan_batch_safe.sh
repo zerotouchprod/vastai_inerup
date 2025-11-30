@@ -10,8 +10,43 @@ fi
 IN_DIR=${1:-}
 OUT_DIR=${2:-}
 shift 2 || true
+# Keep the original caller args as a single string for robust detection of explicit --batch-size
+CALLER_ARGS_STR="$*"
 EXTRA_ARGS=("$@")
+# If caller passed a single space-separated string (e.g. unquoted), split it into array elements for robust parsing
+if [ ${#EXTRA_ARGS[@]} -eq 1 ]; then
+  single="${EXTRA_ARGS[0]}"
+  # if the single element contains a space, split it
+  if echo "$single" | grep -q ' '; then
+    # shell-safe split into array
+    read -r -a EXTRA_ARGS <<< "$single"
+  fi
+fi
 LOGFILE="/tmp/realesrgan_batch_safe_$(date +%s).log"
+
+# Determine if caller provided explicit batch-size and capture tile-size from EXTRA_ARGS
+TILE_SIZE=256
+HAS_BATCH_ARG=0
+for ((i=0;i<${#EXTRA_ARGS[@]};i++)); do
+  a="${EXTRA_ARGS[$i]}"
+  case "$a" in
+    --batch-size|--batch-size=*|-b)
+      HAS_BATCH_ARG=1
+      ;;
+    --tile-size)
+      nextidx=$((i+1))
+      if [ $nextidx -lt ${#EXTRA_ARGS[@]} ]; then
+        TILE_SIZE="${EXTRA_ARGS[$nextidx]}"
+      fi
+      ;;
+  esac
+done
+
+# Final determination: caller explicitly requested batch-size if it appears in the original caller string or in parsed args
+HAS_BATCH=0
+if [ $HAS_BATCH_ARG -eq 1 ] || echo "$CALLER_ARGS_STR" | grep -q -- --batch-size 2>/dev/null; then
+  HAS_BATCH=1
+fi
 
 # allow overriding maximum sensible batch via env (default 64)
 export MAX_BATCH=${MAX_BATCH:-32}
@@ -21,23 +56,13 @@ echo "Running batch script (first attempt). Log: $LOGFILE"
 # Ensure TORCH_COMPILE_DISABLE is exported; child processes inherit it
 : ${TORCH_COMPILE_DISABLE:=1}
 
-# If user didn't specify --batch-size, attempt a very quick GPU probe to estimate a safe batch for given tile size
-HAS_BATCH=0
-TILE_SIZE=256
-for ((i=0;i<${#EXTRA_ARGS[@]};i++)); do
-  a="${EXTRA_ARGS[$i]}"
-  if [ "$a" = "--batch-size" ] || [ "$a" = "-b" ]; then
-    HAS_BATCH=1
-  fi
-  if [ "$a" = "--tile-size" ]; then
-    # next arg is tile size
-    nextidx=$((i+1))
-    if [ $nextidx -lt ${#EXTRA_ARGS[@]} ]; then
-      TILE_SIZE="${EXTRA_ARGS[$nextidx]}"
-    fi
-  fi
-done
+# --- NOTE ---
+# Previously the script re-initialized HAS_BATCH and TILE_SIZE here which could override
+# the earlier detection (from CALLER_ARGS_STR / EXTRA_ARGS). That caused explicit
+# caller-provided --batch-size flags to be ignored and the command to default to --batch-size 1.
+# We removed that duplicate re-detection so the previously computed HAS_BATCH/TILE_SIZE are used.
 
+# If user didn't specify --batch-size, attempt a very quick GPU probe to estimate a safe batch for given tile size
 if [ "$HAS_BATCH" -eq 0 ]; then
   echo "No explicit --batch-size provided; running fast GPU probe for tile_size=$TILE_SIZE to estimate safe batch..."
   # If SKIP_PROBE=1, only compute an estimate from VRAM (no allocations/tests)
@@ -169,50 +194,53 @@ PY
   fi
 fi
 
-# Sanitize EXTRA_ARGS: remove any explicit --batch-size or -b flags so our suggested/default will be enforced
-CLEAN_EXTRA=()
-skip_next=0
-for a in "${EXTRA_ARGS[@]}"; do
-  if [ "$skip_next" -eq 1 ]; then
-    skip_next=0
-    continue
-  fi
-  case "$a" in
-    --batch-size=*)
-      # skip explicit key=value form
-      continue
-      ;;
-    --batch-size|-b)
-      # skip this flag and its value
-      skip_next=1
-      continue
-      ;;
-    *)
-      CLEAN_EXTRA+=("$a")
-      ;;
-  esac
-done
-EXTRA_ARGS=("${CLEAN_EXTRA[@]}")
-
-# Reinsert suggested batch if probe produced one and no explicit --batch-size remains
-if [ -n "${SUGGEST_BATCH:-}" ]; then
-  has_bs=0
+# If we did not receive an explicit --batch-size from the caller, sanitize EXTRA_ARGS and reinsert probe suggestion
+if [ "$HAS_BATCH" -eq 0 ]; then
+  # Sanitize EXTRA_ARGS: remove any explicit --batch-size or -b flags so our suggested/default will be enforced
+  CLEAN_EXTRA=()
+  skip_next=0
   for a in "${EXTRA_ARGS[@]}"; do
-    if [ "$a" = "--batch-size" ] || [ "$a" = "-b" ] || echo "$a" | grep -q -- '--batch-size=' 2>/dev/null; then
-      has_bs=1
-      break
+    if [ "$skip_next" -eq 1 ]; then
+      skip_next=0
+      continue
     fi
+    case "$a" in
+      --batch-size=*)
+        # skip explicit key=value form
+        continue
+        ;;
+      --batch-size|-b)
+        # skip this flag and its value
+        skip_next=1
+        continue
+        ;;
+      *)
+        CLEAN_EXTRA+=("$a")
+        ;;
+    esac
   done
-  if [ $has_bs -eq 0 ]; then
-    EXTRA_ARGS=("--batch-size" "$SUGGEST_BATCH" "${EXTRA_ARGS[@]}")
-    printf 'Applied suggested batch_size: %s\n' "${SUGGEST_BATCH}" >> "$LOGFILE"
-  fi
-fi
+  EXTRA_ARGS=("${CLEAN_EXTRA[@]}")
 
-# Log sanitized args
-printf 'Sanitized EXTRA_ARGS: %s\n' "${EXTRA_ARGS[*]}" >> "$LOGFILE"
-# Log MAX_BATCH as well
-printf 'MAX_BATCH: %s\n' "${MAX_BATCH}" >> "$LOGFILE"
+  # Reinsert suggested batch if probe produced one and no explicit --batch-size remains
+  if [ -n "${SUGGEST_BATCH:-}" ]; then
+    has_bs=0
+    for a in "${EXTRA_ARGS[@]}"; do
+      if [ "$a" = "--batch-size" ] || [ "$a" = "-b" ] || echo "$a" | grep -q -- '--batch-size=' 2>/dev/null; then
+        has_bs=1
+        break
+      fi
+    done
+    if [ $has_bs -eq 0 ]; then
+      EXTRA_ARGS=("--batch-size" "$SUGGEST_BATCH" "${EXTRA_ARGS[@]}")
+      printf 'Applied suggested batch_size: %s\n' "${SUGGEST_BATCH}" >> "$LOGFILE"
+    fi
+  fi
+
+  # Log sanitized args
+  printf 'Sanitized EXTRA_ARGS: %s\n' "${EXTRA_ARGS[*]}" >> "$LOGFILE"
+  # Log MAX_BATCH as well
+  printf 'MAX_BATCH: %s\n' "${MAX_BATCH}" >> "$LOGFILE"
+fi
 
 # --- Progress watcher (background) ---
 # Configurable interval (seconds)
@@ -290,18 +318,24 @@ PROGRESS_WATCHER_PID=$!
 
 # Run the batch script and capture all output
 # Build command array so quoting/arrays are preserved and we can log what we actually run
-CMD=(python3 "$BATCH_PY" "$IN_DIR" "$OUT_DIR" "${EXTRA_ARGS[@]}")
-# Ensure --batch-size is present; if not, prepend a conservative default
+# Prefer probe-suggested batch_size if no explicit --batch-size present
 HAS_BFLAG=0
-for a in "${CMD[@]}"; do
-  if [ "$a" = "--batch-size" ] || [ "$a" = "-b" ]; then
-    HAS_BFLAG=1
-    break
-  fi
+for a in "${EXTRA_ARGS[@]}"; do
+  case "$a" in
+    --batch-size|--batch-size=*|-b)
+      HAS_BFLAG=1
+      break
+      ;;
+  esac
 done
 if [ $HAS_BFLAG -eq 0 ]; then
-  # prepend default batch-size 1
-  CMD=(python3 "$BATCH_PY" "$IN_DIR" "$OUT_DIR" --batch-size 1 "${EXTRA_ARGS[@]}")
+  if [ -n "${SUGGEST_BATCH:-}" ]; then
+    CMD=(python3 "$BATCH_PY" "$IN_DIR" "$OUT_DIR" --batch-size "$SUGGEST_BATCH" "${EXTRA_ARGS[@]}")
+  else
+    CMD=(python3 "$BATCH_PY" "$IN_DIR" "$OUT_DIR" --batch-size 1 "${EXTRA_ARGS[@]}")
+  fi
+else
+  CMD=(python3 "$BATCH_PY" "$IN_DIR" "$OUT_DIR" "${EXTRA_ARGS[@]}")
 fi
 
 # Log the exact command to the logfile for debugging
