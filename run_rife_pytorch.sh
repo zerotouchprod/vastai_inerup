@@ -19,21 +19,149 @@ log "TMP_DIR=$TMP_DIR"
 mkdir -p "$TMP_DIR/input" "$TMP_DIR/output"
 
 progress_collapse(){
+  # Parse either ffmpeg -progress key=value lines OR human stderr lines like:
+  # frame= 2868 fps=0.6 q=26.0 size=   89088kB time=00:00:46.71 bitrate=15622.0kbits/s speed=0.01x
+  # If TOTAL_FRAMES or TOTAL_DURATION_MS is set in env, compute ETA and append it.
   python3 -u - <<'PY'
-import sys,time
+import sys, time, os
 kv={}
 order=[]
+def parse_human(line):
+    # split by spaces and parse tokens with '='
+    res={}
+    for tok in line.strip().split():
+        if '=' in tok:
+            k,v=tok.split('=',1)
+            res[k]=v
+    return res
+
+TOTAL_FRAMES = int(os.environ.get('TOTAL_FRAMES','0') or 0)
+TOTAL_MS = int(os.environ.get('TOTAL_DURATION_MS','0') or 0)
+
+def fmt_s(s):
+    try:
+        s=int(round(s))
+    except Exception:
+        return 'unknown'
+    h = s//3600
+    m = (s%3600)//60
+    sec = s%60
+    if h>0:
+        return f"{h}h{m:02d}m{sec:02d}s"
+    if m>0:
+        return f"{m}m{sec:02d}s"
+    return f"{sec}s"
+
 for raw in sys.stdin:
-    line=raw.strip()
-    if not line or '=' not in line: continue
-    k,v=line.split('=',1)
-    if k not in order: order.append(k)
-    kv[k]=v
-    if k=='progress':
-        parts=[f"{k}={kv.get(k,'')}" for k in order if k!='progress']
-        parts.append(f"progress={kv.get('progress','')}")
+    line=raw.rstrip('\n')
+    if not line:
+        continue
+    # try key=value single-line progress format first
+    if '=' in line and line.strip().count('=')==1 and line.strip().startswith('progress='):
+        # simple progress line
+        k,v = line.split('=',1)
+        kv[k]=v
+        if k=='progress':
+            parts=[f"{k}={kv.get(k,'')}" for k in order if k!='progress']
+            parts.append(f"progress={kv.get('progress','')}")
+            print(f"[{time.strftime('%H:%M:%S')}] "+' '.join(parts), flush=True)
+            kv.clear(); order=[]
+        continue
+
+    # Try to parse ffmpeg -progress key=value blocks
+    if '=' in line and ':' not in line:
+        # parse all key=value tokens on the line
+        toks = [t for t in line.replace('\r',' ').split() if '=' in t]
+        if toks:
+            for t in toks:
+                k,v = t.split('=',1)
+                kv[k]=v
+                if k not in order:
+                    order.append(k)
+            # compute summary when we see progress or when human-like lines (frame/time present)
+            if 'progress' in kv or 'time' in kv or 'out_time_ms' in kv or 'frame' in kv:
+                # Build base parts
+                parts=[]
+                for k in order:
+                    if k in ('progress',):
+                        continue
+                    parts.append(f"{k}={kv.get(k,'')}")
+                # ETA calculation
+                eta_str=''
+                try:
+                    frame = int(float(kv.get('frame','0') or 0))
+                except Exception:
+                    frame = 0
+                fps = 0.0
+                try:
+                    fps = float(kv.get('fps','0') or 0)
+                except Exception:
+                    fps = 0.0
+                # out_time_ms preferred
+                out_ms = 0
+                if 'out_time_ms' in kv:
+                    try:
+                        out_ms = int(kv.get('out_time_ms','0'))
+                    except Exception:
+                        out_ms = 0
+                elif 'time' in kv:
+                    # parse HH:MM:SS.ms
+                    tstr = kv.get('time','')
+                    try:
+                        parts_t = tstr.split(':')
+                        if len(parts_t)==3:
+                            hh=int(parts_t[0]); mm=int(parts_t[1]); ss=float(parts_t[2])
+                            out_ms = int((hh*3600+mm*60+ss)*1000)
+                    except Exception:
+                        out_ms = 0
+
+                if TOTAL_FRAMES>0 and frame>0 and fps>0:
+                    rem = max(0, TOTAL_FRAMES - frame)
+                    eta_s = rem / max(1e-6, fps)
+                    eta_str = fmt_s(eta_s)
+                elif TOTAL_MS>0 and out_ms>0:
+                    rem_ms = max(0, TOTAL_MS - out_ms)
+                    eta_str = fmt_s(rem_ms/1000.0)
+                elif fps>0 and frame>0:
+                    # unknown total, show instantaneous per-frame ETA ~ 1/fps
+                    eta_str = fmt_s( max(0.0, 1.0/fps) )
+
+                if eta_str:
+                    parts.append(f"ETA={eta_str}")
+
+                print(f"[{time.strftime('%H:%M:%S')}] "+' '.join(parts), flush=True)
+            continue
+
+    # fallback: try to parse human ffmpeg progress lines
+    parsed = parse_human(line)
+    if parsed:
+        # merge parsed tokens into kv and order
+        for k,v in parsed.items():
+            kv[k]=v
+            if k not in order:
+                order.append(k)
+        # handle same as above
+        try:
+            frame = int(float(kv.get('frame','0') or 0))
+        except Exception:
+            frame = 0
+        try:
+            fps = float(kv.get('fps','0') or 0)
+        except Exception:
+            fps = 0.0
+        eta_str=''
+        if TOTAL_FRAMES>0 and frame>0 and fps>0:
+            rem = max(0, TOTAL_FRAMES - frame)
+            eta_s = rem / max(1e-6, fps)
+            eta_str = fmt_s(eta_s)
+        if eta_str:
+            parsed['ETA']=eta_str
+        parts = [f"{k}={v}" for k,v in parsed.items()]
         print(f"[{time.strftime('%H:%M:%S')}] "+' '.join(parts), flush=True)
-        kv.clear(); order=[]
+        continue
+
+    # default: print raw line so errors and other messages are visible
+    print(line, flush=True)
 PY
 }
 
@@ -380,6 +508,13 @@ try_filelist(){
         pattern="$TMP_DIR/output/$pattern_name"
         start_number=$((10#$num))
         log "Detected image sequence pattern (numeric group anywhere): $pattern start_number=$start_number pad=$pad"
+        # Export total frames/duration to enable ETA calculation in progress_collapse
+        TOTAL_FRAMES=$(ls -1 "$TMP_DIR/output"/*.{png,jpg,jpeg} 2>/dev/null | wc -l || echo 0)
+        export TOTAL_FRAMES
+        if [ -n "$TARGET_FPS" ] && [ "$TARGET_FPS" != "" ] && [ "$TOTAL_FRAMES" -gt 0 ]; then
+          TOTAL_DURATION_MS=$(awk -v n=$TOTAL_FRAMES -v f="$TARGET_FPS" 'BEGIN{ if(f>0) printf "%d", (n/f*1000); else print 0 }')
+          export TOTAL_DURATION_MS
+        fi
         if [ -f "$TMP_DIR/audio.aac" ]; then
           ffmpeg -hide_banner -loglevel info -y -start_number $start_number -framerate "$TARGET_FPS" -i "$pattern" -i "$TMP_DIR/audio.aac" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p -shortest "$OUTFILE" 2>&1 | progress_collapse | tee "$TMP_DIR/ff_assemble.log"
         else
@@ -404,6 +539,13 @@ try_filelist(){
   esac
 
   # Fallback: use concat demuxer (works for video files); we already wrote $FL
+  # Export total frames/duration based on filelist to enable ETA
+  TOTAL_FRAMES=$(wc -l < "$FL" 2>/dev/null || echo 0)
+  export TOTAL_FRAMES
+  if [ -n "$TARGET_FPS" ] && [ "$TARGET_FPS" != "" ] && [ "$TOTAL_FRAMES" -gt 0 ]; then
+    TOTAL_DURATION_MS=$(awk -v n=$TOTAL_FRAMES -v f="$TARGET_FPS" 'BEGIN{ if(f>0) printf "%d", (n/f*1000); else print 0 }')
+    export TOTAL_DURATION_MS
+  fi
   if [ -f "$TMP_DIR/audio.aac" ]; then
     ffmpeg -hide_banner -loglevel info -y -f concat -safe 0 -i "$FL" -framerate "$TARGET_FPS" -i "$TMP_DIR/audio.aac" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p -shortest "$OUTFILE" 2>&1 | progress_collapse | tee "$TMP_DIR/ff_assemble.log"
   else
@@ -482,6 +624,13 @@ if ls "$TMP_DIR/output"/frame_*_mid*.png 1>/dev/null 2>&1; then
     done
 
     log "filelist_mids head:"; head -n 40 "$FL" || true
+    # Export total frames/duration for ETA
+    TOTAL_FRAMES=$(wc -l < "$FL" 2>/dev/null || echo 0)
+    export TOTAL_FRAMES
+    if [ -n "$TARGET_FPS" ] && [ "$TARGET_FPS" != "" ] && [ "$TOTAL_FRAMES" -gt 0 ]; then
+      TOTAL_DURATION_MS=$(awk -v n=$TOTAL_FRAMES -v f="$TARGET_FPS" 'BEGIN{ if(f>0) printf "%d", (n/f*1000); else print 0 }')
+      export TOTAL_DURATION_MS
+    fi
     # Run ffmpeg using concat filelist (preserve TARGET_FPS)
     if [ -f "$TMP_DIR/audio.aac" ]; then
       ffmpeg -hide_banner -loglevel info -y -f concat -safe 0 -i "$FL" -framerate "$TARGET_FPS" -i "$TMP_DIR/audio.aac" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p -shortest "$OUTFILE" 2>&1 | progress_collapse | tee "$TMP_DIR/ff_assemble_mid.log"
@@ -521,6 +670,13 @@ if ls "$TMP_DIR/output"/frame_*_mid*.png 1>/dev/null 2>&1; then
         log "Sequential assembly: no valid files found in $FL; cannot assemble from mids"
       else
         log "Sequential assembly: prepared $(($seq_idx-1)) frames in $ASSEM_DIR; attempting ffmpeg image2 assemble"
+        # Export total frames/duration for ETA
+        TOTAL_FRAMES=$((seq_idx-1))
+        export TOTAL_FRAMES
+        if [ -n "$TARGET_FPS" ] && [ "$TARGET_FPS" != "" ] && [ "$TOTAL_FRAMES" -gt 0 ]; then
+          TOTAL_DURATION_MS=$(awk -v n=$TOTAL_FRAMES -v f="$TARGET_FPS" 'BEGIN{ if(f>0) printf "%d", (n/f*1000); else print 0 }')
+          export TOTAL_DURATION_MS
+        fi
         if [ -f "$TMP_DIR/audio.aac" ]; then
           ffmpeg -hide_banner -loglevel info -y -start_number 1 -framerate "$TARGET_FPS" -i "$ASSEM_DIR/frame_%06d.png" -i "$TMP_DIR/audio.aac" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p -shortest "$OUTFILE" 2>&1 | progress_collapse | tee "$TMP_DIR/ff_assemble_seq.log"
         else
@@ -543,6 +699,11 @@ fi
 
 # Fallback: ffmpeg minterpolate CPU
 log "FALLBACK: ffmpeg minterpolate -> $OUTFILE"
+# Export TOTAL_DURATION_MS based on input duration so ETA can be calculated (interpolation preserves duration)
+DUR_SEC=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$INFILE" 2>/dev/null || echo 0)
+if [ -z "$DUR_SEC" ]; then DUR_SEC=0; fi
+TOTAL_DURATION_MS=$(awk -v d="$DUR_SEC" 'BEGIN{ printf "%d", (d*1000) }')
+export TOTAL_DURATION_MS
 ffmpeg -hide_banner -loglevel info -y -i "$INFILE" -vf "minterpolate=fps=$TARGET_FPS:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1" -pix_fmt yuv420p -c:v libx264 -crf 18 -preset medium "$OUTFILE" 2>&1 | progress_collapse | tee "$TMP_DIR/ff_fallback.log"
 
 if [ -s "$OUTFILE" ]; then
