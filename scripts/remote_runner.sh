@@ -22,25 +22,52 @@ echo ""
 
 # If a persistent pending upload exists from a previous run, attempt it now (one-shot retry)
 PENDING_MARKER=/workspace/.pending_upload.json
+MAX_ATTEMPTS=${MAX_ATTEMPTS:-3}
 if [ -f "$PENDING_MARKER" ]; then
   echo "[FORCE_UPLOAD] Found pending upload marker: $PENDING_MARKER -> will attempt retry now"
-  # The helper will read pending marker if FORCE_FILE not set
-  HELPER="/workspace/project/scripts/force_upload_and_fail.sh"
-  if [ -f "$HELPER" ]; then
-    echo "[FORCE_UPLOAD] Invoking helper for pending upload: $HELPER"
-    # allow small-file uploads for pending retries as previous run failed
-    export FORCE_UPLOAD_ALLOW_SMALL=1
-    if [ -x "$HELPER" ]; then
-      "$HELPER"
-      rc=$?
-    else
-      bash "$HELPER"
-      rc=$?
-    fi
-    echo "[FORCE_UPLOAD] pending upload helper exited with code=$rc"
-    # Do not exit the runner; log and continue
+  # read attempts from marker (if present)
+  P_ATTEMPTS=0
+  if python3 - <<PY >/dev/null 2>&1
+import json
+try:
+    obj=json.load(open('$PENDING_MARKER'))
+    print(int(obj.get('attempts',0)))
+except Exception:
+    pass
+PY
+  then
+    P_ATTEMPTS=$(python3 - <<PY
+import json
+try:
+    obj=json.load(open('$PENDING_MARKER'))
+    print(int(obj.get('attempts',0)))
+except Exception:
+    print(0)
+PY
+)
+  fi
+  echo "[FORCE_UPLOAD] pending marker attempts=$P_ATTEMPTS max_allowed=$MAX_ATTEMPTS"
+  if [ "$P_ATTEMPTS" -ge "$MAX_ATTEMPTS" ]; then
+    echo "[FORCE_UPLOAD] Max attempts reached for pending upload (attempts=$P_ATTEMPTS >= $MAX_ATTEMPTS). Skipping retry."
   else
-    echo "[FORCE_UPLOAD] ERROR: helper script not found: $HELPER"
+    # The helper will read pending marker if FORCE_FILE not set
+    HELPER="/workspace/project/scripts/force_upload_and_fail.sh"
+    if [ -f "$HELPER" ]; then
+      echo "[FORCE_UPLOAD] Invoking helper for pending upload: $HELPER"
+      # allow small-file uploads for pending retries as previous run failed
+      export FORCE_UPLOAD_ALLOW_SMALL=1
+      if [ -x "$HELPER" ]; then
+        "$HELPER"
+        rc=$?
+      else
+        bash "$HELPER"
+        rc=$?
+      fi
+      echo "[FORCE_UPLOAD] pending upload helper exited with code=$rc"
+      # Do not exit the runner; log and continue
+    else
+      echo "[FORCE_UPLOAD] ERROR: helper script not found: $HELPER"
+    fi
   fi
 fi
 

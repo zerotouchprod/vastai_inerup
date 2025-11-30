@@ -113,7 +113,7 @@ vast:
   gpu_blacklist: []
   gpu_required: false
   gpu_priority: true
-  min_vram: 8
+  min_vram: 12
   min_price: 0.05
   max_price: 0.1
   min_reliability: 0.95      # Increased from 0.90
@@ -133,7 +133,7 @@ vast:
   wait: false
   download: true
   # Request allocated storage (GB) for created instances to avoid small-disk hosts
-  allocated_storage: 100
+  allocated_storage: 50
   host_whitelist:
     - 51345
     - 78246
@@ -157,6 +157,7 @@ vast:
     - 124171
     - 81456
     - 28229362
+    - 85323 #ok but gpu
     - 28230170 #expensive
 
 b2:
