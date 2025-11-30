@@ -304,13 +304,19 @@ run_ffmpeg_with_progress() {
   # Helper to run ffmpeg once with given enc and args; returns ffmpeg rc
   _run_once() {
     local _enc="$1"; shift
+    local _variant=${_VARIANT:-1}
     local _enc_args=()
     if [ "${_enc}" = "libx264" ]; then
       _enc_args=("-c:v" "libx264" "-crf" "18" "-preset" "medium" "-pix_fmt" "$pixfmt")
     else
-      # Safer NVENC args to maximize compatibility across FFmpeg/NVENC driver versions.
-      # Avoid using deprecated 2-pass RC modes combined with new presets which can cause "invalid param" errors.
-      _enc_args=("-c:v" "${_enc}" "-preset" "p4" "-rc" "vbr" "-cq" "19" "-b:v" "0" "-pix_fmt" "$pixfmt")
+      # NVENC variants: variant 1 is conservative, variant 2 is even more conservative (try if variant 1 fails)
+      if [ "${_variant}" = "1" ]; then
+        # conservative default: good balance of compatibility and quality
+        _enc_args=("-c:v" "${_enc}" "-preset" "p4" "-rc" "vbr" "-cq" "19" "-b:v" "0" "-pix_fmt" "$pixfmt")
+      else
+        # very conservative: older drivers/ffmpeg builds often accept simpler settings
+        _enc_args=("-c:v" "${_enc}" "-preset" "p2" "-rc" "vbr" "-cq" "22" "-b:v" "0" "-pix_fmt" "$pixfmt")
+      fi
     fi
 
     echo "FFCMD: ffmpeg -y $* ${_enc_args[*]} -progress pipe:1 -nostats $outfile"
@@ -331,10 +337,29 @@ run_ffmpeg_with_progress() {
   _run_once "$enc" "$@"
   local rc=$?
 
-  # If NVENC failed (non-zero rc) and we didn't already try libx264, retry once with libx264 fallback
-  if [ $rc -ne 0 ] && [ "$enc" != "libx264" ]; then
+  # If primary encoder failed and it's an NVENC encoder, try a second NVENC variant before falling back to libx264
+  if [ $rc -ne 0 ] && echo "$enc" | grep -q "nvenc" 2>/dev/null; then
+    echo "FFERR: Primary NVENC encoder ($enc) failed with rc=$rc; trying alternative NVENC settings" >&2
+    rm -f "$outfile" 2>/dev/null || true
+    # set variant 2 and retry
+    _VARIANT=2 _run_once "$enc" "$@"
+    rc=$?
+    if [ $rc -ne 0 ]; then
+      echo "FFERR: Alternative NVENC settings also failed (rc=$rc); attempting libx264 fallback" >&2
+      rm -f "$outfile" 2>/dev/null || true
+      _run_once "libx264" "$@"
+      rc=$?
+      if [ $rc -ne 0 ]; then
+        echo "FFERR: Fallback to libx264 also failed (rc=$rc)" >&2
+      else
+        echo "FFPROGRESS: Fallback to libx264 succeeded"
+      fi
+    else
+      echo "FFPROGRESS: Alternative NVENC settings succeeded"
+    fi
+  elif [ $rc -ne 0 ] && [ "$enc" != "libx264" ]; then
+    # If encoder was not NVENC (but still failed), try libx264 once
     echo "FFERR: Primary encoder ($enc) failed with rc=$rc; attempting fallback to libx264" >&2
-    # remove any possibly-broken output file before retry to avoid false positives
     rm -f "$outfile" 2>/dev/null || true
     _run_once "libx264" "$@"
     rc=$?
