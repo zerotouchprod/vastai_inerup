@@ -186,20 +186,63 @@ if [ -f "$BATCH_PY" ]; then
   log "Found external batch runner: $BATCH_PY"
   (export PYTHONUNBUFFERED=1; export REPO_DIR="$REPO_DIR"; python3 "$BATCH_PY" "$TMP_DIR/input" "$TMP_DIR/output" "$FACTOR") >"$TMP_DIR/batch_rife_run.log" 2>&1 &
   BATCH_PID=$!
-  log "batch_rife.py started (pid=$BATCH_PID), waiting up to 6000s for completion"
-  WAIT_SECS=6000
-  for waited in $(seq 1 $WAIT_SECS); do
-    sleep 1
-    if ! kill -0 $BATCH_PID 2>/dev/null; then
-      log "batch_rife.py exited (after $waited s)"; break
+  log "batch_rife.py started (pid=$BATCH_PID)"
+  # Smart wait/monitor loop
+  # RIFE_BATCH_MAX_WAIT: total seconds to allow before considering kill (default 3600)
+  # RIFE_BATCH_STALL_TIMEOUT: if log hasn't been updated for this many seconds, consider it stalled (default 300)
+  MAX_WAIT=${RIFE_BATCH_MAX_WAIT:-36000}
+  STALL_TIMEOUT=${RIFE_BATCH_STALL_TIMEOUT:-300}
+  CHECK_INTERVAL=${RIFE_BATCH_CHECK_INTERVAL:-5}
+  start_time=$(date +%s)
+  last_log_update=$start_time
+  log "Monitor: MAX_WAIT=${MAX_WAIT}s STALL_TIMEOUT=${STALL_TIMEOUT}s CHECK_INTERVAL=${CHECK_INTERVAL}s"
+  # Ensure log file exists so stat checks work
+  touch "$TMP_DIR/batch_rife_run.log" 2>/dev/null || true
+  while kill -0 $BATCH_PID 2>/dev/null; do
+    sleep $CHECK_INTERVAL
+    now=$(date +%s)
+    # get last modification time of the log file (portable: use stat -c or python fallback)
+    if last_mod=$(stat -c %Y "$TMP_DIR/batch_rife_run.log" 2>/dev/null); then
+      :
+    else
+      # fallback to python if stat -c not available
+      last_mod=$(python3 - <<PY 2>/dev/null || true
+import os,sys
+p=sys.argv[1]
+try:
+    print(int(os.path.getmtime(p)))
+except Exception:
+    print(0)
+PY
+"$TMP_DIR/batch_rife_run.log")
     fi
-    if [ $((waited % 10)) -eq 0 ]; then
-      log "waiting for batch-runner to finish ($waited/$WAIT_SECS)";
+    # normalize
+    last_mod=${last_mod:-0}
+    # if log updated recently, treat as activity
+    age=$((now - last_mod))
+    if [ $age -lt $STALL_TIMEOUT ]; then
+      last_log_update=$now
+    fi
+    elapsed=$((now - start_time))
+    since_activity=$((now - last_log_update))
+    # periodic status every 60s
+    if [ $((elapsed % 60)) -lt $CHECK_INTERVAL ]; then
+      log "waiting for batch-runner to finish (pid=$BATCH_PID) elapsed=${elapsed}s since_log_update=${since_activity}s"
+    fi
+    # kill condition: total elapsed exceeded MAX_WAIT AND log hasn't updated for STALL_TIMEOUT
+    if [ $elapsed -ge $MAX_WAIT ] && [ $since_activity -ge $STALL_TIMEOUT ]; then
+      log "batch_rife.py appears stalled (elapsed=${elapsed}s since_log_update=${since_activity}s) -> killing pid=$BATCH_PID"
+      kill $BATCH_PID 2>/dev/null || true
+      break
     fi
   done
+  # Wait briefly for process to exit and gather final logs
+  sleep 1
   if kill -0 $BATCH_PID 2>/dev/null; then
-    log "batch_rife.py still running after $WAIT_SECS s, killing"
-    kill $BATCH_PID 2>/dev/null || true
+    log "batch_rife.py still running after monitor requested kill; forcing kill"
+    kill -9 $BATCH_PID 2>/dev/null || true
+  else
+    log "batch_rife.py exited (monitor)"
   fi
   log "batch_rife log (tail 200):"
   tail -n 200 "$TMP_DIR/batch_rife_run.log" 2>/dev/null || true
