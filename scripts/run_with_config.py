@@ -502,7 +502,36 @@ def main():
     except Exception:
         pass
 
-    output_key = f"output/{output_name}"
+    # Build a deterministic output key used for centralized upload in the container.
+    # Preferred pattern: <prefix>/<original-stem>-<timestamp>.mp4 where prefix is one of
+    # 'upscales', 'interp', or 'both' depending on requested mode. This avoids anonymous IDs
+    # produced by some wrappers and gives human-readable organized keys in the bucket.
+    try:
+        mode_for_key = (video_config.get('mode') or 'both').lower()
+    except Exception:
+        mode_for_key = 'both'
+
+    prefix_map = {
+        'upscale': 'upscales',
+        'upscaled': 'upscales',
+        'interp': 'interp',
+        'interpolate': 'interp',
+        'interpolated': 'interp',
+        'both': 'both',
+    }
+    prefix = prefix_map.get(mode_for_key, 'both')
+
+    # Ensure output_name has an extension (default to .mp4)
+    from pathlib import Path as _Path
+    oname_path = _Path(output_name)
+    stem = oname_path.stem
+    suffix = oname_path.suffix or '.mp4'
+    ts_now = datetime.now().strftime('%Y%m%d_%H%M%S')
+    output_key = f"{prefix}/{stem}-{ts_now}{suffix}"
+
+    # Keep a fallback if anything goes wrong
+    if not output_key:
+        output_key = f"output/{output_name}"
 
     # Determine whether input is local or already on B2 / HTTP / S3
     input_url = None

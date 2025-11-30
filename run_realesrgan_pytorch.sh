@@ -168,8 +168,15 @@ maybe_upload_b2() {
     echo "AUTO_UPLOAD_B2: file not found: $file_path"
     return 1
   fi
-  # Default object key: use provided B2_KEY if set, otherwise basename of file
-  local key="${B2_KEY:-$(basename "$file_path") }"
+  # Default object key: prefer B2_OUTPUT_KEY (set by launcher) then B2_KEY (legacy), then basename
+  local key
+  if [ -n "${B2_OUTPUT_KEY:-}" ]; then
+    key="${B2_OUTPUT_KEY}"
+  elif [ -n "${B2_KEY:-}" ]; then
+    key="${B2_KEY}"
+  else
+    key="$(basename "$file_path")"
+  fi
   echo "AUTO_UPLOAD_B2: uploading $file_path -> s3://${B2_BUCKET}/${key} (endpoint=${B2_ENDPOINT:-})"
   # Ensure directory for result exists
   mkdir -p "$(dirname "$UPLOAD_RESULT_JSON")" 2>/dev/null || true
