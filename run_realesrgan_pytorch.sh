@@ -788,7 +788,41 @@ if [ -f "$BATCH_SCRIPT" ]; then
         fi
       fi
       echo "ERROR: failed to assemble video from upscaled frames"
-       fi
+      # ASM_DEBUG: collect lightweight diagnostics for offline debugging (frames list, sizes, sample frame info, logs)
+      {
+        ts=$(date +%Y%m%d_%H%M%S)
+        dbgdir="/workspace/realesrgan_assembly_debug_${ts}"
+        mkdir -p "$dbgdir" || true
+        echo "ASM_DEBUG: timestamp=$ts" | tee -a "$dbgdir/diagnostic.txt"
+        echo "ASM_DEBUG: TMP_DIR=$TMP_DIR" | tee -a "$dbgdir/diagnostic.txt"
+        echo "ASM_DEBUG: OUTFILE=$OUTFILE" | tee -a "$dbgdir/diagnostic.txt"
+        echo "ASM_DEBUG: OUT_IMG_COUNT=${OUT_IMG_COUNT:-unknown}" | tee -a "$dbgdir/diagnostic.txt"
+        echo "ASM_DEBUG: Listing top 200 files in $TMP_DIR/output" | tee -a "$dbgdir/diagnostic.txt"
+        ls -lah "$TMP_DIR/output" 2>/dev/null | sed -n '1,200p' > "$dbgdir/listing.txt" || true
+        # Save first 10 filenames and sizes
+        ls -1v "$TMP_DIR/output"/*.{png,jpg,jpeg} 2>/dev/null | sed -n '1,10p' > "$dbgdir/sample_files.txt" || true
+        # For the first sample frame, try to capture ffprobe and a small hex head for quick inspection (if ffprobe available)
+        samp=$(head -n1 "$dbgdir/sample_files.txt" 2>/dev/null || true)
+        if [ -n "$samp" ] && [ -f "$samp" ]; then
+          echo "ASM_DEBUG: sample_frame=$samp" | tee -a "$dbgdir/diagnostic.txt"
+          if command -v ffprobe >/dev/null 2>&1; then
+            ffprobe -v error -show_entries stream=width,height,pix_fmt -of default=noprint_wrappers=1:nokey=1 "$samp" > "$dbgdir/sample_frame_info.txt" 2>&1 || true
+          fi
+          # small hexdump head
+          (head -c 256 "$samp" | xxd -l 256) > "$dbgdir/sample_frame_head.hex" 2>/dev/null || true
+        fi
+        # Capture recent ffmpeg stderr/progress messages from run_ffmpeg_with_progress outputs if present in temp logs
+        echo "ASM_DEBUG: tail ffmpeg/realesrgan logs (if present)" | tee -a "$dbgdir/diagnostic.txt"
+        # try common log locations
+        tail -n 400 /tmp/realesrgan_batch_safe_*.log 2>/dev/null | sed -n '1,300p' > "$dbgdir/realesrgan_batch_safe_tail.log" || true
+        tail -n 400 /tmp/realesrgan_diag.log 2>/dev/null | sed -n '1,300p' > "$dbgdir/realesrgan_diag_tail.log" || true
+        # include ffmpeg progress lines from main wrapper logs (grep FFERR/FFPROGRESS lines from workspace logs)
+        grep -nE "FFERR:|FFPROGRESS:|ERROR:|InitializeEncoder failed|Unknown pixel format" -R /workspace 2>/dev/null | sed -n '1,400p' > "$dbgdir/workspace_ffgrep.txt" || true
+        echo "ASM_DEBUG: created debug bundle at $dbgdir" | tee -a "$dbgdir/diagnostic.txt"
+        # print summary to stdout so it's visible in remote logs
+        echo "ASM_DEBUG_SUMMARY: debug_bundle=$dbgdir sample_frame=$samp count=${OUT_IMG_COUNT:-unknown}"
+      } || true
+    fi
   fi
 fi
 
