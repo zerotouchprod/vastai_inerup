@@ -269,12 +269,73 @@ fi
 # Try assembling mids pattern
 if ls "$TMP_DIR/output"/frame_*_mid*.png 1>/dev/null 2>&1; then
   log "Assembling from mids"
-  if [ -f "$TMP_DIR/audio.aac" ]; then
-    ffmpeg -hide_banner -loglevel info -y -framerate "$TARGET_FPS" -i "$TMP_DIR/output/frame_%06d_mid.png" -i "$TMP_DIR/audio.aac" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p -shortest "$OUTFILE" 2>&1 | progress_collapse | tee "$TMP_DIR/ff_assemble_mid.log"
+  # Detect number of mids per pair (e.g., _mid_01, _mid_02 -> 2)
+  mids_per_pair=0
+  # Try common pattern for pair 1
+  if ls "$TMP_DIR/output"/frame_000001_mid_* 1>/dev/null 2>&1; then
+    mids_per_pair=$(ls -1 "$TMP_DIR/output"/frame_000001_mid_* 2>/dev/null | wc -l || true)
   else
-    ffmpeg -hide_banner -loglevel info -y -framerate "$TARGET_FPS" -i "$TMP_DIR/output/frame_%06d_mid.png" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p "$OUTFILE" 2>&1 | progress_collapse | tee "$TMP_DIR/ff_assemble_mid.log"
+    # Fallback: count distinct mid suffixes across files
+    mids_per_pair=$(ls -1 "$TMP_DIR/output"/frame_*_mid_* 2>/dev/null | awk -F'_mid_' '{print $2}' | awk -F '.' '{print $1}' | sort -u | wc -l || true)
   fi
-  [ -s "$OUTFILE" ] && { log "OK $OUTFILE"; exit 0; }
+  if [ -z "$mids_per_pair" ] || [ "$mids_per_pair" -lt 1 ]; then
+    mids_per_pair=1
+  fi
+  log "Detected mids_per_pair=$mids_per_pair"
+
+  # Count input frames
+  IN_COUNT=$(find "$TMP_DIR/input" -maxdepth 1 -type f \( -iname '*.png' -o -iname '*.jpg' -o -iname '*.jpeg' \) | wc -l || true)
+  if [ -z "$IN_COUNT" ] || [ "$IN_COUNT" -lt 1 ]; then
+    log "No input frames found to interleave with mids; skipping mids assembly"
+  else
+    # Build a concat filelist that interleaves original frames and mids for each pair
+    FL="$TMP_DIR/filelist_mids.txt"
+    : > "$FL"
+    for i in $(seq 1 $IN_COUNT); do
+      # append original frame i (if exists)
+      if [ -f "$TMP_DIR/input/frame_$(printf "%06d" $i).png" ]; then
+        echo "file '$TMP_DIR/input/frame_$(printf "%06d" $i).png'" >> "$FL"
+      elif [ -f "$TMP_DIR/input/frame_$(printf "%06d" $i).jpg" ]; then
+        echo "file '$TMP_DIR/input/frame_$(printf "%06d" $i).jpg'" >> "$FL"
+      elif [ -f "$TMP_DIR/input/frame_$(printf "%06d" $i).jpeg" ]; then
+        echo "file '$TMP_DIR/input/frame_$(printf "%06d" $i).jpeg'" >> "$FL"
+      fi
+      # for each pair (i -> i+1), append mids (only if not the last original frame)
+      if [ $i -lt $IN_COUNT ]; then
+        for m in $(seq 1 $mids_per_pair); do
+          # try zero-padded two-digit suffix first (01,02), then without padding
+          midp="$TMP_DIR/output/frame_$(printf "%06d" $i)_mid_$(printf "%02d" $m).png"
+          midp2="$TMP_DIR/output/frame_$(printf "%06d" $i)_mid_$m.png"
+          if [ -f "$midp" ]; then
+            echo "file '$midp'" >> "$FL"
+          elif [ -f "$midp2" ]; then
+            echo "file '$midp2'" >> "$FL"
+          else
+            # try jpg variants
+            midj="$TMP_DIR/output/frame_$(printf "%06d" $i)_mid_$(printf "%02d" $m).jpg"
+            midj2="$TMP_DIR/output/frame_$(printf "%06d" $i)_mid_$m.jpg"
+            [ -f "$midj" ] && echo "file '$midj'" >> "$FL"
+            [ -f "$midj2" ] && echo "file '$midj2'" >> "$FL"
+          fi
+        done
+      fi
+    done
+
+    log "filelist_mids head:"; head -n 40 "$FL" || true
+    # Run ffmpeg using concat filelist (preserve TARGET_FPS)
+    if [ -f "$TMP_DIR/audio.aac" ]; then
+      ffmpeg -hide_banner -loglevel info -y -f concat -safe 0 -i "$FL" -framerate "$TARGET_FPS" -i "$TMP_DIR/audio.aac" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p -shortest "$OUTFILE" 2>&1 | progress_collapse | tee "$TMP_DIR/ff_assemble_mid.log"
+    else
+      ffmpeg -hide_banner -loglevel info -y -f concat -safe 0 -i "$FL" -framerate "$TARGET_FPS" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p "$OUTFILE" 2>&1 | progress_collapse | tee "$TMP_DIR/ff_assemble_mid.log"
+    fi
+    RC_ASM=${PIPESTATUS[0]:-1}
+    if [ $RC_ASM -eq 0 ] && [ -s "$OUTFILE" ]; then
+      log "OK $OUTFILE"
+      exit 0
+    else
+      log "Assembly from mids failed (rc=$RC_ASM or empty output), will fallback to minterpolate"
+    fi
+  fi
 fi
 
 # Fallback: ffmpeg minterpolate CPU

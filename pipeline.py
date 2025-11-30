@@ -300,10 +300,29 @@ def try_run_realesrgan_pytorch_wrapper(infile: str, outpath: str, scale: int) ->
         try:
             # Prepare environment for wrapper so centralized upload uses a clear key name.
             env = os.environ.copy()
-            # Do NOT set B2_OUTPUT_KEY proactively here; let the wrapper decide the final object key
-            # This avoids mismatches when the wrapper assembles/moves files with different basenames.
-            env = os.environ.copy()
-            if env.get('B2_OUTPUT_KEY'):
+            # Respect any B2_OUTPUT_KEY provided by launcher; otherwise set a pipeline-suggested key so
+            # the centralized uploader uses a deterministic, meaningful name.
+            if not env.get('B2_OUTPUT_KEY'):
+                try:
+                    base = None
+                    input_url = env.get('INPUT_URL') or env.get('VIDEO_INPUT_URL')
+                    if input_url:
+                        import urllib.parse as _up
+                        p = _up.urlparse(input_url).path
+                        if p:
+                            base = os.path.splitext(os.path.basename(p))[0]
+                except Exception:
+                    base = None
+                if not base:
+                    b2in = env.get('B2_INPUT_KEY') or env.get('B2_KEY') or ''
+                    if b2in:
+                        base = os.path.splitext(os.path.basename(b2in))[0]
+                if not base:
+                    base = os.path.splitext(os.path.basename(outpath))[0] or os.path.splitext(os.path.basename(infile))[0]
+                ts_now = datetime.now().strftime('%Y%m%d_%H%M%S')
+                env['B2_OUTPUT_KEY'] = f"upscales/{base}-{ts_now}.mp4"
+                print(f"B2_OUTPUT_KEY_SET_BY_PIPELINE: {env['B2_OUTPUT_KEY']}", flush=True)
+            else:
                 print(f"INFO: Using pre-existing B2_OUTPUT_KEY from environment: {env.get('B2_OUTPUT_KEY')}", flush=True)
             # Ensure legacy B2_KEY is set only if not present
             if not env.get('B2_KEY') and env.get('B2_OUTPUT_KEY'):
@@ -503,11 +522,31 @@ def try_run_rife_pytorch_wrapper(infile: str, outpath: str, factor: int) -> bool
         try:
             # Prepare env so centralized uploader produces a predictable key for RIFE outputs.
             env = os.environ.copy()
-            # Do NOT set B2_OUTPUT_KEY proactively here; let the wrapper decide the final object key
-            env = os.environ.copy()
-            if env.get('B2_OUTPUT_KEY'):
+            if not env.get('B2_OUTPUT_KEY'):
+                try:
+                    base = None
+                    input_url = env.get('INPUT_URL') or env.get('VIDEO_INPUT_URL')
+                    if input_url:
+                        import urllib.parse as _up
+                        p = _up.urlparse(input_url).path
+                        if p:
+                            base = os.path.splitext(os.path.basename(p))[0]
+                except Exception:
+                    base = None
+                if not base:
+                    b2in = env.get('B2_INPUT_KEY') or env.get('B2_KEY') or ''
+                    if b2in:
+                        base = os.path.splitext(os.path.basename(b2in))[0]
+                if not base:
+                    base = os.path.splitext(os.path.basename(outpath))[0] or os.path.splitext(os.path.basename(infile))[0]
+                ts_now = datetime.now().strftime('%Y%m%d_%H%M%S')
+                env['B2_OUTPUT_KEY'] = f"interp/{base}-{ts_now}.mp4"
+                print(f"B2_OUTPUT_KEY_SET_BY_PIPELINE: {env['B2_OUTPUT_KEY']}", flush=True)
+            else:
                 print(f"INFO: Using pre-existing B2_OUTPUT_KEY from environment: {env.get('B2_OUTPUT_KEY')}", flush=True)
-            # leave legacy B2_KEY untouched if present
+            # keep legacy B2_KEY in sync if missing
+            if not env.get('B2_KEY') and env.get('B2_OUTPUT_KEY'):
+                env['B2_KEY'] = env['B2_OUTPUT_KEY']
         except Exception:
             env = os.environ.copy()
 
