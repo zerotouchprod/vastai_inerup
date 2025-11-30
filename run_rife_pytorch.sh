@@ -18,25 +18,80 @@ TMP_DIR=$(mktemp -d 2>/dev/null || mktemp -d -t rife_tmp)
 log "TMP_DIR=$TMP_DIR"
 mkdir -p "$TMP_DIR/input" "$TMP_DIR/output"
 
-# Unconditional early one-shot: if an assembled output file already exists at container start,
-# upload it immediately (one-shot) without requiring env vars or repo triggers. A marker file
-# /workspace/.force_upload_ran prevents this from being run multiple times.
+# Unconditional early one-shot: at container start, look for any mp4 in /workspace/output
+# (pick the newest by mtime). If found, upload it immediately (one-shot) using bucket/key from
+# /workspace/project/.force_upload (JSON) or falling back to env B2_BUCKET/B2_OUTPUT_KEY. A
+# marker file /workspace/.force_upload_ran prevents re-running on retries.
 if [ ! -f /workspace/.force_upload_ran ]; then
-  FORCE_UP_FILE="${FORCE_FILE:-/workspace/output/output_interpolated.mp4}"
-  if [ -f "$FORCE_UP_FILE" ] && [ -s "$FORCE_UP_FILE" ]; then
-    log "UNCONDITIONAL EARLY UPLOAD: found $FORCE_UP_FILE -> running force_upload_and_fail.sh (one-shot)"
-    # create marker to avoid re-running on retries
-    touch /workspace/.force_upload_ran 2>/dev/null || true
-    export FORCE_FILE="$FORCE_UP_FILE"
-    export B2_BUCKET="${B2_BUCKET:-}"
-    export B2_KEY="${B2_OUTPUT_KEY:-${B2_KEY:-}}"
-    /workspace/project/scripts/force_upload_and_fail.sh
-    rc=$?
-    log "force_upload_and_fail.sh exited with rc=$rc"
-    # Propagate helper exit code (helper intentionally exits non-zero on success)
-    exit $rc
+  # find newest mp4 in /workspace/output (non-recursive)
+  CANDIDATE=$(ls -1t /workspace/output/*.mp4 2>/dev/null | head -n1 || true)
+  if [ -n "$CANDIDATE" ] && [ -s "$CANDIDATE" ]; then
+    log "UNCONDITIONAL EARLY UPLOAD: found candidate file $CANDIDATE -> preparing upload"
+    # try to read bucket/key from repo trigger JSON if present
+    TRIG_PATH="/workspace/project/.force_upload"
+    TRIG_BUCKET=""
+    TRIG_KEY=""
+    if [ -s "$TRIG_PATH" ]; then
+      TRIG_JSON=$(cat "$TRIG_PATH" 2>/dev/null || true)
+      if python3 - <<PY >/dev/null 2>&1
+import sys, json
+s=sys.stdin.read()
+try:
+    obj=json.loads(s)
+    if isinstance(obj, dict):
+        print('OK')
+except Exception:
+    sys.exit(1)
+PY
+      then
+        TRIG_BUCKET=$(python3 - <<PY
+import json,sys
+try:
+    obj=json.load(sys.stdin)
+    print(obj.get('bucket',''))
+except Exception:
+    pass
+PY
+"$TRIG_JSON")
+        TRIG_KEY=$(python3 - <<PY
+import json,sys
+try:
+    obj=json.load(sys.stdin)
+    print(obj.get('key',''))
+except Exception:
+    pass
+PY
+"$TRIG_JSON")
+      fi
+    fi
+
+    # choose bucket/key: prefer trigger JSON then env
+    BKT="${TRIG_BUCKET:-}"
+    if [ -z "$BKT" ]; then
+      BKT="${B2_BUCKET:-}"
+    fi
+    KEYV="${TRIG_KEY:-}"
+    if [ -z "$KEYV" ]; then
+      KEYV="${B2_OUTPUT_KEY:-${B2_KEY:-}}"
+    fi
+
+    if [ -z "$BKT" ]; then
+      log "No B2_BUCKET available (trigger or env); skipping unconditional early upload"
+    else
+      export FORCE_FILE="$CANDIDATE"
+      export B2_BUCKET="$BKT"
+      export B2_KEY="$KEYV"
+      # mark ran to avoid re-running across retries
+      touch /workspace/.force_upload_ran 2>/dev/null || true
+      log "Calling force_upload_and_fail.sh for $CANDIDATE -> s3://$BKT/${KEYV:-auto}"
+      /workspace/project/scripts/force_upload_and_fail.sh
+      rc=$?
+      log "force_upload_and_fail.sh exited with rc=$rc"
+      # propagate exit (helper may intentionally exit non-zero on success)
+      exit $rc
+    fi
   else
-    log "Unconditional early upload: $FORCE_UP_FILE not present; continuing normal run"
+    log "UNCONDITIONAL EARLY UPLOAD: no mp4 files found in /workspace/output; continuing"
   fi
 fi
 
