@@ -300,17 +300,71 @@ fi
 
 # Attempt assembly: prefer filelist from TMP_DIR/output, else look for mids, else fallback
 try_filelist(){
+  # Build a filelist of outputs (supports mixed png/jpg). If outputs look like images, prefer image2 assembly.
   FL="$TMP_DIR/filelist.txt"
   rm -f "$FL" || true
-  for f in "$TMP_DIR/output"/*.png; do [ -f "$f" ] || continue; echo "file '$f'" >>"$FL"; done
-  [ -s "$FL" ] || return 1
+  shopt -s nullglob
+  files=("$TMP_DIR/output"/*.{png,jpg,jpeg} )
+  shopt -u nullglob
+  if [ ${#files[@]} -eq 0 ]; then
+    return 1
+  fi
+  # write filelist for debugging/concat fallback
+  for f in "${files[@]}"; do
+    echo "file '$f'" >>"$FL"
+  done
   log "filelist head:"; head -n 20 "$FL" || true
+
+  # Determine if files are image frames (by extension)
+  ext="${files[0]##*.}"
+  case "${ext,,}" in
+    png|jpg|jpeg)
+      # Try to detect a numeric frame pattern to use image2
+      # Find the first file basename and extract the first numeric substring anywhere in the name
+      first=$(basename "${files[0]}")
+      num=$(echo "$first" | grep -oE '[0-9]+' | head -n1 || true)
+      if [ -n "$num" ]; then
+        pad=${#num}
+        # build pattern by replacing the first occurrence of the numeric substring with printf-style token
+        pattern_name=$(echo "$first" | sed -E "s/${num}/%0${pad}d/1")
+        pattern="$TMP_DIR/output/$pattern_name"
+        start_number=$((10#$num))
+        log "Detected image sequence pattern (numeric group anywhere): $pattern start_number=$start_number pad=$pad"
+        if [ -f "$TMP_DIR/audio.aac" ]; then
+          ffmpeg -hide_banner -loglevel info -y -start_number $start_number -framerate "$TARGET_FPS" -i "$pattern" -i "$TMP_DIR/audio.aac" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p -shortest "$OUTFILE" 2>&1 | progress_collapse | tee "$TMP_DIR/ff_assemble.log"
+        else
+          ffmpeg -hide_banner -loglevel info -y -start_number $start_number -framerate "$TARGET_FPS" -i "$pattern" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p "$OUTFILE" 2>&1 | progress_collapse | tee "$TMP_DIR/ff_assemble.log"
+        fi
+        rc=${PIPESTATUS[0]:-1}
+        # enforce minimum size threshold to avoid tiny stub files (e.g., metadata-only) - 50KB
+        min_size=51200
+        outsiz=$(stat -c %s "$OUTFILE" 2>/dev/null || echo 0)
+        if [ $rc -eq 0 ] && [ $outsiz -ge $min_size ]; then
+          return 0
+        else
+          log "Image2 assembly failed or produced too-small output (rc=$rc size=$outsiz) - will try concat fallback"
+        fi
+      else
+        log "Could not find numeric substring in filename '${first}'; will try concat fallback"
+      fi
+      ;;
+    *)
+      log "Non-image outputs detected, attempting concat demuxer"
+      ;;
+  esac
+
+  # Fallback: use concat demuxer (works for video files); we already wrote $FL
   if [ -f "$TMP_DIR/audio.aac" ]; then
     ffmpeg -hide_banner -loglevel info -y -f concat -safe 0 -i "$FL" -framerate "$TARGET_FPS" -i "$TMP_DIR/audio.aac" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p -shortest "$OUTFILE" 2>&1 | progress_collapse | tee "$TMP_DIR/ff_assemble.log"
   else
     ffmpeg -hide_banner -loglevel info -y -f concat -safe 0 -i "$FL" -framerate "$TARGET_FPS" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p "$OUTFILE" 2>&1 | progress_collapse | tee "$TMP_DIR/ff_assemble.log"
   fi
-  return ${PIPESTATUS[0]:-1}
+  rc=${PIPESTATUS[0]:-1}
+  outsiz=$(stat -c %s "$OUTFILE" 2>/dev/null || echo 0)
+  if [ $rc -eq 0 ] && [ $outsiz -ge 51200 ]; then
+    return 0
+  fi
+  return 1
 }
 
 # If there's a batch runner that wrote to TMP_DIR/output, try filelist assembly
@@ -382,11 +436,13 @@ if ls "$TMP_DIR/output"/frame_*_mid*.png 1>/dev/null 2>&1; then
       ffmpeg -hide_banner -loglevel info -y -f concat -safe 0 -i "$FL" -framerate "$TARGET_FPS" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p "$OUTFILE" 2>&1 | progress_collapse | tee "$TMP_DIR/ff_assemble_mid.log"
     fi
     RC_ASM=${PIPESTATUS[0]:-1}
-    if [ $RC_ASM -eq 0 ] && [ -s "$OUTFILE" ]; then
+    min_size=51200
+    outsiz=$(stat -c %s "$OUTFILE" 2>/dev/null || echo 0)
+    if [ $RC_ASM -eq 0 ] && [ $outsiz -ge $min_size ]; then
       log "OK $OUTFILE"
       exit 0
     else
-      log "Assembly from mids failed (rc=$RC_ASM or empty output); attempting sequential-assembly fallback"
+      log "Assembly from mids failed (rc=$RC_ASM size=$outsiz < $min_size or empty); attempting sequential-assembly fallback"
       # Sequential-assembly fallback: build an ordered image sequence (frame_000001.png, frame_000002.png, ...)
       ASSEM_DIR="$TMP_DIR/assembled_seq"
       rm -rf "$ASSEM_DIR" || true
@@ -418,12 +474,13 @@ if ls "$TMP_DIR/output"/frame_*_mid*.png 1>/dev/null 2>&1; then
           ffmpeg -hide_banner -loglevel info -y -start_number 1 -framerate "$TARGET_FPS" -i "$ASSEM_DIR/frame_%06d.png" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p "$OUTFILE" 2>&1 | progress_collapse | tee "$TMP_DIR/ff_assemble_seq.log"
         fi
         RC_SEQ=${PIPESTATUS[0]:-1}
-        if [ $RC_SEQ -eq 0 ] && [ -s "$OUTFILE" ]; then
+        outsiz=$(stat -c %s "$OUTFILE" 2>/dev/null || echo 0)
+        if [ $RC_SEQ -eq 0 ] && [ $outsiz -ge $min_size ]; then
           log "OK $OUTFILE (assembled via sequential image list)"
           rm -rf "$ASSEM_DIR" 2>/dev/null || true
           exit 0
         else
-          log "Sequential assembly also failed (rc=$RC_SEQ or empty output); see $TMP_DIR/ff_assemble_seq.log for details"
+          log "Sequential assembly also failed (rc=$RC_SEQ size=$outsiz < $min_size or empty); see $TMP_DIR/ff_assemble_seq.log for details"
         fi
       fi
       # fall through to original minterpolate fallback
