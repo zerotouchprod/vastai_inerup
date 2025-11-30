@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Мониторинг конкретного инстанса с постоянным обновлением логов
-Использование: python monitor_instance.py <instance_id>
+Monitor a specific instance and continuously stream logs
+Usage: python monitor_instance.py <instance_id>
 """
 import sys
 import time
@@ -45,17 +45,17 @@ def _save_last_job(job_id: str, start_iso: str):
 
 
 def monitor_instance(inst_id, tail_lines=200, interval=5):
-    """Мониторит инстанс и показывает новые логи"""
+    """Monitor an instance and print new logs as they appear"""
 
-    print(f"=== Мониторинг инстанса {inst_id} ===")
-    print(f"    Строк логов: {tail_lines}")
-    print(f"    Интервал обновления: {interval}с\n")
+    print(f"=== Monitoring instance {inst_id} ===")
+    print(f"    Log lines: {tail_lines}")
+    print(f"    Refresh interval: {interval}s\n")
 
-    # Получаем информацию об инстансе
+    # Fetch instance information
     try:
         info = vast_submit.get_instance(inst_id)
         if not info:
-            print(f"❌ Инстанс {inst_id} не найден")
+            print(f"❌ Instance {inst_id} not found")
             return
 
         inst = info.get('instances', {})
@@ -66,7 +66,7 @@ def monitor_instance(inst_id, tail_lines=200, interval=5):
         ssh_host = inst.get('ssh_host', 'N/A')
         ssh_port = inst.get('ssh_port', 'N/A')
 
-        print(f"📍 Инстанс: {inst_id}")
+        print(f"📍 Instance: {inst_id}")
         print(f"   GPU: {gpu}")
         print(f"   Status: {status}")
         print(f"   State: {state}")
@@ -76,11 +76,11 @@ def monitor_instance(inst_id, tail_lines=200, interval=5):
         print()
 
     except Exception as e:
-        print(f"❌ Ошибка получения информации: {e}")
+        print(f"❌ Error fetching instance info: {e}")
         return
 
-    print("=== Мониторинг логов (Ctrl+C для выхода) ===")
-    print("Обновление каждые 5 секунд...\n")
+    print("=== Streaming logs (Ctrl+C to exit) ===")
+    print("Refreshing every 5 seconds...\n")
 
     last_log_lines = []
     check_count = 0
@@ -124,43 +124,43 @@ def monitor_instance(inst_id, tail_lines=200, interval=5):
             check_count += 1
             current_time = time.strftime('%H:%M:%S')
 
-            # Получаем статус
+            # Fetch status
             info = vast_submit.get_instance(inst_id)
             if not info:
-                print(f"\n❌ Инстанс {inst_id} больше не найден")
+                print(f"\n❌ Instance {inst_id} no longer found")
                 break
 
             inst = info.get('instances', {})
             current_state = inst.get('cur_state', 'unknown')
             current_status = inst.get('actual_status', 'unknown')
 
-            # Показываем статус только если изменился
+            # Print status only if it changed
             status_str = f"{current_state} / {current_status}"
             if status_str != last_status:
-                print(f"\n[{current_time}] 📊 Статус: {status_str}")
+                print(f"\n[{current_time}] 📊 Status: {status_str}")
                 last_status = status_str
 
-            # Каждые 10 проверок показываем "живой" индикатор
+            # Every 2 checks show a small 'alive' indicator
             if check_count % 2 == 0:
-                print(f"[{current_time}] 🔄 Проверка #{check_count}...", end='\r', flush=True)
+                print(f"[{current_time}] 🔄 Check #{check_count}...", end='\r', flush=True)
 
-            # Запрашиваем логи
+            # Request logs
             try:
                 res = vast_submit.api_put(f'/instances/request_logs/{inst_id}/', {'tail': str(tail_lines)})
 
                 if 'temp_download_url' in res:
-                    time.sleep(1.5)  # Небольшая пауза для подготовки логов
+                    time.sleep(1.5)  # Short pause to allow logs to be prepared
 
                     r = requests.get(res['temp_download_url'], timeout=15)
                     if r.status_code == 200:
                         current_lines = r.text.strip().split('\n')
 
-                        # Находим новые строки (если были предыдущие логи). На первом запросе new_lines будет пустым,
-                        # чтобы избежать реакции на старые маркеры из прошлых запусков.
+                        # Find new lines (if we had previous logs). On the first request new_lines will be empty,
+                        # to avoid reacting to old markers from previous runs.
                         new_lines = []
                         if last_log_lines:
-                            # Более надёжный алгоритм: ищем последнюю уникальную строку из старых логов
-                            # и считаем всё, что шло после неё, как новые строки.
+                            # More robust algorithm: find the last unique line from previous logs
+                            # and treat everything after it as new lines.
                             last_non_empty = [l for l in last_log_lines[-20:] if l.strip()]
                             # take up to last 5 non-empty as signature
                             last_non_empty = last_non_empty[-5:] if last_non_empty else []
@@ -171,12 +171,12 @@ def monitor_instance(inst_id, tail_lines=200, interval=5):
                                     marker_idx = len(current_lines) - 1 - current_lines[::-1].index(last_marker)
                                     new_lines = current_lines[marker_idx + 1:]
                                 except ValueError:
-                                    # Если не нашли, покажем последние 30 строк как "новые"
+                                    # If not found, show the last 30 lines as "new"
                                     new_lines = current_lines[-30:]
                             else:
                                 new_lines = current_lines[-30:]
 
-                        # Показываем новые строки (если есть)
+                        # Print new lines (if present)
                         if new_lines:
                             shown_lines = 0
                             for line in new_lines:
@@ -185,17 +185,17 @@ def monitor_instance(inst_id, tail_lines=200, interval=5):
                                 print(line)
                                 shown_lines += 1
                             if shown_lines > 0:
-                                print()  # Пустая строка после блока логов
+                                print()  # Empty line after the log block
                         else:
-                            # Первый запрос - показываем последние 50 строк (больше контекста)
+                            # First request - show last 50 lines for more context
                             if not last_log_lines:
-                                print("--- Последние логи (50 строк) ---")
+                                print("--- Recent logs (50 lines) ---")
                                 for line in current_lines[-50:]:
                                     if line.strip():
                                         print(line)
                                 print("---\n")
 
-                        # Теперь обновим last_log_lines
+                        # Now update last_log_lines
                         last_log_lines = current_lines
 
                         # Detect container-side success marker ONLY in newly appended lines
@@ -326,106 +326,105 @@ def monitor_instance(inst_id, tail_lines=200, interval=5):
                             # non-fatal — continue monitoring
                             pass
 
-                        # Проверяем на завершение - ТОЛЬКО в последних 100 строках!
+                        # Check for completion - ONLY in the last 100 lines!
                         recent_log = '\n'.join(current_lines[-100:])
 
-                        # Проверяем что pipeline активен (есть недавние сообщения)
+                        # Check that pipeline is active (has recent messages)
                         is_active = any(marker in recent_log for marker in [
                             'Starting pipeline', 'Processing', 'Interpolation', 'Upscaling',
                             'pairs/sec', 'GPU:', 'frames'
                         ])
 
-                        # Успешное завершение - только если есть в последних строках
                         if ('Pipeline finished' in recent_log or 'Pipeline completed successfully' in recent_log):
-                            # Дополнительная проверка - должна быть строка с Duration или Upload successful
+                            # Additional check - there should be a line with Duration or Upload successful
                             has_completion = any(marker in recent_log for marker in [
                                 'Duration:', 'Upload successful', 'completed successfully'
                             ])
 
                             if has_completion:
                                 print("\n" + "="*60)
-                                print("🎉 УСПЕХ! Pipeline завершён!")
+                                print("🎉 SUCCESS! Pipeline finished!")
                                 print("="*60)
 
-                                # Ищем финальные результаты
+                                # Show final results
                                 for line in current_lines[-50:]:
                                     if any(kw in line for kw in ['Output file:', 'Duration:', 'Upload successful', 'https://', 'Pipeline completed']):
                                         print(line)
 
-                                print(f"\n✅ Обработка завершена успешно!")
-                                print(f"   Инстанс: {inst_id}")
+                                print(f"\n✅ Processing completed successfully!")
+                                print(f"   Instance: {inst_id}")
                                 print(f"   GPU: {gpu}")
-                                print(f"\n📌 Команды:")
-                                print(f"   Скачать логи: python scripts/show_logs.py {inst_id} > logs_{inst_id}.txt")
-                                print(f"   Остановить:   python scripts/manage_instance.py {inst_id} --stop")
+                                print(f"\n📌 Commands:")
+                                print(f"   Download logs: python scripts/show_logs.py {inst_id} > logs_{inst_id}.txt")
+                                print(f"   Stop:          python scripts/manage_instance.py {inst_id} --stop")
                                 break
 
-                        # Проверяем на критические ошибки - тоже только в последних строках
+                        # Check for fatal errors - also only in the last lines
                         if 'Pipeline failed' in recent_log or 'FATAL' in recent_log:
                             print("\n" + "="*60)
-                            print("❌ ОШИБКА! Pipeline упал")
+                            print("❌ ERROR! Pipeline failed")
                             print("="*60)
 
-                            # Показываем последние ошибки
+                            # Show recent error lines
                             for line in current_lines[-30:]:
                                 if any(kw in line for kw in ['ERROR', 'Failed', 'Exception', 'Traceback']):
                                     print(line)
 
-                            print(f"\n❌ Обработка завершена с ошибкой")
-                            print(f"\n📌 Команды:")
-                            print(f"   Полные логи:  python scripts/show_logs.py {inst_id}")
-                            print(f"   Остановить:   python scripts/manage_instance.py {inst_id} --stop")
+                            print(f"\n❌ Processing finished with error")
+                            print(f"\n📌 Commands:")
+                            print(f"   Full logs:  python scripts/show_logs.py {inst_id}")
+                            print(f"   Stop:       python scripts/manage_instance.py {inst_id} --stop")
                             break
 
-                        # Проверяем на AccessDenied в последних строках
+                        # Check for AccessDenied in recent lines
                         if 'AccessDenied' in recent_log:
-                            # Считаем сколько раз в последних 100 строках
+                            # Count occurrences in the last 100 lines
                             count = recent_log.count('AccessDenied')
-                            if count > 2:  # Если больше 2 раз в последних 100 строках - проблема
-                                print(f"\n⚠️  ВНИМАНИЕ: AccessDenied появляется {count} раз в последних логах!")
-                                print("   Возможно проблема с правами B2 или curl командой")
+                            if count > 2:  # If appears more than 2 times in the last logs - an issue
+                                print(f"\n⚠️  WARNING: AccessDenied appears {count} times in recent logs!")
+                                print("   Possible issue with B2 permissions or the curl command")
 
                 else:
-                    print(f"[{current_time}] ⚠️  Логи пока недоступны (чек #{check_count})")
+                    print(f"[{current_time}] ⚠️  Logs not available yet (check #{check_count})")
 
             except Exception as e:
-                print(f"[{current_time}] ⚠️  Ошибка получения логов: {e}")
+                print(f"[{current_time}] ⚠️  Error fetching logs: {e}")
 
-            # Если инстанс остановлен
+            # If the instance is stopped
             if current_state in ['stopped', 'exited']:
-                print(f"\n⚠️  Инстанс остановлен (state: {current_state})")
-                print("\nПоследние логи:")
+                print(f"\n⚠️  Instance stopped (state: {current_state})")
+                print("\nRecent logs:")
                 if last_log_lines:
                     for line in last_log_lines[-20:]:
                         if line.strip():
                             print(line)
                 break
 
-            # Ждём перед следующей проверкой
+            # Wait before the next check
             time.sleep(interval)
 
         except KeyboardInterrupt:
-            print("\n\n⏸️  Мониторинг прерван пользователем")
-            print(f"\n📌 Инстанс продолжает работать: {inst_id}")
-            print(f"\n   Команды:")
-            print(f"   Возобновить:      python monitor_instance.py {inst_id}")
-            print(f"   Показать логи:    python scripts/show_logs.py {inst_id}")
-            print(f"   Остановить:       python scripts/manage_instance.py {inst_id} --stop")
+            print("\n\n⏸️  Monitoring interrupted by user")
+            print(f"\n📌 Instance continues to run: {inst_id}")
+            print(f"\n   Commands:")
+            print(f"   Resume:      python monitor_instance.py {inst_id}")
+            print(f"   Show logs:    python scripts/show_logs.py {inst_id}")
+            print(f"   Stop:       python scripts/manage_instance.py {inst_id} --stop")
             break
         except Exception as e:
-            print(f"\n❌ Критическая ошибка: {e}")
+            print(f"\n❌ Critical error: {e}")
             import traceback
             traceback.print_exc()
             time.sleep(10)
 
-    print("\n=== Мониторинг завершён ===")
+    print("\n=== Monitoring finished ===")
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Мониторинг инстанса Vast.ai')
-    parser.add_argument('instance_id', help='ID инстанса для мониторинга')
-    parser.add_argument('--tail', type=int, default=200, help='Количество строк логов (по умолчанию: 200)')
-    parser.add_argument('--interval', type=int, default=5, help='Интервал обновления в секундах (по умолчанию: 5)')
+    parser = argparse.ArgumentParser(description='Vast.ai instance monitoring')
+    parser.add_argument('instance_id', help='Instance ID to monitor')
+    parser.add_argument('--tail', type=int, default=200, help='Number of log lines to show (default: 200)')
+    parser.add_argument('--interval', type=int, default=5, help='Refresh interval in seconds (default: 5)')
 
     args = parser.parse_args()
 
