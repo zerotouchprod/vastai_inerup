@@ -186,8 +186,8 @@ if [ -f "$BATCH_PY" ]; then
   log "Found external batch runner: $BATCH_PY"
   (export PYTHONUNBUFFERED=1; export REPO_DIR="$REPO_DIR"; python3 "$BATCH_PY" "$TMP_DIR/input" "$TMP_DIR/output" "$FACTOR") >"$TMP_DIR/batch_rife_run.log" 2>&1 &
   BATCH_PID=$!
-  log "batch_rife.py started (pid=$BATCH_PID), waiting up to 600s for completion"
-  WAIT_SECS=600
+  log "batch_rife.py started (pid=$BATCH_PID), waiting up to 6000s for completion"
+  WAIT_SECS=6000
   for waited in $(seq 1 $WAIT_SECS); do
     sleep 1
     if ! kill -0 $BATCH_PID 2>/dev/null; then
