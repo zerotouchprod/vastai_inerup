@@ -164,8 +164,8 @@ maybe_upload_b2() {
     echo "AUTO_UPLOAD_B2=1 but B2_BUCKET not set; skipping upload (no bucket configured)"
     return 0
   fi
-  if [ ! -f "$file_path" ]; then
-    echo "AUTO_UPLOAD_B2: file not found: $file_path"
+  if [ ! -f "$file_path" ] || [ ! -s "$file_path" ]; then
+    echo "AUTO_UPLOAD_B2: file not found or empty: $file_path"
     return 1
   fi
   # Default object key: prefer B2_OUTPUT_KEY (set by launcher) then B2_KEY (legacy).
@@ -289,7 +289,6 @@ choose_out_pix_fmt() {
 # usage: run_ffmpeg_with_progress <outfile> -- <ffmpeg-args...>
 run_ffmpeg_with_progress() {
   local outfile="$1"; shift
-  # consume '--' if present
   if [ "$1" = "--" ]; then shift; fi
   local enc
   enc=$(choose_video_encoder)
@@ -302,32 +301,50 @@ run_ffmpeg_with_progress() {
   fi
   echo "FFOUT_PIX_FMT:${pixfmt}"
 
-  local enc_args=()
-  if [ "$enc" = "libx264" ]; then
-    enc_args=("-c:v" "libx264" "-crf" "18" "-preset" "medium" "-pix_fmt" "$pixfmt")
-  else
-    # NVENC args - conservative presets and quality tuned for good visual results
-    enc_args=("-c:v" "$enc" "-preset" "p6" "-rc" "vbr_hq" "-cq" "19" "-b:v" "0" "-pix_fmt" "$pixfmt")
+  # Helper to run ffmpeg once with given enc and args; returns ffmpeg rc
+  _run_once() {
+    local _enc="$1"; shift
+    local _enc_args=()
+    if [ "${_enc}" = "libx264" ]; then
+      _enc_args=("-c:v" "libx264" "-crf" "18" "-preset" "medium" "-pix_fmt" "$pixfmt")
+    else
+      # Safer NVENC args to maximize compatibility across FFmpeg/NVENC driver versions.
+      # Avoid using deprecated 2-pass RC modes combined with new presets which can cause "invalid param" errors.
+      _enc_args=("-c:v" "${_enc}" "-preset" "p4" "-rc" "vbr" "-cq" "19" "-b:v" "0" "-pix_fmt" "$pixfmt")
+    fi
+
+    echo "FFCMD: ffmpeg -y $* ${_enc_args[*]} -progress pipe:1 -nostats $outfile"
+
+    ffmpeg -y "$@" "${_enc_args[@]}" -progress pipe:1 -nostats "$outfile" 2> >(while IFS= read -r el; do echo "FFERR:$el"; done) | while IFS= read -r pl; do
+      if echo "$pl" | grep -q '=' 2>/dev/null; then
+        k=$(echo "$pl" | cut -d'=' -f1)
+        v=$(echo "$pl" | cut -d'=' -f2-)
+        echo "FFPROGRESS:$k=$v"
+      else
+        echo "FFPROGRESS:$pl"
+      fi
+    done
+    return ${PIPESTATUS[0]:-0}
+  }
+
+  # First attempt with chosen encoder
+  _run_once "$enc" "$@"
+  local rc=$?
+
+  # If NVENC failed (non-zero rc) and we didn't already try libx264, retry once with libx264 fallback
+  if [ $rc -ne 0 ] && [ "$enc" != "libx264" ]; then
+    echo "FFERR: Primary encoder ($enc) failed with rc=$rc; attempting fallback to libx264" >&2
+    # remove any possibly-broken output file before retry to avoid false positives
+    rm -f "$outfile" 2>/dev/null || true
+    _run_once "libx264" "$@"
+    rc=$?
+    if [ $rc -ne 0 ]; then
+      echo "FFERR: Fallback to libx264 also failed (rc=$rc)" >&2
+    else
+      echo "FFPROGRESS: Fallback to libx264 succeeded"
+    fi
   fi
 
-  # Build full ffmpeg command: user-supplied args first, encoder args appended, add progress pipe
-  # We redirect ffmpeg stderr to a prefixed FFERR: stream and parse progress from stdout
-  # Use -progress pipe:1 -nostats to get machine-friendly progress lines on stdout
-  # Show a readable command preview (join user args and encoder args safely)
-  echo "FFCMD: ffmpeg -y $* ${enc_args[*]} -progress pipe:1 -nostats $outfile"
-
-  # Run ffmpeg; capture stdout(progress) and stderr
-  ffmpeg -y "$@" "${enc_args[@]}" -progress pipe:1 -nostats "$outfile" 2> >(while IFS= read -r el; do echo "FFERR:$el"; done) | while IFS= read -r pl; do
-    # progress lines are key=value
-    if echo "$pl" | grep -q '=' 2>/dev/null; then
-      k=$(echo "$pl" | cut -d'=' -f1)
-      v=$(echo "$pl" | cut -d'=' -f2-)
-      echo "FFPROGRESS:$k=$v"
-    else
-      echo "FFPROGRESS:$pl"
-    fi
-  done
-  local rc=${PIPESTATUS[0]:-0}
   return $rc
 }
 
@@ -553,7 +570,12 @@ do_frame_by_frame_upscale() {
 
   if [ $RESULT -ne 0 ]; then
     echo ""
-    echo "ERROR: Failed to reassemble video"
+    echo "ERROR: Failed to reassemble video (ffmpeg rc=$RESULT)"
+    return 1
+  fi
+  # ensure output has data
+  if [ ! -s "$OUTPUT" ]; then
+    echo "ERROR: Reassembled output is empty: $OUTPUT"
     return 1
   fi
 
@@ -734,13 +756,15 @@ if [ -f "$BATCH_SCRIPT" ]; then
           echo "Detected start_number=$start_num"
           # Use run_ffmpeg_with_progress to choose encoder and emit progress for external watcher
           run_ffmpeg_with_progress "$OUTFILE" -- -start_number "$start_num" -framerate "$FPS" -i "$TMP_DIR/output/$pattern" -frames:v "$OUT_IMG_COUNT"
-          if [ -f "$OUTFILE" ]; then
+          rc=$?
+          # Treat assembly as success only if ffmpeg exited 0 and produced a non-empty file
+          if [ $rc -eq 0 ] && [ -s "$OUTFILE" ]; then
             echo "✓ Assembled: $OUTFILE"
             finalize_success "$OUTFILE"
             rm -rf "$TMP_DIR"
             exit 0
           else
-            echo "ERROR: assembly from pattern failed; attempting concat fallback"
+            echo "ERROR: assembly from pattern failed (rc=$rc or empty output); attempting concat fallback"
           fi
         fi
       else
@@ -755,7 +779,8 @@ if [ -f "$BATCH_SCRIPT" ]; then
       if [ -s "$FILELIST" ]; then
         echo "Trying concat fallback (filelist)"
         run_ffmpeg_with_progress "$OUTFILE" -- -safe 0 -f concat -i "$FILELIST" -framerate "$FPS"
-        if [ -f "$OUTFILE" ]; then
+        rc=$?
+        if [ $rc -eq 0 ] && [ -s "$OUTFILE" ]; then
           echo "✓ Assembled (concat fallback): $OUTFILE"
           finalize_success "$OUTFILE"
           rm -rf "$TMP_DIR"
