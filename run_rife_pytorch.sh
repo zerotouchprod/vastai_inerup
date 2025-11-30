@@ -202,6 +202,87 @@ maybe_upload_and_finish(){
   cp -f "$file" "$FINAL" 2>/dev/null || { log "Failed to copy $file to $FINAL"; return 1; }
   ls -lh "$FINAL" || true
 
+  # One-shot trigger: if any trigger file present, prefer to upload immediately via container_upload.py
+  TRIG_FILES=("/workspace/project/.force_upload" "/workspace/.force_upload" "/workspace/force_upload_trigger")
+  TRIG_PRESENT=0
+  for tf in "${TRIG_FILES[@]}"; do
+    if [ -f "$tf" ]; then
+      TRIG_PRESENT=1
+      TRIG_PATH="$tf"
+      break
+    fi
+  done
+  if [ "$TRIG_PRESENT" -eq 1 ] && [ ! -f /workspace/.force_upload_ran ]; then
+    log "Trigger file detected: $TRIG_PATH -> performing triggered upload"
+    # try to read bucket/key from trigger file (support JSON or KEY=VALUE)
+    TRIG_BUCKET=""
+    TRIG_KEY=""
+    if [ -s "$TRIG_PATH" ]; then
+      # attempt JSON parse first
+      TRIG_JSON=$(cat "$TRIG_PATH" 2>/dev/null || true)
+      if python3 - <<PY >/dev/null 2>&1
+import sys, json
+s=sys.stdin.read()
+try:
+    obj=json.loads(s)
+    if isinstance(obj, dict):
+        print('OK')
+except Exception:
+    sys.exit(1)
+PY
+      then
+        TRIG_BUCKET=$(python3 - <<PY
+import json,sys
+try:
+    obj=json.load(sys.stdin)
+    print(obj.get('bucket',''))
+except Exception:
+    pass
+PY
+"$TRIG_JSON")
+        TRIG_KEY=$(python3 - <<PY
+import json,sys
+try:
+    obj=json.load(sys.stdin)
+    print(obj.get('key',''))
+except Exception:
+    pass
+PY
+"$TRIG_JSON")
+      else
+        # try simple KEY=VALUE parsing
+        TRIG_BUCKET=$(grep -E '^bucket=' "$TRIG_PATH" 2>/dev/null | sed -E "s/^bucket=//" | tr -d '\"' | head -n1 || true)
+        TRIG_KEY=$(grep -E '^(key|k)=|^key=' "$TRIG_PATH" 2>/dev/null | sed -E "s/^(key=|k=)//" | tr -d '\"' | head -n1 || true)
+      fi
+    fi
+    # fallback to env if not present in trigger
+    BKT="${TRIG_BUCKET:-}"
+    if [ -z "$BKT" ]; then
+      BKT="${B2_BUCKET:-}"
+    fi
+    KEYV="${TRIG_KEY:-}"
+    if [ -z "$KEYV" ]; then
+      KEYV="${B2_OUTPUT_KEY:-${B2_KEY:-}}"
+    fi
+    if [ -z "$BKT" ]; then
+      log "Triggered upload requested but no bucket provided (trigger file or B2_BUCKET). Skipping triggered upload"
+    else
+      log "Triggered upload -> bucket=$BKT key=${KEYV:-(auto)}"
+      # mark ran
+      touch /workspace/.force_upload_ran 2>/dev/null || true
+      # call uploader
+      if python3 /workspace/project/scripts/container_upload.py "$FINAL" "$BKT" "${KEYV:-output/$(basename "$FINAL")}" "${B2_ENDPOINT:-https://s3.us-west-004.backblazeb2.com}"; then
+        echo "B2_UPLOAD_KEY_USED: s3://$BKT/${KEYV:-output/$(basename "$FINAL")}" || true
+        log "Triggered AUTO_UPLOAD_B2: upload succeeded"
+        # Also write result file
+        echo "{\"bucket\": \"$BKT\", \"key\": \"${KEYV:-output/$(basename "$FINAL")}\"}" > /workspace/force_upload_result.json || true
+      else
+        log "Triggered AUTO_UPLOAD_B2: upload failed (see container_upload.py output)"
+      fi
+    fi
+    # continue normal flow (do not exit) after triggered upload
+  fi
+
   # If AUTO_UPLOAD_B2 explicitly disabled, skip running container_upload.py
   if [ "${AUTO_UPLOAD_B2:-1}" != "1" ]; then
     log "AUTO_UPLOAD_B2 not enabled; skipping centralized upload"
