@@ -20,6 +20,11 @@ echo "=== Remote Runner Starting ==="
 echo "Time: $(date)"
 echo ""
 
+# Control flag: set ENABLE_EARLY_FORCE_UPLOAD=1 to enable the unconditional early upload check (disabled by default)
+if [ "${ENABLE_EARLY_FORCE_UPLOAD:-0}" != "1" ]; then
+  echo "[FORCE_UPLOAD] Early unconditional upload disabled (ENABLE_EARLY_FORCE_UPLOAD!=1). To enable set ENABLE_EARLY_FORCE_UPLOAD=1 in job env."
+else
+
 # EARLY FORCE-UPLOAD: check for trigger or existing output mp4s and run one-shot uploader immediately.
 # This block is intentionally early so the upload occurs right after git fetch/entrypoint logs.
 {
@@ -124,6 +129,8 @@ PY
   fi
   echo "[FORCE_UPLOAD] PRECHECK END"
 } || true
+
+fi
 
 # Check if config.yaml exists in repository (after Git pull by entrypoint.sh)
 CONFIG_FILE="/workspace/project/config.yaml"
