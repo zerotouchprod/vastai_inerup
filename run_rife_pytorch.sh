@@ -4,6 +4,36 @@ set -u
 
 log(){ echo "[$(date '+%H:%M:%S')] $*"; }
 
+# EARLY DIAGNOSTIC: print FORCE_UPLOAD pre-check immediately so entrypoint logs show it
+# This helps debugging when remote runner starts and we need to know if a forced upload will run.
+{
+  log "FORCE_UPLOAD_PRECHECK: START"
+  log "FORCE_UPLOAD_PRECHECK: FORCE_UPLOAD_ON_NEXT_RUN=${FORCE_UPLOAD_ON_NEXT_RUN:-0}"
+  if [ -f /workspace/project/.force_upload ]; then
+    log "FORCE_UPLOAD_PRECHECK: project trigger present: /workspace/project/.force_upload"
+  else
+    log "FORCE_UPLOAD_PRECHECK: project trigger NOT present: /workspace/project/.force_upload"
+  fi
+  if [ -f /workspace/.force_upload ]; then
+    log "FORCE_UPLOAD_PRECHECK: workspace trigger present: /workspace/.force_upload"
+  else
+    log "FORCE_UPLOAD_PRECHECK: workspace trigger NOT present: /workspace/.force_upload"
+  fi
+  if [ -f /workspace/force_upload_trigger ]; then
+    log "FORCE_UPLOAD_PRECHECK: legacy trigger present: /workspace/force_upload_trigger"
+  fi
+  # list candidate mp4 files (non-recursive)
+  mp4count=$(ls -1 /workspace/output/*.mp4 2>/dev/null | wc -l || echo 0)
+  log "FORCE_UPLOAD_PRECHECK: mp4_in_output_count=${mp4count}"
+  if [ "$mp4count" -gt 0 ]; then
+    log "FORCE_UPLOAD_PRECHECK: top /workspace/output mp4s:";
+    for f in $(ls -1t /workspace/output/*.mp4 2>/dev/null | head -n 5); do
+      log "  - $f";
+    done
+  fi
+  log "FORCE_UPLOAD_PRECHECK: END"
+} || true
+
 INFILE=${1:-}
 OUTFILE=${2:-}
 FACTOR=${3:-2}
