@@ -20,6 +20,11 @@ echo "=== Remote Runner Starting ==="
 echo "Time: $(date)"
 echo ""
 
+# Default: prefer software ffmpeg encoder to avoid NVENC compatibility issues on some hosts
+# Can be overridden by setting FORCE_SW_ENC=0 in the job environment to attempt NVENC again
+export FORCE_SW_ENC=${FORCE_SW_ENC:-1}
+echo "[remote_runner] FORCE_SW_ENC=${FORCE_SW_ENC} (1=force libx264, 0=allow NVENC)"
+
 # If a persistent pending upload exists from a previous run, attempt it now (one-shot retry)
 PENDING_MARKER=/workspace/.pending_upload.json
 MAX_ATTEMPTS=${MAX_ATTEMPTS:-3}
