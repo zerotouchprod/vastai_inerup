@@ -37,6 +37,56 @@ for raw in sys.stdin:
 PY
 }
 
+# Centralized uploader helper: copy final file to /workspace/final_output.mp4 and call container_upload.py
+# Placed here so callers later in the script can invoke it without 'command not found'.
+maybe_upload_and_finish(){
+  local file="$1"
+  # Validate file exists and non-empty
+  if [ -z "$file" ] || [ ! -f "$file" ] || [ ! -s "$file" ]; then
+    log "Cannot upload: file missing or empty: $file"
+    return 1
+  fi
+  # Copy to final location expected by central uploader
+  FINAL="/workspace/final_output.mp4"
+  cp -f "$file" "$FINAL" 2>/dev/null || { log "Failed to copy $file to $FINAL"; return 1; }
+  ls -lh "$FINAL" || true
+
+  # If AUTO_UPLOAD_B2 explicitly disabled, skip running container_upload.py
+  if [ "${AUTO_UPLOAD_B2:-1}" != "1" ]; then
+    log "AUTO_UPLOAD_B2 not enabled; skipping centralized upload"
+    echo "VASTAI_PIPELINE_COMPLETED_SUCCESSFULLY"
+    touch /workspace/VASTAI_PIPELINE_COMPLETED_SUCCESSFULLY 2>/dev/null || true
+    return 0
+  fi
+
+  # Determine bucket/key (prefer B2_OUTPUT_KEY if set)
+  B2_BUCKET=${B2_BUCKET:-$(echo)}
+  B2_KEY_ENV=${B2_OUTPUT_KEY:-${B2_KEY:-}}
+  if [ -z "${B2_BUCKET}" ]; then
+    log "AUTO_UPLOAD_B2 enabled but B2_BUCKET not set; skipping upload"
+    echo "VASTAI_PIPELINE_COMPLETED_SUCCESSFULLY"
+    touch /workspace/VASTAI_PIPELINE_COMPLETED_SUCCESSFULLY 2>/dev/null || true
+    return 0
+  fi
+
+  # Choose key: prefer explicit B2_OUTPUT_KEY, otherwise fallback to output path
+  if [ -n "$B2_KEY_ENV" ]; then
+    outkey="$B2_KEY_ENV"
+  else
+    outkey="output/$(basename "$file")"
+  fi
+
+  log "Calling container_upload.py to upload $FINAL -> s3://$B2_BUCKET/$outkey"
+  if python3 /workspace/project/scripts/container_upload.py "$FINAL" "$B2_BUCKET" "$outkey" "${B2_ENDPOINT:-https://s3.us-west-004.backblazeb2.com}"; then
+    log "AUTO_UPLOAD_B2: upload succeeded"
+  else
+    log "AUTO_UPLOAD_B2: upload failed (see container_upload.py output)"
+  fi
+  echo "VASTAI_PIPELINE_COMPLETED_SUCCESSFULLY"
+  touch /workspace/VASTAI_PIPELINE_COMPLETED_SUCCESSFULLY 2>/dev/null || true
+  return 0
+}
+
 # detect fps
 FPS_FRAC=$(ffprobe -v error -select_streams v:0 -show_entries stream=r_frame_rate -of default=noprint_wrappers=1:nokey=1 "$INFILE" 2>/dev/null | head -n1 || true)
 if [ -z "$FPS_FRAC" ]; then
@@ -504,50 +554,3 @@ else
   exit 5
 fi
 
-maybe_upload_and_finish(){
-  local file="$1"
-  # Validate file exists and non-empty
-  if [ -z "$file" ] || [ ! -f "$file" ] || [ ! -s "$file" ]; then
-    log "Cannot upload: file missing or empty: $file"
-    return 1
-  fi
-  # Copy to final location expected by central uploader
-  FINAL="/workspace/final_output.mp4"
-  cp -f "$file" "$FINAL" 2>/dev/null || { log "Failed to copy $file to $FINAL"; return 1; }
-  ls -lh "$FINAL" || true
-
-  # If AUTO_UPLOAD_B2 explicitly disabled, skip running container_upload.py
-  if [ "${AUTO_UPLOAD_B2:-1}" != "1" ]; then
-    log "AUTO_UPLOAD_B2 not enabled; skipping centralized upload"
-    echo "VASTAI_PIPELINE_COMPLETED_SUCCESSFULLY"
-    touch /workspace/VASTAI_PIPELINE_COMPLETED_SUCCESSFULLY 2>/dev/null || true
-    return 0
-  fi
-
-  # Determine bucket/key (prefer B2_OUTPUT_KEY if set)
-  B2_BUCKET=${B2_BUCKET:-$(echo)}
-  B2_KEY_ENV=${B2_OUTPUT_KEY:-${B2_KEY:-}}
-  if [ -z "${B2_BUCKET}" ]; then
-    log "AUTO_UPLOAD_B2 enabled but B2_BUCKET not set; skipping upload"
-    echo "VASTAI_PIPELINE_COMPLETED_SUCCESSFULLY"
-    touch /workspace/VASTAI_PIPELINE_COMPLETED_SUCCESSFULLY 2>/dev/null || true
-    return 0
-  fi
-
-  # Choose key: prefer explicit B2_OUTPUT_KEY, otherwise fallback to output path
-  if [ -n "$B2_KEY_ENV" ]; then
-    outkey="$B2_KEY_ENV"
-  else
-    outkey="output/$(basename "$file")"
-  fi
-
-  log "Calling container_upload.py to upload $FINAL -> s3://$B2_BUCKET/$outkey"
-  if python3 /workspace/project/scripts/container_upload.py "$FINAL" "$B2_BUCKET" "$outkey" "${B2_ENDPOINT:-https://s3.us-west-004.backblazeb2.com}"; then
-    log "AUTO_UPLOAD_B2: upload succeeded"
-  else
-    log "AUTO_UPLOAD_B2: upload failed (see container_upload.py output)"
-  fi
-  echo "VASTAI_PIPELINE_COMPLETED_SUCCESSFULLY"
-  touch /workspace/VASTAI_PIPELINE_COMPLETED_SUCCESSFULLY 2>/dev/null || true
-  return 0
-}
