@@ -370,7 +370,10 @@ try_filelist(){
 # If there's a batch runner that wrote to TMP_DIR/output, try filelist assembly
 if try_filelist; then
   log "assembled via filelist"
-  [ -s "$OUTFILE" ] && { log "OK $OUTFILE"; exit 0; }
+  if [ -s "$OUTFILE" ]; then
+    log "OK $OUTFILE"
+    maybe_upload_and_finish "$OUTFILE" || exit 0
+  fi
 fi
 
 # Try assembling mids pattern
@@ -440,7 +443,7 @@ if ls "$TMP_DIR/output"/frame_*_mid*.png 1>/dev/null 2>&1; then
     outsiz=$(stat -c %s "$OUTFILE" 2>/dev/null || echo 0)
     if [ $RC_ASM -eq 0 ] && [ $outsiz -ge $min_size ]; then
       log "OK $OUTFILE"
-      exit 0
+      maybe_upload_and_finish "$OUTFILE" || exit 0
     else
       log "Assembly from mids failed (rc=$RC_ASM size=$outsiz < $min_size or empty); attempting sequential-assembly fallback"
       # Sequential-assembly fallback: build an ordered image sequence (frame_000001.png, frame_000002.png, ...)
@@ -478,7 +481,7 @@ if ls "$TMP_DIR/output"/frame_*_mid*.png 1>/dev/null 2>&1; then
         if [ $RC_SEQ -eq 0 ] && [ $outsiz -ge $min_size ]; then
           log "OK $OUTFILE (assembled via sequential image list)"
           rm -rf "$ASSEM_DIR" 2>/dev/null || true
-          exit 0
+          maybe_upload_and_finish "$OUTFILE" || exit 0
         else
           log "Sequential assembly also failed (rc=$RC_SEQ size=$outsiz < $min_size or empty); see $TMP_DIR/ff_assemble_seq.log for details"
         fi
@@ -494,10 +497,57 @@ ffmpeg -hide_banner -loglevel info -y -i "$INFILE" -vf "minterpolate=fps=$TARGET
 
 if [ -s "$OUTFILE" ]; then
   log "Success: $OUTFILE"
-  exit 0
+  maybe_upload_and_finish "$OUTFILE" || exit 0
 else
   log "Failed to produce output"
   tail -n 200 "$TMP_DIR/ff_fallback.log" 2>/dev/null || true
   exit 5
 fi
 
+maybe_upload_and_finish(){
+  local file="$1"
+  # Validate file exists and non-empty
+  if [ -z "$file" ] || [ ! -f "$file" ] || [ ! -s "$file" ]; then
+    log "Cannot upload: file missing or empty: $file"
+    return 1
+  fi
+  # Copy to final location expected by central uploader
+  FINAL="/workspace/final_output.mp4"
+  cp -f "$file" "$FINAL" 2>/dev/null || { log "Failed to copy $file to $FINAL"; return 1; }
+  ls -lh "$FINAL" || true
+
+  # If AUTO_UPLOAD_B2 explicitly disabled, skip running container_upload.py
+  if [ "${AUTO_UPLOAD_B2:-1}" != "1" ]; then
+    log "AUTO_UPLOAD_B2 not enabled; skipping centralized upload"
+    echo "VASTAI_PIPELINE_COMPLETED_SUCCESSFULLY"
+    touch /workspace/VASTAI_PIPELINE_COMPLETED_SUCCESSFULLY 2>/dev/null || true
+    return 0
+  fi
+
+  # Determine bucket/key (prefer B2_OUTPUT_KEY if set)
+  B2_BUCKET=${B2_BUCKET:-$(echo)}
+  B2_KEY_ENV=${B2_OUTPUT_KEY:-${B2_KEY:-}}
+  if [ -z "${B2_BUCKET}" ]; then
+    log "AUTO_UPLOAD_B2 enabled but B2_BUCKET not set; skipping upload"
+    echo "VASTAI_PIPELINE_COMPLETED_SUCCESSFULLY"
+    touch /workspace/VASTAI_PIPELINE_COMPLETED_SUCCESSFULLY 2>/dev/null || true
+    return 0
+  fi
+
+  # Choose key: prefer explicit B2_OUTPUT_KEY, otherwise fallback to output path
+  if [ -n "$B2_KEY_ENV" ]; then
+    outkey="$B2_KEY_ENV"
+  else
+    outkey="output/$(basename "$file")"
+  fi
+
+  log "Calling container_upload.py to upload $FINAL -> s3://$B2_BUCKET/$outkey"
+  if python3 /workspace/project/scripts/container_upload.py "$FINAL" "$B2_BUCKET" "$outkey" "${B2_ENDPOINT:-https://s3.us-west-004.backblazeb2.com}"; then
+    log "AUTO_UPLOAD_B2: upload succeeded"
+  else
+    log "AUTO_UPLOAD_B2: upload failed (see container_upload.py output)"
+  fi
+  echo "VASTAI_PIPELINE_COMPLETED_SUCCESSFULLY"
+  touch /workspace/VASTAI_PIPELINE_COMPLETED_SUCCESSFULLY 2>/dev/null || true
+  return 0
+}
