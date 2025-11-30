@@ -18,15 +18,13 @@ TMP_DIR=$(mktemp -d 2>/dev/null || mktemp -d -t rife_tmp)
 log "TMP_DIR=$TMP_DIR"
 mkdir -p "$TMP_DIR/input" "$TMP_DIR/output"
 
-# Early one-shot: if requested, upload an existing output file immediately and exit.
-# Trigger by setting FORCE_UPLOAD_ON_NEXT_RUN=1 in the job env. A marker file /workspace/.force_upload_ran
-# prevents this from running more than once.
-# Support triggers via env OR presence of a trigger file in repo/workspace so users who can't set env vars
-# can still enable the one-shot by adding a file to the repo (e.g. /workspace/project/.force_upload or /workspace/force_upload_trigger).
-if { [ "${FORCE_UPLOAD_ON_NEXT_RUN:-0}" = "1" ] || [ -f /workspace/project/.force_upload ] || [ -f /workspace/.force_upload ] || [ -f /workspace/force_upload_trigger ]; } && [ ! -f /workspace/.force_upload_ran ]; then
+# Unconditional early one-shot: if an assembled output file already exists at container start,
+# upload it immediately (one-shot) without requiring env vars or repo triggers. A marker file
+# /workspace/.force_upload_ran prevents this from being run multiple times.
+if [ ! -f /workspace/.force_upload_ran ]; then
   FORCE_UP_FILE="${FORCE_FILE:-/workspace/output/output_interpolated.mp4}"
   if [ -f "$FORCE_UP_FILE" ] && [ -s "$FORCE_UP_FILE" ]; then
-    log "FORCE_UPLOAD_ON_NEXT_RUN: found $FORCE_UP_FILE -> running force_upload_and_fail.sh (one-shot)"
+    log "UNCONDITIONAL EARLY UPLOAD: found $FORCE_UP_FILE -> running force_upload_and_fail.sh (one-shot)"
     # create marker to avoid re-running on retries
     touch /workspace/.force_upload_ran 2>/dev/null || true
     export FORCE_FILE="$FORCE_UP_FILE"
@@ -35,9 +33,10 @@ if { [ "${FORCE_UPLOAD_ON_NEXT_RUN:-0}" = "1" ] || [ -f /workspace/project/.forc
     /workspace/project/scripts/force_upload_and_fail.sh
     rc=$?
     log "force_upload_and_fail.sh exited with rc=$rc"
+    # Propagate helper exit code (helper intentionally exits non-zero on success)
     exit $rc
   else
-    log "FORCE_UPLOAD_ON_NEXT_RUN enabled but $FORCE_UP_FILE not present; continuing normal run"
+    log "Unconditional early upload: $FORCE_UP_FILE not present; continuing normal run"
   fi
 fi
 
