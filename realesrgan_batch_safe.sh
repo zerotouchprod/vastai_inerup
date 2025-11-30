@@ -90,19 +90,25 @@ try:
             if gb < 8: return 1
             if gb < 12: return 1
             if gb < 24: return 2
-            return 4
+            if gb < 36: return 4
+            if gb < 48: return 6
+            return 8
         if tile >= 256:
             if gb < 8: return 1
             if gb < 12: return 2
             if gb < 16: return 3
             if gb < 24: return 4
-            return 8
+            if gb < 36: return 6
+            if gb < 48: return 8
+            return 10
         # tile < 256 -> treat as 128
         if gb < 8: return 2
         if gb < 12: return 4
         if gb < 16: return 8
         if gb < 24: return 12
-        return 16
+        if gb < 36: return 16
+        if gb < 48: return 20
+        return 24
     suggested = map_batch(tile, vram_gb)
     # apply MAX_BATCH clamp
     try:

@@ -220,6 +220,18 @@ def try_run_realesrgan_ncnn(infile: str, outpath: str, scale: int) -> bool:
                 # If we could detect framerate, include it as input framerate to preserve timing
                 if fr is not None:
                     ffmpeg_cmd = ["ffmpeg", "-y", "-framerate", str(fr), "-f", "concat", "-safe", "0", "-i", filelist_path, "-c:v", "libx264", "-crf", "18", "-preset", "medium", outpath]
+
+                # Print head of filelist for debugging before running ffmpeg
+                try:
+                    print("filelist_for_assembly (first 20 lines):")
+                    with open(filelist_path, 'r', encoding='utf-8') as _fl:
+                        for i, line in enumerate(_fl):
+                            if i >= 20:
+                                break
+                            print(line.rstrip())
+                except Exception:
+                    pass
+
                 run(ffmpeg_cmd)
                 return True
         except Exception as e:
@@ -279,37 +291,131 @@ def try_run_realesrgan_pytorch_wrapper(infile: str, outpath: str, scale: int) ->
         except:
             pass
 
-        # Run without capturing output for real-time streaming
         print(f"Invoking PyTorch Real-ESRGAN wrapper: {wrapper} {infile} {outpath} {scale}", flush=True)
         print(f"⏱️  Starting Real-ESRGAN at {__import__('datetime').datetime.now().strftime('%H:%M:%S')}", flush=True)
 
-        # Use Popen for real-time output and timeout support
-        import signal
-
-        def timeout_handler(signum, frame):
-            raise TimeoutError("Real-ESRGAN wrapper timeout (30 minutes)")
-
-        # Set timeout (30 minutes should be enough for most videos)
-        TIMEOUT_SECONDS = 1800  # 30 minutes
-        signal.signal(signal.SIGALRM, timeout_handler)
-        signal.alarm(TIMEOUT_SECONDS)
-
+        # Run wrapper and capture output so we can detect tmp dirs / assembly messages
         try:
-            # Don't capture output - let it stream directly
-            res = subprocess.run([wrapper, infile, outpath, str(scale)], check=True, timeout=TIMEOUT_SECONDS)
-            signal.alarm(0)  # Cancel timeout
-            print(f"✓ Real-ESRGAN completed at {__import__('datetime').datetime.now().strftime('%H:%M:%S')}", flush=True)
-            return True
+            proc = subprocess.run([wrapper, infile, outpath, str(scale)], check=False, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            wrapper_out = proc.stdout or ""
+            # Print captured wrapper output to current process stdout for logs
+            try:
+                print(wrapper_out, flush=True)
+            except Exception:
+                pass
+
+            if proc.returncode != 0:
+                print(f"PyTorch Real-ESRGAN wrapper failed: returncode={proc.returncode}", flush=True)
+                return False
+
+            # If wrapper exited successfully, ensure the expected outpath exists; if not, try to assemble from frames
+            if outpath and os.path.isfile(outpath) and os.path.getsize(outpath) > 0:
+                print(f"✓ Real-ESRGAN completed and produced file: {outpath}", flush=True)
+                return True
+
+            # Attempt to locate a temp frames dir from wrapper output
+            tmpdir = None
+            # common patterns printed by wrapper: "Extracting frames to /tmp/tmp.XXXXX" or "Created temp directory: /tmp/tmpXYZ"
+            import re
+            m = re.search(r"Extracting frames to ([^\s]+)", wrapper_out)
+            if not m:
+                m = re.search(r"Created temp directory: ([^\s]+)", wrapper_out)
+            if m:
+                tmpdir = m.group(1).strip()
+
+            # If we have a tmpdir, look for output frames inside it (common path: <tmpdir>/output)
+            candidate_dirs = []
+            if tmpdir:
+                candidate_dirs.append(os.path.join(tmpdir, 'output'))
+                candidate_dirs.append(os.path.join(tmpdir, 'out'))
+                candidate_dirs.append(os.path.join(tmpdir, 'out_frames'))
+            # also check common fallback location printed by safe script (/tmp/tmp.*)
+            # search wrapper_out for any /tmp/tmp.* tokens
+            if not tmpdir:
+                tokens = re.findall(r"(/tmp/tmp[\w\.\-_/]+)", wrapper_out)
+                for t in tokens:
+                    candidate_dirs.append(os.path.join(t, 'output'))
+                    candidate_dirs.append(os.path.join(t, 'out'))
+                    candidate_dirs.append(os.path.join(t, 'out_frames'))
+
+            # Also check sibling directories under /tmp that might match run's prefix
+            if not candidate_dirs:
+                # try a passive scan for recent /tmp/realesrgan* dirs (best-effort)
+                try:
+                    for name in sorted(os.listdir('/tmp'), reverse=True):
+                        if name.startswith('tmp') or 'realesrgan' in name:
+                            candidate_dirs.append(os.path.join('/tmp', name, 'output'))
+                            candidate_dirs.append(os.path.join('/tmp', name))
+                except Exception:
+                    pass
+
+            found_dir = None
+            for d in candidate_dirs:
+                try:
+                    if d and os.path.isdir(d):
+                        # check for image files inside
+                        items = [p for p in os.listdir(d) if p.lower().endswith(('.png', '.jpg', '.jpeg'))]
+                        if items:
+                            found_dir = d
+                            break
+                except Exception:
+                    continue
+
+            if not found_dir:
+                print("Wrapper finished but no output video found and no frame directory detected; giving up.", flush=True)
+                return False
+
+            # We have frames; assemble into outpath using filelist concat (preserve order)
+            print(f"Detected produced frames in {found_dir}; attempting to assemble into {outpath}", flush=True)
+            try:
+                # determine framerate from original input
+                try:
+                    fr = get_avg_fps(infile)
+                except Exception:
+                    fr = None
+
+                filelist_path = os.path.join(found_dir, 'filelist_for_assembly.txt')
+                with open(filelist_path, 'w', encoding='utf-8') as fl:
+                    for fn in sorted(os.listdir(found_dir)):
+                        if not fn.lower().endswith(('.png', '.jpg', '.jpeg')):
+                            continue
+                        fullp = os.path.join(found_dir, fn)
+                        fl.write(f"file '{fullp}'\n")
+
+                ffmpeg_cmd = ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", filelist_path, "-c:v", "libx264", "-crf", "18", "-preset", "medium", outpath]
+                if fr is not None:
+                    ffmpeg_cmd = ["ffmpeg", "-y", "-framerate", str(fr), "-f", "concat", "-safe", "0", "-i", filelist_path, "-c:v", "libx264", "-crf", "18", "-preset", "medium", outpath]
+
+                # Print head of filelist for debugging before running ffmpeg
+                try:
+                    print("filelist_for_assembly (first 20 lines):")
+                    with open(filelist_path, 'r', encoding='utf-8') as _fl:
+                        for i, line in enumerate(_fl):
+                            if i >= 20:
+                                break
+                            print(line.rstrip())
+                except Exception:
+                    pass
+
+                run(ffmpeg_cmd)
+                if os.path.isfile(outpath) and os.path.getsize(outpath) > 0:
+                    print(f"✓ Assembled frames into {outpath}", flush=True)
+                    return True
+                else:
+                    print(f"ERROR: Assembly produced no output at {outpath}", flush=True)
+                    return False
+            except Exception as e:
+                print(f"Failed to assemble frames into video: {e}", flush=True)
+                return False
+
         except subprocess.TimeoutExpired:
-            signal.alarm(0)
-            print(f"ERROR: Real-ESRGAN wrapper timeout after {TIMEOUT_SECONDS//60} minutes", flush=True)
+            print(f"ERROR: Real-ESRGAN wrapper timeout", flush=True)
             return False
-        except subprocess.CalledProcessError as e:
-            signal.alarm(0)
-            print(f"PyTorch Real-ESRGAN wrapper failed: returncode={e.returncode}", flush=True)
+        except Exception as e:
+            print(f"PyTorch Real-ESRGAN wrapper exception: {e}", flush=True)
             return False
     except Exception as e:
-        print(f"PyTorch Real-ESRGAN wrapper exception: {e}", flush=True)
+        print(f"PyTorch Real-ESRGAN wrapper unexpected error: {e}", flush=True)
         return False
 
 
