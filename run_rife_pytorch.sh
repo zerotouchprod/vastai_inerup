@@ -333,7 +333,47 @@ if ls "$TMP_DIR/output"/frame_*_mid*.png 1>/dev/null 2>&1; then
       log "OK $OUTFILE"
       exit 0
     else
-      log "Assembly from mids failed (rc=$RC_ASM or empty output), will fallback to minterpolate"
+      log "Assembly from mids failed (rc=$RC_ASM or empty output); attempting sequential-assembly fallback"
+      # Sequential-assembly fallback: build an ordered image sequence (frame_000001.png, frame_000002.png, ...)
+      ASSEM_DIR="$TMP_DIR/assembled_seq"
+      rm -rf "$ASSEM_DIR" || true
+      mkdir -p "$ASSEM_DIR"
+      seq_idx=1
+      # Read filelist lines and create symlinks with unified .png names to preserve order
+      while IFS= read -r l; do
+        # strip leading/trailing and remove "file '...'
+        fp=$(echo "$l" | sed -E "s/^file[[:space:]]+'(.*)'\s*$/\1/")
+        # skip empty
+        [ -z "$fp" ] && continue
+        if [ -f "$fp" ] && [ -s "$fp" ]; then
+          dest="$ASSEM_DIR/frame_$(printf "%06d" $seq_idx).png"
+          # Prefer copy if cp is fast enough; use symlink to save space
+          ln -sf "$fp" "$dest" 2>/dev/null || cp -f "$fp" "$dest" 2>/dev/null || true
+          seq_idx=$((seq_idx+1))
+        else
+          log "Skipping missing or empty listed file: $fp"
+        fi
+      done < "$FL"
+
+      if [ $seq_idx -eq 1 ]; then
+        log "Sequential assembly: no valid files found in $FL; cannot assemble from mids"
+      else
+        log "Sequential assembly: prepared $(($seq_idx-1)) frames in $ASSEM_DIR; attempting ffmpeg image2 assemble"
+        if [ -f "$TMP_DIR/audio.aac" ]; then
+          ffmpeg -hide_banner -loglevel info -y -start_number 1 -framerate "$TARGET_FPS" -i "$ASSEM_DIR/frame_%06d.png" -i "$TMP_DIR/audio.aac" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p -shortest "$OUTFILE" 2>&1 | progress_collapse | tee "$TMP_DIR/ff_assemble_seq.log"
+        else
+          ffmpeg -hide_banner -loglevel info -y -start_number 1 -framerate "$TARGET_FPS" -i "$ASSEM_DIR/frame_%06d.png" -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p "$OUTFILE" 2>&1 | progress_collapse | tee "$TMP_DIR/ff_assemble_seq.log"
+        fi
+        RC_SEQ=${PIPESTATUS[0]:-1}
+        if [ $RC_SEQ -eq 0 ] && [ -s "$OUTFILE" ]; then
+          log "OK $OUTFILE (assembled via sequential image list)"
+          rm -rf "$ASSEM_DIR" 2>/dev/null || true
+          exit 0
+        else
+          log "Sequential assembly also failed (rc=$RC_SEQ or empty output); see $TMP_DIR/ff_assemble_seq.log for details"
+        fi
+      fi
+      # fall through to original minterpolate fallback
     fi
   fi
 fi
