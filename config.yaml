@@ -113,7 +113,7 @@ vast:
   gpu_blacklist: []
   gpu_required: false
   gpu_priority: true
-  min_vram: 12
+  min_vram: 24
   min_price: 0.05
   max_price: 0.1
   min_reliability: 0.95      # Increased from 0.90
