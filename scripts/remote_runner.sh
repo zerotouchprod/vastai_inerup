@@ -207,7 +207,8 @@ MODE="${MODE:-both}"
 SCALE="${SCALE:-2}"
 INTERP="${INTERP_FACTOR:-2.50}"
 OUTPUT_DIR=/workspace/output
-FINAL=/workspace/final_output.mp4
+# FINAL (deprecated): final output path variable removed because it's unused in this script
+# If a downstream step needs a final path, set/consume /workspace/final_output.mp4 explicitly
 
 if [ "$USE_CONFIG" = false ]; then
   echo "[remote_runner] ENV MODE=$MODE SCALE=$SCALE INTERP=$INTERP"
