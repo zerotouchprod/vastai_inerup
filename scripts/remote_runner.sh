@@ -101,6 +101,9 @@ PY
       HELPER="/workspace/project/scripts/force_upload_and_fail.sh"
       if [ -f "$HELPER" ]; then
         echo "[FORCE_UPLOAD] Invoking helper: $HELPER"
+        # Force allow small-file uploads for one-shot forced upload runs
+        echo "[FORCE_UPLOAD] Forcing small-file upload bypass (FORCE_UPLOAD_ALLOW_SMALL=1)"
+        export FORCE_UPLOAD_ALLOW_SMALL=1
         if [ -x "$HELPER" ]; then
           "$HELPER"
           rc=$?

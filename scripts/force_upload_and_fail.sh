@@ -10,6 +10,12 @@ B2_KEY=${B2_KEY:-}
 B2_ENDPOINT=${B2_ENDPOINT:-https://s3.us-west-004.backblazeb2.com}
 MIN_SIZE=${MIN_SIZE:-51200} # 50KB minimum to consider a valid video
 
+# Allow override for forced small-file upload via env or marker file
+if [ "${FORCE_UPLOAD_ALLOW_SMALL:-0}" = "1" ] || [ -f /workspace/.force_upload_allow_small ]; then
+  log "FORCE_UPLOAD_ALLOW_SMALL detected: bypassing MIN_SIZE check (current MIN_SIZE=$MIN_SIZE)"
+  MIN_SIZE=0
+fi
+
 log "Force upload helper starting"
 log "File: $FILE"
 
