@@ -338,10 +338,12 @@ class BatchProcessor:
         # Get git repo URL and branch from config
         git_repo = self.config.get('git_repo', 'https://github.com/zerotouchprod/vastai_inerup.git')
         git_branch = self.config.get('git_branch', 'main')
-
+        
         # Build onstart command that clones repo and runs script
+        # Remove old project dir first to avoid "already exists" error
         onstart_cmd = (
             f"cd /workspace && "
+            f"rm -rf project && "
             f"git clone -b {git_branch} {git_repo} project && "
             f"cd project && "
             f"bash scripts/remote_runner.sh"
