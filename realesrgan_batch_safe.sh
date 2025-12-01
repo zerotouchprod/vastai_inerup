@@ -397,8 +397,8 @@ fi
 
 if [ "$NEEDS_RETRY" -eq 1 ]; then
   echo "Retrying batch script with conservative settings and TORCH_COMPILE_DISABLE=1"
-  # Conservative overrides
-  ALT_ARGS=("--batch-size" "1" "--tile-size" "256" "--save-workers" "1" "--use-local-temp" "--half")
+  # Conservative overrides (FP16 is ON by default in OOP version, no need for --half)
+  ALT_ARGS=("--batch-size" "1" "--tile-size" "256" "--save-workers" "1" "--use-local-temp")
   # Combine EXTRA_ARGS but strip any conflicting flags (batch-size, tile-size, save-workers, --torch-compile)
   CLEANED=()
   skip_next=0
@@ -414,7 +414,7 @@ if [ "$NEEDS_RETRY" -eq 1 ]; then
       --torch-compile)
         # skip this flag to force disabled compile
         continue;;
-      --use-local-temp|--half|--out-format|--jpeg-quality)
+      --use-local-temp|--out-format|--jpeg-quality)
         CLEANED+=("$a")
         # if option expects value, preserve next
         if [ "$a" = "--out-format" ] || [ "$a" = "--jpeg-quality" ]; then

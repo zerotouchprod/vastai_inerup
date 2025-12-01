@@ -22,8 +22,9 @@ fi
 export TORCH_COMPILE_DISABLE=${TORCH_COMPILE_DISABLE:-1}
 # FAST_COMPILE enables --torch-compile; default OFF for stability
 export FAST_COMPILE=${FAST_COMPILE:-0}
-# Conservative BATCH_ARGS tuned for safety: small tile, fp16, single save-worker (batch-size will be set via VRAM mapping unless explicitly provided)
-export BATCH_ARGS=${BATCH_ARGS:-"--use-local-temp --save-workers 1 --tile-size 256 --half --out-format png"}
+# Conservative BATCH_ARGS tuned for safety: small tile, fp16 (enabled by default in OOP version), single save-worker (batch-size will be set via VRAM mapping unless explicitly provided)
+# Note: FP16 is ON by default in OOP version; use --no-half to disable
+export BATCH_ARGS=${BATCH_ARGS:-"--use-local-temp --save-workers 1 --tile-size 256 --out-format png"}
 # Disable auto-tuning by default to avoid long micro-sweeps on startup
 export AUTO_TUNE_BATCH=${AUTO_TUNE_BATCH:-false}
 # Skip live allocation probing by default (use VRAM-only estimate) to fast-start on varied machines
