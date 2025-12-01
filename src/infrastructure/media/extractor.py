@@ -45,12 +45,20 @@ class FFmpegExtractor:
 
             width = int(info.get('width', 0))
             height = int(info.get('height', 0))
-            frame_count = int(info.get('nb_frames', 0))
+
+            # Handle nb_frames that might be 'N/A' or other non-numeric values
+            nb_frames_str = str(info.get('nb_frames', '0'))
+            try:
+                frame_count = int(nb_frames_str) if nb_frames_str.isdigit() else 0
+            except (ValueError, AttributeError):
+                frame_count = 0
+
             codec = info.get('codec_name', 'unknown')
 
-            # Calculate frame count if not available
+            # Calculate frame count if not available or zero
             if frame_count == 0 and duration > 0 and fps > 0:
                 frame_count = int(duration * fps)
+                self._logger.info(f"Calculated frame count from duration: {frame_count}")
 
             return Video(
                 path=video_path,
