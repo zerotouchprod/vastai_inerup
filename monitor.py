@@ -143,22 +143,45 @@ class InstanceMonitor:
                             new_lines = lines[-50:] if check_count == 1 else lines[-10:]
                             for line in new_lines:
                                 if line.strip():
-                                    print(f"  [{current_time}] [LOG] {line}")
+                                    # Extract timestamp from log line if present, otherwise use current time
+                                    log_timestamp = current_time
+                                    # Look for [HH:MM:SS] pattern in the log line
+                                    timestamp_match = re.search(r'\[(\d{2}:\d{2}:\d{2})\]', line)
+                                    if timestamp_match:
+                                        log_timestamp = timestamp_match.group(1)
+                                    print(f"  [{log_timestamp}] [LOG] {line}")
 
                             self.last_log_size = current_size
                             print()  # Empty line for readability
 
-                        # Check for NEW completion (count must increase)
+                        # Check for NEW completion (count must increase AND we need recent activity)
                         current_success_count = logs.count(self.success_marker)
-                        if current_success_count > self.initial_success_count and not self.seen_new_success:
-                            self.seen_new_success = True  # Mark as seen
-                            result_url = self.extract_result_url(logs)
 
-                            print(f"\n{'='*70}")
-                            print("🎉 SUCCESS! NEW processing completed!")
-                            print(f"{'='*70}")
-                            print(f"  Old completions: {self.initial_success_count}")
-                            print(f"  New completions: {current_success_count - self.initial_success_count}")
+                        # Check if there's been recent activity (logs from last few minutes)
+                        has_recent_activity = False
+                        for line in lines[-50:]:
+                            # Look for recent timestamps or activity markers
+                            if any(marker in line for marker in ['Starting', 'Processing', 'Uploading', 'Progress:', '[batch_rife]', '[18:', '[19:', '[20:', '[21:', '[22:', '[23:']):
+                                has_recent_activity = True
+                                break
+
+                        # Only exit on success if:
+                        # 1. Success count increased (new completion)
+                        # 2. There's recent activity (not just old logs)
+                        # 3. We haven't already seen this
+                        if current_success_count > self.initial_success_count and not self.seen_new_success:
+                            if not has_recent_activity and check_count < 5:
+                                # Too early, keep monitoring
+                                pass
+                            else:
+                                self.seen_new_success = True  # Mark as seen
+                                result_url = self.extract_result_url(logs)
+
+                                print(f"\n{'='*70}")
+                                print("🎉 SUCCESS! NEW processing completed!")
+                                print(f"{'='*70}")
+                                print(f"  Old completions: {self.initial_success_count}")
+                                print(f"  New completions: {current_success_count - self.initial_success_count}")
 
                             if result_url:
                                 print(f"\n📥 Result URL:")
