@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import List, Dict, Any
 
 from infrastructure.processors.base import BaseProcessor
+from infrastructure.processors.debug import ProcessorDebugger
 from domain.exceptions import VideoProcessingError, ProcessorNotAvailableError
 from shared.logging import get_logger
 
@@ -16,12 +17,18 @@ class RealESRGANPytorchWrapper(BaseProcessor):
     """
     Adapter for PyTorch Real-ESRGAN implementation.
     Wraps the existing run_realesrgan_pytorch.sh script.
+
+    Debug mode:
+        export DEBUG_PROCESSORS=1
+        python pipeline_v2.py --mode upscale
+        # Check /tmp/realesrgan_debug.log for detailed logs
     """
 
     WRAPPER_SCRIPT = Path("/workspace/project/run_realesrgan_pytorch.sh")
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
+        self.debugger = ProcessorDebugger('realesrgan')
         if not self.is_available():
             raise ProcessorNotAvailableError("Real-ESRGAN PyTorch wrapper is not available")
 
@@ -63,6 +70,13 @@ class RealESRGANPytorchWrapper(BaseProcessor):
         Raises:
             VideoProcessingError: If processing fails
         """
+        # Debug: Log start
+        self.debugger.log_start(
+            num_input_frames=len(input_frames),
+            output_dir=str(output_dir),
+            options=options
+        )
+
         # Get options
         scale = options.get('scale', 2)
         timeout = options.get('timeout', 7200)  # 2 hours for upscaling
@@ -70,6 +84,14 @@ class RealESRGANPytorchWrapper(BaseProcessor):
         # Input/output paths
         input_dir = input_frames[0].parent
         temp_output_video = output_dir / "upscaled_temp.mp4"
+
+        # Debug: Log paths
+        self.debugger.log_step('setup_paths',
+            input_dir=str(input_dir),
+            output_dir=str(output_dir),
+            wrapper_script=str(self.WRAPPER_SCRIPT),
+            script_exists=self.WRAPPER_SCRIPT.exists()
+        )
 
         # Build command
         cmd = [
@@ -82,12 +104,19 @@ class RealESRGANPytorchWrapper(BaseProcessor):
         self._logger.info(f"Running Real-ESRGAN PyTorch wrapper: scale={scale}")
         self._logger.debug(f"Command: {' '.join(cmd)}")
 
+        # Debug: Log command
+        self.debugger.log_shell_command(cmd)
+
         try:
             # Set environment variables
             env = os.environ.copy()
             env['PREFER'] = 'pytorch'
 
+            # Debug: Log environment
+            self.debugger.log_step('set_environment', PREFER='pytorch')
+
             # Run wrapper
+            self.debugger.log_step('execute_shell_script', timeout=timeout)
             result = subprocess.run(
                 cmd,
                 capture_output=True,
@@ -97,24 +126,49 @@ class RealESRGANPytorchWrapper(BaseProcessor):
                 check=True
             )
 
+            # Debug: Log shell output
+            self.debugger.log_shell_output(
+                returncode=result.returncode,
+                stdout=result.stdout,
+                stderr=result.stderr
+            )
+
             # Log output
             if result.stdout:
                 for line in result.stdout.strip().split('\n'):
                     self._logger.debug(f"[Real-ESRGAN] {line}")
 
             # Get output frames
+            self.debugger.log_step('collect_output_frames', output_dir=str(output_dir))
             output_frames = sorted(output_dir.glob("*.png"))
 
             if not output_frames:
-                raise VideoProcessingError("No output frames found after Real-ESRGAN processing")
+                error = VideoProcessingError("No output frames found after Real-ESRGAN processing")
+                self.debugger.log_error(error, context="collecting_output_frames")
+                self.debugger.log_end(False, output_frames_found=0)
+                raise error
+
+            # Debug: Success
+            self.debugger.log_end(True,
+                output_frames_produced=len(output_frames),
+                first_frame=output_frames[0].name if output_frames else None,
+                last_frame=output_frames[-1].name if output_frames else None
+            )
 
             return output_frames
 
-        except subprocess.TimeoutExpired:
-            raise VideoProcessingError(f"Real-ESRGAN processing timed out after {timeout}s")
+        except subprocess.TimeoutExpired as e:
+            error = VideoProcessingError(f"Real-ESRGAN processing timed out after {timeout}s")
+            self.debugger.log_error(error, context="shell_execution")
+            self.debugger.log_end(False, reason="timeout")
+            raise error
 
         except subprocess.CalledProcessError as e:
             error_msg = f"Real-ESRGAN wrapper failed: {e.stderr}"
             self._logger.error(error_msg)
-            raise VideoProcessingError(error_msg)
+            error = VideoProcessingError(error_msg)
+            self.debugger.log_error(error, context="shell_execution")
+            self.debugger.log_shell_output(e.returncode, e.stdout or "", e.stderr or "")
+            self.debugger.log_end(False, reason="shell_error", exit_code=e.returncode)
+            raise error
 
