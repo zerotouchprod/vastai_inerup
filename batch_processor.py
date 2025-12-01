@@ -351,13 +351,13 @@ class BatchProcessor:
         git_branch = self.config.get('git_branch', 'main')
         
         # Build onstart command that clones repo and runs script
-        # Use aggressive removal to handle busy directories
+        # Use /bin/bash -c to wrap the command properly for Vast.ai
         onstart_cmd = (
-            f"cd /workspace && "
+            f"/bin/bash -c 'cd /workspace && "
             f"(rm -rf project || (sleep 2 && rm -rf project) || true) && "
             f"git clone -b {git_branch} {git_repo} project && "
             f"cd project && "
-            f"bash scripts/remote_runner.sh"
+            f"bash scripts/remote_runner.sh'"
         )
 
         instance_config = VastInstanceConfig(
