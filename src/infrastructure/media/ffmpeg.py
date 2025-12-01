@@ -141,6 +141,7 @@ class FFmpegWrapper:
             '-y',
             '-i', str(video_path),
             '-pix_fmt', 'rgb24',
+            '-vf', 'format=rgb24',  # Force 8-bit RGB output
             str(output_pattern)
         ]
 
