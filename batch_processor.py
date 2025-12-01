@@ -233,7 +233,17 @@ class BatchProcessor:
                     logger.warning("[WARN] Success marker found but no result URL")
                     return None
 
-                # Check for errors (only report once)
+                # Check for pipeline failure (immediate termination)
+                pipeline_failed_marker = "ERROR: Pipeline failed with exit code"
+                if pipeline_failed_marker in logs:
+                    logger.error(f"[ERROR] Pipeline failed - stopping monitoring")
+                    # Extract last error
+                    error_lines = [l for l in lines if 'ERROR' in l]
+                    if error_lines:
+                        logger.error(f"[ERROR] Last error: {error_lines[-1][:200]}")
+                    return None  # Exit monitoring, instance will be destroyed
+
+                # Check for other errors (only report periodically)
                 if check_count == 1 or (check_count % 12 == 0):  # Check every 2 minutes
                     if 'ERROR' in logs or 'FAILED' in logs:
                         error_lines = [l for l in lines if 'ERROR' in l or 'FAILED' in l]
