@@ -376,7 +376,7 @@ class BatchProcessor:
                 'USE_NATIVE_PROCESSORS': '1',  # Use new Python code!
             },
             onstart=onstart_cmd,
-            label=f"video_processing_{output_name}",
+            # No label - reuse cached image on same host
         )
 
         # Create instance
