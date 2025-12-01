@@ -80,6 +80,7 @@ def main():
     parser = argparse.ArgumentParser(description="Video processing pipeline")
     parser.add_argument('--config', type=Path, help='Config YAML file')
     parser.add_argument('--input', '-i', help='Input video URL')
+    parser.add_argument('--output', '-o', type=Path, help='Output directory (default: ./output)')
     parser.add_argument('--mode', choices=['upscale', 'interp', 'both'], help='Processing mode')
     parser.add_argument('--scale', type=float, help='Upscale factor')
     parser.add_argument('--target-fps', type=int, help='Target FPS')
@@ -102,6 +103,8 @@ def main():
 
         if args.input:
             config.input_url = args.input
+        if args.output:
+            config.output_dir = args.output
         if args.mode:
             config.mode = args.mode
         if args.scale:
@@ -113,9 +116,33 @@ def main():
         if args.strict:
             config.strict = True
 
+        # Get git commit info
+        git_commit_hash = "unknown"
+        git_commit_message = "unknown"
+        try:
+            import subprocess
+            git_hash = subprocess.check_output(
+                ['git', 'rev-parse', '--short', 'HEAD'],
+                stderr=subprocess.DEVNULL,
+                cwd=Path(__file__).parent.parent.parent
+            ).decode().strip()
+            git_commit_hash = git_hash
+
+            git_msg = subprocess.check_output(
+                ['git', 'log', '-1', '--pretty=%B'],
+                stderr=subprocess.DEVNULL,
+                cwd=Path(__file__).parent.parent.parent
+            ).decode().strip()
+            git_commit_message = git_msg
+        except Exception:
+            pass  # Git not available or not a git repo
+
         logger.info("="*60)
         logger.info("Video Processing Pipeline v2.0")
+        logger.info(f"Git commit: {git_commit_hash}")
+        logger.info(f"Commit msg: {git_commit_message}")
         logger.info(f"Input: {config.input_url}")
+        logger.info(f"Output: {getattr(config, 'output_dir', './output')}")
         logger.info(f"Mode: {config.mode}")
         logger.info("="*60)
 

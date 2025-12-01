@@ -151,7 +151,7 @@ class TestCLIMain:
         # Should return 1 on error
         assert exit_code == 1
 
-    @patch('sys.argv', ['pipeline_v2.py', '--input', 'test.mp4', '--mode', 'upscale', '--scale', '2', '--target-fps', '60', '--prefer', 'pytorch', '--strict', '--verbose'])
+    @patch('sys.argv', ['pipeline_v2.py', '--input', 'test.mp4', '--output', '/tmp/output', '--mode', 'upscale', '--scale', '2', '--target-fps', '60', '--prefer', 'pytorch', '--strict', '--verbose'])
     @patch('presentation.cli.ConfigLoader')
     @patch('presentation.cli.create_orchestrator_from_config')
     def test_cli_arguments_parsed(self, mock_create_orchestrator, mock_config_loader_class, mock_config, mock_result_success):
@@ -172,6 +172,7 @@ class TestCLIMain:
 
         # Check that config was modified with CLI args
         assert mock_config.input_url == 'test.mp4'
+        assert mock_config.output_dir == Path('/tmp/output')
         assert mock_config.mode == 'upscale'
         assert mock_config.scale == 2.0
         assert mock_config.target_fps == 60
