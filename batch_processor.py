@@ -399,10 +399,10 @@ class BatchProcessor:
         logger.info(f"[MONITOR] Monitoring instance #{instance.id} for completion...")
         result_url = self._monitor_processing(instance.id, timeout=7200)  # 2 hours max
 
-        # Destroy instance
-        logger.info(f"[CLEANUP] Destroying instance #{instance.id}...")
-        self.vast_client.destroy_instance(instance.id)
-        logger.info(f"[OK] Instance destroyed")
+        # Stop instance (keep for debugging instead of destroying)
+        logger.info(f"[CLEANUP] Stopping instance #{instance.id}...")
+        self.vast_client.stop_instance(instance.id)
+        logger.info(f"[OK] Instance stopped (kept for debugging)")
 
         return {
             'instance_id': instance.id,

@@ -355,6 +355,24 @@ class VastAIClient:
             self.logger.error(f"Destroy instance failed: {e}")
             return False
 
+    def stop_instance(self, instance_id: int) -> bool:
+        """Stop instance (keeps it for debugging, doesn't destroy)."""
+        self.logger.info(f"Stopping instance #{instance_id}")
+
+        try:
+            self._request(
+                'PUT',
+                f'instances/{instance_id}',
+                json={'state': 'stopped'}
+            )
+
+            self.logger.info(f"Stopped instance #{instance_id}")
+            return True
+
+        except Exception as e:
+            self.logger.error(f"Stop instance failed: {e}")
+            return False
+
     def wait_for_running(
         self,
         instance_id: int,
