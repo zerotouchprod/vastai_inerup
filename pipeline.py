@@ -7,8 +7,7 @@ import subprocess
 import sys
 import tempfile
 from datetime import datetime
-import threading
-import time
+import shlex
 
 # Final marker used by remote monitoring to detect full successful completion
 FINAL_PIPELINE_MARKER = "=== VASTAI_PIPELINE_COMPLETED_SUCCESSFULLY ==="
@@ -572,10 +571,8 @@ def _verify_and_emit_success(output_path: str):
     """Verify the output exists and emit final marker; otherwise raise RuntimeError."""
     try:
         if output_path and os.path.isfile(output_path) and os.path.getsize(output_path) > 0:
-            try:
-                print(FINAL_PIPELINE_MARKER)
-            except Exception:
-                pass
+            # Do not print the final pipeline marker here anymore.
+            # Caller is responsible for printing the marker after uploads/other actions
             return True
         else:
             print(f"ERROR: Expected output missing or empty: {output_path}")
@@ -785,6 +782,41 @@ def do_interpolate(infile: str, outpath: str, target_fps: int, prefer: str = "au
     do_interpolate_ffmpeg(infile, outpath, target_fps)
 
 
+def try_auto_upload(file_path: str):
+    try:
+        script = os.path.join(os.path.dirname(__file__), 'upload_b2.py')
+        if not os.path.exists(script):
+            print(f"[AUTO_UPLOAD] upload helper not found: {script}; skipping upload", flush=True)
+            return
+        bucket = os.environ.get('B2_BUCKET') or os.environ.get('B2_BUCKET')
+        endpoint = os.environ.get('B2_ENDPOINT') or ''
+        key = os.environ.get('B2_OUTPUT_KEY') or os.environ.get('B2_KEY')
+        if not bucket:
+            print('[AUTO_UPLOAD] B2_BUCKET not set; skipping automatic upload', flush=True)
+            return
+        if not key:
+            key = os.path.basename(file_path)
+        cmd = [sys.executable, script, '--file', file_path, '--bucket', bucket, '--key', key]
+        if endpoint:
+            cmd += ['--endpoint', endpoint]
+        print('[AUTO_UPLOAD] Invoking upload:', ' '.join(shlex.quote(p) for p in cmd), flush=True)
+        p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, env=os.environ.copy())
+        try:
+            for line in iter(p.stdout.readline, ''):
+                if not line:
+                    break
+                print('[AUTO_UPLOAD]', line.rstrip(), flush=True)
+        finally:
+            try:
+                p.stdout.close()
+            except Exception:
+                pass
+        rc = p.wait()
+        print(f'[AUTO_UPLOAD] upload exit code: {rc}', flush=True)
+    except Exception as e:
+        print('[AUTO_UPLOAD] upload invocation failed:', e, flush=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Cheap upscale + interpolation pipeline using ffmpeg (with optional ncnn/pytorch acceleration)")
     parser.add_argument("--input", "-i", required=True, help="Input video file path")
@@ -857,9 +889,11 @@ def main():
                 up_out = os.path.join(outdir, "output_upscaled.mp4")
                 do_upscale(infile, up_out, scale_expr, prefer=args.prefer, strict=args.strict)
                 print("Upscale finished. Output:", up_out)
-                # Final success marker for external monitor
+                # Verify output exists and then attempt upload before emitting final marker
                 _verify_and_emit_success(up_out)
-
+                try_auto_upload(up_out)
+                # Final success marker for external monitor (printed after upload)
+                print(FINAL_PIPELINE_MARKER)
                 if args.keep_tmp:
                     shutil.copy(up_out, os.path.join(outdir, "tmp_upscaled.mp4"))
                 return
@@ -868,9 +902,11 @@ def main():
                 interp_out = os.path.join(outdir, "output_interpolated.mp4")
                 do_interpolate(infile, interp_out, target_fps, prefer=args.prefer, strict=args.strict)
                 print("Interpolation finished. Output:", interp_out)
-                # Final success marker for external monitor
+                # Verify output exists and then attempt upload before emitting final marker
                 _verify_and_emit_success(interp_out)
-
+                try_auto_upload(interp_out)
+                # Final success marker for external monitor (printed after upload)
+                print(FINAL_PIPELINE_MARKER)
                 if args.keep_tmp:
                     shutil.copy(interp_out, os.path.join(outdir, "tmp_interpolated.mp4"))
                 return
@@ -885,14 +921,18 @@ def main():
                 out_final = os.path.join(outdir, "output_interpolated_upscaled.mp4")
                 do_upscale(tmp_inter, out_final, scale_expr, prefer=args.prefer, strict=args.strict)
                 print("Pipeline finished (interp then upscale). Output file:", out_final)
-                # Final success marker for external monitor
+                # Verify output exists and then attempt upload before emitting final marker
                 _verify_and_emit_success(out_final)
+                try_auto_upload(out_final)
+                # Final success marker for external monitor (printed after upload)
+                print(FINAL_PIPELINE_MARKER)
                 if args.keep_tmp:
                     keep_path = os.path.join(outdir, "tmp_kept")
                     os.makedirs(keep_path, exist_ok=True)
                     shutil.copy(tmp_inter, os.path.join(keep_path, "interpolated.mp4"))
                     shutil.copy(out_final, os.path.join(keep_path, "final.mp4"))
                 return
+
             else:
                 # upscale then interpolate
                 upscaled = os.path.join(tmp, "upscaled.mp4")
@@ -909,8 +949,11 @@ def main():
                 output_file = os.path.join(outdir, "output_interpolated.mp4")
                 do_interpolate(upscaled, output_file, target_fps, prefer=args.prefer, strict=args.strict)
                 print("Pipeline finished (upscale then interp). Output file:", output_file)
-                # Final success marker for external monitor
+                # Verify output exists and then attempt upload before emitting final marker
                 _verify_and_emit_success(output_file)
+                try_auto_upload(output_file)
+                # Final success marker for external monitor (printed after upload)
+                print(FINAL_PIPELINE_MARKER)
                 if args.keep_tmp:
                     keep_path = os.path.join(outdir, "tmp_kept")
                     print("Keeping tmp dir ->", keep_path)

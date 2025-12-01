@@ -18,29 +18,37 @@ import sys
 import argparse
 import json
 import mimetypes
+import time
+import traceback
 from typing import Optional
 
 try:
     import boto3
     from botocore.client import Config
     from botocore.exceptions import ClientError
+    from boto3.s3.transfer import TransferConfig
 except Exception:
     print("Missing dependency: boto3. Install with `pip install boto3`.")
     raise
 
+PENDING_MARKER_PATH = '/workspace/.pending_upload.json'
+
 
 def make_client(access_key: Optional[str], secret_key: Optional[str], endpoint: Optional[str], region: Optional[str]):
+    """Create an S3 client with conservative configuration for B2 S3 compatibility."""
     kwargs = {}
     if access_key and secret_key:
         kwargs['aws_access_key_id'] = access_key
         kwargs['aws_secret_access_key'] = secret_key
     if region:
         kwargs['region_name'] = region
+    # Use signature v4 and virtual addressing style for maximum compatibility
     if endpoint:
-        cfg = Config(s3={'addressing_style': 'virtual'})
+        cfg = Config(signature_version='s3v4', s3={'addressing_style': 'virtual'})
         client = boto3.client('s3', endpoint_url=endpoint, config=cfg, **kwargs)
     else:
-        client = boto3.client('s3', **kwargs)
+        cfg = Config(signature_version='s3v4', s3={'addressing_style': 'virtual'})
+        client = boto3.client('s3', config=cfg, **kwargs)
     return client
 
 
@@ -59,7 +67,33 @@ def validate_credentials(s3_client, bucket: Optional[str] = None):
         raise
 
 
-def upload_file(local_path: str, bucket: str, key: str, access_key: Optional[str], secret_key: Optional[str], endpoint: Optional[str], region: Optional[str], expires: int = 604800, overwrite: bool = False):
+def _write_pending_marker(local_path, bucket, key, endpoint, attempts):
+    try:
+        obj = {
+            'file': local_path,
+            'bucket': bucket,
+            'key': key,
+            'endpoint': endpoint,
+            'attempts': attempts,
+            'timestamp': int(time.time())
+        }
+        with open(PENDING_MARKER_PATH, 'w') as f:
+            json.dump(obj, f)
+        print(f"Wrote pending upload marker {PENDING_MARKER_PATH} (attempts={attempts})")
+    except Exception as e:
+        print(f"Failed to write pending marker: {e}")
+
+
+def _remove_pending_marker():
+    try:
+        if os.path.exists(PENDING_MARKER_PATH):
+            os.remove(PENDING_MARKER_PATH)
+            print(f"Removed pending upload marker: {PENDING_MARKER_PATH}")
+    except Exception as e:
+        print(f"Failed to remove pending marker: {e}")
+
+
+def upload_file(local_path: str, bucket: str, key: str, access_key: Optional[str], secret_key: Optional[str], endpoint: Optional[str], region: Optional[str], expires: int = 604800, overwrite: bool = False, max_attempts: int = 3):
     s3 = make_client(access_key, secret_key, endpoint, region)
 
     # Validate credentials early to give clearer errors
@@ -100,6 +134,8 @@ def upload_file(local_path: str, bucket: str, key: str, access_key: Optional[str
                     Params={'Bucket': bucket, 'Key': key},
                     ExpiresIn=expires,
                 )
+                # Clean any pending marker (we succeeded logically)
+                _remove_pending_marker()
                 return url
             else:
                 print(f"Object s3://{bucket}/{key} exists but size differs (remote={remote_size} local={local_size}); will upload and overwrite.")
@@ -112,24 +148,61 @@ def upload_file(local_path: str, bucket: str, key: str, access_key: Optional[str
                 # For other errors, re-raise for visibility
                 raise
 
-    # Use upload_file (multipart-capable) for robust large-file uploads
-    print(f"Uploading {local_path} -> s3://{bucket}/{key} (endpoint={endpoint})")
-    try:
-        s3.upload_file(local_path, bucket, key, ExtraArgs=extra_args)
-    except ClientError as e:
-        code = getattr(e, 'response', {}).get('Error', {}).get('Code')
-        msg = getattr(e, 'response', {}).get('Error', {}).get('Message', str(e))
-        print(f"Failed to upload {local_path} to {bucket}/{key}: {code} - {msg}")
-        raise
-
-    # Generate presigned GET URL for the uploaded object
-    url = s3.generate_presigned_url(
-        ClientMethod='get_object',
-        Params={'Bucket': bucket, 'Key': key},
-        ExpiresIn=expires,
+    # Prepare multipart transfer config (tunable)
+    MB = 1024 * 1024
+    transfer_config = TransferConfig(
+        multipart_threshold=50 * MB,
+        multipart_chunksize=50 * MB,
+        max_concurrency=4,
+        use_threads=True
     )
 
-    return url
+    # TransferConfig exposes attributes we configured; use getattr for safety
+    tc_thresh = getattr(transfer_config, 'multipart_threshold', None)
+    tc_chunksize = getattr(transfer_config, 'multipart_chunksize', None)
+    tc_conc = getattr(transfer_config, 'max_concurrency', None)
+    print(f"Uploading {local_path} -> s3://{bucket}/{key} (endpoint={endpoint}) using multipart_threshold={tc_thresh} chunk_size={tc_chunksize} concurrency={tc_conc}")
+
+    local_size = os.path.getsize(local_path)
+
+    last_exc = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            # Use boto3 upload_file with TransferConfig for multipart support and concurrency
+            s3.upload_file(local_path, bucket, key, ExtraArgs=extra_args, Config=transfer_config)
+            # On success, remove any pending marker and return presigned URL
+            url = s3.generate_presigned_url(
+                ClientMethod='get_object',
+                Params={'Bucket': bucket, 'Key': key},
+                ExpiresIn=expires,
+            )
+            print(f"Upload succeeded on attempt {attempt}")
+            _remove_pending_marker()
+            return url
+        except ClientError as e:
+            code = getattr(e, 'response', {}).get('Error', {}).get('Code')
+            msg = getattr(e, 'response', {}).get('Error', {}).get('Message', str(e))
+            print(f"Attempt {attempt}/{max_attempts} - boto3 ClientError: {code} - {msg}")
+            last_exc = e
+        except Exception as e:
+            print(f"Attempt {attempt}/{max_attempts} - upload exception: {e}")
+            traceback.print_exc()
+            last_exc = e
+
+        # If not last attempt, backoff and retry
+        if attempt < max_attempts:
+            backoff = 2 ** (attempt - 1)
+            print(f"Retrying upload after {backoff}s backoff...")
+            time.sleep(backoff)
+        else:
+            print("Reached max upload attempts; will record pending marker for retry on next container start")
+            try:
+                _write_pending_marker(local_path, bucket, key, endpoint, attempt)
+            except Exception as me:
+                print(f"Failed to write pending marker: {me}")
+
+    # If we reach here, all attempts failed
+    raise last_exc if last_exc is not None else RuntimeError("Unknown upload failure")
 
 
 def main(argv=None):
@@ -143,16 +216,30 @@ def main(argv=None):
     parser.add_argument('--secret-key', default=os.environ.get('B2_SECRET') or os.environ.get('AWS_SECRET_ACCESS_KEY'), help='Secret key (or set B2_SECRET env)')
     parser.add_argument('--overwrite', action='store_true', help='Force upload and overwrite existing object')
     parser.add_argument('--expires', type=int, default=604800, help='Presigned GET expiry seconds (default: 1 week)')
+    parser.add_argument('--max-attempts', type=int, default=3, help='Max upload attempts before writing pending marker')
     args = parser.parse_args(argv)
 
     try:
-        url = upload_file(args.file, args.bucket, args.key, args.access_key, args.secret_key, args.endpoint, args.region, expires=args.expires, overwrite=args.overwrite)
+        url = upload_file(args.file, args.bucket, args.key, args.access_key, args.secret_key, args.endpoint, args.region, expires=args.expires, overwrite=args.overwrite, max_attempts=args.max_attempts)
     except Exception as e:
         print('Upload failed:', e)
+        # write a minimal result file for downstream diagnostics
+        res = {'bucket': args.bucket, 'key': args.key, 'file': args.file, 'error': str(e)}
+        try:
+            with open('/workspace/realesrgan_upload_result.json', 'w') as fo:
+                json.dump(res, fo)
+        except Exception:
+            pass
         return 2
 
     out = {'bucket': args.bucket, 'key': args.key, 'get_url': url}
     print(json.dumps(out, indent=2))
+    # write result file for downstream scripts
+    try:
+        with open('/workspace/realesrgan_upload_result.json', 'w') as fo:
+            json.dump(out, fo)
+    except Exception:
+        pass
     return 0
 
 
