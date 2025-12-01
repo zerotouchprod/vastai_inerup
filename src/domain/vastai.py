@@ -62,6 +62,7 @@ class VastInstanceConfig:
     image: str
     disk: int  # GB
     env: Dict[str, str]
+    args_str: Optional[str] = None  # Shell command to execute (legacy: was 'cmd')
     onstart: Optional[str] = None
     label: Optional[str] = None
     runtype: str = 'oneshot'  # Run once, do not restart on failure
@@ -81,6 +82,8 @@ class VastInstanceConfig:
         }
 
         # Add optional fields only if set
+        if self.args_str:
+            result['args_str'] = self.args_str
         if self.onstart:
             result['onstart'] = self.onstart
         if self.label:

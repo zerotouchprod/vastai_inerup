@@ -350,6 +350,15 @@ class BatchProcessor:
         git_repo = self.config.get('git_repo', 'https://github.com/zerotouchprod/vastai_inerup.git')
         git_branch = self.config.get('git_branch', 'oop2')
 
+        # Build shell command (legacy format) - will be passed as args_str
+        # Format: git clone fresh, then run remote_runner.sh
+        git_clone_cmd = f'cd / && rm -rf /workspace/project && git clone -b {git_branch} {git_repo} /workspace/project'
+        runner_cmd = 'bash /workspace/project/scripts/remote_runner.sh'
+        full_cmd = f'{git_clone_cmd} && {runner_cmd}'
+
+        # Wrap in bash -c
+        shell_cmd = f"bash -c '{full_cmd}'"
+
         instance_config = VastInstanceConfig(
             image=self.config.get('image', ''),
             disk=50,
@@ -364,12 +373,9 @@ class BatchProcessor:
                 'SCALE': str(video_config.get('scale', 2)),
                 'TARGET_FPS': str(video_config.get('target_fps', 60)),
                 'USE_NATIVE_PROCESSORS': '1',  # Use new Python code!
-                # Pass Git info to entrypoint via env vars
-                'GIT_REPO': git_repo,
-                'GIT_BRANCH': git_branch,
             },
-            # No onstart - let entrypoint handle everything
-            # No label - reuse cached image on same host
+            args_str=shell_cmd,  # Shell command for container to execute
+            # No onstart, no label - reuse cached image on same host
         )
 
         # Create instance

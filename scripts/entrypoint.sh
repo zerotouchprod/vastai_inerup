@@ -56,25 +56,7 @@ PY
     exit $?
   fi
 else
-  echo "[entrypoint] Project not cloned yet (first run)"
-
-  # Clone project using env vars (GIT_REPO, GIT_BRANCH) or defaults
-  GIT_REPO="${GIT_REPO:-https://github.com/zerotouchprod/vastai_inerup.git}"
-  GIT_BRANCH="${GIT_BRANCH:-main}"
-
-  echo "[entrypoint] Cloning $GIT_REPO (branch: $GIT_BRANCH)..."
-  cd /workspace
-  rm -rf project 2>/dev/null || true
-  git clone -b "$GIT_BRANCH" "$GIT_REPO" project
-
-  if [ -d "/workspace/project" ]; then
-    echo "[entrypoint] Project cloned successfully"
-    cd /workspace/project
-    echo "[entrypoint] Current commit: $(git rev-parse --short HEAD)"
-  else
-    echo "[entrypoint] ERROR: Failed to clone project"
-    exit 1
-  fi
+  echo "[entrypoint] Project not cloned yet (will be cloned by args_str command)"
 fi
 
 # --- New: fetch remote config_url (if present in config.yaml) on every start ---
