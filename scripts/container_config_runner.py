@@ -580,8 +580,15 @@ def run_pipeline(input_path: str, output_dir: str, config: dict) -> str:
     print("", flush=True)
 
     # Build command
+    # Use pipeline_v2.py (new architecture with native Python support)
+    pipeline_script = '/workspace/project/pipeline_v2.py'
+    if not os.path.exists(pipeline_script):
+        # Fallback to old pipeline.py if v2 not present
+        pipeline_script = '/workspace/project/pipeline.py'
+        print(f"⚠️  Warning: pipeline_v2.py not found, using legacy pipeline.py")
+
     cmd = [
-        'python3', '/workspace/project/pipeline.py',
+        'python3', pipeline_script,
         '--input', input_path,
         '--output', output_dir,
         '--mode', mode,
@@ -607,6 +614,11 @@ def run_pipeline(input_path: str, output_dir: str, config: dict) -> str:
     # Run pipeline with unbuffered output (PYTHONUNBUFFERED=1)
     env = os.environ.copy()
     env['PYTHONUNBUFFERED'] = '1'  # Force unbuffered output
+
+    # 🐍 Use native Python processors (no shell scripts!)
+    # This will be inherited from parent process if set, or default to 1
+    if 'USE_NATIVE_PROCESSORS' not in env:
+        env['USE_NATIVE_PROCESSORS'] = '1'
 
     try:
         # Use Popen instead of run to stream output in real-time

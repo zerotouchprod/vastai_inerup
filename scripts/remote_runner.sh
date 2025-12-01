@@ -16,8 +16,22 @@ set -eo pipefail
 #  B2_OUTPUT_KEY - object key for output
 #  B2_ENDPOINT - S3 endpoint
 
+# 🐍 USE NATIVE PYTHON PROCESSORS (no shell scripts!)
+# This enables the new pure Python implementations without rebuilding Docker image.
+# Native processors provide full debugging support and are 100% Python.
+export USE_NATIVE_PROCESSORS=${USE_NATIVE_PROCESSORS:-1}
+
 echo "=== Remote Runner Starting ==="
 echo "Time: $(date)"
+echo ""
+
+if [ "$USE_NATIVE_PROCESSORS" = "1" ]; then
+  echo "🐍 Native Python processors ENABLED (no bash scripts)"
+  echo "   → Full debugging support"
+  echo "   → 100% Python code"
+else
+  echo "🐚 Shell-based processors (legacy mode)"
+fi
 echo ""
 
 # Default: allow NVENC attempts (faster) but fallback to software if NVENC fails.

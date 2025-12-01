@@ -1,7 +1,6 @@
-"""Storage utilities package."""
+"""Storage infrastructure."""
 
-from infrastructure.storage.temp_storage import TempStorage
-from infrastructure.storage.pending_marker import PendingMarker, PendingUpload
+from infrastructure.storage.b2_client import B2Client
 
-__all__ = ["TempStorage", "PendingMarker", "PendingUpload"]
+__all__ = ['B2Client']
 

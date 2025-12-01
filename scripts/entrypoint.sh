@@ -8,9 +8,33 @@ echo "Time: $(date)"
 if [ -d "/workspace/project/.git" ]; then
   echo "[entrypoint] Updating project from Git repository..."
   cd /workspace/project
-  git fetch origin main
-  git reset --hard origin/main
-  echo "[entrypoint] Project updated to latest commit: $(git rev-parse --short HEAD)"
+
+  # Read git_branch from config.yaml if present
+  GIT_BRANCH="main"
+  if [ -f "config.yaml" ]; then
+    BRANCH_FROM_CONFIG=$(python3 - <<'PY' 2>/dev/null || echo ""
+import yaml
+try:
+    with open('config.yaml', 'r') as f:
+        cfg = yaml.safe_load(f)
+        if isinstance(cfg, dict):
+            branch = cfg.get('git_branch', '').strip()
+            if branch:
+                print(branch)
+except Exception:
+    pass
+PY
+)
+    if [ -n "$BRANCH_FROM_CONFIG" ]; then
+      GIT_BRANCH="$BRANCH_FROM_CONFIG"
+      echo "[entrypoint] Using git_branch from config.yaml: $GIT_BRANCH"
+    fi
+  fi
+
+  # Fetch and checkout branch
+  git fetch origin "$GIT_BRANCH"
+  git reset --hard "origin/$GIT_BRANCH"
+  echo "[entrypoint] Project updated to latest commit on branch '$GIT_BRANCH': $(git rev-parse --short HEAD)"
 
   # IMPORTANT: If project already exists and updated, skip the command's git clone part
   # Check if command tries to clone project again (rm -rf /workspace/project && git clone)
