@@ -175,6 +175,24 @@ class TestVastInstanceConfig:
         assert result["label"] == "my-job"
         assert result["runtype"] == "oneshot"  # Default value
 
+    def test_config_to_dict_without_optional_fields(self):
+        """Test converting config to dict without optional fields."""
+        config = VastInstanceConfig(
+            image="test/image",
+            disk=40,
+            env={"KEY": "value"}
+        )
+
+        result = config.to_dict()
+
+        assert result["image"] == "test/image"
+        assert result["disk"] == 40
+        assert result["env"] == {"KEY": "value"}
+        assert result["runtype"] == "oneshot"
+        # Optional fields should not be in dict
+        assert "onstart" not in result
+        assert "label" not in result
+
 
 class TestVastAIClientBasic:
     """Test VastAIClient basic functionality (without complex API mocking)."""

@@ -73,14 +73,20 @@ class VastInstanceConfig:
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to API request dict."""
-        return {
+        result = {
             'image': self.image,
             'disk': self.disk,
             'env': self.env,
-            'onstart': self.onstart,
-            'label': self.label,
             'runtype': self.runtype,
         }
+
+        # Add optional fields only if set
+        if self.onstart:
+            result['onstart'] = self.onstart
+        if self.label:
+            result['label'] = self.label
+
+        return result
 
 
 class IVastClient(Protocol):
