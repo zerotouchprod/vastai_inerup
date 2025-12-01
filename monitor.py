@@ -44,6 +44,8 @@ class InstanceMonitor:
         self.success_marker = "VASTAI_PIPELINE_COMPLETED_SUCCESSFULLY"
         self.initial_success_count = 0  # Count of success markers at monitor start
         self.seen_new_success = False   # Track if we've seen a NEW success marker
+        self.upload_url_marker = "B2 upload successful"
+        self.last_upload_time = None    # Track when we saw the last upload
 
     def get_info(self):
         """Get instance info."""
@@ -154,34 +156,41 @@ class InstanceMonitor:
                             self.last_log_size = current_size
                             print()  # Empty line for readability
 
-                        # Check for NEW completion (count must increase AND we need recent activity)
+                        # Check for NEW completion (count must increase AND we need recent upload)
                         current_success_count = logs.count(self.success_marker)
 
-                        # Check if there's been recent activity (logs from last few minutes)
-                        has_recent_activity = False
-                        for line in lines[-50:]:
-                            # Look for recent timestamps or activity markers
-                            if any(marker in line for marker in ['Starting', 'Processing', 'Uploading', 'Progress:', '[batch_rife]', '[18:', '[19:', '[20:', '[21:', '[22:', '[23:']):
-                                has_recent_activity = True
+                        # Track upload events - this is the definitive sign of new completion
+                        has_new_upload = False
+                        recent_lines = lines[-100:]
+                        for i, line in enumerate(recent_lines):
+                            if self.upload_url_marker in line:
+                                # Found upload success marker
+                                upload_time = current_time
+                                timestamp_match = re.search(r'\[(\d{2}:\d{2}:\d{2})\]', line)
+                                if timestamp_match:
+                                    upload_time = timestamp_match.group(1)
+
+                                # Check if this is a NEW upload (different time than last)
+                                if self.last_upload_time != upload_time:
+                                    self.last_upload_time = upload_time
+                                    has_new_upload = True
+                                    print(f"\n  ✅ Detected new upload at {upload_time}")
                                 break
 
-                        # Only exit on success if:
-                        # 1. Success count increased (new completion)
-                        # 2. There's recent activity (not just old logs)
-                        # 3. We haven't already seen this
-                        if current_success_count > self.initial_success_count and not self.seen_new_success:
-                            if not has_recent_activity and check_count < 5:
-                                # Too early, keep monitoring
-                                pass
-                            else:
-                                self.seen_new_success = True  # Mark as seen
-                                result_url = self.extract_result_url(logs)
+                        # Only consider completion if we detected a new upload event
+                        # The upload event is the definitive marker - it means:
+                        # 1. Pipeline completed successfully
+                        # 2. File was uploaded to B2
+                        # 3. This is a NEW completion (not from previous run)
+                        if has_new_upload and not self.seen_new_success:
+                            self.seen_new_success = True  # Mark as seen
+                            result_url = self.extract_result_url(logs)
 
-                                print(f"\n{'='*70}")
-                                print("🎉 SUCCESS! NEW processing completed!")
-                                print(f"{'='*70}")
-                                print(f"  Old completions: {self.initial_success_count}")
-                                print(f"  New completions: {current_success_count - self.initial_success_count}")
+                            print(f"\n{'='*70}")
+                            print("🎉 SUCCESS! NEW processing completed!")
+                            print(f"{'='*70}")
+                            print(f"  Old completions: {self.initial_success_count}")
+                            print(f"  New completions: {current_success_count - self.initial_success_count}")
 
                             if result_url:
                                 print(f"\n📥 Result URL:")
@@ -191,17 +200,37 @@ class InstanceMonitor:
                             print(f"GPU:      {info.gpu_name}")
                             print(f"Price:    ${info.price_per_hour:.4f}/hr")
 
+                            # Stop the instance (not destroy)
+                            print(f"\n⏹️  Stopping instance...")
+                            try:
+                                if self.client.stop_instance(self.instance_id):
+                                    print(f"✅ Instance #{self.instance_id} stopped")
+                                else:
+                                    print(f"⚠️  Failed to stop instance (may not be running)")
+                            except Exception as e:
+                                print(f"⚠️  Error stopping instance: {e}")
+
                             if auto_destroy:
                                 print(f"\n🧹 Auto-destroying instance...")
                                 if self.client.destroy_instance(self.instance_id):
                                     print(f"✅ Instance #{self.instance_id} destroyed")
+                                    print(f"\n{'='*70}")
+                                    print("Monitoring finished (instance destroyed)")
+                                    print(f"{'='*70}\n")
+                                    return  # Exit after destroy
                                 else:
                                     print(f"⚠️  Failed to destroy instance")
                             else:
                                 print(f"\n💡 To destroy instance:")
                                 print(f"   python monitor.py {self.instance_id} --destroy")
 
-                            break
+                            # Continue monitoring - don't break the loop
+                            print(f"\n🔄 Continuing to monitor logs and status...")
+                            print(f"   Press Ctrl+C to stop monitoring\n")
+
+                            # Reset for next completion
+                            self.initial_success_count = current_success_count
+                            self.seen_new_success = False
 
                         # Check for errors
                         if any(marker in logs for marker in ['ERROR', 'FAILED', 'Exception']):
