@@ -3,6 +3,7 @@
 # Container will read fresh config on every restart
 
 repo_url: "https://github.com/zerotouchprod/vastai_inerup"
+git_repo: "https://github.com/zerotouchprod/vastai_inerup.git"  # For batch_processor
 config_url: "https://gist.githubusercontent.com/zerotouchprod/56872fc774442b627dbf2e658d03d19c/raw/config.json"
 image: "ghcr.io/zerotouchprod/pytorch-fat-07110957:latest"
 

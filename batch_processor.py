@@ -239,6 +239,18 @@ class BatchProcessor:
         # Build instance config
         video_config = self.config.get('video', {})
 
+        # Get git repo URL and branch from config
+        git_repo = self.config.get('git_repo', 'https://github.com/zerotouchprod/vastai_inerup.git')
+        git_branch = self.config.get('git_branch', 'main')
+
+        # Build onstart command that clones repo and runs script
+        onstart_cmd = (
+            f"cd /workspace && "
+            f"git clone -b {git_branch} {git_repo} project && "
+            f"cd project && "
+            f"bash scripts/remote_runner.sh"
+        )
+
         instance_config = VastInstanceConfig(
             image=self.config.get('image', ''),
             disk=50,
@@ -248,12 +260,13 @@ class BatchProcessor:
                 'B2_BUCKET': os.getenv('B2_BUCKET', ''),
                 'B2_KEY': os.getenv('B2_KEY', ''),
                 'B2_SECRET': os.getenv('B2_SECRET', ''),
+                'B2_ENDPOINT': os.getenv('B2_ENDPOINT', 'https://s3.us-west-004.backblazeb2.com'),
                 'MODE': video_config.get('mode', 'both'),
                 'SCALE': str(video_config.get('scale', 2)),
                 'TARGET_FPS': str(video_config.get('target_fps', 60)),
                 'USE_NATIVE_PROCESSORS': '1',  # Use new Python code!
             },
-            onstart='bash /workspace/project/scripts/remote_runner.sh',
+            onstart=onstart_cmd,
             label=f"video_processing_{output_name}",
         )
 
