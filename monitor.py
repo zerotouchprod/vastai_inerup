@@ -42,6 +42,8 @@ class InstanceMonitor:
         self.client = VastAIClient()
         self.last_log_size = 0
         self.success_marker = "VASTAI_PIPELINE_COMPLETED_SUCCESSFULLY"
+        self.initial_success_count = 0  # Count of success markers at monitor start
+        self.seen_new_success = False   # Track if we've seen a NEW success marker
 
     def get_info(self):
         """Get instance info."""
@@ -127,6 +129,13 @@ class InstanceMonitor:
                     if logs:
                         lines = logs.split('\n')
 
+                        # On first check, count existing success markers (baseline)
+                        if check_count == 1:
+                            self.initial_success_count = logs.count(self.success_marker)
+                            if self.initial_success_count > 0:
+                                print(f"  ℹ️  Found {self.initial_success_count} old success marker(s) from previous run(s)")
+                                print(f"  ⏳ Waiting for NEW completion...\n")
+
                         # Show new lines (simple approach - compare total size)
                         current_size = len(logs)
                         if current_size > self.last_log_size:
@@ -134,18 +143,22 @@ class InstanceMonitor:
                             new_lines = lines[-50:] if check_count == 1 else lines[-10:]
                             for line in new_lines:
                                 if line.strip():
-                                    print(f"  [LOG] {line}")
+                                    print(f"  [{current_time}] [LOG] {line}")
 
                             self.last_log_size = current_size
                             print()  # Empty line for readability
 
-                        # Check for completion
-                        if self.success_marker in logs:
+                        # Check for NEW completion (count must increase)
+                        current_success_count = logs.count(self.success_marker)
+                        if current_success_count > self.initial_success_count and not self.seen_new_success:
+                            self.seen_new_success = True  # Mark as seen
                             result_url = self.extract_result_url(logs)
 
                             print(f"\n{'='*70}")
-                            print("🎉 SUCCESS! Processing completed!")
+                            print("🎉 SUCCESS! NEW processing completed!")
                             print(f"{'='*70}")
+                            print(f"  Old completions: {self.initial_success_count}")
+                            print(f"  New completions: {current_success_count - self.initial_success_count}")
 
                             if result_url:
                                 print(f"\n📥 Result URL:")

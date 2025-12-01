@@ -22,9 +22,18 @@ fi
 export TORCH_COMPILE_DISABLE=${TORCH_COMPILE_DISABLE:-1}
 # FAST_COMPILE enables --torch-compile; default OFF for stability
 export FAST_COMPILE=${FAST_COMPILE:-0}
-# Conservative BATCH_ARGS tuned for safety: small tile, fp16 (enabled by default in OOP version), single save-worker (batch-size will be set via VRAM mapping unless explicitly provided)
-# Note: FP16 is ON by default in OOP version; use --no-half to disable
+# Conservative BATCH_ARGS tuned for safety: small tile, fp16 (enabled by default), single save-worker (batch-size will be set via VRAM mapping unless explicitly provided)
+# Note: FP16 is ON by default in realesrgan_batch_upscale.py; use --no-half to disable
+# Removed --half as it's not a valid argument (the script uses --no-half flag instead)
 export BATCH_ARGS=${BATCH_ARGS:-"--use-local-temp --save-workers 1 --tile-size 256 --out-format png"}
+
+# Clean up invalid --half argument if present (realesrgan_batch_upscale.py uses --no-half instead)
+if echo "$BATCH_ARGS" | grep -q -- '--half'; then
+  echo "⚠️  Detected invalid --half in BATCH_ARGS, removing it (use --no-half to disable FP16)"
+  BATCH_ARGS=$(echo "$BATCH_ARGS" | sed -E 's/--half([[:space:]]|$)/ /g' | tr -s ' ')
+  export BATCH_ARGS
+fi
+
 # Disable auto-tuning by default to avoid long micro-sweeps on startup
 export AUTO_TUNE_BATCH=${AUTO_TUNE_BATCH:-false}
 # Skip live allocation probing by default (use VRAM-only estimate) to fast-start on varied machines
