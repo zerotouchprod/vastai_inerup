@@ -341,10 +341,10 @@ class BatchProcessor:
         git_branch = self.config.get('git_branch', 'main')
         
         # Build onstart command that clones repo and runs script
-        # Remove old project dir first to avoid "already exists" error
+        # Use aggressive removal to handle busy directories
         onstart_cmd = (
             f"cd /workspace && "
-            f"rm -rf project && "
+            f"(rm -rf project || (sleep 2 && rm -rf project) || true) && "
             f"git clone -b {git_branch} {git_repo} project && "
             f"cd project && "
             f"bash scripts/remote_runner.sh"
