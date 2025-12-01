@@ -31,6 +31,13 @@ from pathlib import Path
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 
+# Load .env file if present
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass  # dotenv not installed, will use system env vars
+
 # Add src to path
 _SRC_DIR = Path(__file__).parent / 'src'
 if str(_SRC_DIR) not in sys.path:
@@ -368,10 +375,13 @@ def main():
 
         # Get batch config from config.yaml
         batch_config = processor.config.get('batch', {})
+        video_config = processor.config.get('video', {})
 
         # Determine input source (CLI args override config)
         input_url = args.input
-        input_dir = args.input_dir or batch_config.get('input_dir')
+        # Priority: CLI > video.input_dir (remote) > batch.input_dir (local)
+        # Remote config should override local config
+        input_dir = args.input_dir or video_config.get('input_dir') or batch_config.get('input_dir')
         preset = args.preset or batch_config.get('preset', 'balanced')
         dry_run = args.dry_run if args.dry_run is not None else batch_config.get('dry_run', False)
         skip_existing = args.skip_existing if args.skip_existing is not None else batch_config.get('skip_existing', True)

@@ -112,7 +112,7 @@ python pipeline_v2.py --mode upscale
 
 ### 5️⃣ Unified Batch Processor ✅
 ```bash
-# Простейший запуск - читает всё из config.yaml
+# Простейший запуск - читает всё из config.yaml + .env
 python batch_processor.py
 
 # Dry run (проверить что будет обработано)
@@ -123,13 +123,15 @@ python batch_processor.py --input-dir input/urgent --preset high
 ```
 - **4 скрипта → 1 unified processor!**
 - **Config-driven**: все параметры в `config.yaml`
+- **Auto .env loading**: credentials автоматически из `.env`
+- **Remote config**: приоритет выше локального
 - **Clean Architecture для Vast.ai и B2**
 - **Git branch support** (config.yaml)
 - CLI args опциональны, переопределяют конфиг
 - Automatic output skip
 - SOLID принципы
 
-📚 **Документация**: `BATCH_CONFIG_READY.md`, `BATCH_QUICK_START.md`
+📚 **Документация**: `BATCH_PROCESSOR_SUCCESS.md`, `BATCH_CONFIG_READY.md`
 
 ---
 

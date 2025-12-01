@@ -24,9 +24,29 @@
 
 ---
 
-## 🔧 Решение: Установить credentials
+## ✅ Решение: Credentials загружаются из .env автоматически!
 
-### Windows PowerShell:
+### Способ 1: .env файл (рекомендуется) ✅
+
+Создайте `.env` в корне проекта:
+
+```env
+B2_KEY=your_key_id
+B2_SECRET=your_application_key
+B2_BUCKET=noxfvr-videos
+B2_ENDPOINT=https://s3.us-west-004.backblazeb2.com
+VAST_API_KEY=your_vast_api_key
+```
+
+**Просто запустите:**
+
+```bash
+python batch_processor.py
+```
+
+`.env` файл загружается автоматически! ✅
+
+### Способ 2: Windows PowerShell (альтернативный)
 
 ```powershell
 # B2 Storage
@@ -38,14 +58,7 @@ $env:B2_ENDPOINT="https://s3.us-west-004.backblazeb2.com"
 # Vast.ai
 $env:VAST_API_KEY="your_vast_api_key"
 
-# Проверить
-echo $env:B2_KEY
-echo $env:VAST_API_KEY
-```
-
-### Затем запустить:
-
-```bash
+# Запустить
 python batch_processor.py
 ```
 

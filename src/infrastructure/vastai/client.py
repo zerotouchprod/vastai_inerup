@@ -126,11 +126,12 @@ class VastAIClient:
         }
 
         try:
+            import json
             response = self._request(
                 'GET',
                 'bundles',
                 params={
-                    'q': query,
+                    'q': json.dumps(query),  # Vast.ai expects JSON string
                     'limit': limit,
                 }
             )
