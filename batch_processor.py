@@ -156,6 +156,73 @@ class BatchProcessor:
 
         return video_files
 
+    def _monitor_processing(self, instance_id: int, timeout: int = 7200) -> Optional[str]:
+        """
+        Monitor instance processing and extract result URL.
+
+        Args:
+            instance_id: Instance ID to monitor
+            timeout: Maximum time to wait in seconds
+
+        Returns:
+            Result URL if found, None otherwise
+        """
+        import time
+        import re
+
+        start_time = time.time()
+        last_log_line = 0
+        success_marker = "VASTAI_PIPELINE_COMPLETED_SUCCESSFULLY"
+        url_pattern = r'https://[^\s]+'
+
+        logger.info(f"[MONITOR] Watching logs for instance #{instance_id}...")
+
+        while time.time() - start_time < timeout:
+            try:
+                # Get logs
+                logs = self.vast_client.get_instance_logs(instance_id, tail=500)
+
+                if not logs:
+                    time.sleep(10)
+                    continue
+
+                lines = logs.split('\n')
+
+                # Show new lines
+                if len(lines) > last_log_line:
+                    new_lines = lines[last_log_line:]
+                    for line in new_lines:
+                        if line.strip():
+                            logger.info(f"  [LOG] {line}")
+                    last_log_line = len(lines)
+
+                # Check for success
+                if success_marker in logs:
+                    logger.info(f"[OK] Processing completed successfully!")
+
+                    # Extract result URL
+                    urls = re.findall(url_pattern, logs)
+                    for url in reversed(urls):  # Get last URL
+                        if 'noxfvr-videos' in url and ('output/' in url or 'both/' in url or 'upscales/' in url or 'interps/' in url):
+                            logger.info(f"[RESULT] Download URL: {url}")
+                            return url
+
+                    logger.warning("[WARN] Success marker found but no result URL")
+                    return None
+
+                # Check for errors
+                if 'ERROR' in logs or 'FAILED' in logs or 'Exception' in logs:
+                    logger.warning("[WARN] Errors detected in logs")
+
+                time.sleep(10)
+
+            except Exception as e:
+                logger.error(f"[ERROR] Failed to get logs: {e}")
+                time.sleep(10)
+
+        logger.error(f"[ERROR] Monitoring timeout after {timeout}s")
+        return None
+
     def _filter_existing_outputs(self, files: List) -> List:
         """Filter out files that already have output."""
         if not self.b2_client:
@@ -286,11 +353,21 @@ class BatchProcessor:
             logger.error(f"Instance failed to start: {e}")
             raise
 
+        # Monitor processing
+        logger.info(f"[MONITOR] Monitoring instance #{instance.id} for completion...")
+        result_url = self._monitor_processing(instance.id, timeout=7200)  # 2 hours max
+
+        # Destroy instance
+        logger.info(f"[CLEANUP] Destroying instance #{instance.id}...")
+        self.vast_client.destroy_instance(instance.id)
+        logger.info(f"[OK] Instance destroyed")
+
         return {
             'instance_id': instance.id,
             'input_url': input_url,
             'output_name': output_name,
-            'offer': str(offer),
+            'result_url': result_url,
+            'status': 'completed' if result_url else 'failed'
         }
 
     def process_batch(
