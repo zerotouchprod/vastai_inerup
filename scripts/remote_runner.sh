@@ -265,7 +265,8 @@ if [ -d "/workspace/project/external/RIFE" ]; then
     echo "[remote_runner] RIFE directory exists but RIFE_HDv3.py missing - re-cloning"
     rm -rf /workspace/project/external/RIFE
     mkdir -p /workspace/project/external
-    git clone --depth 1 https://github.com/hzwer/arXiv2020-RIFE.git /workspace/project/external/RIFE
+    # Clone the TRAINING repo which has RIFE_HDv3.py (not the arxiv inference-only repo)
+    git clone --depth 1 https://github.com/hzwer/RIFE.git /workspace/project/external/RIFE
 
     # Copy preinstalled RIFE models from image to RIFE repo
     if [ -d "/opt/rife_models/train_log" ] && [ -n "$(ls -A /opt/rife_models/train_log 2>/dev/null)" ]; then
@@ -280,7 +281,8 @@ if [ -d "/workspace/project/external/RIFE" ]; then
 else
   echo "[remote_runner] Cloning RIFE..."
   mkdir -p /workspace/project/external
-  git clone --depth 1 https://github.com/hzwer/arXiv2020-RIFE.git /workspace/project/external/RIFE
+  # Clone the TRAINING repo which has RIFE_HDv3.py (not the arxiv inference-only repo)
+  git clone --depth 1 https://github.com/hzwer/RIFE.git /workspace/project/external/RIFE
 
   # Copy preinstalled RIFE models from image to RIFE repo
   if [ -d "/opt/rife_models/train_log" ] && [ -n "$(ls -A /opt/rife_models/train_log 2>/dev/null)" ]; then
