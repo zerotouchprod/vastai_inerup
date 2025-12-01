@@ -237,16 +237,20 @@ for b in realesrgan-ncnn-vulkan rife-ncnn-vulkan realesrgan-ncnn rife-ncnn reale
 done
 
 # Clone Real-ESRGAN and RIFE repos to get inference scripts
-if [ ! -d "/workspace/project/external/Real-ESRGAN" ]; then
+if [ ! -d "/workspace/project/external/Real-ESRGAN" ] || [ ! -f "/workspace/project/external/Real-ESRGAN/inference_realesrgan.py" ]; then
   echo "[remote_runner] Cloning Real-ESRGAN..."
   mkdir -p /workspace/project/external
+  rm -rf /workspace/project/external/Real-ESRGAN  # Remove if exists but broken
   git clone --depth 1 https://github.com/xinntao/Real-ESRGAN.git /workspace/project/external/Real-ESRGAN
   rm -rf /workspace/project/external/Real-ESRGAN/realesrgan
   echo "[remote_runner] Removed realesrgan/ package dir (using installed package)"
+else
+  echo "[remote_runner] Real-ESRGAN already cloned and valid"
 fi
-if [ ! -d "/workspace/project/external/RIFE" ]; then
+if [ ! -d "/workspace/project/external/RIFE" ] || [ ! -f "/workspace/project/external/RIFE/RIFE_HDv3.py" ]; then
   echo "[remote_runner] Cloning RIFE..."
   mkdir -p /workspace/project/external
+  rm -rf /workspace/project/external/RIFE  # Remove if exists but broken
   git clone --depth 1 https://github.com/hzwer/arXiv2020-RIFE.git /workspace/project/external/RIFE
 
   # Copy preinstalled RIFE models from image to RIFE repo
@@ -258,6 +262,8 @@ if [ ! -d "/workspace/project/external/RIFE" ]; then
   else
     echo "[remote_runner] WARNING: No preinstalled RIFE models found in /opt/rife_models/train_log/"
   fi
+else
+  echo "[remote_runner] RIFE already cloned and valid"
 fi
 
 # Ensure wrapper scripts are executable
