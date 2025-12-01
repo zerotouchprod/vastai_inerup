@@ -348,16 +348,17 @@ class BatchProcessor:
 
         # Get git repo URL and branch from config
         git_repo = self.config.get('git_repo', 'https://github.com/zerotouchprod/vastai_inerup.git')
-        git_branch = self.config.get('git_branch', 'main')
-        
+        git_branch = self.config.get('git_branch', 'oop2')
+
         # Build onstart command that clones repo and runs script
-        # Use /bin/bash -c to wrap the command properly for Vast.ai
+        # Use bash -c with proper escaping
         onstart_cmd = (
-            f"/bin/bash -c 'cd /workspace && "
-            f"(rm -rf project || (sleep 2 && rm -rf project) || true) && "
+            "bash -c "
+            '"cd /workspace && '
+            "(rm -rf project || (sleep 2 && rm -rf project) || true) && "
             f"git clone -b {git_branch} {git_repo} project && "
-            f"cd project && "
-            f"bash scripts/remote_runner.sh'"
+            "cd project && "
+            'bash scripts/remote_runner.sh"'
         )
 
         instance_config = VastInstanceConfig(
