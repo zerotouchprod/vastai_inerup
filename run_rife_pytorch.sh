@@ -667,7 +667,7 @@ PY
           pair_index=$((i+1))
           log "RIFE pair #$pair_index: $a $b -> $TMP_DIR/output/frame_$(printf "%06d" $pair_index)_mid.png"
           # run inference_img.py in TMP_DIR so it writes to ./output
-          (cd "$TMP_DIR" && export PYTHONUNBUFFERED=1; timeout 300s python3 "$RIFE_PY" --img "$a" "$b" --exp 1 --model "$REPO_DIR/train_log") >"$TMP_DIR/rife_pair_${pair_index}.log" 2>&1 || true
+          (cd "$TMP_DIR" && export PYTHONUNBUFFERED=1; timeout 3060s python3 "$RIFE_PY" --img "$a" "$b" --exp 1 --model "$REPO_DIR/train_log") >"$TMP_DIR/rife_pair_${pair_index}.log" 2>&1 || true
           # check for expected mid (inference_img writes output/img1.png for exp=1)
           if [ -f "$TMP_DIR/output/img1.png" ]; then
             mv -f "$TMP_DIR/output/img1.png" "$TMP_DIR/output/frame_$(printf "%06d" $pair_index)_mid.png"

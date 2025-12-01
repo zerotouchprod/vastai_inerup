@@ -100,10 +100,12 @@ class VastAIClient:
 
     def search_offers(
         self,
-        min_vram_gb: float = 8.0,
+        min_vram_gb: int = 12,
         max_price: float = 0.5,
         min_reliability: float = 0.9,
-        limit: int = 10
+        limit: int = 10,
+        host_whitelist: List[int] = None,
+        host_blacklist: List[int] = None
     ) -> List[VastOffer]:
         """Search for available GPU offers."""
         self.logger.info(
@@ -144,6 +146,15 @@ class VastAIClient:
                     # Client-side filtering (Vast.ai API sometimes ignores filters)
                     price = offer_data.get('dph_total', 999)
                     host_id = offer_data.get('host_id', 0)
+
+                    # Host whitelist/blacklist filtering
+                    if host_whitelist and host_id not in host_whitelist:
+                        self.logger.debug(f"Skipping offer {offer_data['id']}: host {host_id} not in whitelist")
+                        continue
+
+                    if host_blacklist and host_id in host_blacklist:
+                        self.logger.debug(f"Skipping offer {offer_data['id']}: host {host_id} in blacklist")
+                        continue
 
                     # Skip if price too high
                     if price > max_price:
@@ -290,7 +301,9 @@ class VastAIClient:
 
     def get_instance_logs(self, instance_id: int, tail: int = 100) -> str:
         """
-        Get instance container logs.
+        Get instance container logs via Vast.ai API.
+
+        Uses PUT /instances/request_logs/{id}/ endpoint which returns a temp_download_url.
 
         Args:
             instance_id: Instance ID
@@ -300,22 +313,28 @@ class VastAIClient:
             Log output as string
         """
         try:
+            # Step 1: Request logs (returns temp download URL)
             response = self._request(
-                'GET',
-                f'instances/{instance_id}/logs',
-                params={'tail': tail}
+                'PUT',
+                f'instances/request_logs/{instance_id}/',
+                data={'tail': str(tail)}
             )
 
-            # Logs might be in different formats
-            if isinstance(response, dict):
-                return response.get('logs', '') or response.get('output', '')
-            elif isinstance(response, str):
-                return response
-            else:
-                return str(response)
+            # Step 2: Get download URL
+            temp_url = response.get('temp_download_url')
+            if not temp_url:
+                self.logger.debug(f"No temp_download_url in response: {response}")
+                return ""
+
+            # Step 3: Download logs from temp URL
+            import requests
+            log_response = requests.get(temp_url, timeout=10)
+            log_response.raise_for_status()
+
+            return log_response.text
 
         except Exception as e:
-            self.logger.warning(f"Failed to get logs for instance #{instance_id}: {e}")
+            self.logger.debug(f"Failed to get logs for instance #{instance_id}: {e}")
             return ""
 
     def destroy_instance(self, instance_id: int) -> bool:

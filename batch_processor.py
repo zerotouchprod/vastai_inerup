@@ -177,24 +177,46 @@ class BatchProcessor:
 
         logger.info(f"[MONITOR] Watching logs for instance #{instance_id}...")
 
+        consecutive_failures = 0
+        max_consecutive_failures = 6  # 6 failures = 1 minute of no response
+        check_count = 0
+
         while time.time() - start_time < timeout:
             try:
+                check_count += 1
+                elapsed = int(time.time() - start_time)
+
+                # Progress indicator every 30 seconds
+                if check_count % 6 == 0:
+                    logger.info(f"[MONITOR] Still monitoring... ({elapsed}s elapsed, {len(lines) if 'lines' in locals() else 0} log lines)")
+
                 # Get logs
                 logs = self.vast_client.get_instance_logs(instance_id, tail=500)
 
                 if not logs:
+                    consecutive_failures += 1
+                    if consecutive_failures == 1:
+                        logger.info(f"[MONITOR] Waiting for logs to appear...")
+                    elif consecutive_failures >= max_consecutive_failures:
+                        logger.warning(f"[WARN] No logs after {consecutive_failures * 10}s, but continuing...")
+                        consecutive_failures = 0  # Reset to avoid spam
                     time.sleep(10)
                     continue
 
+                # Reset failure counter on success
+                consecutive_failures = 0
+
                 lines = logs.split('\n')
 
-                # Show new lines
+                # Show new lines (only if there are actually new lines)
                 if len(lines) > last_log_line:
                     new_lines = lines[last_log_line:]
-                    for line in new_lines:
-                        if line.strip():
+                    new_content = [line for line in new_lines if line.strip()]
+
+                    if new_content:
+                        for line in new_content:
                             logger.info(f"  [LOG] {line}")
-                    last_log_line = len(lines)
+                        last_log_line = len(lines)
 
                 # Check for success
                 if success_marker in logs:
@@ -210,14 +232,19 @@ class BatchProcessor:
                     logger.warning("[WARN] Success marker found but no result URL")
                     return None
 
-                # Check for errors
-                if 'ERROR' in logs or 'FAILED' in logs or 'Exception' in logs:
-                    logger.warning("[WARN] Errors detected in logs")
+                # Check for errors (only report once)
+                if check_count == 1 or (check_count % 12 == 0):  # Check every 2 minutes
+                    if 'ERROR' in logs or 'FAILED' in logs:
+                        error_lines = [l for l in lines if 'ERROR' in l or 'FAILED' in l]
+                        if error_lines:
+                            logger.warning(f"[WARN] Recent errors: {error_lines[-1][:100]}")
 
                 time.sleep(10)
 
             except Exception as e:
-                logger.error(f"[ERROR] Failed to get logs: {e}")
+                consecutive_failures += 1
+                if consecutive_failures <= 3:  # Only log first 3 failures
+                    logger.warning(f"[WARN] Log fetch failed (attempt {consecutive_failures}): {e}")
                 time.sleep(10)
 
         logger.error(f"[ERROR] Monitoring timeout after {timeout}s")
@@ -293,7 +320,9 @@ class BatchProcessor:
             min_vram_gb=preset_config.get('min_vram', 12),
             max_price=preset_config.get('max_price', 0.5),
             min_reliability=preset_config.get('min_reliability', 0.9),
-            limit=10
+            limit=10,
+            host_whitelist=preset_config.get('host_whitelist'),
+            host_blacklist=preset_config.get('host_blacklist')
         )
 
         if not offers:
