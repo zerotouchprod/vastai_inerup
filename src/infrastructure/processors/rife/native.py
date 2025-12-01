@@ -91,17 +91,44 @@ class RIFENative:
 
         self.logger.info(f"Loading RIFE model from {self.model_path}")
 
-        # Add model path to sys.path
-        model_dir = str(self.model_path.absolute())
-        if model_dir not in sys.path:
-            sys.path.insert(0, model_dir)
+        # Add external/RIFE to sys.path for RIFE_HDv3 import
+        rife_src_paths = [
+            Path('/workspace/project/external/RIFE'),
+            Path('external/RIFE'),
+            self.model_path.parent / 'external' / 'RIFE' if self.model_path.parent else None
+        ]
+
+        rife_src_path = None
+        for path in rife_src_paths:
+            if path and path.exists() and (path / 'RIFE_HDv3.py').exists():
+                rife_src_path = str(path.absolute())
+                break
+
+        if not rife_src_path:
+            raise ImportError(
+                f"RIFE_HDv3.py not found. Searched: {[str(p) for p in rife_src_paths if p]}"
+            )
+
+        if rife_src_path not in sys.path:
+            sys.path.insert(0, rife_src_path)
+            self.logger.info(f"Added {rife_src_path} to sys.path")
 
         try:
             # Import RIFE model
             from RIFE_HDv3 import Model
 
             self._model = Model()
-            self._model.load_model(str(self.model_path / 'train_log'), -1)
+
+            # Look for train_log directory
+            train_log_path = self.model_path / 'train_log'
+            if not train_log_path.exists():
+                # Maybe model_path itself is train_log
+                if (self.model_path / 'flownet.pkl').exists():
+                    train_log_path = self.model_path
+                else:
+                    raise FileNotFoundError(f"train_log not found in {self.model_path}")
+
+            self._model.load_model(str(train_log_path), -1)
             self._model.eval()
             self._model.device()
 
@@ -109,7 +136,8 @@ class RIFENative:
 
         except ImportError as e:
             raise ImportError(
-                f"Failed to import RIFE model from {self.model_path}. "
+                f"Failed to import RIFE model. "
+                f"RIFE source path: {rife_src_path}. "
                 "Make sure RIFE_HDv3.py and dependencies are available."
             ) from e
 
