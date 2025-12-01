@@ -180,6 +180,7 @@ class BatchProcessor:
         consecutive_failures = 0
         max_consecutive_failures = 6  # 6 failures = 1 minute of no response
         check_count = 0
+        lines = []  # Initialize to avoid undefined variable
 
         while time.time() - start_time < timeout:
             try:
@@ -188,7 +189,7 @@ class BatchProcessor:
 
                 # Progress indicator every 30 seconds
                 if check_count % 6 == 0:
-                    logger.info(f"[MONITOR] Still monitoring... ({elapsed}s elapsed, {len(lines) if 'lines' in locals() else 0} log lines)")
+                    logger.info(f"[MONITOR] Still monitoring... ({elapsed}s elapsed, {len(lines)} log lines)")
 
                 # Get logs
                 logs = self.vast_client.get_instance_logs(instance_id, tail=500)

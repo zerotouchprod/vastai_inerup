@@ -10,7 +10,6 @@ from domain.exceptions import DomainException
 from infrastructure.config import ConfigLoader
 from infrastructure.io import HttpDownloader, B2S3Uploader
 from infrastructure.media import FFmpegExtractor, FFmpegAssembler
-from infrastructure.storage import TempStorage, PendingMarker
 from application.orchestrator import VideoProcessingOrchestrator
 from application.factories import ProcessorFactory
 from shared.logging import setup_logger, LoggerAdapter, get_logger
@@ -22,7 +21,6 @@ def create_orchestrator_from_config(config):
     downloader = HttpDownloader()
     extractor = FFmpegExtractor()
     assembler = FFmpegAssembler()
-    temp_storage = TempStorage(base_dir=config.temp_dir)
 
     # Create uploader if configured
     uploader = None
@@ -31,8 +29,7 @@ def create_orchestrator_from_config(config):
             bucket=config.b2_bucket,
             endpoint=config.b2_endpoint or "https://s3.us-west-004.backblazeb2.com",
             access_key=config.b2_key,
-            secret_key=config.b2_secret,
-            pending_marker=PendingMarker()
+            secret_key=config.b2_secret
         )
     else:
         # Dummy uploader
@@ -40,8 +37,6 @@ def create_orchestrator_from_config(config):
         class DummyUploader:
             def upload(self, file_path, key):
                 return UploadResult(success=True, url=f"file://{file_path}", bucket="local", key=key, size_bytes=0)
-            def resume_pending(self):
-                return []
         uploader = DummyUploader()
 
     # Create processors
@@ -75,7 +70,6 @@ def create_orchestrator_from_config(config):
         interpolator=interpolator,
         assembler=assembler,
         uploader=uploader,
-        temp_storage=temp_storage,
         logger=logger,
         metrics=metrics
     )

@@ -7,10 +7,12 @@ from datetime import datetime
 from domain.models import ProcessingJob, ProcessingResult
 from domain.protocols import (
     IDownloader, IExtractor, IProcessor, IAssembler,
-    IUploader, ITempStorage, ILogger, IMetricsCollector
+    IUploader, ILogger, IMetricsCollector
 )
 from domain.exceptions import VideoProcessingError
 from shared.logging import get_logger
+import tempfile
+import shutil
 
 logger = get_logger(__name__)
 
@@ -26,7 +28,6 @@ class VideoProcessingOrchestrator:
         interpolator: Optional[IProcessor],
         assembler: IAssembler,
         uploader: IUploader,
-        temp_storage: ITempStorage,
         logger: ILogger,
         metrics: IMetricsCollector
     ):
@@ -36,7 +37,6 @@ class VideoProcessingOrchestrator:
         self._interpolator = interpolator
         self._assembler = assembler
         self._uploader = uploader
-        self._temp_storage = temp_storage
         self._logger = logger
         self._metrics = metrics
 
@@ -49,7 +49,7 @@ class VideoProcessingOrchestrator:
 
         try:
             # 1. Create workspace
-            workspace = self._temp_storage.create_workspace(job.job_id)
+            workspace = Path(tempfile.mkdtemp(prefix=f"job_{job.job_id}_"))
 
             # 2. Download
             self._metrics.start_timer('download')
@@ -83,8 +83,9 @@ class VideoProcessingOrchestrator:
             upload_result = self._uploader.upload(output_video, upload_key)
             self._metrics.stop_timer('upload')
 
-            # 7. Cleanup
-            self._temp_storage.cleanup(workspace, keep_on_error=False)
+            # 7. Cleanup workspace
+            if workspace and workspace.exists():
+                shutil.rmtree(workspace, ignore_errors=True)
 
             total_time = self._metrics.stop_timer('total_job')
 
@@ -102,8 +103,10 @@ class VideoProcessingOrchestrator:
 
         except Exception as e:
             self._logger.exception(f"Job {job.job_id} failed: {e}")
-            if workspace:
-                self._temp_storage.cleanup(workspace, keep_on_error=True)
+
+            # Cleanup on error (keep workspace for debugging)
+            # if workspace and workspace.exists():
+            #     shutil.rmtree(workspace, ignore_errors=True)
 
             return ProcessingResult(
                 success=False,
