@@ -85,45 +85,84 @@ PY
     echo "[entrypoint] Found remote config_url: $REMOTE_URL"
     TMP_REMOTE=$(mktemp /tmp/remote_config.XXXXXX)
     if curl -fsSL "$REMOTE_URL" -o "$TMP_REMOTE"; then
-      echo "[entrypoint] Remote config downloaded to $TMP_REMOTE — attempting to parse and write as YAML to $CONFIG_PATH"
-      # Validate and write remote config using a small Python snippet
+      echo "[entrypoint] Remote config downloaded — merging with existing $CONFIG_PATH"
+      # Merge remote config with existing config.yaml using Python
       if python3 - "$TMP_REMOTE" "$CONFIG_PATH" 2>/tmp/entrypoint_config_parse.log <<'PY'
 import sys, json
 import yaml
-src = sys.argv[1]
-dst = sys.argv[2]
+
+src = sys.argv[1]  # Downloaded remote config
+dst = sys.argv[2]  # Existing config.yaml
+
+# Read remote config
 try:
     raw = open(src, 'rb').read()
     text = raw.decode('utf-8')
 except Exception as e:
     print(f'Failed to read downloaded remote config: {e}', file=sys.stderr)
     sys.exit(2)
-parsed = None
-# Try JSON first
+
+# Parse remote config (try JSON first, then YAML)
+remote_config = None
 try:
-    parsed = json.loads(text)
+    remote_config = json.loads(text)
+    print('[entrypoint] Remote config parsed as JSON')
 except Exception:
     try:
-        parsed = yaml.safe_load(text)
+        remote_config = yaml.safe_load(text)
+        print('[entrypoint] Remote config parsed as YAML')
     except Exception as e:
         print(f'Failed to parse remote config as JSON or YAML: {e}', file=sys.stderr)
         sys.exit(2)
-if not isinstance(parsed, dict):
+
+if not isinstance(remote_config, dict):
     print('Remote config is not a mapping/object (expected dict)', file=sys.stderr)
     sys.exit(2)
-# Write parsed config back as YAML to ensure consistent format
+
+# Read existing config.yaml
+existing_config = {}
+try:
+    with open(dst, 'r', encoding='utf-8') as f:
+        existing_config = yaml.safe_load(f) or {}
+    if not isinstance(existing_config, dict):
+        existing_config = {}
+except Exception as e:
+    print(f'Warning: Could not read existing config: {e}', file=sys.stderr)
+    existing_config = {}
+
+# Deep merge: remote config overrides existing config
+def deep_merge(base, override):
+    """Deep merge override into base."""
+    result = base.copy()
+    for key, value in override.items():
+        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+            result[key] = deep_merge(result[key], value)
+        else:
+            result[key] = value
+    return result
+
+merged_config = deep_merge(existing_config, remote_config)
+
+# Show what was merged
+print(f'[entrypoint] Merged remote config keys: {list(remote_config.keys())}')
+if 'video' in remote_config:
+    print(f'[entrypoint]   video: {remote_config["video"]}')
+
+# Write merged config back as YAML
 try:
     with open(dst, 'w', encoding='utf-8') as f:
-        yaml.safe_dump(parsed, f, sort_keys=False, allow_unicode=True)
+        yaml.safe_dump(merged_config, f, sort_keys=False, allow_unicode=True, default_flow_style=False)
+    print(f'[entrypoint] Merged config written to {dst}')
 except Exception as e:
-    print(f'Failed to write parsed config to destination: {e}', file=sys.stderr)
+    print(f'Failed to write merged config: {e}', file=sys.stderr)
     sys.exit(2)
+
 sys.exit(0)
 PY
       then
-        echo "[entrypoint] Remote config parsed and wrote to $CONFIG_PATH"
+        echo "[entrypoint] ✓ Remote config merged successfully"
       else
-        echo "[entrypoint] Failed to parse remote config (see /tmp/entrypoint_config_parse.log). Keeping existing $CONFIG_PATH"
+        echo "[entrypoint] ✗ Failed to merge remote config (see /tmp/entrypoint_config_parse.log)"
         echo "[entrypoint] Parse log (tail):"; tail -n 50 /tmp/entrypoint_config_parse.log || true
       fi
      rm -f "$TMP_REMOTE" || true

@@ -26,6 +26,7 @@ import os
 import sys
 import argparse
 import yaml
+import logging
 from pathlib import Path
 from typing import List, Optional, Dict, Any
 from datetime import datetime
@@ -40,7 +41,10 @@ try:
     from domain.vastai import VastInstanceConfig
     from infrastructure.storage.b2_client import B2Client
     from infrastructure.vastai.client import VastAIClient
-    from shared.logging import setup_logging, get_logger
+    from shared.logging import get_logger
+    from shared.remote_config import load_config_with_remote
+
+    # Get logger
     logger = get_logger(__name__)
 except ImportError as e:
     import logging
@@ -72,8 +76,6 @@ class BatchProcessor:
         self.config_path = config_path
         self.config = self._load_config()
 
-        # Setup logging
-        setup_logging()
 
         # Initialize clients
         self.b2_client = None
@@ -82,14 +84,8 @@ class BatchProcessor:
         self._init_clients()
 
     def _load_config(self) -> Dict[str, Any]:
-        """Load configuration from YAML file."""
-        if not Path(self.config_path).exists():
-            raise FileNotFoundError(f"Config not found: {self.config_path}")
-
-        with open(self.config_path, 'r', encoding='utf-8') as f:
-            config = yaml.safe_load(f)
-
-        return config
+        """Load configuration from YAML file and merge with remote config if config_url is set."""
+        return load_config_with_remote(Path(self.config_path), logger_instance=logger)
 
     def _init_clients(self):
         """Initialize B2 and Vast.ai clients."""
@@ -98,9 +94,9 @@ class BatchProcessor:
             b2_creds = B2Credentials.from_env()
             if b2_creds.validate():
                 self.b2_client = B2Client(b2_creds)
-                logger.info("✓ B2 client initialized")
+                logger.info("[OK] B2 client initialized")
             else:
-                logger.warning("⚠ B2 credentials not set (B2_KEY, B2_SECRET, B2_BUCKET)")
+                logger.warning("[WARN] B2 credentials not set (B2_KEY, B2_SECRET, B2_BUCKET)")
 
         except Exception as e:
             logger.error(f"Failed to initialize B2 client: {e}")
@@ -108,7 +104,7 @@ class BatchProcessor:
         try:
             # Vast.ai client
             self.vast_client = VastAIClient()
-            logger.info("✓ Vast.ai client initialized")
+            logger.info("[OK] Vast.ai client initialized")
         except Exception as e:
             logger.error(f"Failed to initialize Vast.ai client: {e}")
 
@@ -133,7 +129,7 @@ class BatchProcessor:
         # Build prefix
         prefix = input_dir if input_dir.startswith('input/') else f'input/{input_dir}'
 
-        logger.info(f"📂 Listing files from B2: {prefix}")
+        logger.info(f"[LIST] Listing files from B2: {prefix}")
 
         # List objects
         objects = self.b2_client.list_objects(prefix=prefix)
@@ -145,7 +141,7 @@ class BatchProcessor:
             if obj.key.lower().endswith(video_extensions) and obj.size > 0
         ]
 
-        logger.info(f"✓ Found {len(video_files)} video files")
+        logger.info(f"[OK] Found {len(video_files)} video files")
 
         # Skip existing outputs if requested
         if skip_existing:
@@ -170,7 +166,7 @@ class BatchProcessor:
             for file_obj in files:
                 stem = file_obj.stem
                 if stem in existing_stems:
-                    logger.info(f"⚠ Skipping {file_obj.key} - output exists")
+                    logger.info(f"[WARN] Skipping {file_obj.key} - output exists")
                     skipped += 1
                 else:
                     filtered.append(file_obj)
@@ -209,7 +205,7 @@ class BatchProcessor:
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
             output_name = f"output_{timestamp}.mp4"
 
-        logger.info(f"🚀 Processing file: {input_url}")
+        logger.info(f"[RUN] Processing file: {input_url}")
         logger.info(f"   Output: {output_name}")
         logger.info(f"   Preset: {preset}")
 
@@ -231,7 +227,7 @@ class BatchProcessor:
 
         # Use best offer (first one - already sorted by price)
         offer = offers[0]
-        logger.info(f"✓ Selected offer: {offer}")
+        logger.info(f"[OK] Selected offer: {offer}")
 
         # Build instance config
         video_config = self.config.get('video', {})
@@ -256,7 +252,7 @@ class BatchProcessor:
 
         # Create instance
         instance = self.vast_client.create_instance(offer.id, instance_config)
-        logger.info(f"✓ Created instance: {instance}")
+        logger.info(f"[OK] Created instance: {instance}")
 
         # Wait for running
         try:
@@ -265,7 +261,7 @@ class BatchProcessor:
                 timeout=300,
                 poll_interval=10
             )
-            logger.info(f"✓ Instance running: {instance}")
+            logger.info(f"[OK] Instance running: {instance}")
         except TimeoutError as e:
             logger.error(f"Instance failed to start: {e}")
             raise
@@ -301,10 +297,10 @@ class BatchProcessor:
             logger.info("No files to process")
             return []
 
-        logger.info(f"📊 {len(files)} files to process")
+        logger.info(f"[STAT] {len(files)} files to process")
 
         if dry_run:
-            logger.info("🔍 Dry run - not creating instances")
+            logger.info("[DRY] Dry run - not creating instances")
             for idx, file_obj in enumerate(files, 1):
                 logger.info(f"  {idx}. {file_obj.key} ({file_obj.size} bytes)")
             return []
@@ -336,10 +332,10 @@ class BatchProcessor:
                 )
 
                 results.append(result)
-                logger.info(f"✓ File {idx}/{len(files)} submitted")
+                logger.info(f"[OK] File {idx}/{len(files)} submitted")
 
             except Exception as e:
-                logger.error(f"❌ Failed to process {file_obj.key}: {e}")
+                logger.error(f"[ERROR] Failed to process {file_obj.key}: {e}")
                 import traceback
                 traceback.print_exc()
                 continue
@@ -350,52 +346,87 @@ class BatchProcessor:
 def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(
-        description='Unified Batch Processor for Vast.ai'
+        description='Unified Batch Processor for Vast.ai - reads defaults from config.yaml'
     )
 
     parser.add_argument('--config', default='config.yaml',
                        help='Config file (default: config.yaml)')
-    parser.add_argument('--input', help='Single input file URL')
-    parser.add_argument('--input-dir', help='Input directory in B2')
+    parser.add_argument('--input', help='Single input file URL (overrides config)')
+    parser.add_argument('--input-dir', help='Input directory in B2 (overrides config)')
     parser.add_argument('--output', help='Output file name (for single file)')
-    parser.add_argument('--preset', default='balanced',
-                       help='Preset name (default: balanced)')
-    parser.add_argument('--dry-run', action='store_true',
-                       help='Show what would be processed')
-    parser.add_argument('--skip-existing', action='store_true', default=True,
-                       help='Skip files with existing output (default: True)')
+    parser.add_argument('--preset', help='Preset name (overrides config)')
+    parser.add_argument('--dry-run', action='store_true', default=None,
+                       help='Show what would be processed (overrides config)')
+    parser.add_argument('--skip-existing', action='store_true', default=None,
+                       help='Skip files with existing output (overrides config)')
 
     args = parser.parse_args()
-
-    # Validate arguments
-    if not args.input and not args.input_dir:
-        parser.error("Either --input or --input-dir required")
 
     try:
         # Initialize processor
         processor = BatchProcessor(config_path=args.config)
 
-        # Process
-        if args.input:
-            # Single file
-            result = processor.process_single_file(
-                input_url=args.input,
-                output_name=args.output,
-                preset=args.preset
-            )
-            logger.info(f"\n✅ Processing submitted: {result}")
+        # Get batch config from config.yaml
+        batch_config = processor.config.get('batch', {})
 
-        elif args.input_dir:
-            # Batch
-            results = processor.process_batch(
-                input_dir=args.input_dir,
-                preset=args.preset,
-                dry_run=args.dry_run
+        # Determine input source (CLI args override config)
+        input_url = args.input
+        input_dir = args.input_dir or batch_config.get('input_dir')
+        preset = args.preset or batch_config.get('preset', 'balanced')
+        dry_run = args.dry_run if args.dry_run is not None else batch_config.get('dry_run', False)
+        skip_existing = args.skip_existing if args.skip_existing is not None else batch_config.get('skip_existing', True)
+
+        # Validate: need either input or input_dir
+        if not input_url and not input_dir:
+            logger.error("[ERROR] No input specified!")
+            logger.error("Either:")
+            logger.error("  1. Set 'batch.input_dir' in config.yaml")
+            logger.error("  2. Use --input <url> for single file")
+            logger.error("  3. Use --input-dir <dir> for batch")
+            sys.exit(1)
+
+        # Validate credentials before processing
+        if input_dir and not processor.b2_client:
+            logger.error("[ERROR] B2 client not initialized - cannot list files from B2")
+            logger.error("Please set environment variables:")
+            logger.error("  $env:B2_KEY='your_key_id'")
+            logger.error("  $env:B2_SECRET='your_application_key'")
+            logger.error("  $env:B2_BUCKET='noxfvr-videos'")
+            sys.exit(1)
+
+        if not processor.vast_client:
+            logger.error("[ERROR] Vast.ai client not initialized - cannot create instances")
+            logger.error("Please set environment variable:")
+            logger.error("  $env:VAST_API_KEY='your_vast_api_key'")
+            sys.exit(1)
+
+        # Process
+        if input_url:
+            # Single file
+            logger.info(f"[FILE] Processing single file: {input_url}")
+            result = processor.process_single_file(
+                input_url=input_url,
+                output_name=args.output,
+                preset=preset
             )
-            logger.info(f"\n✅ Batch processing complete: {len(results)} files submitted")
+            logger.info(f"\n[OK] Processing submitted: {result}")
+
+        elif input_dir:
+            # Batch
+            logger.info(f"[DIR] Processing batch from: {input_dir}")
+            logger.info(f"[CFG] Preset: {preset}")
+            logger.info(f"[DRY] Dry run: {dry_run}")
+            logger.info(f"[SKIP] Skip existing: {skip_existing}\n")
+
+            results = processor.process_batch(
+                input_dir=input_dir,
+                preset=preset,
+                dry_run=dry_run
+            )
+            logger.info(f"\n[OK] Batch processing complete: {len(results)} files submitted")
 
     except Exception as e:
-        logger.error(f"\n❌ Error: {e}")
+        logger.error(f"\n[ERROR] Error: {e}")
         import traceback
         traceback.print_exc()
         sys.exit(1)

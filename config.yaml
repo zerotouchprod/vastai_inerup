@@ -8,7 +8,7 @@ image: "ghcr.io/zerotouchprod/pytorch-fat-07110957:latest"
 
 # Git branch to use (container will git checkout this branch after git pull)
 # Use 'main' for stable, 'dev' for development, or feature branch name
-git_branch: "main"
+git_branch: "oop2"
 
 # ==================== PREDEFINED PRESETS ====================
 presets:
@@ -179,3 +179,20 @@ advanced:
 
   # Low-res strategy: interp-then-upscale (fast, default) or upscale-then-interp
   lowres_strategy: "interp-then-upscale"
+
+# Batch processing settings
+batch:
+  # Input directory in B2 bucket (relative to bucket root)
+  input_dir: "input/queue"
+
+  # Preset to use for batch processing
+  preset: "balanced"
+
+  # Skip files that already have output
+  skip_existing: true
+
+  # Maximum number of files to process in one batch
+  max_files: 100
+
+  # Dry run mode (don't actually submit to Vast.ai)
+  dry_run: false

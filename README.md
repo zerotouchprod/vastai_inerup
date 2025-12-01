@@ -112,31 +112,61 @@ python pipeline_v2.py --mode upscale
 
 ### 5️⃣ Unified Batch Processor ✅
 ```bash
-# Обработать директорию из B2
-python batch_processor.py --input-dir input/batch1
+# Простейший запуск - читает всё из config.yaml
+python batch_processor.py
 
-# Dry run
-python batch_processor.py --input-dir input/batch1 --dry-run
+# Dry run (проверить что будет обработано)
+python batch_processor.py --dry-run
 
-# С кастомным preset
-python batch_processor.py --input-dir input/batch1 --preset high
+# Переопределить директорию или preset
+python batch_processor.py --input-dir input/urgent --preset high
 ```
 - **4 скрипта → 1 unified processor!**
+- **Config-driven**: все параметры в `config.yaml`
 - **Clean Architecture для Vast.ai и B2**
 - **Git branch support** (config.yaml)
+- CLI args опциональны, переопределяют конфиг
 - Automatic output skip
 - SOLID принципы
 
-📚 **Документация**: `BATCH_REFACTORING_COMPLETE.md`, `BATCH_QUICK_START.md`
+📚 **Документация**: `BATCH_CONFIG_READY.md`, `BATCH_QUICK_START.md`
+
+---
+
+### 6️⃣ Remote Config Support ✅
+```yaml
+# config.yaml
+config_url: "https://gist.githubusercontent.com/.../config.json"
+```
+
+```json
+// config.json (скачивается автоматически)
+{
+  "video": {
+    "input_dir": "input/urgent",
+    "mode": "both",
+    "scale": 2,
+    "target_fps": 60
+  }
+}
+```
+
+- **Динамическая загрузка** конфига при каждом запуске
+- **Deep merge** с базовым config.yaml
+- **A/B тестирование** параметров
+- Изменения **без пересборки** Docker
+- 15 unit тестов
+
+📚 **Документация**: `REMOTE_CONFIG_COMPLETE.md`
 
 ---
 
 ## 📊 Статистика
 
 **Код**:
-- Python файлов: 40+
-- Строк кода: 4,200+
-- Тестов: 28 (16 unit + 12 integration)
+- Python файлов: 43+
+- Строк кода: 4,500+
+- Тестов: 78 unit + 4 skipped
 
 **Документация**:
 - MD файлов: 18+
