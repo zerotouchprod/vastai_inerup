@@ -64,6 +64,7 @@ class VastInstanceConfig:
     env: Dict[str, str]
     onstart: Optional[str] = None
     label: Optional[str] = None
+    runtype: str = 'oneshot'  # Run once, do not restart on failure
 
     # Resource requirements
     min_vram_gb: float = 8.0
@@ -78,6 +79,7 @@ class VastInstanceConfig:
             'env': self.env,
             'onstart': self.onstart,
             'label': self.label,
+            'runtype': self.runtype,
         }
 
 

@@ -173,6 +173,7 @@ class TestVastInstanceConfig:
         assert result["env"] == {"KEY": "value"}
         assert result["onstart"] == "startup.sh"
         assert result["label"] == "my-job"
+        assert result["runtype"] == "oneshot"  # Default value
 
 
 class TestVastAIClientBasic:

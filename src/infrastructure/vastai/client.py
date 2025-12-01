@@ -223,6 +223,7 @@ class VastAIClient:
             'image': config.image,
             'env': config.env,
             'disk': config.disk,
+            'runtype': config.runtype,  # oneshot = run once, do not restart
         }
 
         if config.onstart:
