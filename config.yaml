@@ -24,7 +24,7 @@ presets:
     gpu_required: false
     gpu_priority: true
     min_price: 0.08
-    max_price: 0.25
+    max_price: 0.1
     min_reliability: 0.70
     min_dlperf: 20
     min_cuda: 11.0
@@ -53,8 +53,8 @@ presets:
     gpu_blacklist: []
     gpu_required: false
     gpu_priority: true
-    min_price: 0.12
-    max_price: 0.50
+    min_price: 0.05
+    max_price: 0.1
     min_reliability: 0.80
     min_dlperf: 35
     min_dlperf_per_dphtotal: 100
@@ -71,6 +71,61 @@ presets:
     type: "bid"
     wait: false
     download: true
+
+  real:
+    gpu_models:
+      - "RTX_3080"
+      - "RTX_3090"
+    gpu_whitelist: [ ]
+    gpu_blacklist: [ ]
+    gpu_required: false
+    gpu_priority: true
+    min_vram: 12
+    min_price: 0.05
+    max_price: 0.1
+    min_reliability: 0.95      # Increased from 0.90
+    min_dlperf: 40             # Increased from 35
+    min_dlperf_per_dphtotal: 100
+    min_cuda: 11.2
+    compute_cap: 750
+    min_inet_down: 100
+    min_inet_up: 50
+    min_cpu_cores: 6
+    min_cpu_ram: 20
+    min_disk_bw: 100
+    min_gpu_mem_bw: 400
+    datacenter: true           # Changed from false
+    verified: true
+    type: "bid"
+    wait: false
+    download: true
+    # Request allocated storage (GB) for created instances to avoid small-disk hosts
+    allocated_storage: 50
+    host_whitelist:
+      - 51345
+      - 78246
+      - 124171
+      - 67268
+      - 85538
+      - 84962 #ua
+      - 264182
+      - 150602
+      - 67268
+      - 280301 #2cpu
+      - 160473 #2cpu
+    # Blacklist of host IDs to ignore when searching offers (vasts.host_blacklist)
+    host_blacklist:
+      - 160473 #$0.26/hr 2cpu
+      - 34742 #$0.23/hr
+      - 51981 #$0.215/hr
+      - 124072 #$0.198/hr
+      - 155386
+      - 319870
+      - 124171
+      - 81456
+      - 28229362
+      - 85323 #ok but gpu
+      - 28230170 #expensive
 
   high:
     preset: "high"
@@ -157,6 +212,7 @@ vast:
     - 51981 #$0.215/hr
     - 124072 #$0.198/hr
     - 155386
+    - 155386
     - 319870
     - 124171
     - 81456
@@ -186,7 +242,7 @@ batch:
   input_dir: "input/queue"
 
   # Preset to use for batch processing
-  preset: "balanced"
+  preset: "real"
 
   # Skip files that already have output
   skip_existing: true

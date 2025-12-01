@@ -139,26 +139,59 @@ class VastAIClient:
             offers = response.get('offers', [])
 
             result = []
-            for offer_data in offers[:limit]:
+            for offer_data in offers:
                 try:
+                    # Client-side filtering (Vast.ai API sometimes ignores filters)
+                    price = offer_data.get('dph_total', 999)
+                    host_id = offer_data.get('host_id', 0)
+
+                    # Skip if price too high
+                    if price > max_price:
+                        self.logger.debug(f"Skipping offer {offer_data['id']}: price ${price:.3f} > ${max_price}")
+                        continue
+
+                    # Skip if not enough VRAM
+                    vram_gb = offer_data.get('gpu_ram', 0) / 1024
+                    if vram_gb < min_vram_gb:
+                        self.logger.debug(f"Skipping offer {offer_data['id']}: VRAM {vram_gb:.1f}GB < {min_vram_gb}GB")
+                        continue
+
+                    # Skip if reliability too low
+                    reliability = offer_data.get('reliability2', 0)
+                    if reliability < min_reliability:
+                        self.logger.debug(f"Skipping offer {offer_data['id']}: reliability {reliability:.2f} < {min_reliability}")
+                        continue
+
                     offer = VastOffer(
                         id=offer_data['id'],
                         gpu_name=offer_data.get('gpu_name', 'Unknown'),
                         num_gpus=offer_data.get('num_gpus', 1),
                         total_flops=offer_data.get('total_flops', 0),
                         vram_mb=offer_data.get('gpu_ram', 0),
-                        price_per_hour=offer_data.get('dph_total', 0),
-                        reliability=offer_data.get('reliability2', 0),
+                        price_per_hour=price,
+                        reliability=reliability,
                         inet_up=offer_data.get('inet_up', 0),
                         inet_down=offer_data.get('inet_down', 0),
                         storage_cost=offer_data.get('storage_cost', 0),
                     )
                     result.append(offer)
+
+                    # Stop when we have enough
+                    if len(result) >= limit:
+                        break
+
                 except Exception as e:
                     self.logger.warning(f"Failed to parse offer: {e}")
                     continue
 
-            self.logger.info(f"Found {len(result)} matching offers")
+            # Sort by price (cheapest first)
+            result.sort(key=lambda x: x.price_per_hour)
+
+            self.logger.info(f"Found {len(result)} matching offers (after filtering)")
+            if result:
+                cheapest = result[0]
+                self.logger.info(f"Cheapest: ${cheapest.price_per_hour:.3f}/hr, {cheapest.gpu_name}, {cheapest.vram_mb/1024:.0f}GB VRAM")
+
             return result
 
         except Exception as e:
@@ -218,14 +251,28 @@ class VastAIClient:
                 f'instances/{instance_id}'
             )
 
-            instances = response.get('instances', [])
+            # Handle different response formats
+            if isinstance(response, dict):
+                instances = response.get('instances', [])
+            elif isinstance(response, list):
+                instances = response
+            else:
+                self.logger.error(f"Unexpected response type: {type(response)}, data: {response}")
+                raise VideoProcessingError(f"Invalid API response format")
+
             if not instances:
+                self.logger.warning(f"Instance #{instance_id} not found in API response")
                 raise VideoProcessingError(f"Instance #{instance_id} not found")
 
-            data = instances[0]
+            data = instances[0] if isinstance(instances, list) else instances
+
+            # Validate required fields
+            if not data or not isinstance(data, dict):
+                self.logger.error(f"Invalid instance data: {data}")
+                raise VideoProcessingError(f"Invalid instance data structure")
 
             return VastInstance(
-                id=data.get('id'),
+                id=data.get('id', instance_id),
                 status=data.get('status_msg', 'unknown'),
                 actual_status=data.get('actual_status', 'unknown'),
                 ssh_host=data.get('ssh_host'),
@@ -235,9 +282,41 @@ class VastAIClient:
                 price_per_hour=data.get('dph_total'),
             )
 
-        except Exception as e:
-            self.logger.error(f"Get instance failed: {e}")
+        except VideoProcessingError:
             raise
+        except Exception as e:
+            self.logger.error(f"Get instance failed: {e.__class__.__name__}: {e}")
+            raise VideoProcessingError(f"Failed to get instance: {e}") from e
+
+    def get_instance_logs(self, instance_id: int, tail: int = 100) -> str:
+        """
+        Get instance container logs.
+
+        Args:
+            instance_id: Instance ID
+            tail: Number of lines to retrieve
+
+        Returns:
+            Log output as string
+        """
+        try:
+            response = self._request(
+                'GET',
+                f'instances/{instance_id}/logs',
+                params={'tail': tail}
+            )
+
+            # Logs might be in different formats
+            if isinstance(response, dict):
+                return response.get('logs', '') or response.get('output', '')
+            elif isinstance(response, str):
+                return response
+            else:
+                return str(response)
+
+        except Exception as e:
+            self.logger.warning(f"Failed to get logs for instance #{instance_id}: {e}")
+            return ""
 
     def destroy_instance(self, instance_id: int) -> bool:
         """Destroy instance."""
