@@ -287,6 +287,13 @@ for i in range(len(imgs)-1):
             im0 = np.stack([im0, im0, im0], axis=2)
         if im1.ndim == 2:
             im1 = np.stack([im1, im1, im1], axis=2)
+
+        # Convert uint16 to uint8 if needed (FFmpeg sometimes extracts 16-bit PNGs)
+        if im0.dtype == np.uint16:
+            im0 = (im0 / 256).astype(np.uint8)
+        if im1.dtype == np.uint16:
+            im1 = (im1 / 256).astype(np.uint8)
+
         t0 = torch.from_numpy(im0.transpose(2,0,1)).unsqueeze(0)
         t1 = torch.from_numpy(im1.transpose(2,0,1)).unsqueeze(0)
         if t0.dtype == torch.uint8:

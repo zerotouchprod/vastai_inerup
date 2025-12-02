@@ -483,9 +483,9 @@ else
 fi
 
 if [ -n "$VF_PAD" ]; then
-  ffmpeg -y -hide_banner -loglevel info -i "$INFILE" -map 0:v:0 -vsync 0 -start_number 1 -vf "$VF_PAD" -f image2 -vcodec png "$TMP_DIR/input/frame_%06d.png" >"$TMP_DIR/ff_extract.log" 2>&1 || true
+  ffmpeg -y -hide_banner -loglevel info -i "$INFILE" -map 0:v:0 -vsync 0 -start_number 1 -vf "$VF_PAD" -pix_fmt rgb24 -f image2 -vcodec png "$TMP_DIR/input/frame_%06d.png" >"$TMP_DIR/ff_extract.log" 2>&1 || true
 else
-  ffmpeg -y -hide_banner -loglevel info -i "$INFILE" -map 0:v:0 -vsync 0 -start_number 1 -f image2 -vcodec png "$TMP_DIR/input/frame_%06d.png" >"$TMP_DIR/ff_extract.log" 2>&1 || true
+  ffmpeg -y -hide_banner -loglevel info -i "$INFILE" -map 0:v:0 -vsync 0 -start_number 1 -pix_fmt rgb24 -f image2 -vcodec png "$TMP_DIR/input/frame_%06d.png" >"$TMP_DIR/ff_extract.log" 2>&1 || true
 fi
 RC=${PIPESTATUS[0]:-1}
 log "png extract rc=$RC; tail ff_extract.log (head 40):"
