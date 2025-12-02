@@ -288,18 +288,41 @@ for i in range(len(imgs)-1):
         if im1.ndim == 2:
             im1 = np.stack([im1, im1, im1], axis=2)
 
-        # Convert uint16 to uint8 if needed (FFmpeg sometimes extracts 16-bit PNGs)
-        if im0.dtype == np.uint16:
-            im0 = (im0 / 256).astype(np.uint8)
-        if im1.dtype == np.uint16:
-            im1 = (im1 / 256).astype(np.uint8)
+        # Normalize and convert image dtypes robustly.
+        # Cases handled:
+        #  - uint16 (common when ffmpeg outputs 16-bit PNG): scale down by 256 -> uint8
+        #  - float32/float64 in [0,1] or [0,255]: normalize to float32 [0,1]
+        #  - int types >8-bit: clamp/scale to uint8
+        def normalize_img(img):
+            if img.dtype == np.uint8:
+                return img
+            if img.dtype == np.uint16:
+                # downscale 16-bit -> 8-bit
+                return (img // 256).astype(np.uint8)
+            if img.dtype in (np.float32, np.float64):
+                # assume floats in [0,1] or [0,255]
+                mx = img.max() if img.size>0 else 1.0
+                if mx <= 1.0:
+                    return (np.clip(img, 0.0, 1.0) * 255.0).astype(np.uint8)
+                else:
+                    return (np.clip(img, 0.0, 255.0)).astype(np.uint8)
+            # other integer types (int16, int32, etc.) - coerce to uint8 via clipping/scaling
+            if np.issubdtype(img.dtype, np.signedinteger) or np.issubdtype(img.dtype, np.integer):
+                # clip to [0,255]
+                return np.clip(img, 0, 255).astype(np.uint8)
+            # fallback: convert to uint8 via scaling
+            try:
+                return img.astype(np.uint8)
+            except Exception:
+                return (np.clip(img, 0, 255)).astype(np.uint8)
 
-        t0 = torch.from_numpy(im0.transpose(2,0,1)).unsqueeze(0)
-        t1 = torch.from_numpy(im1.transpose(2,0,1)).unsqueeze(0)
-        if t0.dtype == torch.uint8:
-            t0 = t0.float() / 255.0
-        if t1.dtype == torch.uint8:
-            t1 = t1.float() / 255.0
+        im0 = normalize_img(im0)
+        im1 = normalize_img(im1)
+
+        # Create torch tensors [1,C,H,W] in float32 normalized to [0,1]
+        t0 = torch.from_numpy(im0.transpose(2,0,1)).unsqueeze(0).float() / 255.0
+        t1 = torch.from_numpy(im1.transpose(2,0,1)).unsqueeze(0).float() / 255.0
+
         # Pad to multiples of 64 (match model expectations observed in runtime errors)
         n,c,h,w = t0.shape
         ph = ((h - 1) // 64 + 1) * 64
