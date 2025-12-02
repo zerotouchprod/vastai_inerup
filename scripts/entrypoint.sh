@@ -3,37 +3,79 @@ set -e
 
 echo "=== Container Entrypoint ==="
 echo "Time: $(date)"
+echo ""
 
 # Update project code from Git on every container start
 if [ -d "/workspace/project/.git" ]; then
   echo "[entrypoint] Updating project from Git repository..."
   cd /workspace/project
 
-  # Read git_branch from config.yaml if present
+  # Default branch
   GIT_BRANCH="main"
+
+  # 1) If a local config.yaml exists in the checked-out working tree, prefer its git_branch
   if [ -f "config.yaml" ]; then
     BRANCH_FROM_CONFIG=$(python3 - <<'PY' 2>/dev/null || echo ""
 import yaml
 try:
-    with open('config.yaml', 'r') as f:
-        cfg = yaml.safe_load(f)
+    with open('config.yaml','r') as f:
+        cfg = yaml.safe_load(f) or {}
         if isinstance(cfg, dict):
-            branch = cfg.get('git_branch', '').strip()
-            if branch:
-                print(branch)
+            b = cfg.get('git_branch','')
+            if isinstance(b, str) and b.strip():
+                print(b.strip())
 except Exception:
     pass
 PY
 )
     if [ -n "$BRANCH_FROM_CONFIG" ]; then
       GIT_BRANCH="$BRANCH_FROM_CONFIG"
-      echo "[entrypoint] Using git_branch from config.yaml: $GIT_BRANCH"
+      echo "[entrypoint] Using git_branch from local config.yaml: $GIT_BRANCH"
+    else
+      echo "[entrypoint] local config.yaml present but no git_branch key found"
+    fi
+  else
+    echo "[entrypoint] local config.yaml not present in working tree"
+  fi
+
+  # 2) If local config didn't provide git_branch, try to fetch config.yaml from origin/main and read git_branch
+  if [ -z "$BRANCH_FROM_CONFIG" ]; then
+    echo "[entrypoint] Attempting to read config.yaml from origin/main to determine git_branch..."
+    # Try to fetch origin/main refs (do not fail startup if fetch fails)
+    if git fetch origin main >/dev/null 2>&1; then
+      # Attempt to show the file from origin/main
+      if git show origin/main:config.yaml >/tmp/entrypoint_remote_config.yaml 2>/dev/null; then
+        BR_REMOTE=$(python3 - <<'PY' /tmp/entrypoint_remote_config.yaml 2>/dev/null || echo ""
+import yaml,sys
+try:
+    cfg = yaml.safe_load(open(sys.argv[1])) or {}
+    if isinstance(cfg, dict):
+        b = cfg.get('git_branch','')
+        if isinstance(b,str) and b.strip():
+            print(b.strip())
+except Exception:
+    pass
+PY
+)
+        if [ -n "$BR_REMOTE" ]; then
+          GIT_BRANCH="$BR_REMOTE"
+          echo "[entrypoint] Using git_branch from origin/main config.yaml: $GIT_BRANCH"
+        else
+          echo "[entrypoint] origin/main config.yaml parsed but no git_branch found"
+        fi
+        rm -f /tmp/entrypoint_remote_config.yaml || true
+      else
+        echo "[entrypoint] origin/main does not contain config.yaml or fetch failed to read it"
+      fi
+    else
+      echo "[entrypoint] git fetch origin main failed (network or remote); will proceed with default branch: $GIT_BRANCH"
     fi
   fi
 
-  # Fetch and checkout branch
-  git fetch origin "$GIT_BRANCH"
-  git reset --hard "origin/$GIT_BRANCH"
+  # Fetch and checkout chosen branch
+  echo "[entrypoint] Fetching and resetting to branch: $GIT_BRANCH"
+  git fetch origin "$GIT_BRANCH" || true
+  git reset --hard "origin/$GIT_BRANCH" || true
   echo "[entrypoint] Project updated to latest commit on branch '$GIT_BRANCH': $(git rev-parse --short HEAD)"
 
   # IMPORTANT: If project already exists and updated, skip the command's git clone part
