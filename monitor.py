@@ -41,6 +41,7 @@ class InstanceMonitor:
         self.instance_id = instance_id
         self.client = VastAIClient()
         self.last_log_size = 0
+        self.last_log_lines = []        # Track previous log lines for comparison
         self.success_marker = "VASTAI_PIPELINE_COMPLETED_SUCCESSFULLY"
         self.initial_success_count = 0  # Count of success markers at monitor start
         self.seen_new_success = False   # Track if we've seen a NEW success marker
@@ -149,66 +150,55 @@ class InstanceMonitor:
 
                     if logs:
                         lines = logs.split('\n')
-                        current_size = len(logs)
+                        current_lines = [l for l in lines if l.strip()]  # Filter empty lines
 
-                        # Detect if this is the first successful log fetch
-                        is_first_successful_check = not self.first_logs_shown
-
-                        # On first SUCCESSFUL check (could be check #1 or later after retries)
-                        if is_first_successful_check:
+                        # On first successful check, initialize and show recent logs
+                        if not self.first_logs_shown:
                             self.first_logs_shown = True
                             self.initial_success_count = logs.count(self.success_marker)
                             if self.initial_success_count > 0:
                                 print(f"\n  ℹ️  Found {self.initial_success_count} old success marker(s) from previous run(s)")
                                 print(f"  ⏳ Waiting for NEW completion...")
 
-                        # Show logs if:
-                        # 1. First successful check (show initial logs)
-                        # 2. Logs size increased (new content)
-                        # 3. Every 5 checks even if no change (keep user informed)
-                        # 4. If last_log_size is 0 but we have logs (recovery from "no logs" state)
-                        should_show_logs = (
-                            is_first_successful_check or
-                            current_size > self.last_log_size or
-                            check_count % 5 == 0 or  # Changed from 10 to 5 for more frequent updates
-                            (self.last_log_size == 0 and current_size > 0)  # NEW: Recovery condition
-                        )
+                            # Show last 50 lines on first check (like monitor_instance.py)
+                            print(f"\n--- Recent logs ({min(len(current_lines), 50)} lines) ---")
+                            for line in current_lines[-50:]:
+                                print(line)
+                            print("---\n")
 
-                        if should_show_logs:
-                            # Determine how many lines to show
-                            if is_first_successful_check:
-                                # First successful check: show initial logs
-                                new_lines = lines if full_logs else lines[-100:]
-                                header = f"📋 Initial logs (last {len([l for l in new_lines if l.strip()])} lines):"
-                            elif current_size > self.last_log_size:
-                                # New content: show recent additions
-                                new_lines = lines[-30:]  # Increased from 20 to 30
-                                header = "📋 New logs:"
+                            self.last_log_lines = current_lines
+                            self.last_log_size = len(logs)
+
+                        else:
+                            # Find new lines by comparing with last state
+                            new_lines = []
+                            if self.last_log_lines:
+                                # Find last marker from previous logs
+                                last_non_empty = self.last_log_lines[-5:] if len(self.last_log_lines) >= 5 else self.last_log_lines
+
+                                if last_non_empty:
+                                    last_marker = last_non_empty[-1]
+                                    try:
+                                        # Find where last marker is in current logs
+                                        marker_idx = len(current_lines) - 1 - current_lines[::-1].index(last_marker)
+                                        new_lines = current_lines[marker_idx + 1:]
+                                    except ValueError:
+                                        # Marker not found - show last 30 lines as "new"
+                                        new_lines = current_lines[-30:]
+                                else:
+                                    new_lines = current_lines[-30:]
                             else:
-                                # Periodic update: show last few lines
-                                new_lines = lines[-15:]  # Increased from 10 to 15
-                                header = f"📋 Recent logs (periodic check #{check_count}):"
+                                new_lines = current_lines[-30:]
 
-                            # Only print if there are non-empty lines
-                            non_empty_lines = [l for l in new_lines if l.strip()]
-                            if non_empty_lines:
-                                print(f"\n{header}")
-                                for line in non_empty_lines:
-                                    # Extract timestamp from log line if present, otherwise use current time
-                                    log_timestamp = current_time
-                                    # Look for [HH:MM:SS] pattern in the log line
-                                    timestamp_match = re.search(r'\[(\d{2}:\d{2}:\d{2})\]', line)
-                                    if timestamp_match:
-                                        log_timestamp = timestamp_match.group(1)
-                                    print(f"  [{log_timestamp}] {line}")
-                                print()  # Empty line for readability
-                            else:
-                                # Debug: No non-empty lines found
-                                if is_first_successful_check or check_count % 5 == 0:
-                                    print(f"\n  ⚠️  No readable log lines found (size: {current_size} bytes)")
+                            # Print new lines if any
+                            if new_lines:
+                                for line in new_lines:
+                                    print(line)
+                                print()  # Empty line after block
 
-                        # ALWAYS update last_log_size to track changes
-                        self.last_log_size = current_size
+                            # Update state
+                            self.last_log_lines = current_lines
+                            self.last_log_size = len(logs)
 
                         # Check for NEW completion (count must increase AND we need recent upload)
                         current_success_count = logs.count(self.success_marker)

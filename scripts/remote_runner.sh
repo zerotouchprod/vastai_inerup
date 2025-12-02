@@ -265,11 +265,10 @@ if [ -d "/workspace/project/external/RIFE" ]; then
     echo "[remote_runner] RIFE directory exists but RIFE_HDv3.py missing - re-cloning"
     rm -rf /workspace/project/external/RIFE
     mkdir -p /workspace/project/external
-    # Clone the TRAINING repo which has RIFE_HDv3.py (not the arxiv inference-only repo)
-    # Use the v4.6 tag which has the correct structure with RIFE_HDv3.py in model/
-    git clone --depth 1 --branch v4.6 https://github.com/hzwer/RIFE.git /workspace/project/external/RIFE
+    # Clone the TRAINING repo (shallow clone of main branch, then checkout tag)
+    git clone --depth 1 https://github.com/hzwer/RIFE.git /workspace/project/external/RIFE
 
-    # Copy RIFE_HDv3.py and IFNet_HDv3.py from model/ to root for compatibility
+    # Files are in model/ subdirectory - copy to root for compatibility
     if [ -f "/workspace/project/external/RIFE/model/RIFE_HDv3.py" ]; then
       cp /workspace/project/external/RIFE/model/RIFE_HDv3.py /workspace/project/external/RIFE/
       cp /workspace/project/external/RIFE/model/IFNet_HDv3.py /workspace/project/external/RIFE/ 2>/dev/null || true
@@ -290,11 +289,10 @@ if [ -d "/workspace/project/external/RIFE" ]; then
 else
   echo "[remote_runner] Cloning RIFE..."
   mkdir -p /workspace/project/external
-  # Clone the TRAINING repo which has RIFE_HDv3.py (not the arxiv inference-only repo)
-  # Use the v4.6 tag which has the correct structure with RIFE_HDv3.py in model/
-  git clone --depth 1 --branch v4.6 https://github.com/hzwer/RIFE.git /workspace/project/external/RIFE
+  # Clone the TRAINING repo (shallow clone of main branch)
+  git clone --depth 1 https://github.com/hzwer/RIFE.git /workspace/project/external/RIFE
 
-  # Copy RIFE_HDv3.py and IFNet_HDv3.py from model/ to root for compatibility
+  # Files are in model/ subdirectory - copy to root for compatibility
   if [ -f "/workspace/project/external/RIFE/model/RIFE_HDv3.py" ]; then
     cp /workspace/project/external/RIFE/model/RIFE_HDv3.py /workspace/project/external/RIFE/
     cp /workspace/project/external/RIFE/model/IFNet_HDv3.py /workspace/project/external/RIFE/ 2>/dev/null || true
