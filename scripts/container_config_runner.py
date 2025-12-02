@@ -587,6 +587,20 @@ def run_pipeline(input_path: str, output_dir: str, config: dict) -> str:
         pipeline_script = '/workspace/project/pipeline.py'
         print(f"⚠️  Warning: pipeline_v2.py not found, using legacy pipeline.py")
 
+    # Optional strict enforcement: if env REQUIRE_PIPELINE_V2=1, fail if v2 isn't present
+    if os.environ.get('REQUIRE_PIPELINE_V2','0') == '1':
+        if not os.path.exists('/workspace/project/pipeline_v2.py'):
+            print(f"ERROR: REQUIRE_PIPELINE_V2=1 but /workspace/project/pipeline_v2.py not found in repo checkout. Aborting.")
+            print("Please ensure pipeline_v2.py is present on the checked-out branch and push changes.")
+            # list files for debugging
+            try:
+                print("Listing repo root files:")
+                for l in os.listdir('/workspace/project'):
+                    print(" - "+l)
+            except Exception:
+                pass
+            sys.exit(2)
+
     cmd = [
         'python3', pipeline_script,
         '--input', input_path,
@@ -607,7 +621,8 @@ def run_pipeline(input_path: str, output_dir: str, config: dict) -> str:
     # Print start time
     import datetime
     start_time = datetime.datetime.now()
-    print(f"[{ts()}] 🚀 Starting pipeline.py...", flush=True)
+    pipeline_base = os.path.basename(pipeline_script)
+    print(f"[{ts()}] 🚀 Starting {pipeline_base}...", flush=True)
     print("", flush=True)
     sys.stdout.flush()
 
