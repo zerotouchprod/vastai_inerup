@@ -28,6 +28,7 @@ import argparse
 import yaml
 import logging
 import subprocess
+import shlex
 from pathlib import Path
 from typing import List, Optional, Dict, Any
 from datetime import datetime
@@ -357,11 +358,15 @@ class BatchProcessor:
 
         if use_force_sync:
             # Use the helper script in the repo to safely sync branch and run remote_runner
-            # Force the helper to use the desired branch by setting GIT_BRANCH env
-            # The helper itself will clone if /workspace/project is missing.
+            # If /workspace/project does not exist in the image (first-run), clone the desired branch first,
+            # then execute the helper. This avoids "No such file or directory" when helper is referenced
+            # but repo hasn't been cloned by the image entrypoint.
+            safe_repo = shlex.quote(git_repo)
+            safe_branch = shlex.quote(git_branch)
             shell_cmd = (
                 "bash -lc '"
-                f"GIT_BRANCH={git_branch} /workspace/project/scripts/force_sync_and_run.sh'"
+                f"if [ ! -d /workspace/project/.git ]; then git clone --depth 1 -b {safe_branch} {safe_repo} /workspace/project || git clone --depth 1 {safe_repo} /workspace/project; fi && "
+                f"GIT_BRANCH={safe_branch} /workspace/project/scripts/force_sync_and_run.sh'"
             )
         else:
             # Legacy behavior: clone fresh and run remote_runner.sh
