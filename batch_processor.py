@@ -351,14 +351,24 @@ class BatchProcessor:
         git_repo = self.config.get('git_repo', 'https://github.com/zerotouchprod/vastai_inerup.git')
         git_branch = self.config.get('git_branch', 'oop2')
 
-        # Build shell command (legacy format) - will be passed as args_str
-        # Format: git clone fresh, then run remote_runner.sh
-        git_clone_cmd = f'cd / && rm -rf /workspace/project && git clone -b {git_branch} {git_repo} /workspace/project'
-        runner_cmd = 'bash /workspace/project/scripts/remote_runner.sh'
-        full_cmd = f'{git_clone_cmd} && {runner_cmd}'
+        # Determine whether to use force_sync helper on instance startup
+        batch_cfg = self.config.get('batch', {}) or {}
+        use_force_sync = bool(batch_cfg.get('use_force_sync_onstart', True))
 
-        # Wrap in bash -c
-        shell_cmd = f"bash -c '{full_cmd}'"
+        if use_force_sync:
+            # Use the helper script in the repo to safely sync branch and run remote_runner
+            # Force the helper to use the desired branch by setting GIT_BRANCH env
+            # The helper itself will clone if /workspace/project is missing.
+            shell_cmd = (
+                "bash -lc '"
+                f"GIT_BRANCH={git_branch} /workspace/project/scripts/force_sync_and_run.sh'"
+            )
+        else:
+            # Legacy behavior: clone fresh and run remote_runner.sh
+            git_clone_cmd = f'cd / && rm -rf /workspace/project && git clone -b {git_branch} {git_repo} /workspace/project'
+            runner_cmd = 'bash /workspace/project/scripts/remote_runner.sh'
+            full_cmd = f'{git_clone_cmd} && {runner_cmd}'
+            shell_cmd = f"bash -c '{full_cmd}'"
 
         instance_config = VastInstanceConfig(
             image=self.config.get('image', ''),
@@ -605,4 +615,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
