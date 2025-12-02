@@ -29,7 +29,6 @@ except ImportError:
 
 from infrastructure.vastai.client import VastAIClient
 from shared.logging import get_logger
-import re
 
 logger = get_logger(__name__)
 
@@ -40,16 +39,9 @@ class InstanceMonitor:
     def __init__(self, instance_id: int):
         self.instance_id = instance_id
         self.client = VastAIClient()
-        self.last_log_size = 0
-        self.last_log_lines = []        # Track previous log lines for comparison
-        self.success_marker = "VASTAI_PIPELINE_COMPLETED_SUCCESSFULLY"
-        self.initial_success_count = 0  # Count of success markers at monitor start
-        self.seen_new_success = False   # Track if we've seen a NEW success marker
-        self.upload_url_marker = "B2 upload successful"
-        self.last_upload_time = None    # Track when we saw the last upload
-        self.consecutive_errors = 0     # Track consecutive API errors for backoff
-        self.max_backoff = 60           # Max backoff delay in seconds
-        self.first_logs_shown = False   # Track if we've shown initial logs
+        self.last_log_lines = []        # Track previous log lines to show only new ones
+        self.consecutive_errors = 0     # Track API errors for backoff
+        self.max_backoff = 60           # Max backoff delay
 
     def get_info(self):
         """Get instance info."""
@@ -80,15 +72,6 @@ class InstanceMonitor:
         print(f"{'='*70}\n")
         return True
 
-    def extract_result_url(self, logs: str) -> str:
-        """Extract result URL from logs."""
-        url_pattern = r'https://[^\s]+'
-        urls = re.findall(url_pattern, logs)
-
-        for url in reversed(urls):
-            if 'noxfvr-videos' in url and any(x in url for x in ['output/', 'both/', 'upscales/', 'interps/']):
-                return url
-        return None
 
     def monitor(self, tail: int = 1000, interval: int = 5, auto_destroy: bool = False, full_logs: bool = False):
         """
@@ -144,148 +127,50 @@ class InstanceMonitor:
                     state_indicator = "🔄" if info.actual_status not in ['stopped', 'exited'] else "💤"
                     print(f"[{current_time}] {state_indicator} Check #{check_count}...", end='\r', flush=True)
 
-                # Get logs
+                # Get logs - SIMPLE: just get them and show new ones
                 try:
                     logs = self.client.get_instance_logs(self.instance_id, tail=tail)
 
                     if logs:
                         lines = logs.split('\n')
-                        current_lines = [l for l in lines if l.strip()]  # Filter empty lines
+                        current_lines = [l.rstrip() for l in lines if l.strip()]  # Clean lines
 
-                        # On first successful check, initialize and show recent logs
-                        if not self.first_logs_shown:
-                            self.first_logs_shown = True
-                            self.initial_success_count = logs.count(self.success_marker)
-                            if self.initial_success_count > 0:
-                                print(f"\n  ℹ️  Found {self.initial_success_count} old success marker(s) from previous run(s)")
-                                print(f"  ⏳ Waiting for NEW completion...")
-
-                            # Show last 50 lines on first check (like monitor_instance.py)
-                            print(f"\n--- Recent logs ({min(len(current_lines), 50)} lines) ---")
-                            for line in current_lines[-50:]:
+                        if not self.last_log_lines:
+                            # First time - show all available logs
+                            print()
+                            for line in current_lines:
                                 print(line)
-                            print("---\n")
-
+                            print()
                             self.last_log_lines = current_lines
-                            self.last_log_size = len(logs)
-
                         else:
-                            # Find new lines by comparing with last state
+                            # Find new lines
                             new_lines = []
-                            if self.last_log_lines:
-                                # Find last marker from previous logs
-                                last_non_empty = self.last_log_lines[-5:] if len(self.last_log_lines) >= 5 else self.last_log_lines
+                            if current_lines and self.last_log_lines:
+                                # Find last line from previous check
+                                try:
+                                    last_line = self.last_log_lines[-1]
+                                    idx = current_lines.index(last_line)
+                                    new_lines = current_lines[idx + 1:]
+                                except (ValueError, IndexError):
+                                    # Can't find marker - show last 20 lines
+                                    new_lines = current_lines[-20:]
+                            elif current_lines:
+                                # Have current but no previous - show all
+                                new_lines = current_lines
 
-                                if last_non_empty:
-                                    last_marker = last_non_empty[-1]
-                                    try:
-                                        # Find where last marker is in current logs
-                                        marker_idx = len(current_lines) - 1 - current_lines[::-1].index(last_marker)
-                                        new_lines = current_lines[marker_idx + 1:]
-                                    except ValueError:
-                                        # Marker not found - show last 30 lines as "new"
-                                        new_lines = current_lines[-30:]
-                                else:
-                                    new_lines = current_lines[-30:]
-                            else:
-                                new_lines = current_lines[-30:]
-
-                            # Print new lines if any
+                            # Print new lines
                             if new_lines:
                                 for line in new_lines:
                                     print(line)
-                                print()  # Empty line after block
+                                print()
 
                             # Update state
                             self.last_log_lines = current_lines
-                            self.last_log_size = len(logs)
 
-                        # Check for NEW completion (count must increase AND we need recent upload)
-                        current_success_count = logs.count(self.success_marker)
-
-                        # Track upload events - this is the definitive sign of new completion
-                        has_new_upload = False
-                        recent_lines = lines[-100:]
-                        for i, line in enumerate(recent_lines):
-                            if self.upload_url_marker in line:
-                                # Found upload success marker
-                                upload_time = current_time
-                                timestamp_match = re.search(r'\[(\d{2}:\d{2}:\d{2})\]', line)
-                                if timestamp_match:
-                                    upload_time = timestamp_match.group(1)
-
-                                # Check if this is a NEW upload (different time than last)
-                                if self.last_upload_time != upload_time:
-                                    self.last_upload_time = upload_time
-                                    has_new_upload = True
-                                    print(f"\n  ✅ Detected new upload at {upload_time}")
-                                break
-
-                        # Only consider completion if we detected a new upload event
-                        # The upload event is the definitive marker - it means:
-                        # 1. Pipeline completed successfully
-                        # 2. File was uploaded to B2
-                        # 3. This is a NEW completion (not from previous run)
-                        if has_new_upload and not self.seen_new_success:
-                            self.seen_new_success = True  # Mark as seen
-                            result_url = self.extract_result_url(logs)
-
-                            print(f"\n{'='*70}")
-                            print("🎉 SUCCESS! NEW processing completed!")
-                            print(f"{'='*70}")
-                            print(f"  Old completions: {self.initial_success_count}")
-                            print(f"  New completions: {current_success_count - self.initial_success_count}")
-
-                            if result_url:
-                                print(f"\n📥 Result URL:")
-                                print(f"   {result_url}\n")
-
-                            print(f"Instance: #{self.instance_id}")
-                            print(f"GPU:      {info.gpu_name}")
-                            print(f"Price:    ${info.price_per_hour:.4f}/hr")
-
-                            # Stop the instance (not destroy)
-                            print(f"\n⏹️  Stopping instance...")
-                            try:
-                                if self.client.stop_instance(self.instance_id):
-                                    print(f"✅ Instance #{self.instance_id} stopped")
-                                else:
-                                    print(f"⚠️  Failed to stop instance (may not be running)")
-                            except Exception as e:
-                                print(f"⚠️  Error stopping instance: {e}")
-
-                            if auto_destroy:
-                                print(f"\n🧹 Auto-destroying instance...")
-                                if self.client.destroy_instance(self.instance_id):
-                                    print(f"✅ Instance #{self.instance_id} destroyed")
-                                    print(f"    Monitor will keep running (Press Ctrl+C to stop)")
-                                else:
-                                    print(f"⚠️  Failed to destroy instance")
-                            else:
-                                print(f"\n💡 To destroy instance:")
-                                print(f"   python monitor.py {self.instance_id} --destroy")
-
-                            # Continue monitoring - don't break the loop
-                            print(f"\n🔄 Continuing to monitor logs and status...")
-                            print(f"   Press Ctrl+C to stop monitoring\n")
-
-                            # Reset for next completion
-                            self.initial_success_count = current_success_count
-                            self.seen_new_success = False
-
-                        # Check for errors
-                        if any(marker in logs for marker in ['ERROR', 'FAILED', 'Exception']):
-                            # Show error context
-                            error_lines = [l for l in lines[-30:] if any(e in l for e in ['ERROR', 'FAILED', 'Exception'])]
-                            if error_lines:
-                                print(f"\n⚠️  Errors detected:")
-                                for line in error_lines[-5:]:
-                                    print(f"  {line}")
-                                print()
                     else:
-                        # No logs available
-                        if not self.first_logs_shown or check_count % 5 == 0:
-                            print(f"\n  ⚠️  No logs available yet (container may be starting...) [Check #{check_count}]\n")
+                        # No logs yet
+                        if check_count % 3 == 0:
+                            print(f"  ⏳ Waiting for logs... (check #{check_count})")
 
                 except Exception as e:
                     print(f"[{current_time}] ⚠️  Error fetching logs: {e}")

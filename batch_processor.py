@@ -542,20 +542,19 @@ def main():
                 logger.info(f"🔄 Auto-starting monitor for instance #{instance_id}")
                 logger.info(f"{'='*60}\n")
 
-                monitor_script = Path(__file__).parent / 'monitor.py'
+                monitor_script = Path(__file__).parent / 'monitor_instance.py'
                 try:
                     subprocess.run([
                         sys.executable,
                         str(monitor_script),
-                        str(instance_id),
-                        '--full'
+                        str(instance_id)
                     ])
                 except KeyboardInterrupt:
                     logger.info("\n[STOP] Monitor stopped by user")
                 except Exception as e:
                     logger.error(f"\n[ERROR] Failed to start monitor: {e}")
                     logger.info(f"You can manually start it with:")
-                    logger.info(f"  python monitor.py {instance_id} --full")
+                    logger.info(f"  python monitor_instance.py {instance_id}")
 
         elif input_dir:
             # Batch
@@ -580,23 +579,22 @@ def main():
                     logger.info(f"🔄 Auto-starting monitor for instance #{instance_id}")
                     logger.info(f"{'='*60}\n")
 
-                    # Launch monitor.py with --full flag
-                    monitor_script = Path(__file__).parent / 'monitor.py'
+                    # Launch monitor_instance.py (working version)
+                    monitor_script = Path(__file__).parent / 'monitor_instance.py'
                     try:
                         # Use subprocess.run to replace current process with monitor
                         # This makes Ctrl+C work properly
                         subprocess.run([
                             sys.executable,
                             str(monitor_script),
-                            str(instance_id),
-                            '--full'
+                            str(instance_id)
                         ])
                     except KeyboardInterrupt:
                         logger.info("\n[STOP] Monitor stopped by user")
                     except Exception as e:
                         logger.error(f"\n[ERROR] Failed to start monitor: {e}")
                         logger.info(f"You can manually start it with:")
-                        logger.info(f"  python monitor.py {instance_id} --full")
+                        logger.info(f"  python monitor_instance.py {instance_id}")
 
     except Exception as e:
         logger.error(f"\n[ERROR] Error: {e}")
