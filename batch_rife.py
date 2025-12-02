@@ -311,19 +311,9 @@ for i in range(len(imgs)-1):
             try:
                 with torch.no_grad():
                     mid = model.inference(t0, t1)
-                # normalize returned mid size to match inputs
-                try:
-                    ref_h, ref_w = t0.shape[2], t0.shape[3]
-                    mh, mw = mid.shape[2], mid.shape[3]
-                    if mh != ref_h or mw != ref_w:
-                        pad_h = max(0, ref_h - mh)
-                        pad_w = max(0, ref_w - mw)
-                        if pad_h > 0 or pad_w > 0:
-                            mid = F.pad(mid, (0, pad_w, 0, pad_h))
-                        if mid.shape[2] > ref_h or mid.shape[3] > ref_w:
-                            mid = mid[:, :, :ref_h, :ref_w]
-                except Exception:
-                    pass
+                # CRITICAL: Crop back to ORIGINAL size (h, w) to avoid jumping frames
+                # mid might be padded size, need to crop to original dimensions
+                mid = mid[:, :, :h, :w]
             except Exception:
                 print('ERROR: inference call failed; tensor shapes:')
                 try:
@@ -356,6 +346,8 @@ for i in range(len(imgs)-1):
             for k in range(1, mids_per_pair+1):
                 ratio = float(k) / float(mids_per_pair + 1)
                 mid = inference_with_ratio(model, t0, t1, ratio)
+                # CRITICAL: Crop back to ORIGINAL size (h, w) to avoid jumping frames
+                mid = mid[:, :, :h, :w]
                 # save with index
                 try:
                     out_np = (mid[0] * 255.0).clamp(0,255).byte().cpu().numpy().transpose(1,2,0)
