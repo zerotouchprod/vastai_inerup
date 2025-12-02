@@ -266,7 +266,16 @@ if [ -d "/workspace/project/external/RIFE" ]; then
     rm -rf /workspace/project/external/RIFE
     mkdir -p /workspace/project/external
     # Clone the TRAINING repo which has RIFE_HDv3.py (not the arxiv inference-only repo)
-    git clone --depth 1 https://github.com/hzwer/RIFE.git /workspace/project/external/RIFE
+    # Use the v4.6 tag which has the correct structure with RIFE_HDv3.py in model/
+    git clone --depth 1 --branch v4.6 https://github.com/hzwer/RIFE.git /workspace/project/external/RIFE
+
+    # Copy RIFE_HDv3.py and IFNet_HDv3.py from model/ to root for compatibility
+    if [ -f "/workspace/project/external/RIFE/model/RIFE_HDv3.py" ]; then
+      cp /workspace/project/external/RIFE/model/RIFE_HDv3.py /workspace/project/external/RIFE/
+      cp /workspace/project/external/RIFE/model/IFNet_HDv3.py /workspace/project/external/RIFE/ 2>/dev/null || true
+      cp /workspace/project/external/RIFE/model/warplayer.py /workspace/project/external/RIFE/ 2>/dev/null || true
+      echo "[remote_runner] Copied RIFE model files to root directory"
+    fi
 
     # Copy preinstalled RIFE models from image to RIFE repo
     if [ -d "/opt/rife_models/train_log" ] && [ -n "$(ls -A /opt/rife_models/train_log 2>/dev/null)" ]; then
@@ -282,7 +291,16 @@ else
   echo "[remote_runner] Cloning RIFE..."
   mkdir -p /workspace/project/external
   # Clone the TRAINING repo which has RIFE_HDv3.py (not the arxiv inference-only repo)
-  git clone --depth 1 https://github.com/hzwer/RIFE.git /workspace/project/external/RIFE
+  # Use the v4.6 tag which has the correct structure with RIFE_HDv3.py in model/
+  git clone --depth 1 --branch v4.6 https://github.com/hzwer/RIFE.git /workspace/project/external/RIFE
+
+  # Copy RIFE_HDv3.py and IFNet_HDv3.py from model/ to root for compatibility
+  if [ -f "/workspace/project/external/RIFE/model/RIFE_HDv3.py" ]; then
+    cp /workspace/project/external/RIFE/model/RIFE_HDv3.py /workspace/project/external/RIFE/
+    cp /workspace/project/external/RIFE/model/IFNet_HDv3.py /workspace/project/external/RIFE/ 2>/dev/null || true
+    cp /workspace/project/external/RIFE/model/warplayer.py /workspace/project/external/RIFE/ 2>/dev/null || true
+    echo "[remote_runner] Copied RIFE model files to root directory"
+  fi
 
   # Copy preinstalled RIFE models from image to RIFE repo
   if [ -d "/opt/rife_models/train_log" ] && [ -n "$(ls -A /opt/rife_models/train_log 2>/dev/null)" ]; then

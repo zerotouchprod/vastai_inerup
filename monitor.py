@@ -46,6 +46,9 @@ class InstanceMonitor:
         self.seen_new_success = False   # Track if we've seen a NEW success marker
         self.upload_url_marker = "B2 upload successful"
         self.last_upload_time = None    # Track when we saw the last upload
+        self.consecutive_errors = 0     # Track consecutive API errors for backoff
+        self.max_backoff = 60           # Max backoff delay in seconds
+        self.first_logs_shown = False   # Track if we've shown initial logs
 
     def get_info(self):
         """Get instance info."""
@@ -86,7 +89,7 @@ class InstanceMonitor:
                 return url
         return None
 
-    def monitor(self, tail: int = 200, interval: int = 5, auto_destroy: bool = False):
+    def monitor(self, tail: int = 1000, interval: int = 5, auto_destroy: bool = False, full_logs: bool = False):
         """
         Monitor instance logs in real-time.
 
@@ -94,6 +97,7 @@ class InstanceMonitor:
             tail: Number of lines to retrieve
             interval: Refresh interval in seconds
             auto_destroy: Automatically destroy instance on completion
+            full_logs: Show all logs on first check (not just last 50)
         """
         if not self.print_header():
             return
@@ -111,8 +115,21 @@ class InstanceMonitor:
                 # Get instance status
                 info = self.get_info()
                 if not info:
-                    print(f"\n❌ Instance #{self.instance_id} no longer exists")
-                    break
+                    # Don't exit - implement exponential backoff
+                    self.consecutive_errors += 1
+                    backoff_delay = min(interval * (2 ** (self.consecutive_errors - 1)), self.max_backoff)
+
+                    print(f"\n⚠️  Failed to get instance info (API error or rate limit)")
+                    print(f"    Retry attempt #{self.consecutive_errors}, waiting {backoff_delay:.0f}s...")
+                    print(f"    (Press Ctrl+C to stop monitoring)")
+
+                    time.sleep(backoff_delay)
+                    continue
+
+                # Reset error counter on success
+                if self.consecutive_errors > 0:
+                    print(f"\n✅ Connection restored after {self.consecutive_errors} failed attempts")
+                    self.consecutive_errors = 0
 
                 # Show status changes
                 status_str = f"{info.actual_status} / {info.status}"
@@ -122,7 +139,9 @@ class InstanceMonitor:
 
                 # Progress indicator
                 if check_count % 2 == 0:
-                    print(f"[{current_time}] 🔄 Check #{check_count}...", end='\r', flush=True)
+                    # Show different indicator based on instance state
+                    state_indicator = "🔄" if info.actual_status not in ['stopped', 'exited'] else "💤"
+                    print(f"[{current_time}] {state_indicator} Check #{check_count}...", end='\r', flush=True)
 
                 # Get logs
                 try:
@@ -130,31 +149,59 @@ class InstanceMonitor:
 
                     if logs:
                         lines = logs.split('\n')
+                        current_size = len(logs)
 
-                        # On first check, count existing success markers (baseline)
-                        if check_count == 1:
+                        # Detect if this is the first successful log fetch
+                        is_first_successful_check = not self.first_logs_shown
+
+                        # On first SUCCESSFUL check (could be check #1 or later after retries)
+                        if is_first_successful_check:
+                            self.first_logs_shown = True
                             self.initial_success_count = logs.count(self.success_marker)
                             if self.initial_success_count > 0:
-                                print(f"  ℹ️  Found {self.initial_success_count} old success marker(s) from previous run(s)")
-                                print(f"  ⏳ Waiting for NEW completion...\n")
+                                print(f"\n  ℹ️  Found {self.initial_success_count} old success marker(s) from previous run(s)")
+                                print(f"  ⏳ Waiting for NEW completion...")
 
-                        # Show new lines (simple approach - compare total size)
-                        current_size = len(logs)
-                        if current_size > self.last_log_size:
-                            # Show recent new lines
-                            new_lines = lines[-50:] if check_count == 1 else lines[-10:]
-                            for line in new_lines:
-                                if line.strip():
+                        # Show logs if:
+                        # 1. First successful check (show initial logs)
+                        # 2. Logs size increased (new content)
+                        # 3. Every 10 checks even if no change (keep user informed)
+                        should_show_logs = (
+                            is_first_successful_check or
+                            current_size > self.last_log_size or
+                            check_count % 10 == 0
+                        )
+
+                        if should_show_logs:
+                            # Determine how many lines to show
+                            if is_first_successful_check:
+                                # First successful check: show initial logs
+                                new_lines = lines if full_logs else lines[-100:]
+                                header = f"📋 Initial logs (last {len([l for l in new_lines if l.strip()])} lines):"
+                            elif current_size > self.last_log_size:
+                                # New content: show recent additions
+                                new_lines = lines[-20:]
+                                header = "📋 New logs:"
+                            else:
+                                # Periodic update: show last few lines
+                                new_lines = lines[-10:]
+                                header = "📋 Recent logs (periodic check):"
+
+                            # Only print if there are non-empty lines
+                            non_empty_lines = [l for l in new_lines if l.strip()]
+                            if non_empty_lines:
+                                print(f"\n{header}")
+                                for line in non_empty_lines:
                                     # Extract timestamp from log line if present, otherwise use current time
                                     log_timestamp = current_time
                                     # Look for [HH:MM:SS] pattern in the log line
                                     timestamp_match = re.search(r'\[(\d{2}:\d{2}:\d{2})\]', line)
                                     if timestamp_match:
                                         log_timestamp = timestamp_match.group(1)
-                                    print(f"  [{log_timestamp}] [LOG] {line}")
+                                    print(f"  [{log_timestamp}] {line}")
+                                print()  # Empty line for readability
 
                             self.last_log_size = current_size
-                            print()  # Empty line for readability
 
                         # Check for NEW completion (count must increase AND we need recent upload)
                         current_success_count = logs.count(self.success_marker)
@@ -214,10 +261,7 @@ class InstanceMonitor:
                                 print(f"\n🧹 Auto-destroying instance...")
                                 if self.client.destroy_instance(self.instance_id):
                                     print(f"✅ Instance #{self.instance_id} destroyed")
-                                    print(f"\n{'='*70}")
-                                    print("Monitoring finished (instance destroyed)")
-                                    print(f"{'='*70}\n")
-                                    return  # Exit after destroy
+                                    print(f"    Monitor will keep running (Press Ctrl+C to stop)")
                                 else:
                                     print(f"⚠️  Failed to destroy instance")
                             else:
@@ -241,35 +285,32 @@ class InstanceMonitor:
                                 for line in error_lines[-5:]:
                                     print(f"  {line}")
                                 print()
+                    else:
+                        # No logs available
+                        if check_count == 1:
+                            print(f"\n  ⚠️  No logs available yet (container may be starting...)\n")
 
                 except Exception as e:
                     print(f"[{current_time}] ⚠️  Error fetching logs: {e}")
 
-                # Check if stopped
+                # Check if stopped - but DON'T exit, just inform
                 if info.actual_status in ['stopped', 'exited']:
-                    print(f"\n⚠️  Instance stopped (status: {info.actual_status})")
-
-                    # Show final logs
-                    logs = self.client.get_instance_logs(self.instance_id, tail=50)
-                    if logs:
-                        print("\nFinal logs:")
-                        for line in logs.split('\n')[-20:]:
-                            if line.strip():
-                                print(f"  {line}")
-
-                    break
+                    # Only show this message once when status changes
+                    if last_status and not any(x in last_status for x in ['stopped', 'exited']):
+                        print(f"\n⚠️  Instance stopped (status: {info.actual_status})")
+                        print(f"    Still monitoring... (logs won't update until instance restarts)")
+                        print(f"    Press Ctrl+C to stop monitoring\n")
 
                 time.sleep(interval)
 
         except KeyboardInterrupt:
-            print(f"\n\n⏸️  Monitoring stopped by user")
+            print(f"\n\n⏸️  Monitoring stopped by user (Ctrl+C)")
             print(f"\n💡 Commands:")
             print(f"   Resume:  python monitor.py {self.instance_id}")
             print(f"   Destroy: python monitor.py {self.instance_id} --destroy")
-
-        print(f"\n{'='*70}")
-        print("Monitoring finished")
-        print(f"{'='*70}\n")
+            print(f"\n{'='*70}")
+            print("Monitoring finished")
+            print(f"{'='*70}\n")
 
 
 def main():
@@ -281,8 +322,11 @@ Examples:
   # Monitor instance
   python monitor.py 28397367
   
-  # With custom interval
-  python monitor.py 28397367 --interval 10
+  # Show all logs on startup (not just recent)
+  python monitor.py 28397367 --full
+  
+  # With custom interval and more log lines
+  python monitor.py 28397367 --interval 10 --tail 2000
   
   # Auto-destroy on completion
   python monitor.py 28397367 --auto-destroy
@@ -293,10 +337,11 @@ Examples:
     )
 
     parser.add_argument('instance_id', type=int, help='Instance ID to monitor')
-    parser.add_argument('--tail', type=int, default=200, help='Number of log lines (default: 200)')
+    parser.add_argument('--tail', type=int, default=1000, help='Number of log lines (default: 1000)')
     parser.add_argument('--interval', type=int, default=5, help='Refresh interval in seconds (default: 5)')
     parser.add_argument('--auto-destroy', action='store_true', help='Auto-destroy on completion')
     parser.add_argument('--destroy', action='store_true', help='Just destroy instance and exit')
+    parser.add_argument('--full', action='store_true', help='Show all logs on first check')
 
     args = parser.parse_args()
 
@@ -316,7 +361,8 @@ Examples:
     monitor.monitor(
         tail=args.tail,
         interval=args.interval,
-        auto_destroy=args.auto_destroy
+        auto_destroy=args.auto_destroy,
+        full_logs=args.full
     )
 
 
