@@ -329,6 +329,9 @@ fi
 if [ -f "/workspace/project/run_rife_pytorch.sh" ]; then
   chmod +x /workspace/project/run_rife_pytorch.sh || true
 fi
+if [ -f "/workspace/project/scripts/force_upload_and_fail.sh" ]; then
+  chmod +x /workspace/project/scripts/force_upload_and_fail.sh || true
+fi
 
 # GPU diagnostics
 echo ""
