@@ -165,11 +165,11 @@ class InstanceMonitor:
                         # Show logs if:
                         # 1. First successful check (show initial logs)
                         # 2. Logs size increased (new content)
-                        # 3. Every 10 checks even if no change (keep user informed)
+                        # 3. Every 5 checks even if no change (keep user informed)
                         should_show_logs = (
                             is_first_successful_check or
                             current_size > self.last_log_size or
-                            check_count % 10 == 0
+                            check_count % 5 == 0  # Changed from 10 to 5 for more frequent updates
                         )
 
                         if should_show_logs:
@@ -180,12 +180,12 @@ class InstanceMonitor:
                                 header = f"📋 Initial logs (last {len([l for l in new_lines if l.strip()])} lines):"
                             elif current_size > self.last_log_size:
                                 # New content: show recent additions
-                                new_lines = lines[-20:]
+                                new_lines = lines[-30:]  # Increased from 20 to 30
                                 header = "📋 New logs:"
                             else:
                                 # Periodic update: show last few lines
-                                new_lines = lines[-10:]
-                                header = "📋 Recent logs (periodic check):"
+                                new_lines = lines[-15:]  # Increased from 10 to 15
+                                header = f"📋 Recent logs (periodic check #{check_count}):"
 
                             # Only print if there are non-empty lines
                             non_empty_lines = [l for l in new_lines if l.strip()]
@@ -200,8 +200,13 @@ class InstanceMonitor:
                                         log_timestamp = timestamp_match.group(1)
                                     print(f"  [{log_timestamp}] {line}")
                                 print()  # Empty line for readability
+                            else:
+                                # Debug: No non-empty lines found
+                                if is_first_successful_check or check_count % 5 == 0:
+                                    print(f"\n  ⚠️  No readable log lines found (size: {current_size} bytes)")
 
-                            self.last_log_size = current_size
+                        # ALWAYS update last_log_size to track changes
+                        self.last_log_size = current_size
 
                         # Check for NEW completion (count must increase AND we need recent upload)
                         current_success_count = logs.count(self.success_marker)
