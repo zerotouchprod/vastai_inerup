@@ -363,10 +363,11 @@ class BatchProcessor:
             # but repo hasn't been cloned by the image entrypoint.
             safe_repo = shlex.quote(git_repo)
             safe_branch = shlex.quote(git_branch)
+            # Use chmod +x (ignore failures) and run helper through bash to avoid permission issues
             shell_cmd = (
-                "bash -lc '"
+                "bash -lc \""
                 f"if [ ! -d /workspace/project/.git ]; then git clone --depth 1 -b {safe_branch} {safe_repo} /workspace/project || git clone --depth 1 {safe_repo} /workspace/project; fi && "
-                f"GIT_BRANCH={safe_branch} /workspace/project/scripts/force_sync_and_run.sh'"
+                f"chmod +x /workspace/project/scripts/force_sync_and_run.sh 2>/dev/null || true && GIT_BRANCH={safe_branch} bash /workspace/project/scripts/force_sync_and_run.sh\""
             )
         else:
             # Legacy behavior: clone fresh and run remote_runner.sh
