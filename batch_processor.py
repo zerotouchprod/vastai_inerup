@@ -27,6 +27,7 @@ import sys
 import argparse
 import yaml
 import logging
+import subprocess
 from pathlib import Path
 from typing import List, Optional, Dict, Any
 from datetime import datetime
@@ -552,6 +553,28 @@ def main():
             )
             logger.info(f"\n[OK] Processing submitted: {result}")
 
+            # Auto-start monitor
+            instance_id = result.get('instance_id')
+            if instance_id:
+                logger.info(f"\n{'='*60}")
+                logger.info(f"🔄 Auto-starting monitor for instance #{instance_id}")
+                logger.info(f"{'='*60}\n")
+
+                monitor_script = Path(__file__).parent / 'monitor.py'
+                try:
+                    subprocess.run([
+                        sys.executable,
+                        str(monitor_script),
+                        str(instance_id),
+                        '--full'
+                    ])
+                except KeyboardInterrupt:
+                    logger.info("\n[STOP] Monitor stopped by user")
+                except Exception as e:
+                    logger.error(f"\n[ERROR] Failed to start monitor: {e}")
+                    logger.info(f"You can manually start it with:")
+                    logger.info(f"  python monitor.py {instance_id} --full")
+
         elif input_dir:
             # Batch
             logger.info(f"[DIR] Processing batch from: {input_dir}")
@@ -565,6 +588,33 @@ def main():
                 dry_run=dry_run
             )
             logger.info(f"\n[OK] Batch processing complete: {len(results)} files submitted")
+
+            # Auto-start monitor for the last created instance
+            if results and not dry_run:
+                last_result = results[-1]
+                instance_id = last_result.get('instance_id')
+                if instance_id:
+                    logger.info(f"\n{'='*60}")
+                    logger.info(f"🔄 Auto-starting monitor for instance #{instance_id}")
+                    logger.info(f"{'='*60}\n")
+
+                    # Launch monitor.py with --full flag
+                    monitor_script = Path(__file__).parent / 'monitor.py'
+                    try:
+                        # Use subprocess.run to replace current process with monitor
+                        # This makes Ctrl+C work properly
+                        subprocess.run([
+                            sys.executable,
+                            str(monitor_script),
+                            str(instance_id),
+                            '--full'
+                        ])
+                    except KeyboardInterrupt:
+                        logger.info("\n[STOP] Monitor stopped by user")
+                    except Exception as e:
+                        logger.error(f"\n[ERROR] Failed to start monitor: {e}")
+                        logger.info(f"You can manually start it with:")
+                        logger.info(f"  python monitor.py {instance_id} --full")
 
     except Exception as e:
         logger.error(f"\n[ERROR] Error: {e}")
