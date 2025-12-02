@@ -383,33 +383,15 @@ class BatchProcessor:
         instance = self.vast_client.create_instance(offer.id, instance_config)
         logger.info(f"[OK] Created instance: {instance}")
 
-        # Wait for running
-        try:
-            instance = self.vast_client.wait_for_running(
-                instance.id,
-                timeout=300,
-                poll_interval=10
-            )
-            logger.info(f"[OK] Instance running: {instance}")
-        except TimeoutError as e:
-            logger.error(f"Instance failed to start: {e}")
-            raise
-
-        # Monitor processing
-        logger.info(f"[MONITOR] Monitoring instance #{instance.id} for completion...")
-        result_url = self._monitor_processing(instance.id, timeout=7200)  # 2 hours max
-
-        # Stop instance (keep for debugging instead of destroying)
-        logger.info(f"[CLEANUP] Stopping instance #{instance.id}...")
-        self.vast_client.stop_instance(instance.id)
-        logger.info(f"[OK] Instance stopped (kept for debugging)")
+        # Instance created - monitoring will be handled by external monitor.py
+        # No need to wait_for_running or monitor here - monitor.py will do it all
 
         return {
             'instance_id': instance.id,
             'input_url': input_url,
             'output_name': output_name,
-            'result_url': result_url,
-            'status': 'completed' if result_url else 'failed'
+            'result_url': None,  # Will be provided by monitor.py
+            'status': 'submitted'  # Monitor will track completion
         }
 
     def process_batch(
