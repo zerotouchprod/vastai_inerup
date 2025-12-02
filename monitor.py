@@ -166,10 +166,12 @@ class InstanceMonitor:
                         # 1. First successful check (show initial logs)
                         # 2. Logs size increased (new content)
                         # 3. Every 5 checks even if no change (keep user informed)
+                        # 4. If last_log_size is 0 but we have logs (recovery from "no logs" state)
                         should_show_logs = (
                             is_first_successful_check or
                             current_size > self.last_log_size or
-                            check_count % 5 == 0  # Changed from 10 to 5 for more frequent updates
+                            check_count % 5 == 0 or  # Changed from 10 to 5 for more frequent updates
+                            (self.last_log_size == 0 and current_size > 0)  # NEW: Recovery condition
                         )
 
                         if should_show_logs:
@@ -292,8 +294,8 @@ class InstanceMonitor:
                                 print()
                     else:
                         # No logs available
-                        if check_count == 1:
-                            print(f"\n  ⚠️  No logs available yet (container may be starting...)\n")
+                        if not self.first_logs_shown or check_count % 5 == 0:
+                            print(f"\n  ⚠️  No logs available yet (container may be starting...) [Check #{check_count}]\n")
 
                 except Exception as e:
                     print(f"[{current_time}] ⚠️  Error fetching logs: {e}")
