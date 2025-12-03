@@ -20,7 +20,7 @@ set -euo pipefail
 # export USE_NATIVE_PROCESSORS="1"
 
 REPO_DIR="/workspace/project"
-GIT_BRANCH="${GIT_BRANCH:-oop2}"
+GIT_BRANCH="${GIT_BRANCH:-main}"
 GIT_REPO="${GIT_REPO:-https://github.com/zerotouchprod/vastai_inerup.git}"
 
 usage() {
