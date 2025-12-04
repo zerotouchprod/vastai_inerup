@@ -35,10 +35,17 @@ class RealESRGANNativeWrapper(BaseProcessor):
         """Check if Real-ESRGAN dependencies are available."""
         try:
             import torch
+            if not torch.cuda.is_available():
+                logger.debug("Real-ESRGAN native: CUDA not available")
+                return False
+
             from basicsr.archs.rrdbnet_arch import RRDBNet
             from realesrgan import RealESRGANer
-            return torch.cuda.is_available()
-        except ImportError:
+
+            logger.debug("Real-ESRGAN native: all dependencies available")
+            return True
+        except ImportError as e:
+            logger.debug(f"Real-ESRGAN native: missing dependency - {e}")
             return False
 
     def supports_gpu(self) -> bool:

@@ -38,15 +38,18 @@ class ProcessorFactory:
         self._logger = get_logger(__name__)
 
         # Determine whether to use native implementations
+        # Default to '1' (native) for better debugging and pure Python code
         if use_native is None:
-            use_native = os.getenv('USE_NATIVE_PROCESSORS', '0') == '1'
+            env_value = os.getenv('USE_NATIVE_PROCESSORS', '1')
+            use_native = env_value == '1'
+            self._logger.debug(f"USE_NATIVE_PROCESSORS env={env_value}, use_native={use_native}")
 
         self.use_native = use_native
 
         if self.use_native:
             self._logger.info("🐍 Using NATIVE Python processors (no shell scripts)")
         else:
-            self._logger.info("__ Using shell-wrapped processors (default)")
+            self._logger.info("🐚 Using shell-wrapped processors (default)")
 
     def create_interpolator(self, prefer: str = 'auto') -> Optional[IProcessor]:
         """

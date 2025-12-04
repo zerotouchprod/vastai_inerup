@@ -11,12 +11,11 @@ Usage:
     output_frames = processor.process_frames(input_frames, output_dir)
 """
 
-import os
 import sys
 import time
 import subprocess
 from pathlib import Path
-from typing import List, Optional, Dict, Any, Tuple
+from typing import List, Optional
 import logging
 
 # Try to import torch for GPU detection
@@ -24,6 +23,7 @@ try:
     import torch
     TORCH_AVAILABLE = True
 except ImportError:
+    torch = None  # type: ignore
     TORCH_AVAILABLE = False
 
 
@@ -54,10 +54,11 @@ class GPUMemoryDetector:
             pass
 
         # Fallback to torch if available
-        if not memories and TORCH_AVAILABLE and torch.cuda.is_available():
-            for i in range(torch.cuda.device_count()):
-                props = torch.cuda.get_device_properties(i)
-                memories.append(int(props.total_memory / (1024 * 1024)))
+        if not memories and TORCH_AVAILABLE and torch is not None:
+            if torch.cuda.is_available():
+                for i in range(torch.cuda.device_count()):
+                    props = torch.cuda.get_device_properties(i)
+                    memories.append(int(props.total_memory / (1024 * 1024)))
 
         return memories
 
@@ -184,6 +185,7 @@ class RealESRGANNative:
         model_path = self._find_model_weights()
 
         # Create upsampler
+        use_half = self.half and (torch is not None and torch.cuda.is_available())
         self._upsampler = RealESRGANer(
             scale=netscale,
             model_path=str(model_path),
@@ -191,7 +193,7 @@ class RealESRGANNative:
             tile=self.tile_size,
             tile_pad=self.tile_pad,
             pre_pad=self.pre_pad,
-            half=self.half and torch.cuda.is_available(),
+            half=use_half,
             device=self.device
         )
 
@@ -199,12 +201,19 @@ class RealESRGANNative:
 
     def _find_model_weights(self) -> Path:
         """Find model weights file."""
-        # Common locations
+        # Common locations (ordered by priority)
         possible_paths = [
-            Path('weights') / f'{self.model_name}.pth',
-            Path('experiments/pretrained_models') / f'{self.model_name}.pth',
+            # Docker container paths
             Path('/workspace/project/external/Real-ESRGAN/weights') / f'{self.model_name}.pth',
             Path('/workspace/project/external/Real-ESRGAN/experiments/pretrained_models') / f'{self.model_name}.pth',
+            Path('/root/.cache/realesrgan/weights') / f'{self.model_name}.pth',
+            # Relative paths (when running locally)
+            Path('weights') / f'{self.model_name}.pth',
+            Path('experiments/pretrained_models') / f'{self.model_name}.pth',
+            Path('external/Real-ESRGAN/weights') / f'{self.model_name}.pth',
+            Path('external/Real-ESRGAN/experiments/pretrained_models') / f'{self.model_name}.pth',
+            # User home directory
+            Path.home() / '.cache' / 'realesrgan' / 'weights' / f'{self.model_name}.pth',
         ]
 
         for path in possible_paths:
@@ -212,9 +221,34 @@ class RealESRGANNative:
                 self.logger.info(f"Found model weights: {path}")
                 return path
 
+        # If not found, try to download from huggingface
+        self.logger.warning(f"Model weights not found locally for {self.model_name}")
+        self.logger.info(f"Searched: {[str(p) for p in possible_paths]}")
+        self.logger.info("Attempting to download from HuggingFace...")
+
+        try:
+            from realesrgan.utils import download_pretrained_models
+            cache_dir = Path.home() / '.cache' / 'realesrgan' / 'weights'
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            model_path = cache_dir / f'{self.model_name}.pth'
+
+            # Download model
+            download_pretrained_models(
+                model_name=self.model_name,
+                model_path=str(model_path)
+            )
+
+            if model_path.exists():
+                self.logger.info(f"Downloaded model weights to: {model_path}")
+                return model_path
+        except Exception as e:
+            self.logger.warning(f"Failed to download model: {e}")
+
         raise FileNotFoundError(
             f"Model weights not found for {self.model_name}. "
-            f"Searched: {[str(p) for p in possible_paths]}"
+            f"Searched: {[str(p) for p in possible_paths]}\n"
+            f"Please download the model manually from: "
+            f"https://github.com/xinntao/Real-ESRGAN/releases"
         )
 
     def process_frames(
@@ -317,11 +351,10 @@ class RealESRGANNative:
         Returns:
             Output video path
         """
-        from infrastructure.media import FFmpegExtractor, FFmpegAssembler
+        from infrastructure.media.ffmpeg import FFmpegExtractor, FFmpegAssembler
 
         # Create temporary directories
         import tempfile
-        import shutil
 
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
