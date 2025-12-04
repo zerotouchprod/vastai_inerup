@@ -25,12 +25,55 @@ class RealESRGANPytorchWrapper(BaseProcessor):
     """
 
     WRAPPER_SCRIPT = Path("/workspace/project/run_realesrgan_pytorch.sh")
+    REALESRGAN_REPO = Path("/workspace/project/external/Real-ESRGAN")
+    REALESRGAN_GIT_URL = "https://github.com/xinntao/Real-ESRGAN.git"
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.debugger = ProcessorDebugger('realesrgan')
+        # Ensure Real-ESRGAN repo is cloned before checking availability
+        self.__class__._ensure_realesrgan_repo()
         if not self.is_available():
             raise ProcessorNotAvailableError("Real-ESRGAN PyTorch wrapper is not available")
+
+    @staticmethod
+    def _ensure_realesrgan_repo() -> None:
+        """Ensure Real-ESRGAN repository is cloned."""
+        repo = RealESRGANPytorchWrapper.REALESRGAN_REPO
+        git_url = RealESRGANPytorchWrapper.REALESRGAN_GIT_URL
+
+        if repo.exists() and (repo / "inference_realesrgan.py").exists():
+            logger.debug("Real-ESRGAN repo already exists")
+            return
+
+        logger.info(f"Cloning Real-ESRGAN from {git_url}...")
+        try:
+            repo.parent.mkdir(parents=True, exist_ok=True)
+
+            result = subprocess.run(
+                ["git", "clone", "--depth", "1", git_url, str(repo)],
+                capture_output=True,
+                text=True,
+                timeout=120
+            )
+
+            if result.returncode != 0:
+                logger.error(f"Failed to clone Real-ESRGAN: {result.stderr}")
+                return
+
+            # Remove the bundled realesrgan package to avoid conflicts
+            bundled_pkg = repo / "realesrgan"
+            if bundled_pkg.exists():
+                import shutil
+                shutil.rmtree(bundled_pkg, ignore_errors=True)
+                logger.info("Removed bundled realesrgan package to use installed version")
+
+            logger.info("Real-ESRGAN repo cloned successfully")
+
+        except subprocess.TimeoutExpired:
+            logger.error("Timeout while cloning Real-ESRGAN repository")
+        except Exception as e:
+            logger.error(f"Failed to clone Real-ESRGAN: {e}")
 
     @classmethod
     def is_available(cls) -> bool:
@@ -38,12 +81,22 @@ class RealESRGANPytorchWrapper(BaseProcessor):
         try:
             # Check if wrapper script exists
             if not cls.WRAPPER_SCRIPT.exists():
+                logger.debug(f"Wrapper script not found: {cls.WRAPPER_SCRIPT}")
+                return False
+
+            # Check if Real-ESRGAN repo exists
+            if not cls.REALESRGAN_REPO.exists():
+                logger.debug(f"Real-ESRGAN repo not found: {cls.REALESRGAN_REPO}")
                 return False
 
             # Check if PyTorch with CUDA is available
             import torch
-            return torch.cuda.is_available()
-        except ImportError:
+            available = torch.cuda.is_available()
+            if not available:
+                logger.debug("CUDA not available")
+            return available
+        except ImportError as e:
+            logger.debug(f"Import error checking availability: {e}")
             return False
 
     def supports_gpu(self) -> bool:

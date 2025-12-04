@@ -90,6 +90,30 @@ case "$cmd" in
       exit 2
     fi
 
+    # Ensure external dependencies are cloned
+    echo "[start_manual] Ensuring external dependencies (Real-ESRGAN, RIFE)..."
+    if [ ! -d "$REPO_DIR/external/Real-ESRGAN" ] || [ ! -f "$REPO_DIR/external/Real-ESRGAN/inference_realesrgan.py" ]; then
+      echo "[start_manual] Cloning Real-ESRGAN..."
+      mkdir -p "$REPO_DIR/external"
+      git clone --depth 1 https://github.com/xinntao/Real-ESRGAN.git "$REPO_DIR/external/Real-ESRGAN" || true
+      rm -rf "$REPO_DIR/external/Real-ESRGAN/realesrgan" 2>/dev/null || true
+    fi
+
+    if [ ! -d "$REPO_DIR/external/RIFE" ] || [ ! -d "$REPO_DIR/external/RIFE/model" ]; then
+      echo "[start_manual] Cloning RIFE..."
+      mkdir -p "$REPO_DIR/external"
+      git clone --depth 1 https://github.com/hzwer/Practical-RIFE.git "$REPO_DIR/external/RIFE" || true
+
+      # Copy pre-installed models if available
+      if [ -d "$REPO_DIR/RIFEv4.26_0921" ]; then
+        echo "[start_manual] Copying RIFE models from pre-installed location..."
+        mkdir -p "$REPO_DIR/external/RIFE/train_log"
+        find "$REPO_DIR/RIFEv4.26_0921" -name "*.pkl" -exec cp {} "$REPO_DIR/external/RIFE/train_log/" \; 2>/dev/null || true
+        pkl_count=$(find "$REPO_DIR/external/RIFE/train_log" -name "*.pkl" 2>/dev/null | wc -l)
+        echo "[start_manual] Copied $pkl_count .pkl model files"
+      fi
+    fi
+
     echo "[start_manual] Running pipeline_v2.py with args: $*"
     exec "${PY_CMD[@]}" "$@"
     ;;
