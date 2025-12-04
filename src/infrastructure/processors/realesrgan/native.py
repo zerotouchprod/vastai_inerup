@@ -290,35 +290,54 @@ class RealESRGANNative:
         self.logger.info(f"  Batch size: {self.batch_size}")
         self.logger.info(f"  Half precision: {self.half}")
 
+        # Log GPU info if available
+        if torch is not None and torch.cuda.is_available():
+            gpu_name = torch.cuda.get_device_name(0)
+            gpu_memory = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+            self.logger.info(f"  GPU: {gpu_name} ({gpu_memory:.1f}GB)")
+
         start_time = time.time()
+        frame_start_time = start_time
 
         # Process frames
         for idx, frame_path in enumerate(input_frames, 1):
             try:
                 # Load image
+                self.logger.info(f"[{idx}/{total}] Loading frame: {frame_path.name}")
                 img = cv2.imread(str(frame_path), cv2.IMREAD_COLOR)
                 if img is None:
                     self.logger.warning(f"Failed to load frame: {frame_path}")
                     continue
 
+                # Log image info for first frame
+                if idx == 1:
+                    h, w = img.shape[:2]
+                    self.logger.info(f"  Input resolution: {w}x{h}")
+                    self.logger.info(f"  Output resolution: {w*self.scale}x{h*self.scale}")
+
                 # Upscale
+                self.logger.info(f"[{idx}/{total}] Upscaling...")
+                frame_start = time.time()
                 output, _ = self._upsampler.enhance(img, outscale=self.scale)
+                frame_time = time.time() - frame_start
 
                 # Save
                 output_path = output_dir / frame_path.name
                 cv2.imwrite(str(output_path), output)
                 output_frames.append(output_path)
 
-                # Progress
-                if idx % 10 == 0 or idx == total:
+                # Progress (show every frame for first 5, then every 5 frames)
+                show_progress = idx <= 5 or idx % 5 == 0 or idx == total
+                if show_progress:
                     elapsed = time.time() - start_time
                     fps = idx / elapsed if elapsed > 0 else 0
                     eta = (total - idx) / fps if fps > 0 else 0
 
                     self.logger.info(
-                        f"Processed {idx}/{total} frames "
+                        f"✓ [{idx}/{total}] Complete "
                         f"({100*idx/total:.1f}%) | "
-                        f"{fps:.2f} fps | "
+                        f"Frame time: {frame_time:.1f}s | "
+                        f"Avg: {fps:.2f} fps | "
                         f"ETA: {eta:.0f}s"
                     )
 
@@ -327,6 +346,8 @@ class RealESRGANNative:
 
             except Exception as e:
                 self.logger.error(f"Failed to process frame {idx}/{total}: {e}")
+                import traceback
+                self.logger.error(traceback.format_exc())
                 raise
 
         elapsed = time.time() - start_time
