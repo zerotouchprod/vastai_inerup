@@ -6,7 +6,7 @@ from pathlib import Path
 from datetime import datetime
 
 from domain.models import ProcessingJob
-from domain.exceptions import DomainException
+from domain.exceptions import DomainException, ProcessorNotAvailableError
 from infrastructure.config import ConfigLoader
 from infrastructure.io import HttpDownloader, B2S3Uploader
 from infrastructure.media import FFmpegExtractor, FFmpegAssembler
@@ -53,6 +53,29 @@ def create_orchestrator_from_config(config, allow_fallback: bool = False):
         get_logger(__name__).warning(f"Upscaler not available: {e}")
 
     try:
+        if config.mode in ('interp', 'both'):
+            # Mandatory RIFE availability probe: check both native and pytorch wrappers.
+            native_ok = False
+            try:
+                from infrastructure.processors.rife.native_wrapper import RIFENativeWrapper
+                native_ok = RIFENativeWrapper.is_available()
+            except Exception:
+                native_ok = False
+
+            pytorch_ok = False
+            try:
+                from infrastructure.processors.rife.pytorch_wrapper import RifePytorchWrapper
+                pytorch_ok = RifePytorchWrapper.is_available()
+            except Exception:
+                pytorch_ok = False
+
+            if not (native_ok or pytorch_ok):
+                # No RIFE backend passed probe. By default (allow_fallback=False) fail early.
+                msg = "No usable RIFE backend available (probe failed)"
+                if config.strict or not allow_fallback:
+                    raise ProcessorNotAvailableError(msg)
+                get_logger(__name__).warning(msg + " — continuing because allow_fallback=True")
+
         if config.mode in ('interp', 'both'):
             interpolator = factory.create_interpolator(prefer=config.prefer)
     except Exception as e:

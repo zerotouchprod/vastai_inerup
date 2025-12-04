@@ -1,8 +1,21 @@
 import sys, os, traceback
 
-in_dir = sys.argv[1]
-out_dir = sys.argv[2]
-factor = float(sys.argv[3])
+# Probe mode: run only model detection and exit with 0/2 — used by RIFE availability check
+PROBE_MODE = False
+_args = sys.argv[1:]
+if '--probe' in _args:
+    PROBE_MODE = True
+
+if not PROBE_MODE:
+    in_dir = sys.argv[1]
+    out_dir = sys.argv[2]
+    factor = float(sys.argv[3])
+else:
+    # placeholders (not used in probe mode)
+    in_dir = None
+    out_dir = None
+    factor = 0.0
+
 repo = os.environ.get('REPO_DIR', '/workspace/project/external/RIFE')
 # define alt_repo early so it's available for later candidate scanning
 alt_repo = '/workspace/project/RIFEv4.26_0921'
@@ -294,6 +307,11 @@ if Model is None:
     except Exception:
         pass
     sys.exit(2)
+
+# If we're running in PROBE_MODE and Model is found, exit quickly with success.
+if PROBE_MODE:
+    print('RIFE model class available')
+    sys.exit(0)
 
 import torch
 from torch.nn import functional as F

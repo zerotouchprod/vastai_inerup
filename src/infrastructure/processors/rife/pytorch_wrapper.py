@@ -3,6 +3,7 @@
 import subprocess
 import os
 import time
+import sys
 from collections import deque
 from pathlib import Path
 from typing import List, Dict, Any
@@ -57,6 +58,28 @@ class RifePytorchWrapper(BaseProcessor):
             except Exception as _e:
                 logger.warning(f"Failed to run syntax check for RIFE wrapper: {_e}")
                 # Don't fail hard on exceptions from subprocess; proceed assuming script is ok
+
+            # Run a fast probe of batch_rife to ensure a compatible model class can be loaded
+            try:
+                probe_script = Path('/workspace/project/batch_rife.py')
+                if probe_script.exists():
+                    env = os.environ.copy()
+                    # Allow REPO_DIR override if configured in environment; otherwise probe will use its defaults
+                    proc = subprocess.run([sys.executable, str(probe_script), '--probe'], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env, timeout=10, text=True)
+                    out = (proc.stdout or '').strip()
+                    if proc.returncode != 0:
+                        logger.warning(f"RIFE probe failed (rc={proc.returncode}) output:\n{out}")
+                        return False
+                    # probe succeeded
+                else:
+                    # If no probe script present, conservatively assume availability based on wrapper + CUDA
+                    logger.debug("No batch_rife probe script found; skipping deep model probe")
+            except subprocess.TimeoutExpired:
+                logger.warning("RIFE probe timed out")
+                return False
+            except Exception as e:
+                logger.warning(f"RIFE probe invocation failed: {e}")
+                return False
 
             return True
         except ImportError:
