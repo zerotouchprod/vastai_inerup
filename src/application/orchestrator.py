@@ -124,7 +124,12 @@ class VideoProcessingOrchestrator:
             if not self._upscaler:
                 raise VideoProcessingError("Upscaler not available")
             output_dir = workspace / "upscaled"
-            result = self._upscaler.process(frame_paths, output_dir, scale=job.scale)
+            options = {'scale': job.scale, 'job_id': job.job_id}
+            # include b2 overrides if present
+            if isinstance(job.config, dict):
+                options['b2_output_key'] = job.config.get('b2_output_key')
+                options['b2_bucket'] = job.config.get('b2_bucket')
+            result = self._upscaler.process(frame_paths, output_dir, **options)
             if not result.success:
                 raise VideoProcessingError(f"Upscaling failed: {result.errors}")
             return sorted(output_dir.glob("*.png"))
@@ -133,7 +138,11 @@ class VideoProcessingOrchestrator:
             if not self._interpolator:
                 raise VideoProcessingError("Interpolator not available")
             output_dir = workspace / "interpolated"
-            result = self._interpolator.process(frame_paths, output_dir, factor=int(job.interp_factor))
+            options = {'factor': int(job.interp_factor), 'job_id': job.job_id}
+            if isinstance(job.config, dict):
+                options['b2_output_key'] = job.config.get('b2_output_key')
+                options['b2_bucket'] = job.config.get('b2_bucket')
+            result = self._interpolator.process(frame_paths, output_dir, **options)
             if not result.success:
                 raise VideoProcessingError(f"Interpolation failed: {result.errors}")
             return sorted(output_dir.glob("*.png"))
@@ -144,25 +153,41 @@ class VideoProcessingOrchestrator:
 
             if job.strategy == "interp-then-upscale":
                 interp_dir = workspace / "interpolated"
-                result = self._interpolator.process(frame_paths, interp_dir, factor=int(job.interp_factor))
+                interp_options = {'factor': int(job.interp_factor), 'job_id': job.job_id}
+                if isinstance(job.config, dict):
+                    interp_options['b2_output_key'] = job.config.get('b2_output_key')
+                    interp_options['b2_bucket'] = job.config.get('b2_bucket')
+                result = self._interpolator.process(frame_paths, interp_dir, **interp_options)
                 if not result.success:
                     raise VideoProcessingError(f"Interpolation failed")
 
                 interpolated_frames = sorted(interp_dir.glob("*.png"))
                 upscale_dir = workspace / "upscaled"
-                result = self._upscaler.process(interpolated_frames, upscale_dir, scale=job.scale)
+                upscale_options = {'scale': job.scale, 'job_id': job.job_id}
+                if isinstance(job.config, dict):
+                    upscale_options['b2_output_key'] = job.config.get('b2_output_key')
+                    upscale_options['b2_bucket'] = job.config.get('b2_bucket')
+                result = self._upscaler.process(interpolated_frames, upscale_dir, **upscale_options)
                 if not result.success:
                     raise VideoProcessingError(f"Upscaling failed")
                 return sorted(upscale_dir.glob("*.png"))
             else:
                 upscale_dir = workspace / "upscaled"
-                result = self._upscaler.process(frame_paths, upscale_dir, scale=job.scale)
+                upscale_options = {'scale': job.scale, 'job_id': job.job_id}
+                if isinstance(job.config, dict):
+                    upscale_options['b2_output_key'] = job.config.get('b2_output_key')
+                    upscale_options['b2_bucket'] = job.config.get('b2_bucket')
+                result = self._upscaler.process(frame_paths, upscale_dir, **upscale_options)
                 if not result.success:
                     raise VideoProcessingError(f"Upscaling failed")
 
                 upscaled_frames = sorted(upscale_dir.glob("*.png"))
                 interp_dir = workspace / "interpolated"
-                result = self._interpolator.process(upscaled_frames, interp_dir, factor=int(job.interp_factor))
+                interp_options = {'factor': int(job.interp_factor), 'job_id': job.job_id}
+                if isinstance(job.config, dict):
+                    interp_options['b2_output_key'] = job.config.get('b2_output_key')
+                    interp_options['b2_bucket'] = job.config.get('b2_bucket')
+                result = self._interpolator.process(upscaled_frames, interp_dir, **interp_options)
                 if not result.success:
                     raise VideoProcessingError(f"Interpolation failed")
                 return sorted(interp_dir.glob("*.png"))
@@ -174,6 +199,25 @@ class VideoProcessingOrchestrator:
         parsed = urlparse(job.input_url)
         base_name = Path(parsed.path).stem or "video"
 
+        # 1) prefer explicit B2 output key provided in job.config or environment
+        b2_key_cfg = None
+        try:
+            b2_key_cfg = job.config.get('b2_output_key') if isinstance(job.config, dict) else None
+        except Exception:
+            b2_key_cfg = None
+        if b2_key_cfg:
+            # ensure .mp4 extension
+            if not b2_key_cfg.lower().endswith('.mp4'):
+                b2_key_cfg = f"{b2_key_cfg}.mp4"
+            return b2_key_cfg
+
+        # 2) next prefer job.job_id as filename (plain name or with .mp4)
+        job_id_name = getattr(job, 'job_id', None)
+        if job_id_name:
+            fname = job_id_name if job_id_name.lower().endswith('.mp4') else f"{job_id_name}.mp4"
+            return fname
+
+        # 3) fallback to timestamped key using original input basename
         if job.mode == "upscale":
             return f"upscales/{base_name}-{timestamp}.mp4"
         elif job.mode == "interp":

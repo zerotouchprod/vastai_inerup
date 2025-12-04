@@ -47,11 +47,87 @@ def try_path(path):
     tried_locations.append(f"file:{path}")
     if not os.path.isfile(path):
         return False
+    # read initial bytes to detect imports requiring helper modules
+    try:
+        with open(path, 'r', encoding='utf-8', errors='ignore') as fh:
+            head = fh.read(4096)
+    except Exception:
+        head = ''
+    needs_model_warplayer = False
+    if 'from model.warplayer' in head or 'import model.warplayer' in head or 'from model import warplayer' in head:
+        needs_model_warplayer = True
     try:
         name = f"rife_model_{abs(hash(path))}"
         spec = importlib.util.spec_from_file_location(name, path)
         if spec and spec.loader:
             mod = importlib.util.module_from_spec(spec)
+            # If file expects model.warplayer, attempt to locate and preload it
+            if needs_model_warplayer:
+                tried_locations.append(f"need:model.warplayer detected in {path}")
+                # candidate locations to search for warplayer.py
+                warplayer_candidates = [
+                    os.path.join(repo, 'model', 'warplayer.py'),
+                    os.path.join(repo, 'warplayer.py'),
+                    os.path.join(alt_repo, 'model', 'warplayer.py'),
+                    os.path.join(alt_repo, 'warplayer.py'),
+                    '/workspace/project/external/RIFE/model/warplayer.py',
+                    '/workspace/project/external/RIFE/warplayer.py',
+                ]
+                found_wp = None
+                for wp in warplayer_candidates:
+                    try:
+                        if wp and os.path.isfile(wp):
+                            found_wp = wp
+                            tried_locations.append(f"warplayer_found:{wp}")
+                            break
+                    except Exception:
+                        continue
+                if found_wp:
+                    # load warplayer as a module and insert into sys.modules under model.warplayer
+                    try:
+                        wp_name = f"rife_helper_warplayer_{abs(hash(found_wp))}"
+                        wp_spec = importlib.util.spec_from_file_location(wp_name, found_wp)
+                        wp_mod = importlib.util.module_from_spec(wp_spec)
+                        wp_spec.loader.exec_module(wp_mod)
+                        # ensure package module 'model' exists
+                        import types
+                        model_pkg = None
+                        model_dir_candidate = None
+                        # try to locate a model/ directory nearby (repo/model or parent alt_repo)
+                        candidates = [
+                            os.path.join(repo, 'model'),
+                            os.path.join(alt_repo, 'model'),
+                            os.path.dirname(found_wp),
+                        ]
+                        for c in candidates:
+                            if c and os.path.isdir(c):
+                                model_dir_candidate = c
+                                break
+                        if 'model' not in sys.modules:
+                            model_pkg = types.ModuleType('model')
+                            # If we have a model/ directory, set __path__ so imports of model.* resolve
+                            if model_dir_candidate:
+                                model_pkg.__path__ = [model_dir_candidate]
+                                tried_locations.append(f"model_pkg_path_set:{model_dir_candidate}")
+                            sys.modules['model'] = model_pkg
+                        else:
+                            model_pkg = sys.modules['model']
+                            # ensure __path__ exists if not set
+                            if not getattr(model_pkg, '__path__', None) and model_dir_candidate:
+                                try:
+                                    model_pkg.__path__ = [model_dir_candidate]
+                                    tried_locations.append(f"model_pkg_path_set_existing:{model_dir_candidate}")
+                                except Exception:
+                                    pass
+                        # attach warplayer module as submodule
+                        sys.modules['model.warplayer'] = wp_mod
+                        try:
+                            setattr(sys.modules['model'], 'warplayer', wp_mod)
+                        except Exception:
+                            pass
+                        tried_locations.append(f"warplayer_preloaded:{found_wp}")
+                    except Exception as e:
+                        tried_locations.append(f"warplayer_preload_error:{found_wp}:{type(e).__name__}:{str(e)[:200]}")
             try:
                 spec.loader.exec_module(mod)
             except Exception as e:

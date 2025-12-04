@@ -182,10 +182,17 @@ maybe_upload_b2() {
   # If neither are present, derive a deterministic key from the original input filename (INFILE)
   # so uploads are organized as upscales/<original-stem>-<timestamp>.mp4 instead of container-local names.
   local key
+  # IMPORTANT: do not use B2_KEY (credentials) as an output key/filename.
+  # Prefer explicit B2_OUTPUT_KEY, then JOB/JOB_ID, then derive from input filename.
   if [ -n "${B2_OUTPUT_KEY:-}" ]; then
     key="${B2_OUTPUT_KEY}"
-  elif [ -n "${B2_KEY:-}" ]; then
-    key="${B2_KEY}"
+  elif [ -n "${JOB:-}${JOB_ID:-}" ]; then
+    jobenv="${JOB:-${JOB_ID:-}}"
+    if [[ "$jobenv" == *.mp4 ]]; then
+      key="$jobenv"
+    else
+      key="${jobenv}.mp4"
+    fi
   else
     # Try to use original remote filename if present (INPUT_URL/VIDEO_INPUT_URL) or B2_INPUT_KEY;
     # otherwise fall back to INFILE or container-local file path basename.
@@ -871,7 +878,7 @@ if [ -f "$REPO_DIR/inference_realesrgan_video.py" ]; then
     echo ""
     echo "=========================================="
     echo "Input video info:"
-    ffprobe -v error -show_entries format=duration,size,bit_rate -show_entries stream=width,height,nb_frames,r_frame_rate -of default=noprint_wrappers=1 "$INFILE" 2>&1 | head -10
+    ffprobe -v error -show_entries format=duration,size,bit_rate -show_entries stream=width,height,nb_frames,r_frame_rate -of default=nokey=1:noprint_wrappers=1 "$INFILE" 2>&1 | head -10
     echo "=========================================="
     echo ""
 

@@ -146,27 +146,18 @@ PY
     # choose key: prefer trigger JSON key, then JOB env (JOB or JOB_ID), then B2_OUTPUT_KEY/B2_KEY
     KEYV="${TRIG_KEY:-}"
     if [ -z "$KEYV" ]; then
-      job_env="${JOB:-${JOB_ID:-}}"
-      if [ -n "$job_env" ]; then
-        # ensure filename ends with .mp4
-        if [[ "$job_env" == *.mp4 ]]; then key_name="$job_env"; else key_name="${job_env}.mp4"; fi
-        # if key_name contains a slash treat as full key, else prefix with output/
-        if [[ "$key_name" == */* ]]; then
-          KEYV="$key_name"
-        else
-          KEYV="output/$key_name"
-        fi
-      else
-        KEYV="${B2_OUTPUT_KEY:-${B2_KEY:-}}"
-      fi
+      # Do NOT use B2_KEY (credentials) as an output key. Only use explicit B2_OUTPUT_KEY.
+      KEYV="${B2_OUTPUT_KEY:-}"
     fi
-
     if [ -z "$BKT" ]; then
       log "No B2_BUCKET available (trigger or env); skipping unconditional early upload"
     else
       export FORCE_FILE="$CANDIDATE"
       export B2_BUCKET="$BKT"
-      export B2_KEY="$KEYV"
+      # Do not export credential B2_KEY for filename use. Use B2_OUTPUT_KEY for output naming.
+      if [ -n "$KEYV" ]; then
+        export B2_OUTPUT_KEY="$KEYV"
+      fi
       # mark ran to avoid re-running across retries
       touch /workspace/.force_upload_ran 2>/dev/null || true
       log "Calling force_upload_and_fail.sh for $CANDIDATE -> s3://$BKT/${KEYV:-auto}"
@@ -401,8 +392,9 @@ PY
       BKT="${B2_BUCKET:-}"
     fi
     KEYV="${TRIG_KEY:-}"
+    # Do NOT use B2_KEY (credentials) as an output key. Only use explicit B2_OUTPUT_KEY.
     if [ -z "$KEYV" ]; then
-      KEYV="${B2_OUTPUT_KEY:-${B2_KEY:-}}"
+      KEYV="${B2_OUTPUT_KEY:-}"
     fi
     if [ -z "$BKT" ]; then
       log "Triggered upload requested but no bucket provided (trigger file or B2_BUCKET). Skipping triggered upload"
@@ -433,7 +425,8 @@ PY
 
   # Determine bucket/key (prefer B2_OUTPUT_KEY if set)
   B2_BUCKET=${B2_BUCKET:-$(echo)}
-  B2_KEY_ENV=${B2_OUTPUT_KEY:-${B2_KEY:-}}
+  # IMPORTANT: do not fall back to B2_KEY (credential). Only use B2_OUTPUT_KEY as explicit output key.
+  B2_KEY_ENV=${B2_OUTPUT_KEY:-}
   if [ -z "${B2_BUCKET}" ]; then
     log "AUTO_UPLOAD_B2 enabled but B2_BUCKET not set; skipping upload"
     echo "VASTAI_PIPELINE_COMPLETED_SUCCESSFULLY"
@@ -451,8 +444,10 @@ PY
       outkey="${B2_KEY_ENV}.mp4"
     fi
   elif [ -n "$job_env2" ]; then
+    # Use JOB as the final filename (job.ext) — do not prefix with output/
     if [[ "$job_env2" == *.mp4 ]]; then fname="$job_env2"; else fname="${job_env2}.mp4"; fi
-    if [[ "$fname" == */* ]]; then outkey="$fname"; else outkey="output/$fname"; fi
+    # If job specifies a path, respect it; otherwise use plain filename
+    if [[ "$fname" == */* ]]; then outkey="$fname"; else outkey="$fname"; fi
   else
     # fallback to output/<basename>.mp4
     base="$(basename "$file")"
@@ -1060,7 +1055,7 @@ PY
     # Count input frames
     IN_COUNT=$(find "$TMP_DIR/input" -maxdepth 1 -type f \( -iname '*.png' -o -iname '*.jpg' -o -iname '*.jpeg' \) | wc -l || true)
     if [ -z "$IN_COUNT" ] || [ "$IN_COUNT" -lt 1 ]; then
-      log "No input frames found to interleave with mids; skipping mids assembly"
+      log "No input frames found to interleaved with mids; skipping mids assembly"
     else
       # Build a concat filelist that interleaves original frames and mids for each pair
       FL="$TMP_DIR/filelist_mids.txt"
@@ -1220,16 +1215,17 @@ if [ -s "$OUTFILE" ]; then
   if [ "${FORCE_UPLOAD_ON_NEXT_RUN:-0}" = "1" ] && [ ! -f /workspace/.force_upload_ran ]; then
     log "FORCE_UPLOAD_ON_NEXT_RUN enabled -> running force_upload_and_fail.sh (one-shot)"
     # Export B2 vars if provided by the job (B2_OUTPUT_KEY preferred for key)
-    export B2_KEY="${B2_OUTPUT_KEY:-${B2_KEY:-}}"
+    # IMPORTANT: do NOT overwrite credential B2_KEY here. Use B2_OUTPUT_KEY for naming only.
+    export B2_OUTPUT_KEY="${B2_OUTPUT_KEY:-}"
     export B2_BUCKET="${B2_BUCKET:-}"
-    export FORCE_FILE="${FORCE_FILE:-$OUTFILE}"
-    # create marker to avoid re-running on retries
-    touch /workspace/.force_upload_ran 2>/dev/null || true
-    /workspace/project/scripts/force_upload_and_fail.sh
-    rc=$?
-    log "force_upload_and_fail.sh exited with rc=$rc"
-    # Propagate its exit code so the container job fails as intended
-    exit $rc
+     export FORCE_FILE="${FORCE_FILE:-$OUTFILE}"
+     # create marker to avoid re-running on retries
+     touch /workspace/.force_upload_ran 2>/dev/null || true
+     /workspace/project/scripts/force_upload_and_fail.sh
+     rc=$?
+     log "force_upload_and_fail.sh exited with rc=$rc"
+     # Propagate its exit code so the container job fails as intended
+     exit $rc
   fi
   maybe_upload_and_finish "$OUTFILE" || exit 0
  else

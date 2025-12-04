@@ -150,6 +150,47 @@ class RifePytorchWrapper(BaseProcessor):
             env['PYTHONUNBUFFERED'] = '1'
             env['PYTHONIOENCODING'] = 'utf-8'
 
+            # Export job/upload related envs so wrapper scripts can name and upload outputs
+            try:
+                job_id_opt = options.get('job_id') if isinstance(options, dict) else None
+            except Exception:
+                job_id_opt = None
+            if job_id_opt:
+                env['JOB'] = str(job_id_opt)
+                env['JOB_ID'] = str(job_id_opt)
+
+            # B2 upload hints: b2_output_key, b2_bucket, b2_endpoint, b2_key, b2_secret
+            try:
+                b2_out = options.get('b2_output_key') if isinstance(options, dict) else None
+            except Exception:
+                b2_out = None
+            if b2_out:
+                env['B2_OUTPUT_KEY'] = str(b2_out)
+            try:
+                b2_bkt = options.get('b2_bucket') if isinstance(options, dict) else None
+            except Exception:
+                b2_bkt = None
+            if b2_bkt:
+                env['B2_BUCKET'] = str(b2_bkt)
+            try:
+                b2_ep = options.get('b2_endpoint') if isinstance(options, dict) else None
+            except Exception:
+                b2_ep = None
+            if b2_ep:
+                env['B2_ENDPOINT'] = str(b2_ep)
+            try:
+                b2_key = options.get('b2_key') if isinstance(options, dict) else None
+            except Exception:
+                b2_key = None
+            if b2_key:
+                env['B2_KEY'] = str(b2_key)
+            try:
+                b2_secret = options.get('b2_secret') if isinstance(options, dict) else None
+            except Exception:
+                b2_secret = None
+            if b2_secret:
+                env['B2_SECRET'] = str(b2_secret)
+
             # Debug: Log environment
             self.debugger.log_step('set_environment', PREFER='pytorch')
 

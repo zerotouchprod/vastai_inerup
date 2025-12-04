@@ -151,8 +151,18 @@ def main():
         logger.info(f"Mode: {config.mode}")
         logger.info("="*60)
 
+        # Provide relevant config details to the ProcessingJob so downstream
+        # orchestrator and upload helpers can make informed decisions about
+        # output naming and uploads (e.g. b2_output_key, b2_bucket).
+        job_id_val = config.job_id or f"job_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        job_cfg = {
+            'b2_output_key': getattr(config, 'b2_output_key', None),
+            'b2_bucket': getattr(config, 'b2_bucket', None),
+            'b2_endpoint': getattr(config, 'b2_endpoint', None),
+        }
+
         job = ProcessingJob(
-            job_id=config.job_id or f"job_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+            job_id=job_id_val,
             input_url=config.input_url,
             mode=config.mode,
             scale=config.scale,
@@ -160,7 +170,7 @@ def main():
             interp_factor=config.interp_factor,
             prefer=config.prefer,
             strategy=config.strategy,
-            config={}
+            config=job_cfg
         )
 
         orchestrator = create_orchestrator_from_config(config)
