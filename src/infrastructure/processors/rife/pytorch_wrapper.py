@@ -171,16 +171,29 @@ class RifePytorchWrapper(BaseProcessor):
             raise error
 
         except subprocess.CalledProcessError as e:
-            error_msg = f"RIFE wrapper failed: {e.stderr}"
+            # Build a detailed error message including return code, stdout and stderr
+            rc = getattr(e, 'returncode', 'unknown')
+            stdout = getattr(e, 'stdout', '') or ''
+            stderr = getattr(e, 'stderr', '') or ''
+            # Truncate very large outputs to avoid flooding logs
+            def _trunc(s, n=4000):
+                return (s[:n] + '... [truncated]') if len(s) > n else s
+
+            error_msg = (
+                f"RIFE wrapper failed (rc={rc}).\nSTDOUT:\n{_trunc(stdout)}\nSTDERR:\n{_trunc(stderr)}\n"
+            )
             self._logger.error(error_msg)
             error = VideoProcessingError(error_msg)
             self.debugger.log_error(error, context="shell_execution")
-            self.debugger.log_shell_output(e.returncode, e.stdout or "", e.stderr or "")
-            self.debugger.log_end(False, reason="shell_error", exit_code=e.returncode)
+            self.debugger.log_shell_output(rc, stdout, stderr)
+            self.debugger.log_end(False, reason="shell_error", exit_code=rc)
             raise error
 
         except subprocess.CalledProcessError as e:
-            error_msg = f"RIFE wrapper failed: {e.stderr}"
+            # Fallback: ensure we capture the details
+            rc = getattr(e, 'returncode', 'unknown')
+            stdout = getattr(e, 'stdout', '') or ''
+            stderr = getattr(e, 'stderr', '') or ''
+            error_msg = f"RIFE wrapper failed (rc={rc}): {stderr or stdout}"
             self._logger.error(error_msg)
             raise VideoProcessingError(error_msg)
-

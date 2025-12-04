@@ -43,10 +43,31 @@ if [ -z "$INFILE" ] || [ -z "$OUTFILE" ]; then
   exit 2
 fi
 
-TMP_DIR=$(mktemp -d 2>/dev/null || mktemp -d -t rife_tmp)
-[ -d "$TMP_DIR" ] || { log "Failed to create tmp dir"; exit 4; }
+TMP_DIR=""
+# Try robust tmp dir creation with fallbacks. Some minimal containers or busy systems
+# may not have mktemp behaving as expected, so fall back to a deterministic path.
+if TMP_DIR=$(mktemp -d 2>/dev/null); then
+  :
+elif TMP_DIR=$(mktemp -d -t rife_tmp 2>/dev/null); then
+  :
+else
+  TMP_DIR="/tmp/rife_tmp_$$"
+  mkdir -p "$TMP_DIR" 2>/dev/null || {
+    log "Failed to create fallback tmp dir: $TMP_DIR"
+    exit 4
+  }
+fi
+
+# Ensure it's a directory and writable
+if [ ! -d "$TMP_DIR" ] || [ ! -w "$TMP_DIR" ]; then
+  log "Failed to create or access tmp dir: $TMP_DIR"
+  exit 4
+fi
 log "TMP_DIR=$TMP_DIR"
-mkdir -p "$TMP_DIR/input" "$TMP_DIR/output"
+mkdir -p "$TMP_DIR/input" "$TMP_DIR/output" || {
+  log "Failed to create input/output subdirs in TMP_DIR: $TMP_DIR"
+  exit 4
+}
 
 # Unconditional early one-shot: at container start, look for any mp4 in /workspace/output
 # (pick the newest by mtime). If found, upload it immediately (one-shot) using bucket/key from
