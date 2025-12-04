@@ -594,6 +594,24 @@ else
   # --- attempt batch-runner BEFORE assembly ---
   # ensure REPO_DIR is set for batch runner/model lookup
   REPO_DIR="/workspace/project/external/RIFE"
+  # If external/RIFE doesn't contain a train_log or appears empty, fall back to known local RIFE repo
+  # (some images use RIFEv4.26_0921 inside the project instead of external/RIFE)
+  if [ -d "/workspace/project/external/RIFE" ]; then
+    # if train_log exists and non-empty, keep it; otherwise consider fallback
+    if [ -d "/workspace/project/external/RIFE/train_log" ] && [ "$(ls -A /workspace/project/external/RIFE/train_log 2>/dev/null | wc -l)" -gt 0 ]; then
+      : # keep REPO_DIR
+    else
+      # fallback candidate
+      if [ -d "/workspace/project/RIFEv4.26_0921" ]; then
+        REPO_DIR="/workspace/project/RIFEv4.26_0921"
+      fi
+    fi
+  else
+    # external/RIFE missing entirely — try local RIFEv4.26_0921
+    if [ -d "/workspace/project/RIFEv4.26_0921" ]; then
+      REPO_DIR="/workspace/project/RIFEv4.26_0921"
+    fi
+  fi
   mkdir -p "$REPO_DIR/train_log" 2>/dev/null || true
 
   log "GPU diagnostics (nvidia-smi and torch info)"
