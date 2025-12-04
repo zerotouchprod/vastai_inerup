@@ -65,21 +65,71 @@ class RIFENative:
         self._model = None
 
     def _find_model_path(self) -> Path:
-        """Find RIFE model directory."""
+        """
+        Find RIFE model weights directory.
+
+        Note: This is for model WEIGHTS (train_log/*.pkl), not the code.
+        The code is loaded from external/RIFE.
+        """
         possible_paths = [
-            Path('RIFEv4.26_0921'),
-            Path('/workspace/project/RIFEv4.26_0921'),
-            Path('/workspace/project/external/RIFE'),
+            Path('/workspace/project/RIFEv4.26_0921'),  # Preinstalled weights
+            Path('/workspace/project/external/RIFE/train_log'),  # Cloned repo weights
+            Path('RIFEv4.26_0921'),  # Local dev
+            Path('external/RIFE/train_log'),  # Local dev
         ]
 
         for path in possible_paths:
-            if path.exists():
-                self.logger.info(f"Found RIFE model: {path}")
+            if path.exists() and list(path.glob('*.pkl')):  # Check for .pkl files
+                self.logger.info(f"Found RIFE model weights: {path}")
                 return path
 
         raise FileNotFoundError(
-            f"RIFE model not found. Searched: {[str(p) for p in possible_paths]}"
+            f"RIFE model weights not found. Searched: {[str(p) for p in possible_paths]}"
         )
+
+    def _setup_model_package(self, rife_repo_path: Path):
+        """
+        Set up model package for RIFE imports.
+
+        RIFE_HDv3.py needs 'from model.warplayer import warp' to work.
+        We need to create a 'model' package module and load warplayer.
+        """
+        import importlib.util
+        import types
+
+        # Find model directory
+        model_dir = rife_repo_path / 'model'
+        if not model_dir.exists():
+            raise FileNotFoundError(f"model/ directory not found in {rife_repo_path}")
+
+        # Find warplayer.py
+        warplayer_path = model_dir / 'warplayer.py'
+        if not warplayer_path.exists():
+            raise FileNotFoundError(f"warplayer.py not found in {model_dir}")
+
+        self.logger.info(f"Setting up model package from {model_dir}")
+
+        # Create or get model package
+        if 'model' not in sys.modules:
+            model_pkg = types.ModuleType('model')
+            model_pkg.__path__ = [str(model_dir)]
+            model_pkg.__file__ = str(model_dir / '__init__.py')
+            sys.modules['model'] = model_pkg
+        else:
+            model_pkg = sys.modules['model']
+            if not hasattr(model_pkg, '__path__'):
+                model_pkg.__path__ = [str(model_dir)]
+
+        # Load warplayer module
+        spec = importlib.util.spec_from_file_location('model.warplayer', warplayer_path)
+        warplayer_mod = importlib.util.module_from_spec(spec)
+        sys.modules['model.warplayer'] = warplayer_mod
+        spec.loader.exec_module(warplayer_mod)
+
+        # Attach to model package
+        setattr(model_pkg, 'warplayer', warplayer_mod)
+
+        self.logger.info("model.warplayer loaded successfully")
 
     def _load_model(self):
         """Load RIFE model (lazy loading)."""
@@ -91,54 +141,79 @@ class RIFENative:
 
         self.logger.info(f"Loading RIFE model from {self.model_path}")
 
-        # Add external/RIFE to sys.path for RIFE_HDv3 import
-        rife_src_paths = [
+        # Find RIFE repository (external/RIFE)
+        rife_repo_paths = [
             Path('/workspace/project/external/RIFE'),
             Path('external/RIFE'),
-            self.model_path.parent / 'external' / 'RIFE' if self.model_path.parent else None
+            self.model_path.parent / 'external' / 'RIFE' if self.model_path.parent else None,
+            Path(__file__).parent.parent.parent.parent.parent / 'external' / 'RIFE',  # From src/
         ]
 
-        rife_src_path = None
-        for path in rife_src_paths:
-            if path and path.exists() and (path / 'RIFE_HDv3.py').exists():
-                rife_src_path = str(path.absolute())
+        rife_repo_path = None
+        for path in rife_repo_paths:
+            if path and path.exists() and (path / 'model').exists():
+                rife_repo_path = path
                 break
 
-        if not rife_src_path:
+        if not rife_repo_path:
             raise ImportError(
-                f"RIFE_HDv3.py not found. Searched: {[str(p) for p in rife_src_paths if p]}"
+                f"RIFE repository not found. Searched: {[str(p) for p in rife_repo_paths if p]}"
             )
 
-        if rife_src_path not in sys.path:
-            sys.path.insert(0, rife_src_path)
-            self.logger.info(f"Added {rife_src_path} to sys.path")
+        self.logger.info(f"Found RIFE repository: {rife_repo_path}")
+
+        # Set up model package (needed for model.warplayer imports)
+        self._setup_model_package(rife_repo_path)
+
+        # Find RIFE_HDv3.py in the cloned repo
+        # NOTE: RIFE v4.6 has RIFE_HDv3.py in model/ directory,
+        # but remote_runner.sh copies it to root for compatibility
+        rife_hdv3_paths = [
+            rife_repo_path / 'RIFE_HDv3.py',  # Copied to root by remote_runner.sh
+            rife_repo_path / 'model' / 'RIFE_HDv3.py',  # Original location in v4.6
+        ]
+
+        rife_hdv3_path = None
+        for path in rife_hdv3_paths:
+            if path.exists():
+                rife_hdv3_path = path
+                break
+
+        if not rife_hdv3_path:
+            raise FileNotFoundError(
+                f"RIFE_HDv3.py not found. Searched: {[str(p) for p in rife_hdv3_paths]}"
+            )
+
+        # Add directory containing RIFE_HDv3.py to sys.path
+        code_dir = str(rife_hdv3_path.parent.absolute())
+        if code_dir not in sys.path:
+            sys.path.insert(0, code_dir)
+            self.logger.info(f"Added {code_dir} to sys.path")
 
         try:
-            # Import RIFE model
+            # Import RIFE model class
             from RIFE_HDv3 import Model
 
             self._model = Model()
 
-            # Look for train_log directory
-            train_log_path = self.model_path / 'train_log'
-            if not train_log_path.exists():
-                # Maybe model_path itself is train_log
-                if (self.model_path / 'flownet.pkl').exists():
-                    train_log_path = self.model_path
-                else:
-                    raise FileNotFoundError(f"train_log not found in {self.model_path}")
+            # Load model weights from self.model_path (which points to weights directory)
+            # This can be /workspace/project/RIFEv4.26_0921 or external/RIFE/train_log
+            weights_path = self.model_path
+            if not (weights_path / 'flownet.pkl').exists():
+                # If model_path doesn't have pkl files directly, check parent
+                if (weights_path.parent / 'flownet.pkl').exists():
+                    weights_path = weights_path.parent
 
-            self._model.load_model(str(train_log_path), -1)
+            self.logger.info(f"Loading model weights from {weights_path}")
+            self._model.load_model(str(weights_path), -1)
             self._model.eval()
             self._model.device()
 
             self.logger.info("RIFE model loaded successfully")
 
-        except ImportError as e:
+        except Exception as e:
             raise ImportError(
-                f"Failed to import RIFE model. "
-                f"RIFE source path: {rife_src_path}. "
-                "Make sure RIFE_HDv3.py and dependencies are available."
+                f"Failed to load RIFE model. Code from {rife_hdv3_path}, weights from {self.model_path}: {e}"
             ) from e
 
     def _calculate_mids_per_pair(self) -> int:
