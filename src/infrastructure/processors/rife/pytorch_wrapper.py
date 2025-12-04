@@ -3,7 +3,6 @@
 import subprocess
 import os
 import time
-import sys
 from collections import deque
 from pathlib import Path
 from typing import List, Dict, Any
@@ -37,52 +36,48 @@ class RifePytorchWrapper(BaseProcessor):
 
     @classmethod
     def is_available(cls) -> bool:
-        """Check if PyTorch and CUDA are available."""
+        """
+        Check if RIFE bash wrapper is available.
+
+        For shell-wrapped processors, we only check:
+        1. Bash script exists
+        2. PyTorch + CUDA available (runtime dependencies)
+
+        We do NOT probe Python RIFE models - the bash script handles that internally.
+        """
         try:
             # Check if wrapper script exists
             if not cls.WRAPPER_SCRIPT.exists():
+                logger.debug(f"RIFE wrapper script not found: {cls.WRAPPER_SCRIPT}")
                 return False
 
             # Check if PyTorch with CUDA is available
             import torch
             if not torch.cuda.is_available():
+                logger.debug("PyTorch CUDA not available for RIFE")
                 return False
 
-            # Lightweight syntax check of the wrapper script to catch obvious problems
+            # Lightweight syntax check of the wrapper script
             try:
                 import subprocess
-                rc = subprocess.run(['bash', '-n', str(cls.WRAPPER_SCRIPT)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode
+                rc = subprocess.run(
+                    ['bash', '-n', str(cls.WRAPPER_SCRIPT)],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=5
+                ).returncode
                 if rc != 0:
-                    logger.warning(f"RIFE wrapper script syntax check failed (rc={rc}), script={cls.WRAPPER_SCRIPT}")
+                    logger.warning(f"RIFE wrapper script syntax check failed (rc={rc})")
                     return False
-            except Exception as _e:
-                logger.warning(f"Failed to run syntax check for RIFE wrapper: {_e}")
-                # Don't fail hard on exceptions from subprocess; proceed assuming script is ok
-
-            # Run a fast probe of batch_rife to ensure a compatible model class can be loaded
-            try:
-                probe_script = Path('/workspace/project/batch_rife.py')
-                if probe_script.exists():
-                    env = os.environ.copy()
-                    # Allow REPO_DIR override if configured in environment; otherwise probe will use its defaults
-                    proc = subprocess.run([sys.executable, str(probe_script), '--probe'], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env, timeout=10, text=True)
-                    out = (proc.stdout or '').strip()
-                    if proc.returncode != 0:
-                        logger.warning(f"RIFE probe failed (rc={proc.returncode}) output:\n{out}")
-                        return False
-                    # probe succeeded
-                else:
-                    # If no probe script present, conservatively assume availability based on wrapper + CUDA
-                    logger.debug("No batch_rife probe script found; skipping deep model probe")
-            except subprocess.TimeoutExpired:
-                logger.warning("RIFE probe timed out")
-                return False
             except Exception as e:
-                logger.warning(f"RIFE probe invocation failed: {e}")
-                return False
+                logger.warning(f"Failed to run syntax check for RIFE wrapper: {e}")
+                # Don't fail - proceed assuming script is OK
 
+            logger.debug("RIFE PyTorch wrapper is available")
             return True
+
         except ImportError:
+            logger.debug("PyTorch not available for RIFE")
             return False
 
     def supports_gpu(self) -> bool:
