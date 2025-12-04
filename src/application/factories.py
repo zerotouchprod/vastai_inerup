@@ -46,7 +46,7 @@ class ProcessorFactory:
         if self.use_native:
             self._logger.info("🐍 Using NATIVE Python processors (no shell scripts)")
         else:
-            self._logger.info("🐚 Using shell-wrapped processors (default)")
+            self._logger.info("__ Using shell-wrapped processors (default)")
 
     def create_interpolator(self, prefer: str = 'auto') -> Optional[IProcessor]:
         """

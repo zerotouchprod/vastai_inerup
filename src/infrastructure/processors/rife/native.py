@@ -94,47 +94,63 @@ class RIFENative:
         RIFE_HDv3.py needs 'from model.warplayer import warp' to work.
         We need to ensure the model/ directory is properly on the Python path.
         """
-        # Find model directory
-        model_dir = rife_repo_path / 'model'
-        if not model_dir.exists():
-            raise FileNotFoundError(f"model/ directory not found in {rife_repo_path}")
-
-        self.logger.info(f"Setting up model package from {model_dir}")
-
         # Add the RIFE repo root to sys.path (so "import model" works)
         rife_root = str(rife_repo_path.absolute())
         if rife_root not in sys.path:
             sys.path.insert(0, rife_root)
-            self.logger.info(f"Added {rife_root} to sys.path for 'model' package")
+            self.logger.info(f"Added {rife_root} to sys.path")
 
-        # Verify model package can be imported
-        try:
+        # Check if RIFE_HDv3.py was copied to root (done by remote_runner.sh)
+        rife_hdv3_root = rife_repo_path / 'RIFE_HDv3.py'
+        if rife_hdv3_root.exists():
+            self.logger.info(f"✓ Found RIFE_HDv3.py in root: {rife_hdv3_root}")
+            # Also copy warplayer.py if needed
+            warplayer_root = rife_repo_path / 'warplayer.py'
+            warplayer_model = rife_repo_path / 'model' / 'warplayer.py'
+            if not warplayer_root.exists() and warplayer_model.exists():
+                import shutil
+                shutil.copy(warplayer_model, warplayer_root)
+                self.logger.info(f"Copied warplayer.py to root")
+
+        # Find model directory
+        model_dir = rife_repo_path / 'model'
+        if model_dir.exists():
+            self.logger.info(f"Setting up model package from {model_dir}")
+
             # Create __init__.py in model/ if it doesn't exist (for Python package)
             init_file = model_dir / '__init__.py'
             if not init_file.exists():
                 init_file.write_text("# RIFE model package\n")
                 self.logger.info(f"Created {init_file}")
 
-            # Force reload if already imported
-            import importlib
-            if 'model' in sys.modules:
-                importlib.reload(sys.modules['model'])
-            if 'model.warplayer' in sys.modules:
-                importlib.reload(sys.modules['model.warplayer'])
-
-            # Now try importing
-            import model
-            import model.warplayer
-            self.logger.info("✓ model.warplayer loaded successfully")
-        except ImportError as e:
-            self.logger.error(f"✗ Failed to import model package: {e}")
-            # List what's actually in the model directory for debugging
+            # Verify model package can be imported
             try:
-                files = list(model_dir.glob('*.py'))
-                self.logger.error(f"Available .py files in {model_dir}: {[f.name for f in files]}")
-            except Exception:
-                pass
-            raise
+                # Force reload if already imported
+                import importlib
+                if 'model' in sys.modules:
+                    importlib.reload(sys.modules['model'])
+                if 'model.warplayer' in sys.modules:
+                    importlib.reload(sys.modules['model.warplayer'])
+
+                # Now try importing
+                import model
+                import model.warplayer
+                self.logger.info("✓ model.warplayer loaded successfully")
+            except ImportError as e:
+                self.logger.warning(f"Could not import model.warplayer from model/: {e}")
+                # Try to copy files to root as fallback
+                try:
+                    import shutil
+                    for f in ['warplayer.py', 'IFNet_HDv3.py']:
+                        src = model_dir / f
+                        dst = rife_repo_path / f
+                        if src.exists() and not dst.exists():
+                            shutil.copy(src, dst)
+                            self.logger.info(f"Copied {f} to root as fallback")
+                except Exception as copy_err:
+                    self.logger.warning(f"Fallback copy failed: {copy_err}")
+        else:
+            self.logger.warning(f"model/ directory not found in {rife_repo_path}, will try root files")
 
     def _load_model(self):
         """Load RIFE model (lazy loading)."""
@@ -179,41 +195,56 @@ class RIFENative:
         self._setup_model_package(rife_repo_path)
 
         # Find RIFE_HDv3.py or model/RIFE.py
-        # Check multiple locations for backward compatibility
-        # Note: RIFE_HDv3.py is typically in train_log/ directory in newer RIFE versions
+        # Priority: root (copied by remote_runner.sh) -> model/ -> train_log/
         model_class_paths = [
-            (rife_repo_path / 'train_log' / 'RIFE_HDv3.py', 'RIFE_HDv3', 'Model'),  # v4.6+ (train_log)
-            (rife_repo_path / 'model' / 'RIFE_HDv3.py', 'RIFE_HDv3', 'Model'),  # v4.6 (model dir)
-            (rife_repo_path / 'model' / 'RIFE.py', 'RIFE', 'Model'),  # v4.x
-            (rife_repo_path / 'RIFE_HDv3.py', 'RIFE_HDv3', 'Model'),  # Copied to root
+            (rife_repo_path / 'RIFE_HDv3.py', 'RIFE_HDv3_root', 'Model'),  # Copied to root by remote_runner.sh (PRIORITY!)
+            (rife_repo_path / 'model' / 'RIFE_HDv3.py', 'RIFE_HDv3_model', 'Model'),  # v4.6 (model dir)
+            (rife_repo_path / 'train_log' / 'RIFE_HDv3.py', 'RIFE_HDv3_train', 'Model'),  # v4.6+ (train_log)
+            (rife_repo_path / 'model' / 'RIFE.py', 'RIFE_model', 'Model'),  # v4.x
             (rife_repo_path / 'train_log' / 'RIFE_HD.py', 'RIFE_HD', 'Model'),  # Older version
         ]
 
         model_class = None
-        for model_file, module_name, class_name in model_class_paths:
-            if model_file.exists():
-                self.logger.info(f"✓ Found model file: {model_file}")
-                try:
-                    # Import the module
-                    import importlib.util
-                    spec = importlib.util.spec_from_file_location(module_name, model_file)
-                    module = importlib.util.module_from_spec(spec)
-                    sys.modules[module_name] = module
-                    spec.loader.exec_module(module)
+        last_error = None
 
-                    # Get the Model class
-                    if hasattr(module, class_name):
-                        model_class = getattr(module, class_name)
-                        self.logger.info(f"✓ Loaded {module_name}.{class_name}")
-                        break
-                except Exception as e:
-                    self.logger.warning(f"Failed to load {model_file}: {e}")
+        for model_file, module_name, class_name in model_class_paths:
+            if not model_file.exists():
+                continue
+
+            self.logger.info(f"Trying model file: {model_file}")
+            try:
+                # Import the module
+                import importlib.util
+                spec = importlib.util.spec_from_file_location(module_name, model_file)
+                if spec is None or spec.loader is None:
+                    self.logger.warning(f"Could not create spec for {model_file}")
                     continue
 
+                module = importlib.util.module_from_spec(spec)
+                sys.modules[module_name] = module
+                spec.loader.exec_module(module)
+
+                # Get the Model class
+                if hasattr(module, class_name):
+                    model_class = getattr(module, class_name)
+                    self.logger.info(f"✓ Successfully loaded {module_name}.{class_name} from {model_file}")
+                    break
+                else:
+                    self.logger.warning(f"Module {module_name} does not have {class_name} class")
+
+            except Exception as e:
+                last_error = e
+                self.logger.warning(f"Failed to load {model_file}: {e}")
+                import traceback
+                self.logger.debug(traceback.format_exc())
+                continue
+
         if not model_class:
-            raise ImportError(
-                f"Could not load RIFE Model class. Tried: {[str(p[0]) for p in model_class_paths]}"
-            )
+            tried_files = [str(p[0]) for p in model_class_paths if p[0].exists()]
+            error_msg = f"Could not load RIFE Model class. Tried: {tried_files}"
+            if last_error:
+                error_msg += f"\nLast error: {last_error}"
+            raise ImportError(error_msg)
 
         try:
             # Create model instance

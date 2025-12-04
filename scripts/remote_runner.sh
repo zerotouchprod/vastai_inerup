@@ -19,7 +19,8 @@ set -eo pipefail
 # 🐍 USE NATIVE PYTHON PROCESSORS (no shell scripts!)
 # This enables the new pure Python implementations without rebuilding Docker image.
 # Native processors provide full debugging support and are 100% Python.
-export USE_NATIVE_PROCESSORS=${USE_NATIVE_PROCESSORS:-1}
+# TEMPORARILY DISABLED: using working bash scripts until native is fully tested
+export USE_NATIVE_PROCESSORS=${USE_NATIVE_PROCESSORS:-0}
 
 echo "=== Remote Runner Starting ==="
 echo "Time: $(date)"
