@@ -2,6 +2,8 @@
 
 import subprocess
 import os
+import time
+from collections import deque
 from pathlib import Path
 from typing import List, Dict, Any
 
@@ -144,32 +146,136 @@ class RifePytorchWrapper(BaseProcessor):
             # Set environment variables
             env = os.environ.copy()
             env['PREFER'] = 'pytorch'
+            # Encourage unbuffered Python output from child processes so logs stream in real-time
+            env['PYTHONUNBUFFERED'] = '1'
+            env['PYTHONIOENCODING'] = 'utf-8'
 
             # Debug: Log environment
             self.debugger.log_step('set_environment', PREFER='pytorch')
 
-            # Run wrapper
+            # Run wrapper and stream output live so user sees progress in real time
             self.debugger.log_step('execute_shell_script', timeout=timeout)
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                env=env,
-                check=True
-            )
+            try:
+                proc = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    bufsize=1,
+                    env=env,
+                )
+            except OSError as e:
+                self._logger.error(f"Failed to start wrapper process: {e}")
+                raise VideoProcessingError(f"Failed to start RIFE wrapper: {e}")
 
-            # Debug: Log shell output
-            self.debugger.log_shell_output(
-                returncode=result.returncode,
-                stdout=result.stdout,
-                stderr=result.stderr
-            )
+            self._logger.info(f"Started wrapper pid={proc.pid}")
+            # Immediate diagnostics: log script file details and input_arg details so user sees something
+            try:
+                script_path = Path(self.WRAPPER_SCRIPT)
+                script_exists = script_path.exists()
+                script_mode = oct(script_path.stat().st_mode & 0o777) if script_exists else 'n/a'
+            except Exception:
+                script_exists = False
+                script_mode = 'n/a'
+            self._logger.info(f"Wrapper script exists={script_exists} mode={script_mode} wrapper_path={self.WRAPPER_SCRIPT}")
+            try:
+                in_path = Path(input_arg)
+                if in_path.exists():
+                    if in_path.is_dir():
+                        files = list(in_path.glob('*'))[:6]
+                        files_str = ','.join([p.name for p in files])
+                        self._logger.info(f"Input is directory {in_path} contains sample: {files_str}")
+                    else:
+                        try:
+                            sz = in_path.stat().st_size
+                            self._logger.info(f"Input file {in_path} exists size={sz}")
+                        except Exception:
+                            self._logger.info(f"Input file {in_path} exists (size unknown)")
+                else:
+                    self._logger.info(f"Input argument does not exist on disk: {input_arg}")
+            except Exception as e:
+                self._logger.info(f"Error while inspecting input_arg: {e}")
 
-            # Log output
-            if result.stdout:
-                for line in result.stdout.strip().split('\n'):
-                    self._logger.debug(f"[RIFE] {line}")
+            # Keep a rolling buffer of output for diagnostics (avoid unbounded memory)
+            MAX_BUFFER_LINES = 2000
+            buf = deque(maxlen=MAX_BUFFER_LINES)
+            start_ts = time.time()
+
+            # Read lines as they appear using readline so we can insert heartbeat checks
+            try:
+                if proc.stdout is None:
+                    raise VideoProcessingError("Wrapper process had no stdout pipe")
+
+                last_output_ts = time.time()
+                # seconds without output before emitting a heartbeat (env override RIFE_HEARTBEAT_INTERVAL)
+                try:
+                    HEARTBEAT_INTERVAL = int(os.environ.get('RIFE_HEARTBEAT_INTERVAL', '3'))
+                except Exception:
+                    HEARTBEAT_INTERVAL = 3
+
+                while True:
+                    # Try to read a line; readline blocks but we can check process poll periodically
+                    line = proc.stdout.readline()
+                    if line:
+                        line = line.rstrip('\n')
+                        buf.append(line)
+                        last_output_ts = time.time()
+                        # Mirror to logger (info for visibility)
+                        self._logger.info(f"[RIFE] {line}")
+                    else:
+                        # No data available right now
+                        if proc.poll() is not None:
+                            # Process has exited and no more data
+                            break
+                        # If we've been waiting longer than heartbeat, log a small heartbeat so user knows we're alive
+                        now = time.time()
+                        if now - last_output_ts > HEARTBEAT_INTERVAL:
+                            self._logger.info(f"[RIFE] (no stdout for {int(now-last_output_ts)}s) still running pid={proc.pid}...")
+                            # refresh last_output to avoid spamming
+                            last_output_ts = now
+                        # Sleep briefly to avoid busy loop
+                        time.sleep(0.5)
+
+                # Ensure process has exited (reap)
+                proc.wait()
+            except subprocess.TimeoutExpired as e:
+                # Ensure process terminated
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+                error = VideoProcessingError(f"RIFE processing timed out after {timeout}s")
+                self.debugger.log_error(error, context="shell_execution")
+                self.debugger.log_shell_output(returncode=-1, stdout='\n'.join(list(buf)), stderr='')
+                self.debugger.log_end(False, reason="timeout")
+                raise error
+
+            # Collect final output
+            try:
+                remaining_stdout, _ = proc.communicate(timeout=1)
+            except Exception:
+                remaining_stdout = ''
+            if remaining_stdout:
+                for line in remaining_stdout.splitlines():
+                    buf.append(line)
+                    self._logger.info(f"[RIFE] {line}")
+
+            result_stdout = '\n'.join(list(buf))
+            result_returncode = proc.returncode if proc.returncode is not None else -1
+
+            # Debug: Log shell output snapshot
+            self.debugger.log_shell_output(returncode=result_returncode, stdout=result_stdout, stderr='')
+
+            # If wrapper failed, raise with captured output
+            if result_returncode != 0:
+                # Truncate for error message
+                snippet = (result_stdout[:4000] + '... [truncated]') if len(result_stdout) > 4000 else result_stdout
+                error_msg = f"RIFE wrapper failed (rc={result_returncode}).\nLOG:\n{snippet}\n"
+                self._logger.error(error_msg)
+                error = VideoProcessingError(error_msg)
+                self.debugger.log_error(error, context="shell_execution")
+                self.debugger.log_end(False, reason="shell_error", exit_code=result_returncode)
+                raise error
 
             # Extract frames from output video if needed
             # For now, assume wrapper already created frames in output_dir
