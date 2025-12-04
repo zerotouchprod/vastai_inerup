@@ -203,6 +203,8 @@ class RealESRGANNative:
         """Find model weights file."""
         # Common locations (ordered by priority)
         possible_paths = [
+            # Docker container preinstalled models (highest priority)
+            Path('/opt/realesrgan_models') / f'{self.model_name}.pth',
             # Docker container paths
             Path('/workspace/project/external/Real-ESRGAN/weights') / f'{self.model_name}.pth',
             Path('/workspace/project/external/Real-ESRGAN/experiments/pretrained_models') / f'{self.model_name}.pth',
