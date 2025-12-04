@@ -92,44 +92,36 @@ class RIFENative:
         Set up model package for RIFE imports.
 
         RIFE_HDv3.py needs 'from model.warplayer import warp' to work.
-        We need to create a 'model' package module and load warplayer.
+        We need to ensure the model/ directory is properly on the Python path.
         """
-        import importlib.util
-        import types
-
         # Find model directory
         model_dir = rife_repo_path / 'model'
         if not model_dir.exists():
             raise FileNotFoundError(f"model/ directory not found in {rife_repo_path}")
 
-        # Find warplayer.py
-        warplayer_path = model_dir / 'warplayer.py'
-        if not warplayer_path.exists():
-            raise FileNotFoundError(f"warplayer.py not found in {model_dir}")
-
         self.logger.info(f"Setting up model package from {model_dir}")
 
-        # Create or get model package
-        if 'model' not in sys.modules:
-            model_pkg = types.ModuleType('model')
-            model_pkg.__path__ = [str(model_dir)]
-            model_pkg.__file__ = str(model_dir / '__init__.py')
-            sys.modules['model'] = model_pkg
-        else:
-            model_pkg = sys.modules['model']
-            if not hasattr(model_pkg, '__path__'):
-                model_pkg.__path__ = [str(model_dir)]
+        # Add the RIFE repo root to sys.path (so "import model" works)
+        rife_root = str(rife_repo_path.absolute())
+        if rife_root not in sys.path:
+            sys.path.insert(0, rife_root)
+            self.logger.info(f"Added {rife_root} to sys.path for 'model' package")
 
-        # Load warplayer module
-        spec = importlib.util.spec_from_file_location('model.warplayer', warplayer_path)
-        warplayer_mod = importlib.util.module_from_spec(spec)
-        sys.modules['model.warplayer'] = warplayer_mod
-        spec.loader.exec_module(warplayer_mod)
+        # Verify model package can be imported
+        try:
+            # Create __init__.py in model/ if it doesn't exist (for Python package)
+            init_file = model_dir / '__init__.py'
+            if not init_file.exists():
+                init_file.write_text("# RIFE model package\n")
+                self.logger.info(f"Created {init_file}")
 
-        # Attach to model package
-        setattr(model_pkg, 'warplayer', warplayer_mod)
-
-        self.logger.info("model.warplayer loaded successfully")
+            # Now try importing
+            import model
+            import model.warplayer
+            self.logger.info("✓ model.warplayer loaded successfully")
+        except ImportError as e:
+            self.logger.error(f"✗ Failed to import model package: {e}")
+            raise
 
     def _load_model(self):
         """Load RIFE model (lazy loading)."""
@@ -139,13 +131,12 @@ class RIFENative:
         if not TORCH_AVAILABLE:
             raise ImportError("PyTorch not found. Install: pip install torch")
 
-        self.logger.info(f"Loading RIFE model from {self.model_path}")
+        self.logger.info(f"Loading RIFE model (weights from: {self.model_path})")
 
         # Find RIFE repository (external/RIFE)
         rife_repo_paths = [
             Path('/workspace/project/external/RIFE'),
             Path('external/RIFE'),
-            self.model_path.parent / 'external' / 'RIFE' if self.model_path.parent else None,
             Path(__file__).parent.parent.parent.parent.parent / 'external' / 'RIFE',  # From src/
         ]
 
@@ -153,6 +144,7 @@ class RIFENative:
         for path in rife_repo_paths:
             if path and path.exists() and (path / 'model').exists():
                 rife_repo_path = path
+                self.logger.info(f"✓ Found RIFE repository: {path}")
                 break
 
         if not rife_repo_path:
@@ -160,44 +152,48 @@ class RIFENative:
                 f"RIFE repository not found. Searched: {[str(p) for p in rife_repo_paths if p]}"
             )
 
-        self.logger.info(f"Found RIFE repository: {rife_repo_path}")
-
         # Set up model package (needed for model.warplayer imports)
         self._setup_model_package(rife_repo_path)
 
-        # Find RIFE_HDv3.py in the cloned repo
-        # NOTE: RIFE v4.6 has RIFE_HDv3.py in model/ directory,
-        # but remote_runner.sh copies it to root for compatibility
-        rife_hdv3_paths = [
-            rife_repo_path / 'RIFE_HDv3.py',  # Copied to root by remote_runner.sh
-            rife_repo_path / 'model' / 'RIFE_HDv3.py',  # Original location in v4.6
+        # Find RIFE_HDv3.py or model/RIFE.py
+        # Check multiple locations for backward compatibility
+        model_class_paths = [
+            (rife_repo_path / 'model' / 'RIFE_HDv3.py', 'RIFE_HDv3', 'Model'),  # v4.6
+            (rife_repo_path / 'model' / 'RIFE.py', 'RIFE', 'Model'),  # v4.x
+            (rife_repo_path / 'RIFE_HDv3.py', 'RIFE_HDv3', 'Model'),  # Copied to root
         ]
 
-        rife_hdv3_path = None
-        for path in rife_hdv3_paths:
-            if path.exists():
-                rife_hdv3_path = path
-                break
+        model_class = None
+        for model_file, module_name, class_name in model_class_paths:
+            if model_file.exists():
+                self.logger.info(f"✓ Found model file: {model_file}")
+                try:
+                    # Import the module
+                    import importlib.util
+                    spec = importlib.util.spec_from_file_location(module_name, model_file)
+                    module = importlib.util.module_from_spec(spec)
+                    sys.modules[module_name] = module
+                    spec.loader.exec_module(module)
 
-        if not rife_hdv3_path:
-            raise FileNotFoundError(
-                f"RIFE_HDv3.py not found. Searched: {[str(p) for p in rife_hdv3_paths]}"
+                    # Get the Model class
+                    if hasattr(module, class_name):
+                        model_class = getattr(module, class_name)
+                        self.logger.info(f"✓ Loaded {module_name}.{class_name}")
+                        break
+                except Exception as e:
+                    self.logger.warning(f"Failed to load {model_file}: {e}")
+                    continue
+
+        if not model_class:
+            raise ImportError(
+                f"Could not load RIFE Model class. Tried: {[str(p[0]) for p in model_class_paths]}"
             )
 
-        # Add directory containing RIFE_HDv3.py to sys.path
-        code_dir = str(rife_hdv3_path.parent.absolute())
-        if code_dir not in sys.path:
-            sys.path.insert(0, code_dir)
-            self.logger.info(f"Added {code_dir} to sys.path")
-
         try:
-            # Import RIFE model class
-            from RIFE_HDv3 import Model
+            # Create model instance
+            self._model = model_class()
 
-            self._model = Model()
-
-            # Load model weights from self.model_path (which points to weights directory)
-            # This can be /workspace/project/RIFEv4.26_0921 or external/RIFE/train_log
+            # Load model weights
             weights_path = self.model_path
             if not (weights_path / 'flownet.pkl').exists():
                 # If model_path doesn't have pkl files directly, check parent
@@ -209,11 +205,11 @@ class RIFENative:
             self._model.eval()
             self._model.device()
 
-            self.logger.info("RIFE model loaded successfully")
+            self.logger.info("✓ RIFE model loaded successfully")
 
         except Exception as e:
             raise ImportError(
-                f"Failed to load RIFE model. Code from {rife_hdv3_path}, weights from {self.model_path}: {e}"
+                f"Failed to load RIFE model. Weights from {self.model_path}: {e}"
             ) from e
 
     def _calculate_mids_per_pair(self) -> int:
