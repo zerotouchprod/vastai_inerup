@@ -143,9 +143,22 @@ PY
     if [ -z "$BKT" ]; then
       BKT="${B2_BUCKET:-}"
     fi
+    # choose key: prefer trigger JSON key, then JOB env (JOB or JOB_ID), then B2_OUTPUT_KEY/B2_KEY
     KEYV="${TRIG_KEY:-}"
     if [ -z "$KEYV" ]; then
-      KEYV="${B2_OUTPUT_KEY:-${B2_KEY:-}}"
+      job_env="${JOB:-${JOB_ID:-}}"
+      if [ -n "$job_env" ]; then
+        # ensure filename ends with .mp4
+        if [[ "$job_env" == *.mp4 ]]; then key_name="$job_env"; else key_name="${job_env}.mp4"; fi
+        # if key_name contains a slash treat as full key, else prefix with output/
+        if [[ "$key_name" == */* ]]; then
+          KEYV="$key_name"
+        else
+          KEYV="output/$key_name"
+        fi
+      else
+        KEYV="${B2_OUTPUT_KEY:-${B2_KEY:-}}"
+      fi
     fi
 
     if [ -z "$BKT" ]; then
@@ -428,11 +441,23 @@ PY
     return 0
   fi
 
-  # Choose key: prefer explicit B2_OUTPUT_KEY, otherwise fallback to output path
+  # Prefer explicit B2_OUTPUT_KEY, else JOB/JOB_ID (ensuring .mp4), else fallback to output/<basename>.mp4
+  job_env2="${JOB:-${JOB_ID:-}}"
   if [ -n "$B2_KEY_ENV" ]; then
-    outkey="$B2_KEY_ENV"
+    # respect provided key but ensure extension
+    if [[ "$B2_KEY_ENV" == *.mp4 ]]; then
+      outkey="$B2_KEY_ENV"
+    else
+      outkey="${B2_KEY_ENV}.mp4"
+    fi
+  elif [ -n "$job_env2" ]; then
+    if [[ "$job_env2" == *.mp4 ]]; then fname="$job_env2"; else fname="${job_env2}.mp4"; fi
+    if [[ "$fname" == */* ]]; then outkey="$fname"; else outkey="output/$fname"; fi
   else
-    outkey="output/$(basename "$file")"
+    # fallback to output/<basename>.mp4
+    base="$(basename "$file")"
+    # if base already has extension, replace it with .mp4
+    outkey="output/${base%.*}.mp4"
   fi
 
   log "Calling container_upload.py to upload $FINAL -> s3://$B2_BUCKET/$outkey"
