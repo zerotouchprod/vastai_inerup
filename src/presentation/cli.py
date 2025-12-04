@@ -208,6 +208,14 @@ def main():
         if result.success:
             logger.info("✅ Processing completed successfully!")
             logger.info(f"Output: {result.output_path}")
+
+            # Display upload URL if available
+            upload_url = result.metrics.get('upload_url')
+            if upload_url:
+                logger.info("")
+                logger.info("📥 Download URL:")
+                logger.info(f"   {upload_url}")
+
             print("\n=== VASTAI_PIPELINE_COMPLETED_SUCCESSFULLY ===\n")
             return 0
         else:
