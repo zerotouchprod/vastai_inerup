@@ -19,8 +19,8 @@ set -eo pipefail
 # 🐍 USE NATIVE PYTHON PROCESSORS (no shell scripts!)
 # This enables the new pure Python implementations without rebuilding Docker image.
 # Native processors provide full debugging support and are 100% Python.
-# TEMPORARILY DISABLED: using working bash scripts until native is fully tested
-export USE_NATIVE_PROCESSORS=${USE_NATIVE_PROCESSORS:-0}
+# Now fully functional - enabled by default!
+export USE_NATIVE_PROCESSORS=${USE_NATIVE_PROCESSORS:-1}
 
 echo "=== Remote Runner Starting ==="
 echo "Time: $(date)"
@@ -555,7 +555,7 @@ if [ "$USE_CONFIG" = true ]; then
   # Run using container_config_runner.py which reads config.yaml
   if [ -f "/workspace/project/scripts/container_config_runner.py" ]; then
     echo "[remote_runner] Running with config.yaml via container_config_runner.py..."
-    env B2_KEY="$B2_KEY" B2_SECRET="$B2_SECRET" B2_BUCKET="$B2_BUCKET" B2_ENDPOINT="$B2_ENDPOINT" python3 /workspace/project/scripts/container_config_runner.py "$CONFIG_FILE"
+    env USE_NATIVE_PROCESSORS="$USE_NATIVE_PROCESSORS" B2_KEY="$B2_KEY" B2_SECRET="$B2_SECRET" B2_BUCKET="$B2_BUCKET" B2_ENDPOINT="$B2_ENDPOINT" python3 /workspace/project/scripts/container_config_runner.py "$CONFIG_FILE"
   else
     echo "ERROR: container_config_runner.py not found!"
     echo "Falling back to ENV-driven mode..."
