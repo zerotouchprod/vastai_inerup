@@ -4,26 +4,171 @@ in_dir = sys.argv[1]
 out_dir = sys.argv[2]
 factor = float(sys.argv[3])
 repo = os.environ.get('REPO_DIR', '/workspace/project/external/RIFE')
+# define alt_repo early so it's available for later candidate scanning
+alt_repo = '/workspace/project/RIFEv4.26_0921'
+# If REPO_DIR not present or empty, fallback candidate
+if not repo or not os.path.isdir(repo):
+    if os.path.isdir(alt_repo):
+        repo = alt_repo
 model_dir = os.path.join(repo, 'train_log')
 
-# Try importing a model class from common locations
+# Try importing a model class from common locations — robust approach
+import importlib, importlib.util
 Model = None
-try:
-    from train_log.RIFE_HDv3 import Model as _Model
-    Model = _Model
-except Exception:
-    try:
-        from model.RIFE import Model as _Model
-        Model = _Model
-    except Exception:
-        try:
-            from train_log.RIFE_HD import Model as _Model
-            Model = _Model
-        except Exception:
-            Model = None
+tried_locations = []
 
+# Helper to attempt import by dotted name (package-style)
+def try_dotted(dotted):
+    global Model
+    tried_locations.append(f"dotted:{dotted}")
+    try:
+        mod = importlib.import_module(dotted)
+        if hasattr(mod, 'Model'):
+            Model = getattr(mod, 'Model')
+            return True
+    except Exception:
+        return False
+    return False
+
+# Ensure model_dir and repo are on sys.path to help package-relative imports inside model files
+try:
+    if model_dir and os.path.isdir(model_dir) and model_dir not in sys.path:
+        sys.path.insert(0, model_dir)
+        tried_locations.append(f"sys.path-added:{model_dir}")
+    if repo and os.path.isdir(repo) and repo not in sys.path:
+        sys.path.insert(0, repo)
+        tried_locations.append(f"sys.path-added:{repo}")
+except Exception:
+    pass
+
+# Helper to attempt import by file path
+def try_path(path):
+    global Model
+    tried_locations.append(f"file:{path}")
+    if not os.path.isfile(path):
+        return False
+    try:
+        name = f"rife_model_{abs(hash(path))}"
+        spec = importlib.util.spec_from_file_location(name, path)
+        if spec and spec.loader:
+            mod = importlib.util.module_from_spec(spec)
+            try:
+                spec.loader.exec_module(mod)
+            except Exception as e:
+                # record exception for diagnostics
+                tried_locations.append(f"file_error:{path}:{type(e).__name__}:{str(e)[:200]}")
+                return False
+            if hasattr(mod, 'Model'):
+                Model = getattr(mod, 'Model')
+                tried_locations.append(f"file_ok:{path}")
+                return True
+    except Exception as e:
+        tried_locations.append(f"file_error:{path}:{type(e).__name__}:{str(e)[:200]}")
+        return False
+    return False
+
+# 1) Try common dotted imports (may succeed if repo is on sys.path and packages are present)
+# Add repo and repo parent to sys.path to increase chance of package imports working
+candidates_sys_paths = [repo, os.path.dirname(repo), os.path.join(repo, '..')]
+for p in candidates_sys_paths:
+    if p and os.path.isdir(p) and p not in sys.path:
+        sys.path.insert(0, p)
+        tried_locations.append(f"sys.path-added:{p}")
+
+# Package-style attempts (original fallback order)
+if try_dotted('train_log.RIFE_HDv3'):
+    pass
+elif try_dotted('model.RIFE'):
+    pass
+elif try_dotted('train_log.RIFE_HD'):
+    pass
+
+# 2) If still not found, try file-based imports from several likely locations
+if Model is None:
+    # build list of candidate files
+    cand_files = [
+        os.path.join(repo, 'train_log', 'RIFE_HDv3.py'),
+        os.path.join(repo, 'model', 'RIFE.py'),
+        os.path.join(repo, 'train_log', 'RIFE_HD.py'),
+        os.path.join(repo, 'RIFE_HDv3.py'),
+        os.path.join(repo, 'model.py'),
+    ]
+    # Also check common fallback repo inside project
+    alt_repo = '/workspace/project/RIFEv4.26_0921'
+    if alt_repo != repo and os.path.isdir(alt_repo):
+        cand_files.extend([
+            os.path.join(alt_repo, 'train_log', 'RIFE_HDv3.py'),
+            os.path.join(alt_repo, 'model', 'RIFE.py'),
+            os.path.join(alt_repo, 'train_log', 'RIFE_HD.py'),
+            os.path.join(alt_repo, 'RIFE_HDv3.py'),
+        ])
+
+    for p in cand_files:
+        if try_path(p):
+            break
+
+# broaden search: look for likely model files under repo and common subdirs
+if Model is None:
+    def scan_for_candidates(base_dirs, name_hint_patterns=('rife','model')):
+        cand = []
+        for base in base_dirs:
+            if not base or not os.path.isdir(base):
+                continue
+            # prioritize train_log and model subdirs
+            for sub in ('train_log','model',''):
+                d = os.path.join(base, sub) if sub else base
+                if not os.path.isdir(d):
+                    continue
+                try:
+                    for fname in sorted(os.listdir(d)):
+                        lf = fname.lower()
+                        if not lf.endswith('.py'):
+                            continue
+                        # prefer files that contain hint words
+                        for pat in name_hint_patterns:
+                            if pat in lf:
+                                cand.append(os.path.join(d, fname))
+                                break
+                        else:
+                            # also keep generic python files as lower priority
+                            cand.append(os.path.join(d, fname))
+                except Exception:
+                    continue
+        # dedupe while preserving order
+        seen=set(); out=[]
+        for p in cand:
+            if p not in seen:
+                seen.add(p); out.append(p)
+        return out
+
+    extra_bases = [repo, os.path.join(repo,'model'), os.path.join(repo,'train_log')]
+    if alt_repo and alt_repo != repo:
+        extra_bases.extend([alt_repo, os.path.join(alt_repo,'model'), os.path.join(alt_repo,'train_log')])
+    candidates = scan_for_candidates(extra_bases)
+    # attempt imports on candidate files
+    for p in candidates:
+        if try_path(p):
+            break
+
+# Final diagnostics if still not found
 if Model is None:
     print('No compatible RIFE Model class found (tried train_log.RIFE_HDv3, model.RIFE, train_log.RIFE_HD)')
+    print('DEBUG: REPO_DIR scanned:', repo)
+    print('DEBUG: model_dir:', model_dir)
+    print('DEBUG: attempted locations:')
+    for t in tried_locations[-500:]:
+        print('  -', t)
+    # Show top-level listing of repo for debugging
+    try:
+        print('DEBUG: repo listing (top 50):')
+        for root, dirs, files in os.walk(repo):
+            print('  dir:', root)
+            for f in files[:50]:
+                if f.endswith('.py'):
+                    print('    file:', f)
+            break
+    except Exception:
+        pass
     sys.exit(2)
 
 import torch
@@ -417,5 +562,24 @@ for i in range(len(imgs)-1):
         print('Exception processing pair', a_path, b_path, '->', e)
         traceback.print_exc()
         sys.stdout.flush()
+
+# After discovery, print which method succeeded for debugging
+found_source = None
+for t in reversed(tried_locations):
+    if t.startswith('file_ok:'):
+        found_source = t.split(':',1)[1]
+        break
+    if t.startswith('dotted:'):
+        found_source = t
+        break
+if found_source:
+    print('DEBUG: Loaded RIFE Model from:', found_source)
+else:
+    # If Model exists but we don't have a recorded source, try to get module name
+    try:
+        mod_name = getattr(Model, '__module__', None)
+        print('DEBUG: Loaded RIFE Model module:', mod_name)
+    except Exception:
+        pass
 
 sys.exit(0)
