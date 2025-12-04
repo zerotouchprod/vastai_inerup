@@ -90,7 +90,7 @@ class ConfigLoader:
         self.config_path = config_path or Path("config.yaml")
         self._logger = get_logger(__name__)
 
-    def load(self) -> ProcessingConfig:
+    def load(self, overrides: Optional[Dict[str, Any]] = None) -> ProcessingConfig:
         """
         Load configuration from file and environment.
 
@@ -116,6 +116,14 @@ class ConfigLoader:
         # Override with environment variables
         env_config = self._load_from_env()
         config_dict.update(env_config)
+
+        # Apply runtime overrides (from CLI) if provided
+        if overrides:
+            # Only accept known keys to avoid passing unexpected values
+            for k, v in overrides.items():
+                if v is None:
+                    continue
+                config_dict[k] = v
 
         # Validate required fields
         if "input_url" not in config_dict:
@@ -212,4 +220,3 @@ class ConfigLoader:
             env_config["job_id"] = job_id
 
         return env_config
-

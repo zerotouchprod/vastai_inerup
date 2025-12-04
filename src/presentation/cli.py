@@ -87,6 +87,7 @@ def main():
     parser.add_argument('--prefer', choices=['auto', 'pytorch'], help='Backend')
     parser.add_argument('--strict', action='store_true', help='Strict mode')
     parser.add_argument('--verbose', '-v', action='store_true', help='Verbose')
+    parser.add_argument('--job', '-j', help='Job id (override)')
 
     args = parser.parse_args()
 
@@ -99,10 +100,14 @@ def main():
 
     try:
         config_loader = ConfigLoader(config_path=args.config)
-        config = config_loader.load()
-
+        # Pass CLI-provided input as an override so loader validation accepts it
+        overrides = {}
         if args.input:
-            config.input_url = args.input
+            overrides['input_url'] = args.input
+        if getattr(args, 'job', None):
+            overrides['job_id'] = args.job
+        config = config_loader.load(overrides=overrides)
+
         if args.output:
             config.output_dir = args.output
         if args.mode:
