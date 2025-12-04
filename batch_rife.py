@@ -39,6 +39,64 @@ def try_dotted(dotted):
         if hasattr(mod, 'Model'):
             Model = getattr(mod, 'Model')
             return True
+    except ModuleNotFoundError as mnfe:
+        # If missing 'model' package or similar, attempt to create a lightweight package
+        msg = str(mnfe)
+        missing = getattr(mnfe, 'name', None)
+        if not missing:
+            # fallback: inspect message
+            missing = 'model' if 'model' in msg else None
+        if missing == 'model' or (missing is None and 'No module named' in msg and 'model' in msg):
+            tried_locations.append(f"dotted_missing_model:{dotted}:{msg}")
+            try:
+                import types
+                repo_model_dir = os.path.join(repo, 'model')
+                alt_model_dir = os.path.join(alt_repo, 'model')
+                candidate = None
+                if os.path.isdir(repo_model_dir):
+                    candidate = repo_model_dir
+                elif os.path.isdir(alt_model_dir):
+                    candidate = alt_model_dir
+                if candidate:
+                    if 'model' not in sys.modules:
+                        model_pkg = types.ModuleType('model')
+                        try:
+                            model_pkg.__path__ = [candidate]
+                        except Exception:
+                            pass
+                        sys.modules['model'] = model_pkg
+                        tried_locations.append(f"model_pkg_injected:{candidate}")
+                    else:
+                        try:
+                            sys.modules['model'].__path__ = [candidate]
+                            tried_locations.append(f"model_pkg_adjusted:{candidate}")
+                        except Exception:
+                            pass
+                # Also ensure train_log package exists if importing from train_log
+                if dotted.startswith('train_log'):
+                    train_log_dir = os.path.join(repo, 'train_log')
+                    if not os.path.isdir(train_log_dir):
+                        train_log_dir = os.path.join(alt_repo, 'train_log') if os.path.isdir(os.path.join(alt_repo, 'train_log')) else None
+                    if train_log_dir:
+                        if 'train_log' not in sys.modules:
+                            pkg = importlib.util.module_from_spec(importlib.machinery.ModuleSpec('train_log', None))
+                            try:
+                                pkg.__path__ = [train_log_dir]
+                            except Exception:
+                                pass
+                            sys.modules['train_log'] = pkg
+                            tried_locations.append(f"train_log_pkg_injected:{train_log_dir}")
+            except Exception as _e:
+                tried_locations.append(f"dotted_missing_model_inject_error:{type(_e).__name__}:{str(_e)[:200]}")
+            # retry import once
+            try:
+                mod = importlib.import_module(dotted)
+                if hasattr(mod, 'Model'):
+                    Model = getattr(mod, 'Model')
+                    return True
+            except Exception:
+                return False
+        return False
     except Exception:
         return False
     return False
@@ -51,6 +109,36 @@ try:
     if repo and os.path.isdir(repo) and repo not in sys.path:
         sys.path.insert(0, repo)
         tried_locations.append(f"sys.path-added:{repo}")
+except Exception:
+    pass
+
+# Ensure a top-level 'model' package exists and points to the repo/model dir if present.
+try:
+    import types
+    candidate_model_dir = None
+    repo_model = os.path.join(repo, 'model')
+    alt_model = os.path.join(alt_repo, 'model')
+    if os.path.isdir(repo_model):
+        candidate_model_dir = repo_model
+    elif os.path.isdir(alt_model):
+        candidate_model_dir = alt_model
+
+    if candidate_model_dir:
+        if 'model' not in sys.modules:
+            model_pkg = types.ModuleType('model')
+            try:
+                model_pkg.__path__ = [candidate_model_dir]
+            except Exception:
+                # best-effort
+                pass
+            sys.modules['model'] = model_pkg
+            tried_locations.append(f"model_pkg_forced:{candidate_model_dir}")
+        else:
+            try:
+                sys.modules['model'].__path__ = [candidate_model_dir]
+                tried_locations.append(f"model_pkg_path_adjusted:{candidate_model_dir}")
+            except Exception:
+                pass
 except Exception:
     pass
 
