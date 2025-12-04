@@ -151,6 +151,28 @@ try:
                 tried_locations.append(f"model_pkg_path_adjusted:{candidate_model_dir}")
             except Exception:
                 pass
+
+        # Preload all common model submodules that RIFE files typically need
+        common_submodules = ['warplayer', 'loss', 'refine', 'IFNet', 'IFNet_HDv3']
+        for submod_name in common_submodules:
+            full_name = f'model.{submod_name}'
+            if full_name not in sys.modules:
+                submod_path = os.path.join(candidate_model_dir, f'{submod_name}.py')
+                if os.path.isfile(submod_path):
+                    try:
+                        spec = importlib.util.spec_from_file_location(full_name, submod_path)
+                        if spec and spec.loader:
+                            submod = importlib.util.module_from_spec(spec)
+                            sys.modules[full_name] = submod
+                            spec.loader.exec_module(submod)
+                            # Attach to parent package
+                            try:
+                                setattr(sys.modules['model'], submod_name, submod)
+                            except Exception:
+                                pass
+                            tried_locations.append(f"model.{submod_name}_preloaded:{submod_path}")
+                    except Exception as sme:
+                        tried_locations.append(f"model.{submod_name}_preload_error:{type(sme).__name__}:{str(sme)[:200]}")
 except Exception as e:
     tried_locations.append(f"model_pkg_setup_error:{type(e).__name__}:{str(e)[:200]}")
 
