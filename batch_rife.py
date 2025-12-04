@@ -13,7 +13,7 @@ if not repo or not os.path.isdir(repo):
 model_dir = os.path.join(repo, 'train_log')
 
 # Try importing a model class from common locations — robust approach
-import importlib, importlib.util
+import importlib, importlib.util, importlib.machinery
 Model = None
 tried_locations = []
 
@@ -57,7 +57,53 @@ def try_path(path):
     if 'from model.warplayer' in head or 'import model.warplayer' in head or 'from model import warplayer' in head:
         needs_model_warplayer = True
     try:
-        name = f"rife_model_{abs(hash(path))}"
+        # Prefer a sensible dotted module name derived from repo-relative path so
+        # internal package imports inside the model file (e.g. `from model import ...`)
+        # resolve correctly. If path is inside repo or alt_repo, use that relative path
+        mod_name = None
+        try:
+            rp = os.path.relpath(path, repo)
+            if not rp.startswith('..'):
+                mod_name = rp.replace(os.sep, '.')
+        except Exception:
+            mod_name = None
+        if not mod_name:
+            try:
+                rp2 = os.path.relpath(path, alt_repo)
+                if not rp2.startswith('..'):
+                    mod_name = rp2.replace(os.sep, '.')
+            except Exception:
+                mod_name = None
+        # strip .py extension
+        if mod_name and mod_name.lower().endswith('.py'):
+            mod_name = mod_name[:-3]
+        # fallback to hash-based name if we couldn't compute a relative dotted name
+        name = mod_name if mod_name else f"rife_model_{abs(hash(path))}"
+        # Ensure parent package modules exist in sys.modules with __path__ set so
+        # `import model` or `import train_log` inside the loaded file works.
+        if mod_name and '.' in mod_name:
+            parts = mod_name.split('.')[:-1]
+            accum = []
+            for i, part in enumerate(parts):
+                accum.append(part)
+                pkg_name = '.'.join(accum)
+                if pkg_name not in sys.modules:
+                    pkg = importlib.util.module_from_spec(importlib.machinery.ModuleSpec(pkg_name, None))
+                    # determine a path for this package: try to map the dotted path back to filesystem
+                    try:
+                        # candidate directory is join(repo, *parts_up_to_i)
+                        candidate_dir = os.path.join(repo, *parts[:i+1])
+                        if not os.path.isdir(candidate_dir):
+                            # try alt_repo
+                            candidate_dir = os.path.join(alt_repo, *parts[:i+1])
+                        if os.path.isdir(candidate_dir):
+                            pkg.__path__ = [candidate_dir]
+                        else:
+                            # fallback to repo root so imports can still attempt to resolve
+                            pkg.__path__ = [repo]
+                    except Exception:
+                        pkg.__path__ = [repo]
+                    sys.modules[pkg_name] = pkg
         spec = importlib.util.spec_from_file_location(name, path)
         if spec and spec.loader:
             mod = importlib.util.module_from_spec(spec)
@@ -129,6 +175,8 @@ def try_path(path):
                     except Exception as e:
                         tried_locations.append(f"warplayer_preload_error:{found_wp}:{type(e).__name__}:{str(e)[:200]}")
             try:
+                # Insert module into sys.modules under the chosen name before execution
+                sys.modules[name] = mod
                 spec.loader.exec_module(mod)
             except Exception as e:
                 # record exception for diagnostics

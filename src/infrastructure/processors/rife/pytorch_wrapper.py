@@ -44,7 +44,21 @@ class RifePytorchWrapper(BaseProcessor):
 
             # Check if PyTorch with CUDA is available
             import torch
-            return torch.cuda.is_available()
+            if not torch.cuda.is_available():
+                return False
+
+            # Lightweight syntax check of the wrapper script to catch obvious problems
+            try:
+                import subprocess
+                rc = subprocess.run(['bash', '-n', str(cls.WRAPPER_SCRIPT)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode
+                if rc != 0:
+                    logger.warning(f"RIFE wrapper script syntax check failed (rc={rc}), script={cls.WRAPPER_SCRIPT}")
+                    return False
+            except Exception as _e:
+                logger.warning(f"Failed to run syntax check for RIFE wrapper: {_e}")
+                # Don't fail hard on exceptions from subprocess; proceed assuming script is ok
+
+            return True
         except ImportError:
             return False
 

@@ -16,7 +16,7 @@ from shared.logging import setup_logger, LoggerAdapter, get_logger
 from shared.metrics import MetricsCollector
 
 
-def create_orchestrator_from_config(config):
+def create_orchestrator_from_config(config, allow_fallback: bool = False):
     """Create orchestrator with all dependencies from config."""
     downloader = HttpDownloader()
     extractor = FFmpegExtractor()
@@ -56,7 +56,11 @@ def create_orchestrator_from_config(config):
         if config.mode in ('interp', 'both'):
             interpolator = factory.create_interpolator(prefer=config.prefer)
     except Exception as e:
-        if config.strict:
+        # If interpolation mode requested but no RIFE backend is available,
+        # by default we should fail early (no silent fallback to ffmpeg).
+        # allow_fallback toggles whether to continue when RIFE isn't available.
+        if config.strict or not allow_fallback:
+            # Propagate exception to CLI which will terminate the run.
             raise
         get_logger(__name__).warning(f"Interpolator not available: {e}")
 
@@ -86,6 +90,7 @@ def main():
     parser.add_argument('--target-fps', type=int, help='Target FPS')
     parser.add_argument('--prefer', choices=['auto', 'pytorch'], help='Backend')
     parser.add_argument('--strict', action='store_true', help='Strict mode')
+    parser.add_argument('--allow-fallback', action='store_true', help='Allow ffmpeg fallback when RIFE is not available (default: disabled)')
     parser.add_argument('--verbose', '-v', action='store_true', help='Verbose')
     parser.add_argument('--job', '-j', help='Job id (override)')
 
@@ -173,7 +178,7 @@ def main():
             config=job_cfg
         )
 
-        orchestrator = create_orchestrator_from_config(config)
+        orchestrator = create_orchestrator_from_config(config, allow_fallback=args.allow_fallback)
         result = orchestrator.process(job)
 
         logger.info("="*60)
