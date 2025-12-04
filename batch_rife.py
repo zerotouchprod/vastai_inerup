@@ -101,7 +101,7 @@ def try_dotted(dotted):
         return False
     return False
 
-# Ensure model_dir and repo are on sys.path to help package-relative imports inside model files
+# Ensure model_dir, repo, and parent of repo are on sys.path to help package-relative imports inside model files
 try:
     if model_dir and os.path.isdir(model_dir) and model_dir not in sys.path:
         sys.path.insert(0, model_dir)
@@ -109,6 +109,11 @@ try:
     if repo and os.path.isdir(repo) and repo not in sys.path:
         sys.path.insert(0, repo)
         tried_locations.append(f"sys.path-added:{repo}")
+    # Also add parent directory of repo so that imports like "from RIFEv4.26_0921.model import ..." work
+    repo_parent = os.path.dirname(repo) if repo else None
+    if repo_parent and os.path.isdir(repo_parent) and repo_parent not in sys.path:
+        sys.path.insert(0, repo_parent)
+        tried_locations.append(f"sys.path-added:{repo_parent}")
 except Exception:
     pass
 
@@ -124,8 +129,14 @@ try:
         candidate_model_dir = alt_model
 
     if candidate_model_dir:
+        # Ensure the candidate_model_dir is in sys.path so relative imports work
+        if candidate_model_dir not in sys.path:
+            sys.path.insert(0, candidate_model_dir)
+            tried_locations.append(f"sys.path-added-model:{candidate_model_dir}")
+
         if 'model' not in sys.modules:
             model_pkg = types.ModuleType('model')
+            model_pkg.__file__ = os.path.join(candidate_model_dir, '__init__.py')
             try:
                 model_pkg.__path__ = [candidate_model_dir]
             except Exception:
@@ -136,11 +147,48 @@ try:
         else:
             try:
                 sys.modules['model'].__path__ = [candidate_model_dir]
+                sys.modules['model'].__file__ = os.path.join(candidate_model_dir, '__init__.py')
                 tried_locations.append(f"model_pkg_path_adjusted:{candidate_model_dir}")
             except Exception:
                 pass
-except Exception:
-    pass
+except Exception as e:
+    tried_locations.append(f"model_pkg_setup_error:{type(e).__name__}:{str(e)[:200]}")
+
+# Ensure train_log package is also set up
+try:
+    import types
+    candidate_train_log_dir = None
+    repo_train_log = os.path.join(repo, 'train_log')
+    alt_train_log = os.path.join(alt_repo, 'train_log')
+    if os.path.isdir(repo_train_log):
+        candidate_train_log_dir = repo_train_log
+    elif os.path.isdir(alt_train_log):
+        candidate_train_log_dir = alt_train_log
+
+    if candidate_train_log_dir:
+        # Ensure the candidate_train_log_dir is in sys.path
+        if candidate_train_log_dir not in sys.path:
+            sys.path.insert(0, candidate_train_log_dir)
+            tried_locations.append(f"sys.path-added-train_log:{candidate_train_log_dir}")
+
+        if 'train_log' not in sys.modules:
+            train_log_pkg = types.ModuleType('train_log')
+            train_log_pkg.__file__ = os.path.join(candidate_train_log_dir, '__init__.py')
+            try:
+                train_log_pkg.__path__ = [candidate_train_log_dir]
+            except Exception:
+                pass
+            sys.modules['train_log'] = train_log_pkg
+            tried_locations.append(f"train_log_pkg_forced:{candidate_train_log_dir}")
+        else:
+            try:
+                sys.modules['train_log'].__path__ = [candidate_train_log_dir]
+                sys.modules['train_log'].__file__ = os.path.join(candidate_train_log_dir, '__init__.py')
+                tried_locations.append(f"train_log_pkg_path_adjusted:{candidate_train_log_dir}")
+            except Exception:
+                pass
+except Exception as e:
+    tried_locations.append(f"train_log_pkg_setup_error:{type(e).__name__}:{str(e)[:200]}")
 
 # Helper to attempt import by file path
 def try_path(path):
@@ -154,9 +202,36 @@ def try_path(path):
             head = fh.read(4096)
     except Exception:
         head = ''
-    needs_model_warplayer = False
+    # Check for common model package imports that need preloading
+    needs_model_submodules = []
     if 'from model.warplayer' in head or 'import model.warplayer' in head or 'from model import warplayer' in head:
-        needs_model_warplayer = True
+        needs_model_submodules.append('warplayer')
+    if 'from model.loss' in head or 'import model.loss' in head or 'from model import loss' in head:
+        needs_model_submodules.append('loss')
+
+    # Preload model submodules if needed
+    for submodule in needs_model_submodules:
+        full_name = f'model.{submodule}'
+        tried_locations.append(f"need:{full_name} detected in {path}")
+        if full_name not in sys.modules:
+            # Find submodule file in model/ directory
+            submodule_paths = []
+            for candidate_repo in [repo, alt_repo]:
+                if candidate_repo:
+                    sp = os.path.join(candidate_repo, 'model', f'{submodule}.py')
+                    if os.path.isfile(sp):
+                        submodule_paths.append(sp)
+            if submodule_paths:
+                sp_path = submodule_paths[0]
+                try:
+                    spec = importlib.util.spec_from_file_location(full_name, sp_path)
+                    if spec and spec.loader:
+                        submod = importlib.util.module_from_spec(spec)
+                        sys.modules[full_name] = submod
+                        spec.loader.exec_module(submod)
+                        tried_locations.append(f"{full_name}_loaded:{sp_path}")
+                except Exception as sme:
+                    tried_locations.append(f"{full_name}_load_error:{type(sme).__name__}:{str(sme)[:200]}")
     try:
         # Prefer a sensible dotted module name derived from repo-relative path so
         # internal package imports inside the model file (e.g. `from model import ...`)
