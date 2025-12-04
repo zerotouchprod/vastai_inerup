@@ -81,11 +81,40 @@ class RifePytorchWrapper(BaseProcessor):
         factor = options.get('factor', 2)
         timeout = options.get('timeout', 3600)
 
-        # Create temporary video from frames (RIFE wrapper expects video input)
-        # For now, we'll assume frames are in a directory and let the wrapper handle it
-        input_dir = input_frames[0].parent
+        # Determine input to pass to the wrapper. The wrapper expects a video file path.
+        # Upstream code sometimes passes a frames directory (e.g. /tmp/.../frames).
+        # Try to locate the original video (common name: input.mp4) in the workspace parent.
+        first_input = input_frames[0]
+        # If caller passed a directory path as the first item, handle that case
+        if first_input.is_dir():
+            frames_dir = first_input
+        else:
+            frames_dir = first_input.parent
+        input_candidate = None
+        # Common candidate: parent/input.mp4
+        parent_dir = frames_dir.parent
+        cand = parent_dir / 'input.mp4'
+        if cand.exists():
+            input_candidate = cand
+        else:
+            # look for any video file in parent_dir
+            for ext in ('mp4','mkv','mov','webm','avi'):
+                found = list(parent_dir.glob(f"*.{ext}"))
+                if found:
+                    input_candidate = found[0]
+                    break
+
+        if input_candidate is not None:
+            input_arg = str(input_candidate)
+            self._logger.debug(f"Detected original input video for wrapper: {input_arg}")
+        else:
+            # Fallback: pass frames dir (legacy behavior) — but this usually causes the wrapper to fail
+            # Prefer to assemble a temporary video here if needed. For now we'll attempt to pass the
+            # parent dir input if present; otherwise we pass frames_dir and let the wrapper log a clear error.
+            input_arg = str(frames_dir)
 
         # Prepare output video path (wrapper creates video, we'll extract frames later)
+        input_dir = frames_dir
         temp_output_video = output_dir / "interpolated_temp.mp4"
 
         # Debug: Log paths
@@ -99,10 +128,11 @@ class RifePytorchWrapper(BaseProcessor):
         # Build command
         cmd = [
             str(self.WRAPPER_SCRIPT),
-            str(input_dir),  # Input (will be handled by wrapper)
+            input_arg,
             str(temp_output_video),
             str(factor)
         ]
+        self._logger.debug(f"Wrapper will be invoked with input_arg={input_arg}")
 
         self._logger.info(f"Running RIFE PyTorch wrapper: factor={factor}")
         self._logger.debug(f"Command: {' '.join(cmd)}")
@@ -189,11 +219,4 @@ class RifePytorchWrapper(BaseProcessor):
             self.debugger.log_end(False, reason="shell_error", exit_code=rc)
             raise error
 
-        except subprocess.CalledProcessError as e:
-            # Fallback: ensure we capture the details
-            rc = getattr(e, 'returncode', 'unknown')
-            stdout = getattr(e, 'stdout', '') or ''
-            stderr = getattr(e, 'stderr', '') or ''
-            error_msg = f"RIFE wrapper failed (rc={rc}): {stderr or stdout}"
-            self._logger.error(error_msg)
-            raise VideoProcessingError(error_msg)
+        # (no additional fallback - previous block captures details and raises VideoProcessingError)
