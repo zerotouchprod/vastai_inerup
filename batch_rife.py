@@ -208,30 +208,59 @@ def try_path(path):
         needs_model_submodules.append('warplayer')
     if 'from model.loss' in head or 'import model.loss' in head or 'from model import loss' in head:
         needs_model_submodules.append('loss')
+    if 'from model.refine' in head or 'import model.refine' in head or 'from model import refine' in head:
+        needs_model_submodules.append('refine')
 
-    # Preload model submodules if needed
-    for submodule in needs_model_submodules:
-        full_name = f'model.{submodule}'
-        tried_locations.append(f"need:{full_name} detected in {path}")
-        if full_name not in sys.modules:
-            # Find submodule file in model/ directory
-            submodule_paths = []
+    # Preload model package and its submodules if needed
+    if needs_model_submodules:
+        # Ensure 'model' package exists in sys.modules
+        if 'model' not in sys.modules:
+            import types
+            model_pkg = types.ModuleType('model')
+            # Find model directory
+            model_dir_candidates = []
             for candidate_repo in [repo, alt_repo]:
                 if candidate_repo:
-                    sp = os.path.join(candidate_repo, 'model', f'{submodule}.py')
-                    if os.path.isfile(sp):
-                        submodule_paths.append(sp)
-            if submodule_paths:
-                sp_path = submodule_paths[0]
-                try:
-                    spec = importlib.util.spec_from_file_location(full_name, sp_path)
-                    if spec and spec.loader:
-                        submod = importlib.util.module_from_spec(spec)
-                        sys.modules[full_name] = submod
-                        spec.loader.exec_module(submod)
-                        tried_locations.append(f"{full_name}_loaded:{sp_path}")
-                except Exception as sme:
-                    tried_locations.append(f"{full_name}_load_error:{type(sme).__name__}:{str(sme)[:200]}")
+                    md = os.path.join(candidate_repo, 'model')
+                    if os.path.isdir(md):
+                        model_dir_candidates.append(md)
+            if model_dir_candidates:
+                model_pkg.__path__ = [model_dir_candidates[0]]
+                tried_locations.append(f"model_pkg_created:{model_dir_candidates[0]}")
+            else:
+                # Fallback to repo root
+                model_pkg.__path__ = [repo] if repo else []
+                tried_locations.append(f"model_pkg_created_fallback:{repo}")
+            sys.modules['model'] = model_pkg
+
+        # Now load each submodule
+        for submodule in needs_model_submodules:
+            full_name = f'model.{submodule}'
+            tried_locations.append(f"need:{full_name} detected in {path}")
+            if full_name not in sys.modules:
+                # Find submodule file in model/ directory
+                submodule_paths = []
+                for candidate_repo in [repo, alt_repo]:
+                    if candidate_repo:
+                        sp = os.path.join(candidate_repo, 'model', f'{submodule}.py')
+                        if os.path.isfile(sp):
+                            submodule_paths.append(sp)
+                if submodule_paths:
+                    sp_path = submodule_paths[0]
+                    try:
+                        spec = importlib.util.spec_from_file_location(full_name, sp_path)
+                        if spec and spec.loader:
+                            submod = importlib.util.module_from_spec(spec)
+                            sys.modules[full_name] = submod
+                            spec.loader.exec_module(submod)
+                            # Also attach to parent module
+                            try:
+                                setattr(sys.modules['model'], submodule, submod)
+                            except Exception:
+                                pass
+                            tried_locations.append(f"{full_name}_loaded:{sp_path}")
+                    except Exception as sme:
+                        tried_locations.append(f"{full_name}_load_error:{type(sme).__name__}:{str(sme)[:200]}")
     try:
         # Prefer a sensible dotted module name derived from repo-relative path so
         # internal package imports inside the model file (e.g. `from model import ...`)
@@ -283,73 +312,6 @@ def try_path(path):
         spec = importlib.util.spec_from_file_location(name, path)
         if spec and spec.loader:
             mod = importlib.util.module_from_spec(spec)
-            # If file expects model.warplayer, attempt to locate and preload it
-            if needs_model_warplayer:
-                tried_locations.append(f"need:model.warplayer detected in {path}")
-                # candidate locations to search for warplayer.py
-                warplayer_candidates = [
-                    os.path.join(repo, 'model', 'warplayer.py'),
-                    os.path.join(repo, 'warplayer.py'),
-                    os.path.join(alt_repo, 'model', 'warplayer.py'),
-                    os.path.join(alt_repo, 'warplayer.py'),
-                    '/workspace/project/external/RIFE/model/warplayer.py',
-                    '/workspace/project/external/RIFE/warplayer.py',
-                ]
-                found_wp = None
-                for wp in warplayer_candidates:
-                    try:
-                        if wp and os.path.isfile(wp):
-                            found_wp = wp
-                            tried_locations.append(f"warplayer_found:{wp}")
-                            break
-                    except Exception:
-                        continue
-                if found_wp:
-                    # load warplayer as a module and insert into sys.modules under model.warplayer
-                    try:
-                        wp_name = f"rife_helper_warplayer_{abs(hash(found_wp))}"
-                        wp_spec = importlib.util.spec_from_file_location(wp_name, found_wp)
-                        wp_mod = importlib.util.module_from_spec(wp_spec)
-                        wp_spec.loader.exec_module(wp_mod)
-                        # ensure package module 'model' exists
-                        import types
-                        model_pkg = None
-                        model_dir_candidate = None
-                        # try to locate a model/ directory nearby (repo/model or parent alt_repo)
-                        candidates = [
-                            os.path.join(repo, 'model'),
-                            os.path.join(alt_repo, 'model'),
-                            os.path.dirname(found_wp),
-                        ]
-                        for c in candidates:
-                            if c and os.path.isdir(c):
-                                model_dir_candidate = c
-                                break
-                        if 'model' not in sys.modules:
-                            model_pkg = types.ModuleType('model')
-                            # If we have a model/ directory, set __path__ so imports of model.* resolve
-                            if model_dir_candidate:
-                                model_pkg.__path__ = [model_dir_candidate]
-                                tried_locations.append(f"model_pkg_path_set:{model_dir_candidate}")
-                            sys.modules['model'] = model_pkg
-                        else:
-                            model_pkg = sys.modules['model']
-                            # ensure __path__ exists if not set
-                            if not getattr(model_pkg, '__path__', None) and model_dir_candidate:
-                                try:
-                                    model_pkg.__path__ = [model_dir_candidate]
-                                    tried_locations.append(f"model_pkg_path_set_existing:{model_dir_candidate}")
-                                except Exception:
-                                    pass
-                        # attach warplayer module as submodule
-                        sys.modules['model.warplayer'] = wp_mod
-                        try:
-                            setattr(sys.modules['model'], 'warplayer', wp_mod)
-                        except Exception:
-                            pass
-                        tried_locations.append(f"warplayer_preloaded:{found_wp}")
-                    except Exception as e:
-                        tried_locations.append(f"warplayer_preload_error:{found_wp}:{type(e).__name__}:{str(e)[:200]}")
             try:
                 # Insert module into sys.modules under the chosen name before execution
                 sys.modules[name] = mod
