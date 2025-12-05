@@ -71,8 +71,8 @@ class VideoProcessingOrchestrator:
             self._metrics.start_timer('assembly')
             # Determine target FPS based on mode
             if job.mode == "upscale":
-                # Upscale doesn't change frame count or FPS
-                target_fps = job.target_fps or video_info.fps
+                # Upscale doesn't change frame count or FPS - always use original
+                target_fps = video_info.fps
             elif job.mode in ("interp", "both"):
                 # Interpolation increases frame count
                 target_fps = job.target_fps or (video_info.fps * job.interp_factor)
