@@ -1,18 +1,20 @@
 """Test FPS calculation for 'both' mode to verify duration preservation."""
 
-def calculate_target_fps(original_frames, original_fps, processed_frames, mode='both', explicit_fps=None):
+def calculate_target_fps(original_frames, original_fps, processed_frames, mode='both', explicit_fps=None, interp_factor=2):
     """Simulate the FPS calculation logic from orchestrator."""
     original_duration = original_frames / original_fps if original_fps > 0 else None
 
     if explicit_fps:
         target_fps = float(explicit_fps)
         reason = "explicit"
+    elif mode == 'interp':
+        # For interpolation: multiply FPS by interpolation factor
+        # More frames at higher FPS = same duration, smoother motion
+        target_fps = original_fps * interp_factor
+        reason = f"interp mode (FPS * {interp_factor}x factor)"
     elif mode == 'both' and original_duration and original_duration > 0:
         target_fps = max(1.0, float(processed_frames) / original_duration)
         reason = "both mode (maintain duration)"
-    elif mode == 'interp' and original_duration and original_duration > 0:
-        target_fps = max(1.0, float(processed_frames) / original_duration)
-        reason = "interp mode (maintain duration)"
     elif original_duration and original_duration > 0:
         target_fps = max(1.0, float(processed_frames) / original_duration)
         reason = "derived from duration"
@@ -54,7 +56,7 @@ def test_fps_scenarios():
     processed_frames = 289
 
     target_fps, output_duration, reason = calculate_target_fps(
-        original_frames, original_fps, processed_frames, mode='interp'
+        original_frames, original_fps, processed_frames, mode='interp', interp_factor=2
     )
 
     print(f"   Original: {original_frames} frames @ {original_fps} fps = {original_duration:.2f}s")
