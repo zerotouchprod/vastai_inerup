@@ -153,6 +153,34 @@ class RIFENative:
         else:
             self.logger.warning(f"model/ directory not found in {rife_repo_path}, will try root files")
 
+    def _check_cuda_compatibility(self) -> str:
+        """
+        Check if CUDA device is compatible with current PyTorch.
+        Returns: 'cuda' if compatible, 'cpu' if fallback needed
+        """
+        if not torch.cuda.is_available():
+            self.logger.warning("CUDA not available, using CPU")
+            return 'cpu'
+
+        try:
+            # Get GPU compute capability
+            device_props = torch.cuda.get_device_properties(0)
+            compute_capability = f"sm_{device_props.major}{device_props.minor}"
+
+            # Try a simple CUDA operation to test compatibility
+            test_tensor = torch.randn(10, 10).cuda()
+            _ = test_tensor * 2
+
+            self.logger.info(f"CUDA is available and compatible: {device_props.name} ({compute_capability})")
+            return 'cuda'
+
+        except RuntimeError as e:
+            if "no kernel image is available" in str(e) or "not compatible" in str(e):
+                self.logger.warning(f"CUDA device not compatible with PyTorch: {e}")
+                self.logger.warning("Falling back to CPU processing (will be slower)")
+                return 'cpu'
+            raise
+
     def _load_model(self):
         """Load RIFE model (lazy loading)."""
         if self._model is not None:
@@ -160,6 +188,11 @@ class RIFENative:
 
         if not TORCH_AVAILABLE:
             raise ImportError("PyTorch not found. Install: pip install torch")
+
+        # Check CUDA compatibility and fall back to CPU if needed
+        self.device = self._check_cuda_compatibility()
+        if self.device == 'cpu':
+            self.logger.warning("⚠️ Using CPU for RIFE - processing will be much slower!")
 
         self.logger.info(f"Loading RIFE model (weights from: {self.model_path})")
 

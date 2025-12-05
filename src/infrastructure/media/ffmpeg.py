@@ -241,6 +241,12 @@ class FFmpegWrapper:
                 timeout=3600  # 1 hour timeout
             )
 
+            # Log ffmpeg output for debugging
+            if result.stdout:
+                self._logger.info(f"[ASSEMBLY DEBUG] FFmpeg stdout: {result.stdout[-2000:]}")
+            if result.stderr:
+                self._logger.info(f"[ASSEMBLY DEBUG] FFmpeg stderr (last 2000 chars): {result.stderr[-2000:]}")
+
             if not output_path.exists() or output_path.stat().st_size == 0:
                 raise AssemblyError("Output video is empty or missing")
 
