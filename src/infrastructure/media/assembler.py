@@ -52,7 +52,9 @@ class FFmpegAssembler:
         if not frames:
             raise AssemblyError("No frames to assemble")
 
-        frames_dir = frames[0].parent
+        # Convert to Path if needed
+        first_frame = frames[0] if isinstance(frames[0], Path) else Path(frames[0])
+        frames_dir = first_frame.parent
         pattern = options.get('pattern', 'frame_%06d.png')
         encoder = options.get('encoder', self._preferred_encoder)
         pix_fmt = options.get('pix_fmt', 'yuv420p')
