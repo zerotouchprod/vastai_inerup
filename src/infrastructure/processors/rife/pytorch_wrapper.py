@@ -181,7 +181,7 @@ class RifePytorchWrapper(BaseProcessor):
             # Encourage unbuffered Python output from child processes so logs stream in real-time
             env['PYTHONUNBUFFERED'] = '1'
             env['PYTHONIOENCODING'] = 'utf-8'
-
+            env['AUTO_UPLOAD_B2'] = '1'
             # Disable auto-upload if we're in an intermediate processing stage (e.g. 'both' mode)
             # The orchestrator will handle final upload after all processing is complete
             is_intermediate = options.get('_intermediate_stage', False)
