@@ -164,6 +164,13 @@ class RealESRGANPytorchWrapper(BaseProcessor):
             # Set environment variables
             env = os.environ.copy()
             env['PREFER'] = 'pytorch'
+            env['AUTO_UPLOAD_B2'] = '1'
+            # Disable auto-upload if we're in an intermediate processing stage (e.g. 'both' mode)
+            # The orchestrator will handle final upload after all processing is complete
+            is_intermediate = options.get('_intermediate_stage', False)
+            if is_intermediate:
+                env['AUTO_UPLOAD_B2'] = '0'
+                self._logger.info("Disabling AUTO_UPLOAD_B2 for intermediate processing stage")
 
             # Debug: Log environment
             self.debugger.log_step('set_environment', PREFER='pytorch')

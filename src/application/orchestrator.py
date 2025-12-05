@@ -161,8 +161,13 @@ class VideoProcessingOrchestrator:
                 raise VideoProcessingError("Both processors required")
 
             if job.strategy == "interp-then-upscale":
+                # Step 1: Interpolation (intermediate stage - no upload)
                 interp_dir = workspace / "interpolated"
-                interp_options = {'factor': int(job.interp_factor), 'job_id': job.job_id}
+                interp_options = {
+                    'factor': int(job.interp_factor),
+                    'job_id': job.job_id,
+                    '_intermediate_stage': True  # Don't upload intermediate results
+                }
                 if isinstance(job.config, dict):
                     interp_options['b2_output_key'] = job.config.get('b2_output_key')
                     interp_options['b2_bucket'] = job.config.get('b2_bucket')
@@ -170,9 +175,14 @@ class VideoProcessingOrchestrator:
                 if not result.success:
                     raise VideoProcessingError(f"Interpolation failed")
 
+                # Step 2: Upscaling (final stage - orchestrator will upload assembled video)
                 interpolated_frames = sorted(interp_dir.glob("*.png"))
                 upscale_dir = workspace / "upscaled"
-                upscale_options = {'scale': job.scale, 'job_id': job.job_id}
+                upscale_options = {
+                    'scale': job.scale,
+                    'job_id': job.job_id,
+                    '_intermediate_stage': True  # Don't upload intermediate results
+                }
                 if isinstance(job.config, dict):
                     upscale_options['b2_output_key'] = job.config.get('b2_output_key')
                     upscale_options['b2_bucket'] = job.config.get('b2_bucket')
@@ -181,8 +191,13 @@ class VideoProcessingOrchestrator:
                     raise VideoProcessingError(f"Upscaling failed")
                 return sorted(upscale_dir.glob("*.png"))
             else:
+                # Step 1: Upscaling (intermediate stage - no upload)
                 upscale_dir = workspace / "upscaled"
-                upscale_options = {'scale': job.scale, 'job_id': job.job_id}
+                upscale_options = {
+                    'scale': job.scale,
+                    'job_id': job.job_id,
+                    '_intermediate_stage': True  # Don't upload intermediate results
+                }
                 if isinstance(job.config, dict):
                     upscale_options['b2_output_key'] = job.config.get('b2_output_key')
                     upscale_options['b2_bucket'] = job.config.get('b2_bucket')
@@ -190,9 +205,14 @@ class VideoProcessingOrchestrator:
                 if not result.success:
                     raise VideoProcessingError(f"Upscaling failed")
 
+                # Step 2: Interpolation (final stage - orchestrator will upload assembled video)
                 upscaled_frames = sorted(upscale_dir.glob("*.png"))
                 interp_dir = workspace / "interpolated"
-                interp_options = {'factor': int(job.interp_factor), 'job_id': job.job_id}
+                interp_options = {
+                    'factor': int(job.interp_factor),
+                    'job_id': job.job_id,
+                    '_intermediate_stage': True  # Don't upload intermediate results
+                }
                 if isinstance(job.config, dict):
                     interp_options['b2_output_key'] = job.config.get('b2_output_key')
                     interp_options['b2_bucket'] = job.config.get('b2_bucket')

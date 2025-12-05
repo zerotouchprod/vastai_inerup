@@ -112,7 +112,7 @@ def main():
     parser.add_argument('--scale', type=float, help='Upscale factor')
     parser.add_argument('--target-fps', type=int, help='Target FPS')
     parser.add_argument('--prefer', choices=['auto', 'pytorch'], help='Backend')
-    parser.add_argument('--strategy', choices=['interp-first', 'upscale-first'], help='Processing order for "both" mode')
+    parser.add_argument('--strategy', choices=['interp-then-upscale', 'upscale-then-interp'], help='Processing order for "both" mode (default: interp-then-upscale)')
     parser.add_argument('--strict', action='store_true', help='Strict mode')
     parser.add_argument('--allow-fallback', action='store_true', help='Allow ffmpeg fallback when RIFE is not available (default: disabled)')
     parser.add_argument('--verbose', '-v', action='store_true', help='Verbose')

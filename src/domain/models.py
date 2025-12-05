@@ -80,6 +80,8 @@ class ProcessingJob:
             raise ValueError(f"Invalid mode: {self.mode}")
         if self.scale <= 0:
             raise ValueError("Scale must be positive")
+        if self.strategy not in ('interp-then-upscale', 'upscale-then-interp'):
+            raise ValueError(f"Invalid strategy: {self.strategy}. Must be 'interp-then-upscale' or 'upscale-then-interp'")
 
 
 @dataclass
