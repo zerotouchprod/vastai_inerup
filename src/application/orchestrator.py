@@ -69,19 +69,39 @@ class VideoProcessingOrchestrator:
 
             # 5. Assemble
             self._metrics.start_timer('assembly')
-            # Determine target FPS based on mode
-            if job.mode == "upscale":
-                # Upscale doesn't change frame count or FPS - always use original
-                target_fps = video_info.fps
-            elif job.mode in ("interp", "both"):
-                # Interpolation increases frame count
-                target_fps = job.target_fps or (video_info.fps * job.interp_factor)
+
+            # Normalize processed frame paths to strings (Path or str accepted downstream)
+            if not processed_frames:
+                raise VideoProcessingError("No processed frames to assemble")
+
+            # If processed_frames elements are objects with .path attribute (legacy), extract those.
+            if hasattr(processed_frames[0], 'path'):
+                frame_paths = [str(f.path) for f in processed_frames]
             else:
-                target_fps = job.target_fps or video_info.fps
+                # Convert Path objects to strings, leave strings intact
+                frame_paths = [str(p) for p in processed_frames]
 
             output_video = workspace / "output.mp4"
 
-            frame_paths = [f.path for f in processed_frames] if hasattr(processed_frames[0], 'path') else processed_frames
+            # Compute a robust target FPS based on actual processed frames and the original video duration.
+            # This prevents the pipeline from producing a shorter/faster video when processed frame count
+            # doesn't match the expected interpolation (observed in 'both' mode).
+            try:
+                original_frame_count = len(frames)
+                original_fps = float(video_info.fps)
+                original_duration = original_frame_count / original_fps if original_fps > 0 else None
+            except Exception:
+                original_duration = None
+
+            # Prefer explicit target FPS from job, otherwise derive from actual processed frames and original duration
+            if getattr(job, 'target_fps', None):
+                target_fps = float(job.target_fps)
+            elif original_duration and original_duration > 0:
+                # final_fps = number_of_output_frames / original_duration
+                target_fps = max(1.0, float(len(frame_paths)) / original_duration)
+            else:
+                # fallback to video_info.fps if available
+                target_fps = float(getattr(video_info, 'fps', 24.0))
 
             self._assembler.assemble(frames=frame_paths, output_path=output_video, fps=target_fps)
             self._metrics.stop_timer('assembly')
