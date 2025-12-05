@@ -457,11 +457,12 @@ PY
   log "Calling container_upload.py to upload $FINAL -> s3://$B2_BUCKET/$outkey"
   if python3 /workspace/project/scripts/container_upload.py "$FINAL" "$B2_BUCKET" "$outkey" "${B2_ENDPOINT:-https://s3.us-west-004.backblazeb2.com}"; then
     log "AUTO_UPLOAD_B2: upload succeeded"
+    # Only print success marker when upload actually happened (not intermediate stage)
+    echo "VASTAI_PIPELINE_COMPLETED_SUCCESSFULLY"
+    touch /workspace/VASTAI_PIPELINE_COMPLETED_SUCCESSFULLY 2>/dev/null || true
   else
     log "AUTO_UPLOAD_B2: upload failed (see container_upload.py output)"
   fi
-  echo "VASTAI_PIPELINE_COMPLETED_SUCCESSFULLY"
-  touch /workspace/VASTAI_PIPELINE_COMPLETED_SUCCESSFULLY 2>/dev/null || true
   return 0
 }
 
