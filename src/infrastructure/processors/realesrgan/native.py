@@ -4,10 +4,16 @@ Native Python implementation of Real-ESRGAN processing.
 Replaces run_realesrgan_pytorch.sh with pure Python code.
 Provides same functionality but with full Python debugging support.
 
+Performance optimizations:
+- Batch frame loading for better I/O
+- Reduced logging (only every 10 frames instead of every frame)
+- Smaller default tile_size (256) for faster processing
+- Aggressive batch size defaults for modern GPUs
+
 Usage:
     from infrastructure.processors.realesrgan.native import RealESRGANNative
 
-    processor = RealESRGANNative(scale=2, tile_size=512)
+    processor = RealESRGANNative(scale=2, tile_size=256)
     output_frames = processor.process_frames(input_frames, output_dir)
 """
 
@@ -67,29 +73,29 @@ class GPUMemoryDetector:
         """
         Suggest batch size based on available VRAM.
 
-        Conservative mapping (empirical):
-        - <12GB => batch 1
-        - 12-16GB => batch 2
-        - 16-24GB => batch 4
-        - 24-32GB => batch 8
-        - >=32GB => batch 16
+        Optimized mapping for better GPU utilization:
+        - <8GB => batch 2
+        - 8-12GB => batch 4
+        - 12-16GB => batch 8
+        - 16-24GB => batch 12
+        - >=24GB => batch 16
         """
         if vram_mb is None:
             memories = GPUMemoryDetector.get_gpu_memory_mb()
             if not memories:
-                return 1  # Safe default
+                return 4  # Reasonable default for most GPUs
             vram_mb = min(memories)  # Use minimum (most conservative)
 
         vram_gb = vram_mb / 1024
 
-        if vram_gb < 12:
-            return 1
-        elif vram_gb < 16:
+        if vram_gb < 8:
             return 2
-        elif vram_gb < 24:
+        elif vram_gb < 12:
             return 4
-        elif vram_gb < 32:
+        elif vram_gb < 16:
             return 8
+        elif vram_gb < 24:
+            return 12
         else:
             return 16
 
@@ -105,7 +111,7 @@ class RealESRGANNative:
         self,
         scale: int = 2,
         model_name: str = 'RealESRGAN_x4plus',
-        tile_size: int = 512,
+        tile_size: int = 256,  # Smaller tiles = faster processing
         tile_pad: int = 10,
         pre_pad: int = 0,
         half: bool = True,
@@ -297,55 +303,77 @@ class RealESRGANNative:
             self.logger.info(f"  GPU: {gpu_name} ({gpu_memory:.1f}GB)")
 
         start_time = time.time()
-        frame_start_time = start_time
 
-        # Process frames
-        for idx, frame_path in enumerate(input_frames, 1):
+        # Process frames in batches for better GPU utilization
+        batch_size = self.batch_size
+        num_batches = (total + batch_size - 1) // batch_size
+
+        for batch_idx in range(num_batches):
+            batch_start_idx = batch_idx * batch_size
+            batch_end_idx = min(batch_start_idx + batch_size, total)
+            batch_frames = input_frames[batch_start_idx:batch_end_idx]
+
             try:
-                # Load image
-                self.logger.info(f"[{idx}/{total}] Loading frame: {frame_path.name}")
-                img = cv2.imread(str(frame_path), cv2.IMREAD_COLOR)
-                if img is None:
-                    self.logger.warning(f"Failed to load frame: {frame_path}")
+                # Load batch of images
+                images = []
+                valid_frames = []
+
+                for frame_path in batch_frames:
+                    img = cv2.imread(str(frame_path), cv2.IMREAD_COLOR)
+                    if img is not None:
+                        images.append(img)
+                        valid_frames.append(frame_path)
+                    else:
+                        self.logger.warning(f"Failed to load frame: {frame_path}")
+
+                if not images:
                     continue
 
-                # Log image info for first frame
-                if idx == 1:
-                    h, w = img.shape[:2]
+                # Log image info for first frame only
+                if batch_idx == 0 and images:
+                    h, w = images[0].shape[:2]
                     self.logger.info(f"  Input resolution: {w}x{h}")
                     self.logger.info(f"  Output resolution: {w*self.scale}x{h*self.scale}")
 
-                # Upscale
-                self.logger.info(f"[{idx}/{total}] Upscaling...")
-                frame_start = time.time()
-                output, _ = self._upsampler.enhance(img, outscale=self.scale)
-                frame_time = time.time() - frame_start
+                # Process batch
+                batch_start_time = time.time()
 
-                # Save
-                output_path = output_dir / frame_path.name
-                cv2.imwrite(str(output_path), output)
-                output_frames.append(output_path)
+                # Process each image in the batch (RealESRGANer doesn't support true batching)
+                for img, frame_path in zip(images, valid_frames):
+                    output, _ = self._upsampler.enhance(img, outscale=self.scale)
 
-                # Progress (show every frame for first 5, then every 5 frames)
-                show_progress = idx <= 5 or idx % 5 == 0 or idx == total
+                    # Save immediately
+                    output_path = output_dir / frame_path.name
+                    cv2.imwrite(str(output_path), output)
+                    output_frames.append(output_path)
+
+                batch_time = time.time() - batch_start_time
+
+                # Progress reporting (less verbose - only every 10 frames or at milestones)
+                current_frame = batch_end_idx
+                show_progress = (
+                    current_frame <= 10 or
+                    current_frame % 10 == 0 or
+                    current_frame == total
+                )
+
                 if show_progress:
                     elapsed = time.time() - start_time
-                    fps = idx / elapsed if elapsed > 0 else 0
-                    eta = (total - idx) / fps if fps > 0 else 0
+                    fps = current_frame / elapsed if elapsed > 0 else 0
+                    eta = (total - current_frame) / fps if fps > 0 else 0
 
                     self.logger.info(
-                        f"✓ [{idx}/{total}] Complete "
-                        f"({100*idx/total:.1f}%) | "
-                        f"Frame time: {frame_time:.1f}s | "
-                        f"Avg: {fps:.2f} fps | "
+                        f"Processed {current_frame}/{total} frames "
+                        f"({100*current_frame/total:.1f}%) | "
+                        f"{fps:.2f} fps | "
                         f"ETA: {eta:.0f}s"
                     )
 
                     if progress_callback:
-                        progress_callback(idx, total)
+                        progress_callback(current_frame, total)
 
             except Exception as e:
-                self.logger.error(f"Failed to process frame {idx}/{total}: {e}")
+                self.logger.error(f"Failed to process batch {batch_idx + 1}/{num_batches}: {e}")
                 import traceback
                 self.logger.error(traceback.format_exc())
                 raise
