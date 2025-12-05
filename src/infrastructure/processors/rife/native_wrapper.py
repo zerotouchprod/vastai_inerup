@@ -5,14 +5,12 @@ This adapter uses the pure Python implementation instead of shell scripts.
 """
 
 from pathlib import Path
-from typing import List, Dict, Any, TYPE_CHECKING
+from typing import List, Dict, Any
 
 from infrastructure.processors.base import BaseProcessor
 from domain.exceptions import VideoProcessingError, ProcessorNotAvailableError
 from shared.logging import get_logger
 
-if TYPE_CHECKING:
-    from infrastructure.processors.rife.native import RIFENative
 
 logger = get_logger(__name__)
 
@@ -87,6 +85,9 @@ class RIFENativeWrapper(BaseProcessor):
             self._logger.info(f"Running RIFE (Native Python): factor={factor}")
 
         try:
+            # Import at runtime to avoid circular dependencies
+            from infrastructure.processors.rife.native import RIFENative
+
             # Create processor if not exists
             if self._processor is None:
                 self._processor = RIFENative(
