@@ -1,5 +1,5 @@
 """CLI interface for video processing pipeline."""
-
+import os
 import sys
 import argparse
 from pathlib import Path
@@ -126,7 +126,7 @@ def main():
     setup_logger('pipeline', level=log_level)
 
     logger = get_logger(__name__)
-
+    os.environ.setdefault('USE_NATIVE_PROCESSORS', '1')
     try:
         config_loader = ConfigLoader(config_path=args.config)
         # Pass CLI-provided input as an override so loader validation accepts it

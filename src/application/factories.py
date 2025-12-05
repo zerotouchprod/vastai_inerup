@@ -68,7 +68,10 @@ class ProcessorFactory:
                 if RIFENativeWrapper.is_available():
                     self._logger.info("Using RIFE native Python backend")
                     return RIFENativeWrapper()
-            except ImportError:
+                else:
+                    self._logger.warning("RIFE native is not available (is_available=False), falling back to shell wrapper")
+            except ImportError as e:
+                self._logger.warning(f"RIFE native import failed: {e}, falling back to shell wrapper")
                 if prefer == 'native':
                     raise ProcessorNotAvailableError("RIFE native not available")
                 # Fall through to shell wrapper if not explicitly native
@@ -101,7 +104,10 @@ class ProcessorFactory:
                 if RealESRGANNativeWrapper.is_available():
                     self._logger.info("Using Real-ESRGAN native Python backend")
                     return RealESRGANNativeWrapper()
-            except ImportError:
+                else:
+                    self._logger.warning("Real-ESRGAN native is not available (is_available=False), falling back to shell wrapper")
+            except ImportError as e:
+                self._logger.warning(f"Real-ESRGAN native import failed: {e}, falling back to shell wrapper")
                 if prefer == 'native':
                     raise ProcessorNotAvailableError("Real-ESRGAN native not available")
                 # Fall through to shell wrapper if not explicitly native

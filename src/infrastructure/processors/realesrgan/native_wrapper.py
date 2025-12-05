@@ -35,9 +35,8 @@ class RealESRGANNativeWrapper(BaseProcessor):
         """Check if Real-ESRGAN dependencies are available."""
         try:
             import torch
-            if not torch.cuda.is_available():
-                logger.debug("Real-ESRGAN native: CUDA not available")
-                return False
+            # Note: CUDA is preferred but not required for testing
+            # The actual device selection happens during model loading
 
             from basicsr.archs.rrdbnet_arch import RRDBNet
             from realesrgan import RealESRGANer
@@ -74,8 +73,12 @@ class RealESRGANNativeWrapper(BaseProcessor):
         tile_size = options.get('tile_size', 512)
         batch_size = options.get('batch_size')  # None = auto-detect
         half = options.get('half', True)
+        is_intermediate = options.get('_intermediate_stage', False)
 
-        self._logger.info(f"Running Real-ESRGAN (Native Python): scale={scale}")
+        if is_intermediate:
+            self._logger.info(f"Running Real-ESRGAN (Native Python, intermediate stage): scale={scale}")
+        else:
+            self._logger.info(f"Running Real-ESRGAN (Native Python): scale={scale}")
 
         try:
             # Create processor if not exists
@@ -97,6 +100,11 @@ class RealESRGANNativeWrapper(BaseProcessor):
 
             if not output_frames:
                 raise VideoProcessingError("No output frames produced")
+
+            # Note: Native processors don't handle B2 uploads
+            # The orchestrator will upload the final assembled video
+            if is_intermediate:
+                self._logger.debug("Intermediate stage - orchestrator will handle final upload")
 
             return output_frames
 

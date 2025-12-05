@@ -5,12 +5,14 @@ This adapter uses the pure Python implementation instead of shell scripts.
 """
 
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import List, Dict, Any, TYPE_CHECKING
 
 from infrastructure.processors.base import BaseProcessor
-from infrastructure.processors.rife.native import RIFENative
 from domain.exceptions import VideoProcessingError, ProcessorNotAvailableError
 from shared.logging import get_logger
+
+if TYPE_CHECKING:
+    from infrastructure.processors.rife.native import RIFENative
 
 logger = get_logger(__name__)
 
@@ -35,11 +37,23 @@ class RIFENativeWrapper(BaseProcessor):
         """Check if RIFE dependencies are available."""
         try:
             import torch
-            # Check for RIFE model directory
+            
+            # Check CUDA availability
+            if not torch.cuda.is_available():
+                logger.debug("RIFE native not available: CUDA not available")
+                return False
+
+            # Check that we can import the native module (don't instantiate yet)
             from infrastructure.processors.rife.native import RIFENative
-            processor = RIFENative()
-            return torch.cuda.is_available()
-        except (ImportError, FileNotFoundError):
+
+            # Basic availability check - actual model loading happens in _execute_processing
+            logger.debug("RIFE native is available (PyTorch + CUDA detected)")
+            return True
+        except ImportError as e:
+            logger.debug(f"RIFE native not available: {e}")
+            return False
+        except Exception as e:
+            logger.debug(f"RIFE native availability check failed: {e}")
             return False
 
     def supports_gpu(self) -> bool:
@@ -65,8 +79,12 @@ class RIFENativeWrapper(BaseProcessor):
         """
         # Get options
         factor = options.get('factor', 2.0)
+        is_intermediate = options.get('_intermediate_stage', False)
 
-        self._logger.info(f"Running RIFE (Native Python): factor={factor}")
+        if is_intermediate:
+            self._logger.info(f"Running RIFE (Native Python, intermediate stage): factor={factor}")
+        else:
+            self._logger.info(f"Running RIFE (Native Python): factor={factor}")
 
         try:
             # Create processor if not exists
@@ -85,6 +103,11 @@ class RIFENativeWrapper(BaseProcessor):
 
             if not output_frames:
                 raise VideoProcessingError("No output frames produced")
+
+            # Note: Native processors don't handle B2 uploads
+            # The orchestrator will upload the final assembled video
+            if is_intermediate:
+                self._logger.debug("Intermediate stage - orchestrator will handle final upload")
 
             return output_frames
 
