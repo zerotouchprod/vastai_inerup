@@ -60,7 +60,17 @@ def test_upscale_fps_preserved():
 
     # Mock upscaler to return processed frames
     upscaler_result = Mock(success=True, errors=[])
-    upscaler.process.return_value = upscaler_result
+
+    def mock_upscaler_process(input_frames, output_dir, **kwargs):
+        """Mock upscaler that creates output files."""
+        output_dir.mkdir(parents=True, exist_ok=True)
+        # Create output files
+        for i, frame in enumerate(input_frames, 1):
+            output_file = output_dir / f"upscaled_{i:06d}.png"
+            output_file.touch()
+        return upscaler_result
+
+    upscaler.process.side_effect = mock_upscaler_process
 
     # Mock assembler to capture FPS
     assembler.assemble.return_value = workspace / "output.mp4"
@@ -145,7 +155,17 @@ def test_upscale_fps_preserved():
     )
 
     interpolator_result = Mock(success=True, errors=[])
-    interpolator.process.return_value = interpolator_result
+
+    def mock_interpolator_process(input_frames, output_dir, **kwargs):
+        """Mock interpolator that creates output files."""
+        output_dir.mkdir(parents=True, exist_ok=True)
+        # Interpolation should double the frames
+        for i in range(1, len(input_frames) * 2 + 1):
+            output_file = output_dir / f"interp_{i:06d}.png"
+            output_file.touch()
+        return interpolator_result
+
+    interpolator.process.side_effect = mock_interpolator_process
 
     with patch('tempfile.mkdtemp', return_value=str(workspace2)):
         try:
@@ -171,6 +191,102 @@ def test_upscale_fps_preserved():
             # Cleanup
             if workspace2.exists():
                 shutil.rmtree(workspace2, ignore_errors=True)
+
+    # Test 3: both mode with interp-then-upscale strategy
+    assembler.reset_mock()
+    upscaler.reset_mock()
+    interpolator.reset_mock()
+
+    workspace3 = Path(tempfile.mkdtemp(prefix="test_both_"))
+
+    # Reset the side_effect
+    upscaler.process.side_effect = mock_upscaler_process
+    interpolator.process.side_effect = mock_interpolator_process
+
+    job3 = ProcessingJob(
+        job_id="test_both",
+        input_url="https://example.com/input.mp4",
+        mode="both",
+        scale=2.0,
+        target_fps=None,  # Should calculate from interp_factor
+        interp_factor=2.0,
+        strategy="interp-then-upscale"
+    )
+
+    with patch('tempfile.mkdtemp', return_value=str(workspace3)):
+        try:
+            result = orchestrator.process(job3)
+
+            # Verify order: interpolator called first, then upscaler
+            assert interpolator.process.call_count == 1, "Interpolator should be called once"
+            assert upscaler.process.call_count == 1, "Upscaler should be called once"
+
+            # Check FPS: should use interpolated FPS (48)
+            assembler.assemble.assert_called_once()
+            call_args = assembler.assemble.call_args
+            fps_used = call_args.kwargs.get('fps')
+            expected_fps = 24.0 * 2.0  # 48.0
+
+            print(f"\n✓ Test 3: Both mode (interp-then-upscale)")
+            print(f"  Video FPS: {video_info.fps}")
+            print(f"  Job interp_factor: {job3.interp_factor}")
+            print(f"  FPS passed to assembler: {fps_used}")
+            print(f"  Expected: {expected_fps}")
+
+            assert fps_used == expected_fps, f"Expected FPS={expected_fps} for both mode, got {fps_used}"
+            print(f"  ✅ PASS: Both mode correctly uses interpolated FPS ({expected_fps})")
+
+        finally:
+            if workspace3.exists():
+                shutil.rmtree(workspace3, ignore_errors=True)
+
+    # Test 4: both mode with upscale-then-interp strategy
+    assembler.reset_mock()
+    upscaler.reset_mock()
+    interpolator.reset_mock()
+
+    workspace4 = Path(tempfile.mkdtemp(prefix="test_both_rev_"))
+
+    # Reset the side_effect
+    upscaler.process.side_effect = mock_upscaler_process
+    interpolator.process.side_effect = mock_interpolator_process
+
+    job4 = ProcessingJob(
+        job_id="test_both_reverse",
+        input_url="https://example.com/input.mp4",
+        mode="both",
+        scale=2.0,
+        target_fps=None,
+        interp_factor=2.0,
+        strategy="upscale-then-interp"
+    )
+
+    with patch('tempfile.mkdtemp', return_value=str(workspace4)):
+        try:
+            result = orchestrator.process(job4)
+
+            # Verify order: upscaler called first, then interpolator
+            assert upscaler.process.call_count == 1, "Upscaler should be called once"
+            assert interpolator.process.call_count == 1, "Interpolator should be called once"
+
+            # Check FPS: should still use interpolated FPS (48)
+            assembler.assemble.assert_called_once()
+            call_args = assembler.assemble.call_args
+            fps_used = call_args.kwargs.get('fps')
+            expected_fps = 24.0 * 2.0  # 48.0
+
+            print(f"\n✓ Test 4: Both mode (upscale-then-interp)")
+            print(f"  Video FPS: {video_info.fps}")
+            print(f"  Job interp_factor: {job4.interp_factor}")
+            print(f"  FPS passed to assembler: {fps_used}")
+            print(f"  Expected: {expected_fps}")
+
+            assert fps_used == expected_fps, f"Expected FPS={expected_fps} for both mode, got {fps_used}"
+            print(f"  ✅ PASS: Both mode (reverse) correctly uses interpolated FPS ({expected_fps})")
+
+        finally:
+            if workspace4.exists():
+                shutil.rmtree(workspace4, ignore_errors=True)
 
     print("\n✅ All real orchestrator tests passed!")
 
