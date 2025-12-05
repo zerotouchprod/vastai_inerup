@@ -270,8 +270,7 @@ class FFmpegWrapper:
         cmd = [
             'ffmpeg',
             '-hide_banner',
-            '-encoders'
-        ]
+            '-encoders']
 
         try:
             result = subprocess.run(
