@@ -94,10 +94,15 @@ class VideoProcessingOrchestrator:
                 original_duration = None
 
             # Prefer explicit target FPS from job, otherwise derive from actual processed frames and original duration
-            if getattr(job, 'target_fps', None):
+            if job.mode == 'both':
+                # For 'both' mode, always derive the fps to account for interpolation
+                if original_duration and original_duration > 0:
+                    target_fps = max(1.0, float(len(frame_paths)) / original_duration)
+                else:
+                    target_fps = float(getattr(video_info, 'fps', 24.0))
+            elif getattr(job, 'target_fps', None):
                 target_fps = float(job.target_fps)
             elif original_duration and original_duration > 0:
-                # final_fps = number_of_output_frames / original_duration
                 target_fps = max(1.0, float(len(frame_paths)) / original_duration)
             else:
                 # fallback to video_info.fps if available
