@@ -41,10 +41,13 @@ class RealESRGANNativeWrapper(BaseProcessor):
             from basicsr.archs.rrdbnet_arch import RRDBNet
             from realesrgan import RealESRGANer
 
-            logger.debug("Real-ESRGAN native: all dependencies available")
+            logger.debug("Real-ESRGAN native is available (all dependencies found)")
             return True
         except ImportError as e:
-            logger.debug(f"Real-ESRGAN native: missing dependency - {e}")
+            logger.debug(f"Real-ESRGAN native not available: {e}")
+            return False
+        except Exception as e:
+            logger.debug(f"Real-ESRGAN native availability check failed: {e}")
             return False
 
     def supports_gpu(self) -> bool:
