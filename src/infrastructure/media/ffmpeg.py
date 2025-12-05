@@ -198,10 +198,11 @@ class FFmpegWrapper:
         cmd = [
             'ffmpeg',
             '-y',
-            '-framerate', str(fps),
+            '-framerate', str(fps),  # Input framerate for reading images
             '-i', str(input_pattern),
             '-c:v', encoder,
             '-pix_fmt', pix_fmt,
+            '-r', str(fps),  # Output framerate - EXPLICITLY set in output video
         ]
 
         # Add encoder-specific options
