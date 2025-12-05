@@ -110,7 +110,7 @@ class RealESRGANNative:
     def __init__(
         self,
         scale: int = 2,
-        model_name: str = 'RealESRGAN_x4plus',
+        model_name: Optional[str] = None,
         tile_size: int = 256,  # Smaller tiles = faster processing
         tile_pad: int = 10,
         pre_pad: int = 0,
@@ -124,7 +124,7 @@ class RealESRGANNative:
 
         Args:
             scale: Upscale factor (2, 4, etc.)
-            model_name: Model to use
+            model_name: Model to use (auto-select based on scale if None)
             tile_size: Tile size for processing
             tile_pad: Padding for tiles
             pre_pad: Pre-padding
@@ -134,6 +134,17 @@ class RealESRGANNative:
             logger: Logger instance
         """
         self.scale = scale
+
+        # Auto-select model based on scale if not specified
+        if model_name is None:
+            if scale == 2:
+                model_name = 'RealESRGAN_x2plus'
+            elif scale == 4:
+                model_name = 'RealESRGAN_x4plus'
+            else:
+                # For other scales, use x4plus and post-scale
+                model_name = 'RealESRGAN_x4plus'
+
         self.model_name = model_name
         self.tile_size = tile_size
         self.tile_pad = tile_pad
@@ -152,6 +163,7 @@ class RealESRGANNative:
         # Model will be loaded on first use
         self._model = None
         self._upsampler = None
+        self._use_fallback_scale = False  # Flag for x4plus->x2 fallback
 
     def _load_model(self):
         """Load Real-ESRGAN model (lazy loading)."""
@@ -169,12 +181,16 @@ class RealESRGANNative:
 
         self.logger.info(f"Loading Real-ESRGAN model: {self.model_name}")
 
-        # Determine model architecture
-        if 'x4plus' in self.model_name:
+        # Determine model architecture based on model name
+        if 'x4plus' in self.model_name or 'x4' in self.model_name:
             num_block = 23
             netscale = 4
+        elif 'x2plus' in self.model_name or 'x2' in self.model_name:
+            num_block = 23
+            netscale = 2
         else:
-            num_block = 6
+            # Default to x4
+            num_block = 23
             netscale = 4
 
         # Create model
@@ -228,6 +244,24 @@ class RealESRGANNative:
             if path.exists():
                 self.logger.info(f"Found model weights: {path}")
                 return path
+
+        # If x2plus not found, try to fallback to x4plus (we'll post-scale)
+        if 'x2plus' in self.model_name:
+            self.logger.warning(f"{self.model_name} not found, trying fallback to x4plus...")
+            fallback_name = 'RealESRGAN_x4plus'
+            fallback_paths = [
+                Path('/opt/realesrgan_models') / f'{fallback_name}.pth',
+                Path('/workspace/project/external/Real-ESRGAN/weights') / f'{fallback_name}.pth',
+                Path('/workspace/project/external/Real-ESRGAN/experiments/pretrained_models') / f'{fallback_name}.pth',
+            ]
+            for path in fallback_paths:
+                if path.exists():
+                    self.logger.info(f"Using fallback model: {path}")
+                    self.logger.info(f"Will use x4plus model with outscale={self.scale}")
+                    # Update model_name to x4plus for architecture setup
+                    self.model_name = fallback_name
+                    self._use_fallback_scale = True
+                    return path
 
         # If not found, try to download from huggingface
         self.logger.warning(f"Model weights not found locally for {self.model_name}")

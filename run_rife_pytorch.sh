@@ -667,7 +667,7 @@ PY
     # RIFE_BATCH_MAX_WAIT: total seconds to allow before considering kill (default 3600)
     # RIFE_BATCH_STALL_TIMEOUT: if log hasn't been updated for this many seconds, consider it stalled (default 300)
     MAX_WAIT=${RIFE_BATCH_MAX_WAIT:-36000}
-    STALL_TIMEOUT=${RIFE_BATCH_STALL_TIMEOUT:-300}
+    STALL_TIMEOUT=${RIFE_BATCH_STALL_TIMEOUT:-30000}
     CHECK_INTERVAL=${RIFE_BATCH_CHECK_INTERVAL:-5}
     start_time=$(date +%s)
     last_log_update=$start_time
