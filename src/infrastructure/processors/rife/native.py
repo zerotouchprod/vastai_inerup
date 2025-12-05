@@ -275,6 +275,30 @@ class RIFENative:
         # factor 2 -> 1 mid, factor 4 -> 3 mids, etc.
         return max(1, int(self.factor) - 1)
 
+    def _pad_to_multiple(self, tensor: torch.Tensor, multiple: int = 64) -> tuple:
+        """
+        Pad tensor to multiple of given size.
+
+        Args:
+            tensor: Input tensor [1, C, H, W]
+            multiple: Pad to multiple of this value (default 64)
+
+        Returns:
+            Tuple of (padded_tensor, original_height, original_width)
+        """
+        n, c, h, w = tensor.shape
+        ph = ((h - 1) // multiple + 1) * multiple
+        pw = ((w - 1) // multiple + 1) * multiple
+
+        # Calculate padding (left, right, top, bottom)
+        pad = (0, pw - w, 0, ph - h)
+
+        if pad[1] != 0 or pad[3] != 0:
+            import torch.nn.functional as F
+            tensor = F.pad(tensor, pad)
+
+        return tensor, h, w
+
     def _interpolate_pair(
         self,
         frame1: torch.Tensor,
@@ -292,6 +316,13 @@ class RIFENative:
         Returns:
             List of intermediate frames
         """
+        # Store original dimensions
+        _, _, orig_h, orig_w = frame1.shape
+
+        # Pad to multiples of 64 (RIFE model requirement)
+        frame1_padded, _, _ = self._pad_to_multiple(frame1, 64)
+        frame2_padded, _, _ = self._pad_to_multiple(frame2, 64)
+
         mids = []
 
         with torch.no_grad():
@@ -300,7 +331,11 @@ class RIFENative:
                 timestep = (i + 1) / (mids_count + 1)
 
                 # Interpolate
-                mid = self._model.inference(frame1, frame2, timestep)
+                mid = self._model.inference(frame1_padded, frame2_padded, timestep)
+
+                # Crop back to original dimensions
+                mid = mid[:, :, :orig_h, :orig_w]
+
                 mids.append(mid)
 
         return mids
