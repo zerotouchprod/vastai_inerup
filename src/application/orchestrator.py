@@ -177,6 +177,10 @@ class VideoProcessingOrchestrator:
 
                 # Step 2: Upscaling (final stage - orchestrator will upload assembled video)
                 interpolated_frames = sorted(interp_dir.glob("*.png"))
+                self._logger.info(f"Found {len(interpolated_frames)} interpolated frames for upscaling")
+                if len(interpolated_frames) > 0:
+                    self._logger.debug(f"First 5 frames: {[f.name for f in interpolated_frames[:5]]}")
+                    self._logger.debug(f"Last 5 frames: {[f.name for f in interpolated_frames[-5:]]}")
                 upscale_dir = workspace / "upscaled"
                 upscale_options = {
                     'scale': job.scale,
