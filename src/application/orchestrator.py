@@ -101,12 +101,13 @@ class VideoProcessingOrchestrator:
                 target_fps = float(job.target_fps)
                 self._logger.info(f"Using explicit target FPS: {target_fps}")
             elif job.mode == 'interp':
-                # For interpolation: KEEP the original FPS
-                # More frames at same FPS = longer, smoother video
-                # Example: 145→289 frames @ 24 fps → 6s becomes 12s (2x slower/smoother)
-                target_fps = original_fps
+                # For interpolation: MULTIPLY the FPS by the interpolation factor
+                # More frames at higher FPS = same duration, smoother motion
+                # Example: 145→289 frames @ 48 fps (24*2) → stays 6s but smoother
+                interp_factor = int(job.interp_factor) if hasattr(job, 'interp_factor') else 2
+                target_fps = original_fps * interp_factor
                 expected_duration = processed_frame_count / target_fps
-                self._logger.info(f"Interp mode: {processed_frame_count} frames @ {target_fps} fps = {expected_duration:.2f}s (was {original_duration:.2f}s, now {expected_duration/original_duration:.1f}x longer)")
+                self._logger.info(f"Interp mode: {processed_frame_count} frames @ {target_fps} fps (was {original_fps} fps * {interp_factor}x factor) = {expected_duration:.2f}s (original duration)")
             elif job.mode == 'both' and original_duration and original_duration > 0:
                 # For 'both' mode, calculate FPS to maintain original duration
                 target_fps = max(1.0, float(processed_frame_count) / original_duration)
