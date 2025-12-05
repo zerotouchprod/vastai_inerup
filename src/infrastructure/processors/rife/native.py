@@ -426,8 +426,18 @@ class RIFENative:
                 frame1 = self._load_frame_as_tensor(frame1_path)
                 frame2 = self._load_frame_as_tensor(frame2_path)
 
-                # Add original frame1 to output
-                output_frames.append(frame1_path)
+                # Copy/symlink original frame1 to output directory
+                # (so all frames are in output_dir for subsequent processing)
+                orig_output_path = output_dir / frame1_path.name
+                if not orig_output_path.exists():
+                    try:
+                        # Try symlink first (faster)
+                        orig_output_path.symlink_to(frame1_path.absolute())
+                    except (OSError, NotImplementedError):
+                        # Fall back to copy if symlink not supported
+                        import shutil
+                        shutil.copy2(frame1_path, orig_output_path)
+                output_frames.append(orig_output_path)
 
                 # Generate intermediate frames
                 mids = self._interpolate_pair(frame1, frame2, mids_per_pair)
@@ -459,8 +469,16 @@ class RIFENative:
                 self.logger.error(f"Failed to process pair {idx+1}/{total_pairs}: {e}")
                 raise
 
-        # Add last frame
-        output_frames.append(input_frames[-1])
+        # Copy/symlink last frame to output directory
+        last_frame_path = input_frames[-1]
+        last_output_path = output_dir / last_frame_path.name
+        if not last_output_path.exists():
+            try:
+                last_output_path.symlink_to(last_frame_path.absolute())
+            except (OSError, NotImplementedError):
+                import shutil
+                shutil.copy2(last_frame_path, last_output_path)
+        output_frames.append(last_output_path)
 
         elapsed = time.time() - start_time
         avg_fps = total_pairs / elapsed if elapsed > 0 else 0
