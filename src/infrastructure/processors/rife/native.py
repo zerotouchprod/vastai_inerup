@@ -72,6 +72,7 @@ class RIFENative:
         The code is loaded from external/RIFE.
         """
         possible_paths = [
+            Path('/opt/rife_models/train_log'),  # Docker container preinstalled models (PRIORITY!)
             Path('/workspace/project/RIFEv4.26_0921'),  # Preinstalled weights
             Path('/workspace/project/external/RIFE/train_log'),  # Cloned repo weights
             Path('RIFEv4.26_0921'),  # Local dev
