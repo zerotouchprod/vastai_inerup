@@ -147,7 +147,7 @@ def main():
             config.target_fps = args.target_fps
         if args.prefer:
             config.prefer = args.prefer
-        if args.strategy:
+        if getattr(args, 'strategy', None):
             config.strategy = args.strategy
         if args.strict:
             config.strict = True
