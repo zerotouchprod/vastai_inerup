@@ -194,14 +194,28 @@ class FFmpegWrapper:
 
         input_pattern = frames_dir / pattern
 
+        # Count frames for verification
+        frame_files = sorted(frames_dir.glob("*.png"))
+        frame_count = len(frame_files)
+        expected_duration = frame_count / fps
+
+        self._logger.info(f"[ASSEMBLY DEBUG] Frames dir: {frames_dir}")
+        self._logger.info(f"[ASSEMBLY DEBUG] Frame pattern: {pattern}")
+        self._logger.info(f"[ASSEMBLY DEBUG] Frame count: {frame_count}")
+        self._logger.info(f"[ASSEMBLY DEBUG] Target FPS: {fps}")
+        self._logger.info(f"[ASSEMBLY DEBUG] Expected duration: {expected_duration:.2f}s")
+
         # Build ffmpeg command
-        # IMPORTANT: -r must come BEFORE -i to set input framerate
-        # and BEFORE -c:v to set output framerate
+        # IMPORTANT:
+        # -framerate BEFORE -i sets how fast to READ input images
+        # -r AFTER input sets the OUTPUT video framerate
+        # Both are needed for correct encoding
         cmd = [
             'ffmpeg',
             '-y',
-            '-r', str(fps),  # Input AND output framerate - set before -i for input reading rate
+            '-framerate', str(fps),  # How fast to read input frames
             '-i', str(input_pattern),
+            '-r', str(fps),  # Output video framerate (must match for CFR)
             '-c:v', encoder,
             '-pix_fmt', pix_fmt,
             '-vsync', 'cfr',  # Constant frame rate - ensures timestamps are evenly spaced
@@ -216,6 +230,7 @@ class FFmpegWrapper:
         cmd.append(str(output_path))
 
         self._logger.info(f"Assembling video with encoder: {encoder}")
+        self._logger.info(f"[ASSEMBLY DEBUG] FFmpeg command: {' '.join(cmd)}")
 
         try:
             result = subprocess.run(
@@ -228,6 +243,20 @@ class FFmpegWrapper:
 
             if not output_path.exists() or output_path.stat().st_size == 0:
                 raise AssemblyError("Output video is empty or missing")
+
+            # Verify output video
+            actual_duration = self.get_duration(output_path)
+            actual_fps = self.get_fps(output_path)
+
+            self._logger.info(f"[ASSEMBLY DEBUG] Output video: {output_path}")
+            self._logger.info(f"[ASSEMBLY DEBUG] Actual FPS: {actual_fps:.2f}")
+            self._logger.info(f"[ASSEMBLY DEBUG] Actual duration: {actual_duration:.2f}s")
+            self._logger.info(f"[ASSEMBLY DEBUG] Duration ratio (actual/expected): {actual_duration/expected_duration:.2f}x")
+
+            if abs(actual_duration - expected_duration) > 0.5:
+                self._logger.warning(f"[ASSEMBLY DEBUG] Duration mismatch! Expected {expected_duration:.2f}s but got {actual_duration:.2f}s")
+                self._logger.warning(f"[ASSEMBLY DEBUG] This suggests FPS encoding issue. Check ffmpeg output:")
+                self._logger.warning(f"[ASSEMBLY DEBUG] FFmpeg stderr: {result.stderr[:1000]}")
 
             self._logger.info(f"Assembled video: {output_path}")
             return output_path
