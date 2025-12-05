@@ -84,12 +84,14 @@ class VideoProcessingOrchestrator:
             output_video = workspace / "output.mp4"
 
             # Compute target FPS to maintain original video duration
+            original_fps = 24.0  # Default fallback
+            original_duration = None
             try:
                 original_frame_count = len(frames)
                 original_fps = float(video_info.fps)
                 original_duration = original_frame_count / original_fps if original_fps > 0 else None
             except Exception:
-                original_duration = None
+                pass  # Use defaults
 
             processed_frame_count = len(frame_paths)
 
@@ -98,14 +100,17 @@ class VideoProcessingOrchestrator:
                 # Explicit target FPS takes priority
                 target_fps = float(job.target_fps)
                 self._logger.info(f"Using explicit target FPS: {target_fps}")
+            elif job.mode == 'interp':
+                # For interpolation: KEEP the original FPS
+                # More frames at same FPS = longer, smoother video
+                # Example: 145→289 frames @ 24 fps → 6s becomes 12s (2x slower/smoother)
+                target_fps = original_fps
+                expected_duration = processed_frame_count / target_fps
+                self._logger.info(f"Interp mode: {processed_frame_count} frames @ {target_fps} fps = {expected_duration:.2f}s (was {original_duration:.2f}s, now {expected_duration/original_duration:.1f}x longer)")
             elif job.mode == 'both' and original_duration and original_duration > 0:
                 # For 'both' mode, calculate FPS to maintain original duration
                 target_fps = max(1.0, float(processed_frame_count) / original_duration)
                 self._logger.info(f"Both mode: {processed_frame_count} frames / {original_duration:.2f}s = {target_fps:.2f} fps")
-            elif job.mode == 'interp' and original_duration and original_duration > 0:
-                # For interpolation, also maintain original duration
-                target_fps = max(1.0, float(processed_frame_count) / original_duration)
-                self._logger.info(f"Interp mode: {processed_frame_count} frames / {original_duration:.2f}s = {target_fps:.2f} fps")
             elif original_duration and original_duration > 0:
                 # Derive FPS from processed frames and original duration
                 target_fps = max(1.0, float(processed_frame_count) / original_duration)
