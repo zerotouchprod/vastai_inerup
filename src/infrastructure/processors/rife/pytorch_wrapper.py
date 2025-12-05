@@ -350,34 +350,41 @@ class RifePytorchWrapper(BaseProcessor):
                 self.debugger.log_end(False, reason="shell_error", exit_code=result_returncode)
                 raise error
 
-            # Extract frames from output video if needed
-            # The bash wrapper creates a video file, not frames. Extract them.
+            # Extract frames from output video
+            # The bash wrapper creates a video file, not frames. We must extract them.
             self.debugger.log_step('collect_output_frames', output_dir=str(output_dir))
-            output_frames = sorted(output_dir.glob("*.png"))
+
+            # First check if video exists
+            if not temp_output_video.exists():
+                error = VideoProcessingError(f"Bash wrapper did not create expected output video: {temp_output_video}")
+                self.debugger.log_error(error, context="video_not_found")
+                self.debugger.log_end(False, output_frames_found=0)
+                raise error
+
+            self._logger.info(f"Bash wrapper created video {temp_output_video}, extracting frames for next stage...")
+
+            # Extract frames from the video
+            from infrastructure.media import FFmpegExtractor
+            extractor = FFmpegExtractor()
+            try:
+                video_info = extractor.get_video_info(temp_output_video)
+                self._logger.info(f"Video info: {video_info.width}x{video_info.height}, {video_info.fps} fps, {video_info.frame_count} frames")
+
+                frames = extractor.extract_frames(video_info, output_dir)
+                output_frames = [f.path for f in frames] if hasattr(frames[0], 'path') else frames
+                output_frames = sorted(output_frames)
+                self._logger.info(f"✓ Extracted {len(output_frames)} frames from interpolated video for next processing stage")
+            except Exception as e:
+                error = VideoProcessingError(f"Failed to extract frames from output video: {e}")
+                self.debugger.log_error(error, context="extracting_frames_from_video")
+                self.debugger.log_end(False, output_frames_found=0)
+                raise error
 
             if not output_frames:
-                # Check if wrapper created a video file instead
-                if temp_output_video.exists():
-                    self._logger.info(f"Bash wrapper created video {temp_output_video}, extracting frames...")
-                    # Extract frames from the video
-                    from infrastructure.media import FFmpegExtractor
-                    extractor = FFmpegExtractor()
-                    try:
-                        video_info = extractor.get_video_info(temp_output_video)
-                        frames = extractor.extract_frames(video_info, output_dir)
-                        output_frames = [f.path for f in frames] if hasattr(frames[0], 'path') else frames
-                        output_frames = sorted(output_frames)
-                        self._logger.info(f"Extracted {len(output_frames)} frames from video")
-                    except Exception as e:
-                        error = VideoProcessingError(f"Failed to extract frames from output video: {e}")
-                        self.debugger.log_error(error, context="extracting_frames_from_video")
-                        self.debugger.log_end(False, output_frames_found=0)
-                        raise error
-                else:
-                    error = VideoProcessingError("No output frames or video found after RIFE processing")
-                    self.debugger.log_error(error, context="collecting_output_frames")
-                    self.debugger.log_end(False, output_frames_found=0)
-                    raise error
+                error = VideoProcessingError("Frame extraction produced no frames")
+                self.debugger.log_error(error, context="empty_frame_extraction")
+                self.debugger.log_end(False, output_frames_found=0)
+                raise error
 
             # Debug: Success
             self.debugger.log_end(True,
