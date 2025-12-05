@@ -417,9 +417,9 @@ PY
 
   # If AUTO_UPLOAD_B2 explicitly disabled, skip running container_upload.py
   if [ "${AUTO_UPLOAD_B2:-1}" != "1" ]; then
-    log "AUTO_UPLOAD_B2 not enabled; skipping centralized upload"
-    echo "VASTAI_PIPELINE_COMPLETED_SUCCESSFULLY"
-    touch /workspace/VASTAI_PIPELINE_COMPLETED_SUCCESSFULLY 2>/dev/null || true
+    log "AUTO_UPLOAD_B2 not enabled; skipping centralized upload (intermediate stage)"
+    # Do NOT print VASTAI_PIPELINE_COMPLETED_SUCCESSFULLY for intermediate stages
+    # The orchestrator will handle final success marker after all processing
     return 0
   fi
 
@@ -428,9 +428,8 @@ PY
   # IMPORTANT: do not fall back to B2_KEY (credential). Only use B2_OUTPUT_KEY as explicit output key.
   B2_KEY_ENV=${B2_OUTPUT_KEY:-}
   if [ -z "${B2_BUCKET}" ]; then
-    log "AUTO_UPLOAD_B2 enabled but B2_BUCKET not set; skipping upload"
-    echo "VASTAI_PIPELINE_COMPLETED_SUCCESSFULLY"
-    touch /workspace/VASTAI_PIPELINE_COMPLETED_SUCCESSFULLY 2>/dev/null || true
+    log "AUTO_UPLOAD_B2 enabled but B2_BUCKET not set; skipping upload (intermediate stage)"
+    # Do NOT print VASTAI_PIPELINE_COMPLETED_SUCCESSFULLY for intermediate stages
     return 0
   fi
 

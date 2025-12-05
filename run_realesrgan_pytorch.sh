@@ -636,11 +636,13 @@ do_frame_by_frame_upscale() {
     else
       echo "AUTO_UPLOAD_B2: upload succeeded"
     fi
+    # Only print completion marker if upload was enabled (final stage)
+    echo "VASTAI_PIPELINE_COMPLETED_SUCCESSFULLY"
+    touch /workspace/VASTAI_PIPELINE_COMPLETED_SUCCESSFULLY 2>/dev/null || true
   else
-    echo "AUTO_UPLOAD_B2 not enabled; skipping upload"
+    echo "AUTO_UPLOAD_B2 not enabled; skipping upload (intermediate stage)"
+    # Do NOT print VASTAI_PIPELINE_COMPLETED_SUCCESSFULLY for intermediate stages
   fi
-  echo "VASTAI_PIPELINE_COMPLETED_SUCCESSFULLY"
-  touch /workspace/VASTAI_PIPELINE_COMPLETED_SUCCESSFULLY 2>/dev/null || true
   rm -rf "$TMP_DIR"
   exit 0
 }
@@ -688,12 +690,13 @@ finalize_success() {
         fi
       fi
     fi
+    # Only print completion marker if upload was enabled (final stage)
+    echo "VASTAI_PIPELINE_COMPLETED_SUCCESSFULLY"
+    touch /workspace/VASTAI_PIPELINE_COMPLETED_SUCCESSFULLY 2>/dev/null || true
   else
-    echo "AUTO_UPLOAD_B2 not enabled; skipping upload"
+    echo "AUTO_UPLOAD_B2 not enabled; skipping upload (intermediate stage)"
+    # Do NOT print VASTAI_PIPELINE_COMPLETED_SUCCESSFULLY for intermediate stages
   fi
-  # final sentinel
-  echo "VASTAI_PIPELINE_COMPLETED_SUCCESSFULLY"
-  touch /workspace/VASTAI_PIPELINE_COMPLETED_SUCCESSFULLY 2>/dev/null || true
 }
 
 # Try BATCH upscaling first (10x faster!)
@@ -985,9 +988,11 @@ if [ -f "$REPO_DIR/inference_realesrgan_video.py" ]; then
     else
       echo "AUTO_UPLOAD_B2: upload succeeded"
     fi
+    # Only print completion marker if upload was enabled (final stage)
+    echo "VASTAI_PIPELINE_COMPLETED_SUCCESSFULLY"
+    touch /workspace/VASTAI_PIPELINE_COMPLETED_SUCCESSFULLY 2>/dev/null || true
   else
-    echo "AUTO_UPLOAD_B2 not enabled; skipping upload"
+    echo "AUTO_UPLOAD_B2 not enabled; skipping upload (intermediate stage)"
+    # Do NOT print VASTAI_PIPELINE_COMPLETED_SUCCESSFULLY for intermediate stages
   fi
-  echo "VASTAI_PIPELINE_COMPLETED_SUCCESSFULLY"
-  touch /workspace/VASTAI_PIPELINE_COMPLETED_SUCCESSFULLY 2>/dev/null || true
 fi
