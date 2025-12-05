@@ -448,6 +448,7 @@ class RIFENative:
 
         output_frames = []
         start_time = time.time()
+        frame_counter = 1  # Sequential frame counter for output
 
         # Process pairs
         for idx in range(total_pairs):
@@ -459,9 +460,8 @@ class RIFENative:
                 frame1 = self._load_frame_as_tensor(frame1_path)
                 frame2 = self._load_frame_as_tensor(frame2_path)
 
-                # Copy/symlink original frame1 to output directory
-                # (so all frames are in output_dir for subsequent processing)
-                orig_output_path = output_dir / frame1_path.name
+                # Save original frame1 with sequential numbering
+                orig_output_path = output_dir / f"frame_{frame_counter:06d}.png"
                 if not orig_output_path.exists():
                     try:
                         # Try symlink first (faster)
@@ -471,16 +471,17 @@ class RIFENative:
                         import shutil
                         shutil.copy2(frame1_path, orig_output_path)
                 output_frames.append(orig_output_path)
+                frame_counter += 1
 
                 # Generate intermediate frames
                 mids = self._interpolate_pair(frame1, frame2, mids_per_pair)
 
-                # Save intermediate frames
+                # Save intermediate frames with sequential numbering
                 for mid_idx, mid in enumerate(mids, 1):
-                    mid_name = f"{frame1_path.stem}_mid_{mid_idx:02d}.png"
-                    mid_path = output_dir / mid_name
+                    mid_path = output_dir / f"frame_{frame_counter:06d}.png"
                     self._save_tensor_as_frame(mid, mid_path)
                     output_frames.append(mid_path)
+                    frame_counter += 1
 
                 # Progress
                 if (idx + 1) % 10 == 0 or (idx + 1) == total_pairs:
@@ -502,9 +503,9 @@ class RIFENative:
                 self.logger.error(f"Failed to process pair {idx+1}/{total_pairs}: {e}")
                 raise
 
-        # Copy/symlink last frame to output directory
+        # Copy/symlink last frame to output directory with sequential numbering
         last_frame_path = input_frames[-1]
-        last_output_path = output_dir / last_frame_path.name
+        last_output_path = output_dir / f"frame_{frame_counter:06d}.png"
         if not last_output_path.exists():
             try:
                 last_output_path.symlink_to(last_frame_path.absolute())
