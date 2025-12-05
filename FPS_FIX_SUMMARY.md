@@ -3,6 +3,8 @@
 ## Issue
 Video interpolation (2x) was outputting at 24 fps instead of 48 fps, making videos 2x longer (slow-motion) instead of smoother at the same duration.
 
+**Status:** FIX APPLIED - logs show correct behavior (48 fps), but user reports video is 2x shorter (3s instead of 6s). Investigating actual video file properties vs. logged values.
+
 ## Root Cause
 The orchestrator was keeping the original FPS for interpolated videos instead of multiplying by the interpolation factor.
 
@@ -53,4 +55,22 @@ Expected output for interp mode:
 - Interpolation now produces smoother video at the **same speed** (not slow-motion)
 - Video duration remains unchanged
 - Framerate properly doubled (or tripled/quadrupled for higher factors)
+
+## Investigation: User Reports Video is 2x Shorter
+
+**User Report:** Video duration is 3 seconds instead of 6 seconds (2x shorter)
+
+**Logs Show:** `289 frames @ 48.0 fps = 6.02s (original duration)`
+
+**Possible Causes:**
+1. **FFmpeg assembly issue** - Logs show correct FPS calculation, but ffmpeg might not be applying it correctly
+2. **Frame count mismatch** - Maybe only 144 frames (interpolated only) instead of 289 (original + interpolated)
+3. **Video player interpretation** - Player might be reading wrong metadata
+4. **Caching issue** - Browser/player showing old version
+
+**Next Steps:**
+1. Run `python verify_interp_video.py` to check actual video file properties
+2. Compare frame count in output directory: should be 289 files
+3. Check ffmpeg assembly command in logs for any issues
+4. Verify input video is actually 6 seconds (not 3 seconds)
 

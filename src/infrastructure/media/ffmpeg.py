@@ -195,14 +195,16 @@ class FFmpegWrapper:
         input_pattern = frames_dir / pattern
 
         # Build ffmpeg command
+        # IMPORTANT: -r must come BEFORE -i to set input framerate
+        # and BEFORE -c:v to set output framerate
         cmd = [
             'ffmpeg',
             '-y',
-            '-framerate', str(fps),  # Input framerate for reading images
+            '-r', str(fps),  # Input AND output framerate - set before -i for input reading rate
             '-i', str(input_pattern),
             '-c:v', encoder,
             '-pix_fmt', pix_fmt,
-            '-r', str(fps),  # Output framerate - EXPLICITLY set in output video
+            '-vsync', 'cfr',  # Constant frame rate - ensures timestamps are evenly spaced
         ]
 
         # Add encoder-specific options
