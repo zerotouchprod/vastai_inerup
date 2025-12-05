@@ -83,9 +83,7 @@ class VideoProcessingOrchestrator:
 
             output_video = workspace / "output.mp4"
 
-            # Compute a robust target FPS based on actual processed frames and the original video duration.
-            # This prevents the pipeline from producing a shorter/faster video when processed frame count
-            # doesn't match the expected interpolation (observed in 'both' mode).
+            # Compute target FPS to maintain original video duration
             try:
                 original_frame_count = len(frames)
                 original_fps = float(video_info.fps)
@@ -93,21 +91,31 @@ class VideoProcessingOrchestrator:
             except Exception:
                 original_duration = None
 
-            # Prefer explicit target FPS from job, otherwise derive from actual processed frames and original duration
-            if job.mode == 'both':
-                # For 'both' mode, always derive the fps to account for interpolation
-                if original_duration and original_duration > 0:
-                    target_fps = max(1.0, float(len(frame_paths)) / original_duration)
-                else:
-                    target_fps = float(getattr(video_info, 'fps', 24.0))
-            elif getattr(job, 'target_fps', None):
-                target_fps = float(job.target_fps)
-            elif original_duration and original_duration > 0:
-                target_fps = max(1.0, float(len(frame_paths)) / original_duration)
-            else:
-                # fallback to video_info.fps if available
-                target_fps = float(getattr(video_info, 'fps', 24.0))
+            processed_frame_count = len(frame_paths)
 
+            # Calculate target FPS based on mode and available information
+            if getattr(job, 'target_fps', None):
+                # Explicit target FPS takes priority
+                target_fps = float(job.target_fps)
+                self._logger.info(f"Using explicit target FPS: {target_fps}")
+            elif job.mode == 'both' and original_duration and original_duration > 0:
+                # For 'both' mode, calculate FPS to maintain original duration
+                target_fps = max(1.0, float(processed_frame_count) / original_duration)
+                self._logger.info(f"Both mode: {processed_frame_count} frames / {original_duration:.2f}s = {target_fps:.2f} fps")
+            elif job.mode == 'interp' and original_duration and original_duration > 0:
+                # For interpolation, also maintain original duration
+                target_fps = max(1.0, float(processed_frame_count) / original_duration)
+                self._logger.info(f"Interp mode: {processed_frame_count} frames / {original_duration:.2f}s = {target_fps:.2f} fps")
+            elif original_duration and original_duration > 0:
+                # Derive FPS from processed frames and original duration
+                target_fps = max(1.0, float(processed_frame_count) / original_duration)
+                self._logger.info(f"Derived FPS: {processed_frame_count} frames / {original_duration:.2f}s = {target_fps:.2f} fps")
+            else:
+                # Fallback to original video FPS
+                target_fps = float(getattr(video_info, 'fps', 24.0))
+                self._logger.info(f"Using fallback FPS: {target_fps}")
+
+            self._logger.info(f"Assembly: {processed_frame_count} frames at {target_fps:.2f} fps = {processed_frame_count/target_fps:.2f}s duration")
             self._assembler.assemble(frames=frame_paths, output_path=output_video, fps=target_fps)
             self._metrics.stop_timer('assembly')
 
@@ -196,16 +204,36 @@ class VideoProcessingOrchestrator:
                 if isinstance(job.config, dict):
                     interp_options['b2_output_key'] = job.config.get('b2_output_key')
                     interp_options['b2_bucket'] = job.config.get('b2_bucket')
-                result = self._interpolator.process(frame_paths, interp_dir, **interp_options)
-                if not result.success:
+                interp_result = self._interpolator.process(frame_paths, interp_dir, **interp_options)
+                if not interp_result.success:
                     raise VideoProcessingError(f"Interpolation failed")
 
                 # Step 2: Upscaling (final stage - orchestrator will upload assembled video)
-                interpolated_frames = sorted(interp_dir.glob("*.png"))
-                self._logger.info(f"Found {len(interpolated_frames)} interpolated frames for upscaling")
-                if len(interpolated_frames) > 0:
-                    self._logger.debug(f"First 5 frames: {[f.name for f in interpolated_frames[:5]]}")
-                    self._logger.debug(f"Last 5 frames: {[f.name for f in interpolated_frames[-5:]]}")
+                # List all files in interpolated directory (including symlinks)
+                all_files = []
+                for item in sorted(interp_dir.iterdir()):
+                    if item.is_file() or item.is_symlink():
+                        if item.suffix.lower() in ['.png', '.jpg', '.jpeg']:
+                            all_files.append(item)
+
+                self._logger.info(f"Found {len(all_files)} interpolated frames for upscaling")
+                expected_frames = len(frame_paths) * int(job.interp_factor) - (len(frame_paths) - 1)
+                self._logger.info(f"Expected ~{expected_frames} frames after {job.interp_factor}x interpolation")
+
+                if len(all_files) == 0:
+                    # Debug: list ALL files in directory
+                    all_items = list(interp_dir.iterdir())
+                    self._logger.error(f"No image files found! Directory contains {len(all_items)} items:")
+                    for item in all_items[:20]:  # Show first 20
+                        self._logger.error(f"  - {item.name} (is_file={item.is_file()}, is_symlink={item.is_symlink()}, suffix={item.suffix})")
+                    raise VideoProcessingError(f"No interpolated frames found in {interp_dir}")
+
+                if len(all_files) > 0:
+                    self._logger.debug(f"First 5 frames: {[f.name for f in all_files[:5]]}")
+                    self._logger.debug(f"Last 5 frames: {[f.name for f in all_files[-5:]]}")
+
+                interpolated_frames = all_files
+
                 upscale_dir = workspace / "upscaled"
                 upscale_options = {
                     'scale': job.scale,
@@ -215,10 +243,16 @@ class VideoProcessingOrchestrator:
                 if isinstance(job.config, dict):
                     upscale_options['b2_output_key'] = job.config.get('b2_output_key')
                     upscale_options['b2_bucket'] = job.config.get('b2_bucket')
-                result = self._upscaler.process(interpolated_frames, upscale_dir, **upscale_options)
-                if not result.success:
+                upscale_result = self._upscaler.process(interpolated_frames, upscale_dir, **upscale_options)
+                if not upscale_result.success:
                     raise VideoProcessingError(f"Upscaling failed")
-                return sorted(upscale_dir.glob("*.png"))
+
+                # Return upscaled frames
+                upscaled_frames = sorted(upscale_dir.glob("*.png"))
+                self._logger.info(f"Upscaling produced {len(upscaled_frames)} frames from {len(interpolated_frames)} interpolated frames")
+                if len(upscaled_frames) == 0:
+                    raise VideoProcessingError(f"No upscaled frames found in {upscale_dir}")
+                return upscaled_frames
             else:
                 # Step 1: Upscaling (intermediate stage - no upload)
                 upscale_dir = workspace / "upscaled"
@@ -236,6 +270,10 @@ class VideoProcessingOrchestrator:
 
                 # Step 2: Interpolation (final stage - orchestrator will upload assembled video)
                 upscaled_frames = sorted(upscale_dir.glob("*.png"))
+                self._logger.info(f"Found {len(upscaled_frames)} upscaled frames for interpolation")
+                if len(upscaled_frames) == 0:
+                    raise VideoProcessingError(f"No upscaled frames found in {upscale_dir}")
+
                 interp_dir = workspace / "interpolated"
                 interp_options = {
                     'factor': int(job.interp_factor),
@@ -248,7 +286,14 @@ class VideoProcessingOrchestrator:
                 result = self._interpolator.process(upscaled_frames, interp_dir, **interp_options)
                 if not result.success:
                     raise VideoProcessingError(f"Interpolation failed")
-                return sorted(interp_dir.glob("*.png"))
+
+                final_frames = sorted(interp_dir.glob("*.png"))
+                self._logger.info(f"Interpolation produced {len(final_frames)} frames from {len(upscaled_frames)} upscaled frames")
+                expected_frames = len(upscaled_frames) * int(job.interp_factor) - (len(upscaled_frames) - 1)
+                if len(final_frames) != expected_frames:
+                    self._logger.warning(f"Frame count unexpected! Got: {len(final_frames)}, Expected: {expected_frames}")
+
+                return final_frames
 
     def _generate_upload_key(self, job):
         """Generate S3 key for upload."""
