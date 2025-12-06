@@ -76,19 +76,50 @@ def generate_presigned(bucket: str, key: str, access_key: Optional[str], secret_
 
 
 def list_objects(bucket: str, prefix: str, access_key: Optional[str] = None, secret_key: Optional[str] = None, endpoint: Optional[str] = None, region: Optional[str] = None):
-    """List objects in bucket with given prefix using B2 API"""
-    import requests
-    # Fallback to environment variables if explicit creds/endpoints not provided
+    """List objects in bucket with given prefix.
+
+    Prefer S3-compatible listing with boto3 (honors endpoint_url/B2_ENDPOINT) when boto3 is
+    available and an endpoint is provided; otherwise fall back to Backblaze native API.
+    """
+    # Resolve inputs from environment if not provided
     access_key = access_key or os.environ.get('B2_KEY') or os.environ.get('AWS_ACCESS_KEY_ID')
     secret_key = secret_key or os.environ.get('B2_SECRET') or os.environ.get('AWS_SECRET_ACCESS_KEY')
     endpoint = endpoint or os.environ.get('B2_ENDPOINT')
     region = region or os.environ.get('B2_REGION')
 
-    # B2 API endpoints
-    auth_url = "https://api.backblazeb2.com/b2api/v2/b2_authorize_account"
-    list_url = "https://api.backblazeb2.com/b2api/v2/b2_list_file_names"
+    # If boto3 and endpoint are available (top-level import), prefer S3-compatible listing (uses endpoint_url)
+    BOTO3_OK = True
+    if BOTO3_OK and endpoint:
+        # Use boto3 to list objects (handles pagination)
+        cfg = Config(s3={'addressing_style': 'virtual'})
+        client_kwargs = {'config': cfg}
+        if access_key and secret_key:
+            client_kwargs['aws_access_key_id'] = access_key
+            client_kwargs['aws_secret_access_key'] = secret_key
+        if region:
+            client_kwargs['region_name'] = region
 
-    # Get credentials
+        s3 = boto3.client('s3', endpoint_url=endpoint, **client_kwargs)
+
+        objects = []
+        paginator = s3.get_paginator('list_objects_v2')
+        page_iter = paginator.paginate(Bucket=bucket, Prefix=prefix)
+        for page in page_iter:
+            for item in page.get('Contents', []):
+                objects.append({
+                    'key': item.get('Key', ''),
+                    'size': item.get('Size', 0),
+                    'last_modified': str(item.get('LastModified', '')),
+                    'etag': item.get('ETag', '').strip('"')
+                })
+        return objects
+
+    # Fallback: use Backblaze native API (requests) when boto3 S3-compatible listing is not possible
+    import requests
+
+    # Backblaze native endpoints
+    auth_url = "https://api.backblazeb2.com/b2api/v2/b2_authorize_account"
+
     account_id = access_key
     application_key = secret_key
 
@@ -104,12 +135,8 @@ def list_objects(bucket: str, prefix: str, access_key: Optional[str] = None, sec
     auth_token = auth_data['authorizationToken']
     account_id = auth_data['accountId']
 
-    # List files
-    headers = {
-        'Authorization': auth_token
-    }
-
     # First, get bucket ID
+    headers = {'Authorization': auth_token}
     bucket_url = f"{api_url}/b2api/v2/b2_list_buckets"
     bucket_response = requests.post(bucket_url, headers=headers, json={'accountId': account_id})
     bucket_response.raise_for_status()
@@ -124,23 +151,13 @@ def list_objects(bucket: str, prefix: str, access_key: Optional[str] = None, sec
     if not bucket_id:
         raise ValueError(f"Bucket {bucket} not found")
 
-    # List files
-    headers = {
-        'Authorization': auth_token
-    }
-
-    params = {
-        'bucketId': bucket_id,
-        'prefix': prefix
-    }
-
-    # List files
+    params = {'bucketId': bucket_id, 'prefix': prefix}
     list_response = requests.post(f"{api_url}/b2api/v2/b2_list_file_names", headers=headers, json=params)
     list_response.raise_for_status()
     list_data = list_response.json()
 
     objects = []
-    for file_info in list_data['files']:
+    for file_info in list_data.get('files', []):
         objects.append({
             'key': file_info.get('fileName', ''),
             'size': file_info.get('size', 0),
