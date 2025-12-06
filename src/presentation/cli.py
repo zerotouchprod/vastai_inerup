@@ -10,10 +10,10 @@ from domain.exceptions import DomainException, ProcessorNotAvailableError
 from infrastructure.config import ConfigLoader
 from infrastructure.io import HttpDownloader, B2S3Uploader
 from infrastructure.media import FFmpegExtractor, FFmpegAssembler
-from application.orchestrator import VideoProcessingOrchestrator
 from application.factories import ProcessorFactory
 from shared.logging import setup_logger, LoggerAdapter, get_logger
 from shared.metrics import MetricsCollector
+from botocore.exceptions import ClientError
 
 
 def create_orchestrator_from_config(config, allow_fallback: bool = False):
@@ -29,8 +29,19 @@ def create_orchestrator_from_config(config, allow_fallback: bool = False):
             bucket=config.b2_bucket,
             endpoint=config.b2_endpoint or "https://s3.us-west-004.backblazeb2.com",
             access_key=config.b2_key,
-            secret_key=config.b2_secret
+            secret_key=config.b2_secret,
+            region=getattr(config, 'b2_region', None)
         )
+
+        # Preliminary pre-check: ensure bucket is accessible with provided creds
+        try:
+            # Use head_bucket to validate access; will raise ClientError on failure
+            uploader._client.head_bucket(Bucket=uploader.bucket)
+            get_logger(__name__).info(f"B2 pre-check: bucket '{uploader.bucket}' accessible")
+        except ClientError as e:
+            raise DomainException(f"B2 pre-check failed: cannot access bucket '{uploader.bucket}' with provided credentials/endpoint: {e}")
+        except Exception as e:
+            raise DomainException(f"B2 pre-check failed: unexpected error when accessing bucket '{uploader.bucket}': {e}")
     else:
         # Dummy uploader
         from domain.models import UploadResult
@@ -108,6 +119,11 @@ def main():
     parser.add_argument('--config', type=Path, help='Config YAML file')
     parser.add_argument('--input', '-i', help='Input video URL')
     parser.add_argument('--output', '-o', type=Path, help='Output directory (default: ./output)')
+    parser.add_argument('--bucket', '-b', help='B2 bucket name (overrides B2_BUCKET in config/env)')
+    parser.add_argument('--b2-endpoint', help='B2 S3-compatible endpoint URL (overrides B2_ENDPOINT)')
+    parser.add_argument('--b2-key', help='B2 access key (overrides B2_KEY)')
+    parser.add_argument('--b2-secret', help='B2 secret key (overrides B2_SECRET)')
+    parser.add_argument('--b2-region', help='B2 region name (overrides B2_REGION)')
     parser.add_argument('--mode', choices=['upscale', 'interp', 'both'], help='Processing mode')
     parser.add_argument('--scale', type=float, help='Upscale factor')
     parser.add_argument('--target-fps', type=int, help='Target FPS')
@@ -136,6 +152,20 @@ def main():
         if getattr(args, 'job', None):
             overrides['job_id'] = args.job
         config = config_loader.load(overrides=overrides)
+
+        # CLI-level overrides: allow explicit bucket to override env/config
+        if getattr(args, 'bucket', None):
+            config.b2_bucket = args.bucket
+
+        # Allow passing B2 credentials/endpoint from CLI so user doesn't need to set env
+        if getattr(args, 'b2_key', None):
+            config.b2_key = args.b2_key
+        if getattr(args, 'b2_secret', None):
+            config.b2_secret = args.b2_secret
+        if getattr(args, 'b2_endpoint', None):
+            config.b2_endpoint = args.b2_endpoint
+        if getattr(args, 'b2_region', None):
+            config.b2_region = args.b2_region
 
         # Interpret --output as B2 target when provided:
         if args.output:
@@ -202,6 +232,9 @@ def main():
             'b2_output_prefix': getattr(config, 'b2_output_prefix', None),
             'b2_bucket': getattr(config, 'b2_bucket', None),
             'b2_endpoint': getattr(config, 'b2_endpoint', None),
+            'b2_key': getattr(config, 'b2_key', None),
+            'b2_secret': getattr(config, 'b2_secret', None),
+            'b2_region': getattr(config, 'b2_region', None),
         }
 
         job = ProcessingJob(
