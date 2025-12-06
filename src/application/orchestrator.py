@@ -128,6 +128,8 @@ class VideoProcessingOrchestrator:
             # 6. Upload
             self._metrics.start_timer('upload')
             upload_key = self._generate_upload_key(job)
+            # Log the resolved upload key so CLI/remote logs show where the file will be uploaded
+            self._logger.info(f"Resolved upload key for B2: {upload_key}")
             upload_result = self._uploader.upload(output_video, upload_key)
             self._metrics.stop_timer('upload')
 
@@ -319,6 +321,20 @@ class VideoProcessingOrchestrator:
             if not b2_key_cfg.lower().endswith('.mp4'):
                 b2_key_cfg = f"{b2_key_cfg}.mp4"
             return b2_key_cfg
+
+        # 1.5) support b2_output_prefix (directory/prefix on bucket)
+        b2_prefix = None
+        try:
+            b2_prefix = job.config.get('b2_output_prefix') if isinstance(job.config, dict) else None
+        except Exception:
+            b2_prefix = None
+        if b2_prefix:
+            # build filename from job id or base name
+            filename = (getattr(job, 'job_id', None) or base_name)
+            if not str(filename).lower().endswith('.mp4'):
+                filename = f"{filename}.mp4"
+            # join prefix and filename
+            return f"{b2_prefix.rstrip('/')}/{filename}"
 
         # 2) next prefer job.job_id as filename (plain name or with .mp4)
         job_id_name = getattr(job, 'job_id', None)

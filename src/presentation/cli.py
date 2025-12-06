@@ -137,8 +137,19 @@ def main():
             overrides['job_id'] = args.job
         config = config_loader.load(overrides=overrides)
 
+        # Interpret --output as B2 target when provided:
         if args.output:
-            config.output_dir = args.output
+            out_str = str(args.output)
+            # If user passed explicit filename -> treat as exact B2 key
+            if out_str.lower().endswith('.mp4'):
+                config.b2_output_key = out_str
+            else:
+                # Treat value as a directory/prefix on B2 bucket (no trailing slash)
+                # Normalize path separators to forward slashes for S3 keys
+                config.b2_output_prefix = out_str.replace('\\', '/').rstrip('/')
+                # Keep local output_dir setting too for local runs
+                config.output_dir = args.output
+
         if args.mode:
             config.mode = args.mode
         if args.scale:
@@ -188,6 +199,7 @@ def main():
         job_id_val = config.job_id or f"job_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         job_cfg = {
             'b2_output_key': getattr(config, 'b2_output_key', None),
+            'b2_output_prefix': getattr(config, 'b2_output_prefix', None),
             'b2_bucket': getattr(config, 'b2_bucket', None),
             'b2_endpoint': getattr(config, 'b2_endpoint', None),
         }
