@@ -14,6 +14,7 @@ from application.factories import ProcessorFactory
 from shared.logging import setup_logger, LoggerAdapter, get_logger
 from shared.metrics import MetricsCollector
 from botocore.exceptions import ClientError
+from application.orchestrator import VideoProcessingOrchestrator
 
 
 def create_orchestrator_from_config(config, allow_fallback: bool = False):
