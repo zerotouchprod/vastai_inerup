@@ -230,9 +230,11 @@ if [ "$USE_CONFIG" = false ]; then
   echo "[remote_runner] PREFER=${PREFER:-auto}"
 fi
 
-echo "[remote_runner] Checking for PyTorch wrapper scripts and ncnn binaries:"
-if [ -x "/workspace/project/run_realesrgan_pytorch.sh" ]; then echo "  run_realesrgan_pytorch.sh: exists+executable"; else echo "  run_realesrgan_pytorch.sh: missing or not executable"; fi
-if [ -x "/workspace/project/run_rife_pytorch.sh" ]; then echo "  run_rife_pytorch.sh: exists+executable"; else echo "  run_rife_pytorch.sh: missing or not executable"; fi
+echo "[remote_runner] Using pipeline_v2.py with native Python processors"
+echo "  → Legacy bash wrappers removed (Dec 2025)"
+echo "  → 100% Python implementation"
+echo ""
+echo "[remote_runner] Checking for optional ncnn binaries:"
 for b in realesrgan-ncnn-vulkan rife-ncnn-vulkan realesrgan-ncnn rife-ncnn realesrgan rife; do
   which $b >/dev/null 2>&1 && echo "  ncnn binary found in PATH: $b" || true
 done
@@ -323,13 +325,7 @@ else
   ls -la /workspace/project/external/RIFE/ 2>/dev/null || echo "Directory not found"
 fi
 
-# Ensure wrapper scripts are executable
-if [ -f "/workspace/project/run_realesrgan_pytorch.sh" ]; then
-  chmod +x /workspace/project/run_realesrgan_pytorch.sh || true
-fi
-if [ -f "/workspace/project/run_rife_pytorch.sh" ]; then
-  chmod +x /workspace/project/run_rife_pytorch.sh || true
-fi
+# Ensure helper scripts are executable
 if [ -f "/workspace/project/scripts/force_upload_and_fail.sh" ]; then
   chmod +x /workspace/project/scripts/force_upload_and_fail.sh || true
 fi

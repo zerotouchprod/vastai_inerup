@@ -580,26 +580,25 @@ def run_pipeline(input_path: str, output_dir: str, config: dict) -> str:
     print("", flush=True)
 
     # Build command
-    # Use pipeline_v2.py (new architecture with native Python support)
+    # Use pipeline_v2.py (ONLY entry point - legacy removed Dec 2025)
     pipeline_script = '/workspace/project/pipeline_v2.py'
     if not os.path.exists(pipeline_script):
-        # Fallback to old pipeline.py if v2 not present
-        pipeline_script = '/workspace/project/pipeline.py'
-        print(f"⚠️  Warning: pipeline_v2.py not found, using legacy pipeline.py")
-
-    # Optional strict enforcement: if env REQUIRE_PIPELINE_V2=1, fail if v2 isn't present
-    if os.environ.get('REQUIRE_PIPELINE_V2','0') == '1':
-        if not os.path.exists('/workspace/project/pipeline_v2.py'):
-            print(f"ERROR: REQUIRE_PIPELINE_V2=1 but /workspace/project/pipeline_v2.py not found in repo checkout. Aborting.")
-            print("Please ensure pipeline_v2.py is present on the checked-out branch and push changes.")
-            # list files for debugging
-            try:
-                print("Listing repo root files:")
-                for l in os.listdir('/workspace/project'):
-                    print(" - "+l)
-            except Exception:
-                pass
-            sys.exit(2)
+        print(f"❌ ERROR: pipeline_v2.py not found!")
+        print(f"")
+        print(f"Legacy pipeline.py has been permanently removed (Dec 2025).")
+        print(f"Please ensure your Git repo is up to date:")
+        print(f"  git pull origin main")
+        print(f"")
+        print(f"Expected location: /workspace/project/pipeline_v2.py")
+        print(f"")
+        # list files for debugging
+        try:
+            print("Listing repo root files:")
+            for l in sorted(os.listdir('/workspace/project')):
+                print(f"  - {l}")
+        except Exception:
+            pass
+        sys.exit(1)
 
     cmd = [
         'python3', pipeline_script,
