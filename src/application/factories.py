@@ -78,7 +78,7 @@ class ProcessorFactory:
 
         # Shell wrapper (default)
         if prefer in ('auto', 'pytorch'):
-            if RifePytorchWrapper.is_available():
+            if RifePytorchWrapper and getattr(RifePytorchWrapper, 'is_available', lambda: False)():
                 self._logger.info("Using RIFE pytorch backend (shell wrapper)")
                 return RifePytorchWrapper()
             raise ProcessorNotAvailableError("No RIFE backend available")
@@ -114,7 +114,7 @@ class ProcessorFactory:
 
         # Shell wrapper (default)
         if prefer in ('auto', 'pytorch'):
-            if RealESRGANPytorchWrapper.is_available():
+            if RealESRGANPytorchWrapper and getattr(RealESRGANPytorchWrapper, 'is_available', lambda: False)():
                 self._logger.info("Using Real-ESRGAN pytorch backend (shell wrapper)")
                 return RealESRGANPytorchWrapper()
             raise ProcessorNotAvailableError("No Real-ESRGAN backend available")
