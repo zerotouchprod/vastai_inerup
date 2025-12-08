@@ -2,7 +2,23 @@
 
 **Production-ready система с Clean Architecture, Full Debugging и Native Python!**
 
-*Последнее обновление: 1 декабря 2025*
+*Последнее обновление: 8 декабря 2025*
+
+---
+
+## ⚠️ ВАЖНО: Legacy Code Removed (Dec 2025)
+
+**`pipeline.py` и bash скрипты удалены!** Используйте `pipeline_v2.py`.
+
+```bash
+# ❌ Старый способ (больше НЕ работает):
+python pipeline.py --input video.mp4 --output output/
+
+# ✅ Новый способ (используйте это):
+python pipeline_v2.py --input video.mp4 --output output/
+```
+
+📖 **Полная информация**: см. [`DEPRECATED.md`](DEPRECATED.md)
 
 ---
 
@@ -414,4 +430,3 @@ MIT License - см. LICENSE файл
 
 *README: 1 декабря 2025*  
 *Complete Edition with Native Python Support*
-
