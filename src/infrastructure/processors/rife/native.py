@@ -296,6 +296,26 @@ class RIFENative:
             self._model.eval()
             self._model.device()
 
+            # Ensure self.device matches model parameters' device
+            try:
+                # Inspect first parameter to determine model device
+                for p in self._model.parameters():
+                    model_dev = p.device
+                    break
+                else:
+                    model_dev = None
+
+                if model_dev is not None:
+                    # Set self.device to torch.device object
+                    try:
+                        self.device = model_dev
+                    except Exception:
+                        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+                    self.logger.info(f"Model parameters are on device: {self.device}")
+            except Exception:
+                # Non-critical: if inspection fails, keep existing self.device
+                pass
+
             self.logger.info("✓ RIFE model loaded successfully")
 
         except Exception as e:
@@ -630,4 +650,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
