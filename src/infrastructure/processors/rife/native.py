@@ -304,26 +304,58 @@ class RIFENative:
             self._model.eval()
             self._model.device()
 
-            # Ensure we track the model device and normalize it to torch.device
+            # --- Ensure model parameters/buffers are on the selected device ---
             try:
-                for p in self._model.parameters():
-                    model_dev = p.device
-                    break
-                else:
-                    model_dev = None
-
-                if model_dev is not None:
+                target_dev = getattr(self, 'model_device', None) or self.device
+                target_dev = torch.device(str(target_dev)) if torch and not isinstance(target_dev, torch.device) else target_dev
+                # If the model has a .to() method, use it
+                if hasattr(self._model, 'to'):
                     try:
-                        self.model_device = torch.device(str(model_dev))
-                    except Exception:
-                        self.model_device = self.device
-                    self.logger.info(f"Model parameters are on device: {self.model_device}")
+                        self._model = self._model.to(target_dev)
+                        self.logger.info(f"Moved model to device: {target_dev}")
+                    except Exception as e:
+                        # Some RIFE model wrappers provide custom device movers; fall back to manual param move
+                        self.logger.debug(f"model.to() failed: {e}; falling back to manual parameter/buffer move")
+                        for p in getattr(self._model, 'parameters', lambda: [])():
+                            try:
+                                p.data = p.data.to(target_dev)
+                            except Exception:
+                                pass
+                        for b in getattr(self._model, 'buffers', lambda: [])():
+                            try:
+                                b.data = b.data.to(target_dev)
+                            except Exception:
+                                pass
                 else:
-                    self.model_device = self.device
-            except Exception:
-                self.model_device = self.device
+                    # Manual parameter/buffer move
+                    for p in getattr(self._model, 'parameters', lambda: [])():
+                        try:
+                            p.data = p.data.to(target_dev)
+                        except Exception:
+                            pass
+                    for b in getattr(self._model, 'buffers', lambda: [])():
+                        try:
+                            b.data = b.data.to(target_dev)
+                        except Exception:
+                            pass
 
-            self.logger.info("✓ RIFE model loaded successfully")
+                # Normalize model_device to torch.device
+                try:
+                    for p in self._model.parameters():
+                        model_dev = p.device
+                        break
+                    else:
+                        model_dev = target_dev
+                    self.model_device = torch.device(str(model_dev))
+                    self.logger.info(f"Model parameters are on device: {self.model_device}")
+                except Exception:
+                    # keep previous model_device
+                    self.model_device = target_dev
+
+            except Exception as e:
+                self.logger.warning(f"Failed to explicitly move model to device: {e}")
+
+            self.logger.info("\u2713 RIFE model loaded successfully")
 
         except Exception as e:
             raise ImportError(
@@ -415,6 +447,19 @@ class RIFENative:
             for i in range(mids_count):
                 # Calculate timestep
                 timestep = (i + 1) / (mids_count + 1)
+
+                # Log debug info about device placement before inference
+                try:
+                    model_param_devices = set()
+                    for p in self._model.parameters():
+                        model_param_devices.add(str(p.device))
+                except Exception:
+                    model_param_devices = {str(getattr(self, 'model_device', 'unknown'))}
+
+                self.logger.debug(
+                    "Calling RIFE inference: timestep=%s frame1.device=%s frame2.device=%s model_param_devices=%s",
+                    timestep, getattr(frame1_padded, 'device', 'unknown'), getattr(frame2_padded, 'device', 'unknown'), model_param_devices
+                )
 
                 # Interpolate
                 try:
