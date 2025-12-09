@@ -11,11 +11,10 @@ Usage:
     output_frames = processor.process_frames(input_frames, output_dir)
 """
 
-import os
 import sys
 import time
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Optional
 import logging
 
 # Try to import torch
@@ -23,6 +22,8 @@ try:
     import torch
     TORCH_AVAILABLE = True
 except ImportError:
+    # Ensure name exists even if torch not installed (helps static checks)
+    torch = None  # type: ignore
     TORCH_AVAILABLE = False
 
 
@@ -156,11 +157,11 @@ class RIFENative:
     def _check_cuda_compatibility(self) -> str:
         """
         Check if CUDA device is compatible with current PyTorch.
-        Returns: 'cuda' if compatible, 'cpu' if fallback needed
+        Returns: torch.device('cuda') or torch.device('cpu')
         """
         if not torch.cuda.is_available():
             self.logger.warning("CUDA not available, using CPU")
-            return 'cpu'
+            return torch.device('cpu')
 
         try:
             # Get GPU compute capability
@@ -168,17 +169,17 @@ class RIFENative:
             compute_capability = f"sm_{device_props.major}{device_props.minor}"
 
             # Try a simple CUDA operation to test compatibility
-            test_tensor = torch.randn(10, 10).cuda()
+            test_tensor = torch.randn(10, 10).to('cuda')
             _ = test_tensor * 2
 
             self.logger.info(f"CUDA is available and compatible: {device_props.name} ({compute_capability})")
-            return 'cuda'
+            return torch.device('cuda')
 
         except RuntimeError as e:
             if "no kernel image is available" in str(e) or "not compatible" in str(e):
                 self.logger.warning(f"CUDA device not compatible with PyTorch: {e}")
                 self.logger.warning("Falling back to CPU processing (will be slower)")
-                return 'cpu'
+                return torch.device('cpu')
             raise
 
     def _load_model(self):
@@ -191,7 +192,14 @@ class RIFENative:
 
         # Check CUDA compatibility and fall back to CPU if needed
         self.device = self._check_cuda_compatibility()
-        if self.device == 'cpu':
+        # Normalize to torch.device
+        if not isinstance(self.device, torch.device):
+            try:
+                self.device = torch.device(str(self.device))
+            except Exception:
+                self.device = torch.device('cpu')
+
+        if self.device.type == 'cpu':
             self.logger.warning("⚠️ Using CPU for RIFE - processing will be much slower!")
 
         self.logger.info(f"Loading RIFE model (weights from: {self.model_path})")
@@ -296,9 +304,8 @@ class RIFENative:
             self._model.eval()
             self._model.device()
 
-            # Ensure self.device matches model parameters' device
+            # Ensure we track the model device and normalize it to torch.device
             try:
-                # Inspect first parameter to determine model device
                 for p in self._model.parameters():
                     model_dev = p.device
                     break
@@ -306,15 +313,15 @@ class RIFENative:
                     model_dev = None
 
                 if model_dev is not None:
-                    # Set self.device to torch.device object
                     try:
-                        self.device = model_dev
+                        self.model_device = torch.device(str(model_dev))
                     except Exception:
-                        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-                    self.logger.info(f"Model parameters are on device: {self.device}")
+                        self.model_device = self.device
+                    self.logger.info(f"Model parameters are on device: {self.model_device}")
+                else:
+                    self.model_device = self.device
             except Exception:
-                # Non-critical: if inspection fails, keep existing self.device
-                pass
+                self.model_device = self.device
 
             self.logger.info("✓ RIFE model loaded successfully")
 
@@ -372,11 +379,37 @@ class RIFENative:
         # Store original dimensions
         _, _, orig_h, orig_w = frame1.shape
 
+        # Determine target device for inference (prefer model_device if set)
+        model_dev = getattr(self, 'model_device', None) or self.device
+        try:
+            model_dev = torch.device(str(model_dev))
+        except Exception:
+            model_dev = torch.device('cpu')
+
+        # --- FIX: ensure inputs are on the same device as the model parameters ---
+        # Move input tensors to model device before any ops (use non_blocking when possible)
+        try:
+            if frame1.device != model_dev:
+                try:
+                    frame1 = frame1.to(model_dev, non_blocking=True)
+                except Exception:
+                    frame1 = frame1.to(model_dev)
+            if frame2.device != model_dev:
+                try:
+                    frame2 = frame2.to(model_dev, non_blocking=True)
+                except Exception:
+                    frame2 = frame2.to(model_dev)
+        except Exception as e:
+            # If moving tensors fails, log devices and re-raise with context
+            self.logger.error(f"Failed to move input tensors to device {model_dev}: {e}")
+            self.logger.error(f"frame1.device={getattr(frame1, 'device', 'unknown')}, frame2.device={getattr(frame2, 'device', 'unknown')}")
+            raise
+
         # Pad to multiples of 64 (RIFE model requirement)
         frame1_padded, _, _ = self._pad_to_multiple(frame1, 64)
         frame2_padded, _, _ = self._pad_to_multiple(frame2, 64)
 
-        mids = []
+        mids: List[torch.Tensor] = []
 
         with torch.no_grad():
             for i in range(mids_count):
@@ -384,7 +417,23 @@ class RIFENative:
                 timestep = (i + 1) / (mids_count + 1)
 
                 # Interpolate
-                mid = self._model.inference(frame1_padded, frame2_padded, timestep)
+                try:
+                    mid = self._model.inference(frame1_padded, frame2_padded, timestep)
+                except RuntimeError as e:
+                    # Collect model parameter devices for debugging
+                    model_param_devices = set()
+                    try:
+                        for p in self._model.parameters():
+                            model_param_devices.add(str(p.device))
+                    except Exception:
+                        model_param_devices.add('unknown')
+
+                    # Log detailed device mismatch info
+                    self.logger.error(
+                        "RuntimeError during RIFE inference: %s | frame1.device=%s frame2.device=%s model_param_devices=%s",
+                        e, getattr(frame1, 'device', 'unknown'), getattr(frame2, 'device', 'unknown'), model_param_devices
+                    )
+                    raise
 
                 # Crop back to original dimensions
                 mid = mid[:, :, :orig_h, :orig_w]
@@ -411,8 +460,13 @@ class RIFENative:
         # Convert to tensor [1, 3, H, W]
         img = torch.from_numpy(img).permute(2, 0, 1).unsqueeze(0).float() / 255.0
 
-        # Move to device
-        img = img.to(self.device)
+        # Move to device (prefer model_device if available)
+        target_dev = getattr(self, 'model_device', None) or self.device
+        try:
+            target_dev = torch.device(str(target_dev))
+        except Exception:
+            target_dev = torch.device('cpu')
+        img = img.to(target_dev)
 
         return img
 
@@ -562,7 +616,11 @@ class RIFENative:
         Returns:
             Output video path
         """
-        from infrastructure.media import FFmpegExtractor, FFmpegAssembler
+        # import media helpers dynamically to avoid static import resolution issues
+        import importlib
+        media_mod = importlib.import_module('infrastructure.media')
+        FFmpegExtractor = getattr(media_mod, 'FFmpegExtractor')
+        FFmpegAssembler = getattr(media_mod, 'FFmpegAssembler')
 
         # Create temporary directories
         import tempfile
