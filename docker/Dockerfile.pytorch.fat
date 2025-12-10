@@ -39,7 +39,8 @@ RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 # with the appropriate nightly wheel index (e.g. cu126) when available.
 # torchaudio removed
 RUN pip uninstall -y torch torchvision || true && \
-    pip install --no-cache-dir --pre torch torchvision --index-url https://download.pytorch.org/whl/nightly/cu124 && \
+    pip install --no-cache-dir --pre torch --index-url https://download.pytorch.org/whl/nightly/cu124 && \
+    pip install --no-cache-dir --pre torchvision --no-deps --index-url https://download.pytorch.org/whl/nightly/cu124 && \
     rm -rf /root/.cache/pip
 
 # Lightweight Python utilities used by scripts
