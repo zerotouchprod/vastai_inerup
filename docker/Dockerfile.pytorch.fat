@@ -5,7 +5,7 @@
 # Build locally:
 #   docker build -f Dockerfile.pytorch.fat -t vastai-interup:pytorch-fat .
 
-FROM nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04 AS base
+FROM nvidia/cuda:12.4.0-cudnn8-runtime-ubuntu22.04 AS base
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -34,20 +34,20 @@ ENV PATH="/opt/venv/bin:$PATH"
 # Upgrade pip and install minimal Python packages
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 
-# Install CUDA-enabled PyTorch wheel. Host reports Max CUDA ~12.x — install matching torch+cu121 wheels.
-RUN pip install --no-cache-dir \
-    torch==2.2.2+cu121 \
-    torchvision==0.17.2+cu121 \
-    --index-url https://download.pytorch.org/whl/cu121 && \
+# Install CUDA-enabled PyTorch wheel (Nightly) to support newest compute capabilities (e.g. sm_120)
+# NOTE: We use the PyTorch Nightly index for cu124 (CUDA 12.4). If you prefer cu126 replace the index URL
+# with the appropriate nightly wheel index (e.g. cu126) when available.
+RUN pip uninstall -y torch torchvision torchaudio || true && \
+    pip install --no-cache-dir --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/cu124 && \
     rm -rf /root/.cache/pip
 
 # Lightweight Python utilities used by scripts
-# Pin numpy<2 FIRST to avoid compatibility issues with PyTorch 2.2.2
+# Pin numpy<2 FIRST to avoid compatibility issues with some older packages
 RUN pip install --no-cache-dir "numpy<2" && \
     rm -rf /root/.cache/pip
 
 # Install Real-ESRGAN and RIFE dependencies (HEAVY - install early for better caching)
-# Install basicsr with patch for torchvision 0.17+ compatibility
+# Install basicsr with patch for torchvision compatibility
 RUN pip install --no-cache-dir basicsr && \
     sed -i 's/from torchvision.transforms.functional_tensor import rgb_to_grayscale/from torchvision.transforms.functional import rgb_to_grayscale/' \
         /opt/venv/lib/python3.10/site-packages/basicsr/data/degradations.py && \
