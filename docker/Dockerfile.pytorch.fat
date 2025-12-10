@@ -53,9 +53,12 @@ RUN pip install --no-cache-dir "numpy<2" && \
 
 # Install Real-ESRGAN and RIFE dependencies (HEAVY - install early for better caching)
 # Install basicsr with patch for torchvision compatibility
-RUN pip install --no-cache-dir basicsr && \
-    sed -i 's/from torchvision.transforms.functional_tensor import rgb_to_grayscale/from torchvision.transforms.functional import rgb_to_grayscale/' \
-        /opt/venv/lib/python3.10/site-packages/basicsr/data/degradations.py && \
+RUN pip install --no-cache-dir addict lmdb scipy Pillow pyyaml requests tb-nightly tqdm yapf && \
+    pip install --no-cache-dir basicsr --no-deps && \
+    # Patch basicsr only if the file exists (don't fail the build if not present)
+    if [ -f /opt/venv/lib/python3.10/site-packages/basicsr/data/degradations.py ]; then \
+        sed -i 's/from torchvision.transforms.functional_tensor import rgb_to_grayscale/from torchvision.transforms.functional import rgb_to_grayscale/' /opt/venv/lib/python3.10/site-packages/basicsr/data/degradations.py; \
+    fi && \
     rm -rf /root/.cache/pip /tmp/*
 
 RUN pip install --no-cache-dir facexlib gfpgan && rm -rf /root/.cache/pip /tmp/*
