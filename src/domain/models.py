@@ -61,30 +61,6 @@ class UploadResult:
 
 
 @dataclass
-class ProcessingJob:
-    """Represents a video processing job."""
-
-    job_id: str
-    input_url: str
-    mode: str  # 'upscale', 'interp', 'both'
-    scale: float = 2.0
-    target_fps: Optional[int] = None
-    interp_factor: float = 2.0
-    prefer: str = 'auto'
-    strategy: str = 'interp-then-upscale'
-    created_at: datetime = field(default_factory=datetime.now)
-    config: Dict[str, Any] = field(default_factory=dict)
-
-    def __post_init__(self):
-        if self.mode not in ('upscale', 'interp', 'both'):
-            raise ValueError(f"Invalid mode: {self.mode}")
-        if self.scale <= 0:
-            raise ValueError("Scale must be positive")
-        if self.strategy not in ('interp-then-upscale', 'upscale-then-interp'):
-            raise ValueError(f"Invalid strategy: {self.strategy}. Must be 'interp-then-upscale' or 'upscale-then-interp'")
-
-
-@dataclass
 class Frame:
     """Represents a single video frame."""
 
@@ -96,3 +72,47 @@ class Frame:
         """Check if frame file exists."""
         return self.path.exists()
 
+
+@dataclass
+class Job:
+    """Represents a media processing job."""
+
+    job_id: str
+    input_url: str
+    type: str = 'video'  # 'video', 'image', 'audio'
+    mode: str = 'upscale'  # depends on type
+    # Video-specific
+    scale: float = 2.0
+    target_fps: Optional[int] = None
+    interp_factor: float = 2.0
+    strategy: str = 'interp-then-upscale'
+    # Audio-specific
+    audio_mode: str = 'remove_reverb'  # 'remove_reverb', 'enhance', 'normalize'
+    # Image-specific
+    image_mode: str = 'upscale'  # 'upscale', 'hdr', 'denoise'
+    # Common
+    prefer: str = 'auto'
+    created_at: datetime = field(default_factory=datetime.now)
+    config: Dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self):
+        # Validate type
+        if self.type not in ('video', 'image', 'audio'):
+            raise ValueError(f"Invalid type: {self.type}. Must be 'video', 'image', or 'audio'")
+        
+        # Validate based on type
+        if self.type == 'video':
+            if self.mode not in ('upscale', 'interp', 'both', 'remove-subtitles'):
+                raise ValueError(f"Invalid video mode: {self.mode}")
+            if self.scale <= 0:
+                raise ValueError("Scale must be positive")
+            if self.mode == 'both' and self.strategy not in ('interp-then-upscale', 'upscale-then-interp'):
+                raise ValueError(f"Invalid strategy: {self.strategy}")
+        elif self.type == 'image':
+            if self.mode not in ('upscale', 'hdr', 'denoise'):
+                raise ValueError(f"Invalid image mode: {self.mode}")
+            if self.scale <= 0:
+                raise ValueError("Scale must be positive")
+        elif self.type == 'audio':
+            if self.mode not in ('remove_reverb', 'enhance', 'normalize'):
+                raise ValueError(f"Invalid audio mode: {self.mode}")

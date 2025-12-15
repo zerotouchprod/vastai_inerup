@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Optional
 from datetime import datetime
 
-from domain.models import ProcessingJob, ProcessingResult
+from domain.models import Job, ProcessingResult
 from domain.protocols import (
     IDownloader, IExtractor, IProcessor, IAssembler,
     IUploader, ILogger, IMetricsCollector
@@ -40,9 +40,9 @@ class VideoProcessingOrchestrator:
         self._logger = logger
         self._metrics = metrics
 
-    def process(self, job: ProcessingJob) -> ProcessingResult:
+    def process(self, job: Job) -> ProcessingResult:
         """Execute video processing job."""
-        self._logger.info(f"Starting job {job.job_id}: mode={job.mode}")
+        self._logger.info(f"Starting job {job.job_id}: type={job.type}, mode={job.mode}")
         self._metrics.start_timer('total_job')
 
         workspace = None

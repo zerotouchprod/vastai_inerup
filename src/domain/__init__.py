@@ -1,6 +1,6 @@
 """Domain layer package."""
 
-from .models import Video, ProcessingResult, UploadResult, ProcessingJob, Frame
+from .models import Video, ProcessingResult, UploadResult, Job, Frame
 from .exceptions import (
     DomainException,
     VideoProcessingError,
@@ -27,7 +27,7 @@ __all__ = [
     "Video",
     "ProcessingResult",
     "UploadResult",
-    "ProcessingJob",
+    "Job",
     "Frame",
     # Exceptions
     "DomainException",
@@ -48,4 +48,3 @@ __all__ = [
     "ILogger",
     "IMetricsCollector",
 ]
-

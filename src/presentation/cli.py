@@ -5,7 +5,7 @@ import argparse
 from pathlib import Path
 from datetime import datetime
 
-from domain.models import ProcessingJob
+from domain.models import Job
 from domain.exceptions import DomainException, ProcessorNotAvailableError
 from infrastructure.config import ConfigLoader
 from infrastructure.io import HttpDownloader, B2S3Uploader
@@ -15,14 +15,13 @@ from shared.logging import setup_logger, LoggerAdapter, get_logger
 from shared.metrics import MetricsCollector
 from botocore.exceptions import ClientError
 from application.orchestrator import VideoProcessingOrchestrator
+from application.image_orchestrator import ImageProcessingOrchestrator
 
 
 def create_orchestrator_from_config(config, allow_fallback: bool = False):
     """Create orchestrator with all dependencies from config."""
     downloader = HttpDownloader()
-    extractor = FFmpegExtractor()
-    assembler = FFmpegAssembler()
-
+    
     # Create uploader if configured
     uploader = None
     if config.b2_bucket and config.b2_key and config.b2_secret:
@@ -57,15 +56,33 @@ def create_orchestrator_from_config(config, allow_fallback: bool = False):
     interpolator = None
 
     try:
-        if config.mode in ('upscale', 'both'):
+        if config.mode in ('upscale', 'both', 'image'):
             upscaler = factory.create_upscaler(prefer=config.prefer)
     except Exception as e:
         if config.strict:
             raise
         get_logger(__name__).warning(f"Upscaler not available: {e}")
 
-    try:
-        if config.mode in ('interp', 'both'):
+    # Determine orchestrator based on type
+    if config.type == 'image':
+        logger = LoggerAdapter(get_logger('image_orchestrator'))
+        metrics = MetricsCollector()
+        
+        return ImageProcessingOrchestrator(
+            downloader=downloader,
+            upscaler=upscaler,
+            uploader=uploader,
+            logger=logger,
+            metrics=metrics
+        )
+    
+    # For video and audio types, create video components (audio processing uses video pipeline for now)
+    extractor = FFmpegExtractor()
+    assembler = FFmpegAssembler()
+
+    # Only create interpolator for video type with interp/both modes
+    if config.type == 'video' and config.mode in ('interp', 'both'):
+        try:
             # Mandatory RIFE availability probe: check both native and pytorch wrappers.
             native_ok = False
             try:
@@ -88,16 +105,15 @@ def create_orchestrator_from_config(config, allow_fallback: bool = False):
                     raise ProcessorNotAvailableError(msg)
                 get_logger(__name__).warning(msg + " — continuing because allow_fallback=True")
 
-        if config.mode in ('interp', 'both'):
             interpolator = factory.create_interpolator(prefer=config.prefer)
-    except Exception as e:
-        # If interpolation mode requested but no RIFE backend is available,
-        # by default we should fail early (no silent fallback to ffmpeg).
-        # allow_fallback toggles whether to continue when RIFE isn't available.
-        if config.strict or not allow_fallback:
-            # Propagate exception to CLI which will terminate the run.
-            raise
-        get_logger(__name__).warning(f"Interpolator not available: {e}")
+        except Exception as e:
+            # If interpolation mode requested but no RIFE backend is available,
+            # by default we should fail early (no silent fallback to ffmpeg).
+            # allow_fallback toggles whether to continue when RIFE isn't available.
+            if config.strict or not allow_fallback:
+                # Propagate exception to CLI which will terminate the run.
+                raise
+            get_logger(__name__).warning(f"Interpolator not available: {e}")
 
     logger = LoggerAdapter(get_logger('orchestrator'))
     metrics = MetricsCollector()
@@ -125,11 +141,14 @@ def main():
     parser.add_argument('--b2-key', help='B2 access key (overrides B2_KEY)')
     parser.add_argument('--b2-secret', help='B2 secret key (overrides B2_SECRET)')
     parser.add_argument('--b2-region', help='B2 region name (overrides B2_REGION)')
-    parser.add_argument('--mode', choices=['upscale', 'interp', 'both'], help='Processing mode')
+    parser.add_argument('--type', choices=['video', 'image', 'audio'], default='video', help='Media type (default: video)')
+    parser.add_argument('--mode', help='Processing mode (depends on type)')
     parser.add_argument('--scale', type=float, help='Upscale factor')
     parser.add_argument('--target-fps', type=int, help='Target FPS')
     parser.add_argument('--prefer', choices=['auto', 'pytorch'], help='Backend')
     parser.add_argument('--strategy', choices=['interp-then-upscale', 'upscale-then-interp'], help='Processing order for "both" mode (default: interp-then-upscale)')
+    parser.add_argument('--image-mode', choices=['upscale', 'hdr', 'denoise'], help='Image processing mode (default: upscale)')
+    parser.add_argument('--audio-mode', choices=['remove_reverb', 'enhance', 'normalize'], help='Audio processing mode (default: remove_reverb)')
     parser.add_argument('--strict', action='store_true', help='Strict mode')
     parser.add_argument('--allow-fallback', action='store_true', help='Allow ffmpeg fallback when RIFE is not available (default: disabled)')
     parser.add_argument('--verbose', '-v', action='store_true', help='Verbose')
@@ -181,6 +200,8 @@ def main():
                 # Keep local output_dir setting too for local runs
                 config.output_dir = args.output
 
+        if args.type:
+            config.type = args.type
         if args.mode:
             config.mode = args.mode
         if args.scale:
@@ -193,6 +214,10 @@ def main():
             config.strategy = args.strategy
         if args.strict:
             config.strict = True
+        if args.image_mode:
+            config.image_mode = args.image_mode
+        if args.audio_mode:
+            config.audio_mode = args.audio_mode
 
         # Get git commit info
         git_commit_hash = "unknown"
@@ -238,15 +263,19 @@ def main():
             'b2_region': getattr(config, 'b2_region', None),
         }
 
-        job = ProcessingJob(
+        # Create unified Job
+        job = Job(
             job_id=job_id_val,
             input_url=config.input_url,
+            type=config.type,
             mode=config.mode,
             scale=config.scale,
             target_fps=config.target_fps,
             interp_factor=config.interp_factor,
-            prefer=config.prefer,
             strategy=config.strategy,
+            audio_mode=getattr(config, 'audio_mode', 'remove_reverb'),
+            image_mode=getattr(config, 'image_mode', 'upscale'),
+            prefer=config.prefer,
             config=job_cfg
         )
 

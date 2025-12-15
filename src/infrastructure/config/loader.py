@@ -21,14 +21,15 @@ class ProcessingConfig:
     output_dir: Path = Path("/workspace/output")
     temp_dir: Path = Path("/tmp")
 
-    # Processing mode
-    mode: str = "both"  # 'upscale', 'interp', 'both'
+    # Media type and processing mode
+    type: str = "video"  # 'video', 'image', 'audio'
+    mode: str = "both"  # depends on type
 
-    # Upscaling
+    # Upscaling (video/image)
     scale: float = 2.0
     target_resolution: Optional[str] = None
 
-    # Interpolation
+    # Interpolation (video)
     interp_factor: float = 2.0
     target_fps: Optional[int] = None
 
@@ -36,8 +37,14 @@ class ProcessingConfig:
     prefer: str = "auto"  # 'auto', 'pytorch', 'ncnn', 'ffmpeg'
     strict: bool = False
 
-    # Strategy for 'both' mode
+    # Strategy for 'both' mode (video)
     strategy: str = "interp-then-upscale"  # or 'upscale-then-interp'
+
+    # Audio processing
+    audio_mode: str = "remove_reverb"  # 'remove_reverb', 'enhance', 'normalize'
+
+    # Image processing
+    image_mode: str = "upscale"  # 'upscale', 'hdr', 'denoise'
 
     # Upload settings
     b2_bucket: Optional[str] = None
@@ -61,17 +68,27 @@ class ProcessingConfig:
 
     def _validate(self):
         """Validate configuration values."""
-        if self.mode not in ("upscale", "interp", "both"):
-            raise ConfigurationError(f"Invalid mode: {self.mode}")
+        if self.type not in ("video", "image", "audio"):
+            raise ConfigurationError(f"Invalid type: {self.type}")
 
-        if self.scale <= 0:
-            raise ConfigurationError(f"Scale must be positive, got: {self.scale}")
-
-        if self.interp_factor <= 0:
-            raise ConfigurationError(f"Interp factor must be positive, got: {self.interp_factor}")
-
-        if self.strategy not in ("interp-then-upscale", "upscale-then-interp"):
-            raise ConfigurationError(f"Invalid strategy: {self.strategy}")
+        # Type-specific validation
+        if self.type == "video":
+            if self.mode not in ("upscale", "interp", "both", "remove-subtitles"):
+                raise ConfigurationError(f"Invalid video mode: {self.mode}")
+            if self.scale <= 0:
+                raise ConfigurationError(f"Scale must be positive, got: {self.scale}")
+            if self.mode != "remove-subtitles" and self.interp_factor <= 0:
+                raise ConfigurationError(f"Interp factor must be positive, got: {self.interp_factor}")
+            if self.mode == "both" and self.strategy not in ("interp-then-upscale", "upscale-then-interp"):
+                raise ConfigurationError(f"Invalid strategy: {self.strategy}")
+        elif self.type == "image":
+            if self.mode not in ("upscale", "hdr", "denoise"):
+                raise ConfigurationError(f"Invalid image mode: {self.mode}")
+            if self.scale <= 0:
+                raise ConfigurationError(f"Scale must be positive, got: {self.scale}")
+        elif self.type == "audio":
+            if self.mode not in ("remove_reverb", "enhance", "normalize"):
+                raise ConfigurationError(f"Invalid audio mode: {self.mode}")
 
         if self.prefer not in ("auto", "pytorch", "ncnn", "ffmpeg"):
             raise ConfigurationError(f"Invalid prefer: {self.prefer}")
@@ -131,10 +148,11 @@ class ConfigLoader:
 
         # Filter to only known ProcessingConfig fields
         valid_fields = {
-            'input_url', 'output_dir', 'temp_dir', 'mode', 'scale', 'target_resolution',
+            'input_url', 'output_dir', 'temp_dir', 'type', 'mode', 'scale', 'target_resolution',
             'interp_factor', 'target_fps', 'prefer', 'strict', 'strategy',
             'b2_bucket', 'b2_endpoint', 'b2_output_key', 'b2_key', 'b2_secret',
-            'batch_args', 'smoke_seconds', 'smoke_timeout', 'keep_tmp', 'job_id'
+            'batch_args', 'smoke_seconds', 'smoke_timeout', 'keep_tmp', 'job_id',
+            'audio_mode', 'image_mode'
         }
 
         filtered_config = {k: v for k, v in config_dict.items() if k in valid_fields}
@@ -158,9 +176,21 @@ class ConfigLoader:
         if temp_dir := os.getenv("TEMP_DIR") or os.getenv("TMP_DIR"):
             env_config["temp_dir"] = Path(temp_dir)
 
+        # Media type
+        if media_type := os.getenv("TYPE") or os.getenv("MEDIA_TYPE"):
+            env_config["type"] = media_type.lower()
+
         # Processing mode
         if mode := os.getenv("MODE"):
             env_config["mode"] = mode.lower()
+
+        # Image mode
+        if image_mode := os.getenv("IMAGE_MODE"):
+            env_config["image_mode"] = image_mode.lower()
+
+        # Audio mode
+        if audio_mode := os.getenv("AUDIO_MODE"):
+            env_config["audio_mode"] = audio_mode.lower()
 
         # Upscaling
         if scale := os.getenv("SCALE"):
