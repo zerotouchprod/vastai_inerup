@@ -88,12 +88,13 @@ class ProcessorFactory:
         else:
             raise ProcessorNotAvailableError(f"Unknown prefer: {prefer}")
 
-    def create_subtitle_remover(self, prefer: str = 'auto') -> Optional[IProcessor]:
+    def create_subtitle_remover(self, prefer: str = 'auto', lang: str = 'en') -> Optional[IProcessor]:
         """
         Create subtitle removal processor.
 
         Args:
             prefer: Backend preference ('auto', 'native')
+            lang: Language code for OCR ('en', 'ru', etc.)
 
         Returns:
             Subtitle remover processor instance
@@ -101,8 +102,8 @@ class ProcessorFactory:
         # Currently only native implementation exists
         if prefer in ('auto', 'native'):
             if SubtitleRemoverWrapper.is_available():
-                self._logger.info("Using subtitle remover native backend")
-                return SubtitleRemoverWrapper()
+                self._logger.info(f"Using subtitle remover native backend (lang={lang})")
+                return SubtitleRemoverWrapper(lang=lang)
             raise ProcessorNotAvailableError("Subtitle remover not available (requires paddleocr, opencv)")
         else:
             raise ProcessorNotAvailableError(f"Unknown prefer: {prefer}")

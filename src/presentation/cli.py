@@ -56,11 +56,31 @@ def create_orchestrator_from_config(config, allow_fallback: bool = False):
     interpolator = None
     subtitle_remover = None
 
+    # Create subtitle remover if needed (as preprocessing step)
+    if config.remove_subtitles:
+        try:
+            subtitle_remover = factory.create_subtitle_remover(
+                prefer=config.prefer,
+                lang=config.subtitle_language
+            )
+            get_logger(__name__).info(f"Subtitle remover created (language: {config.subtitle_language})")
+        except Exception as e:
+            if config.strict:
+                raise
+            get_logger(__name__).warning(f"Subtitle remover not available: {e}")
+            # If subtitle remover fails but we're not strict, continue without it
+            subtitle_remover = None
+
     try:
         if config.mode in ('upscale', 'both', 'image'):
             upscaler = factory.create_upscaler(prefer=config.prefer)
         elif config.mode == 'remove-subtitles':
-            subtitle_remover = factory.create_subtitle_remover(prefer=config.prefer)
+            # If mode is explicitly remove-subtitles, we still need a subtitle remover
+            if not subtitle_remover:
+                subtitle_remover = factory.create_subtitle_remover(
+                    prefer=config.prefer,
+                    lang=config.subtitle_language
+                )
     except Exception as e:
         if config.strict:
             raise
@@ -133,7 +153,8 @@ def create_orchestrator_from_config(config, allow_fallback: bool = False):
         assembler=assembler,
         uploader=uploader,
         logger=logger,
-        metrics=metrics
+        metrics=metrics,
+        subtitle_remover=subtitle_remover
     )
 
 
@@ -156,6 +177,8 @@ def main():
     parser.add_argument('--strategy', choices=['interp-then-upscale', 'upscale-then-interp'], help='Processing order for "both" mode (default: interp-then-upscale)')
     parser.add_argument('--image-mode', choices=['upscale', 'hdr', 'denoise'], help='Image processing mode (default: upscale)')
     parser.add_argument('--audio-mode', choices=['remove_reverb', 'enhance', 'normalize'], help='Audio processing mode (default: remove_reverb)')
+    parser.add_argument('--remove-subs', action='store_true', help='Remove hardcoded subtitles before processing')
+    parser.add_argument('--subs-lang', type=str, default='en', help='Language code for subtitle OCR (default: en)')
     parser.add_argument('--strict', action='store_true', help='Strict mode')
     parser.add_argument('--allow-fallback', action='store_true', help='Allow ffmpeg fallback when RIFE is not available (default: disabled)')
     parser.add_argument('--verbose', '-v', action='store_true', help='Verbose')
@@ -226,6 +249,12 @@ def main():
         if args.audio_mode:
             config.audio_mode = args.audio_mode
 
+        # Subtitle removal
+        if args.remove_subs:
+            config.remove_subtitles = True
+        if args.subs_lang:
+            config.subtitle_language = args.subs_lang
+
         # Get git commit info
         git_commit_hash = "unknown"
         git_commit_message = "unknown"
@@ -280,6 +309,8 @@ def main():
             target_fps=config.target_fps,
             interp_factor=config.interp_factor,
             strategy=config.strategy,
+            remove_subtitles=getattr(config, 'remove_subtitles', False),
+            subtitle_language=getattr(config, 'subtitle_language', 'en'),
             audio_mode=getattr(config, 'audio_mode', 'remove_reverb'),
             image_mode=getattr(config, 'image_mode', 'upscale'),
             prefer=config.prefer,

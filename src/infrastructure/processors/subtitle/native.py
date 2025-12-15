@@ -3,10 +3,15 @@ import cv2
 import numpy as np
 from typing import List, Tuple, Optional
 from pathlib import Path
-from paddleocr import PaddleOCR  # type: ignore
+# Try-except import to allow running even if paddle is missing (optional safety)
+try:
+    from paddleocr import PaddleOCR
+except ImportError:
+    PaddleOCR = None
 
 # Настройка логирования Paddle, чтобы не спамил в консоль
-logging.getLogger("ppocr").setLevel(logging.ERROR)
+if PaddleOCR:
+    logging.getLogger("ppocr").setLevel(logging.ERROR)
 
 logger = logging.getLogger(__name__)
 
@@ -24,10 +29,14 @@ class SubtitleRemoverNative:
         :param mask_dilation: На сколько пикселей расширять маску вокруг текста.
                               Больше = лучше убирает края, но мылит фон.
         """
-        logger.info(f"Initializing PaddleOCR (lang={lang}, use_gpu=False)...")
-        # Инициализируем PaddleOCR один раз. use_gpu=False критично для нашего Docker образа.
-        self.ocr = PaddleOCR(use_angle_cls=False, lang=lang, use_gpu=False, show_log=False)
+        if PaddleOCR is None:
+            raise ImportError("PaddleOCR not installed. Cannot remove subtitles.")
+            
+        self.lang = lang
         self.mask_dilation = mask_dilation
+        logger.info(f"Initializing SubtitleRemoverNative (lang={lang}, CPU)...")
+        # use_angle_cls=False faster, use_gpu=False required for this env
+        self.ocr = PaddleOCR(use_angle_cls=False, lang=lang, use_gpu=False, show_log=False)
         logger.info("PaddleOCR initialized successfully.")
 
     def process_frames(self, input_dir: Path, output_dir: Path) -> None:

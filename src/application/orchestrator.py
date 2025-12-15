@@ -29,7 +29,8 @@ class VideoProcessingOrchestrator:
         assembler: IAssembler,
         uploader: IUploader,
         logger: ILogger,
-        metrics: IMetricsCollector
+        metrics: IMetricsCollector,
+        subtitle_remover: Optional[IProcessor] = None
     ):
         self._downloader = downloader
         self._extractor = extractor
@@ -39,6 +40,7 @@ class VideoProcessingOrchestrator:
         self._uploader = uploader
         self._logger = logger
         self._metrics = metrics
+        self._subtitle_remover = subtitle_remover
 
     def process(self, job: Job) -> ProcessingResult:
         """Execute video processing job."""
@@ -169,6 +171,25 @@ class VideoProcessingOrchestrator:
     def _process_frames(self, job, frames, workspace):
         """Process frames based on mode."""
         frame_paths = [f.path for f in frames] if hasattr(frames[0], 'path') else frames
+
+        # Step 0: Subtitle removal (if requested) - happens BEFORE any other processing
+        if job.remove_subtitles and self._subtitle_remover:
+            self._logger.info(f"Removing subtitles (lang={job.subtitle_language})...")
+            subtitle_dir = workspace / "subtitles_removed"
+            options = {'job_id': job.job_id}
+            if isinstance(job.config, dict):
+                options['b2_output_key'] = job.config.get('b2_output_key')
+                options['b2_bucket'] = job.config.get('b2_bucket')
+            result = self._subtitle_remover.process(frame_paths, subtitle_dir, **options)
+            if not result.success:
+                self._logger.error(f"Subtitle removal failed: {result.errors}")
+                # According to task: if OCR fails, pipeline should continue without subtitle removal
+                # We'll just use original frames
+                self._logger.warning("Continuing with original frames (subtitle removal skipped)")
+            else:
+                # Use frames with subtitles removed for further processing
+                frame_paths = sorted(subtitle_dir.glob("*.png"))
+                self._logger.info(f"Subtitle removal completed, {len(frame_paths)} frames processed")
 
         if job.mode == "upscale":
             if not self._upscaler:
