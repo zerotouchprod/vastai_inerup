@@ -5,6 +5,7 @@ from typing import Optional
 from domain.protocols import IProcessor
 from domain.exceptions import ProcessorNotAvailableError
 from infrastructure.processors import RifePytorchWrapper, RealESRGANPytorchWrapper
+from infrastructure.processors.subtitle import SubtitleRemoverWrapper
 from shared.logging import get_logger
 
 logger = get_logger(__name__)
@@ -84,6 +85,25 @@ class ProcessorFactory:
             raise ProcessorNotAvailableError("No RIFE backend available")
 
 
+        else:
+            raise ProcessorNotAvailableError(f"Unknown prefer: {prefer}")
+
+    def create_subtitle_remover(self, prefer: str = 'auto') -> Optional[IProcessor]:
+        """
+        Create subtitle removal processor.
+
+        Args:
+            prefer: Backend preference ('auto', 'native')
+
+        Returns:
+            Subtitle remover processor instance
+        """
+        # Currently only native implementation exists
+        if prefer in ('auto', 'native'):
+            if SubtitleRemoverWrapper.is_available():
+                self._logger.info("Using subtitle remover native backend")
+                return SubtitleRemoverWrapper()
+            raise ProcessorNotAvailableError("Subtitle remover not available (requires paddleocr, opencv)")
         else:
             raise ProcessorNotAvailableError(f"Unknown prefer: {prefer}")
 

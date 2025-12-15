@@ -54,10 +54,13 @@ def create_orchestrator_from_config(config, allow_fallback: bool = False):
     factory = ProcessorFactory()
     upscaler = None
     interpolator = None
+    subtitle_remover = None
 
     try:
         if config.mode in ('upscale', 'both', 'image'):
             upscaler = factory.create_upscaler(prefer=config.prefer)
+        elif config.mode == 'remove-subtitles':
+            subtitle_remover = factory.create_subtitle_remover(prefer=config.prefer)
     except Exception as e:
         if config.strict:
             raise
@@ -79,6 +82,10 @@ def create_orchestrator_from_config(config, allow_fallback: bool = False):
     # For video and audio types, create video components (audio processing uses video pipeline for now)
     extractor = FFmpegExtractor()
     assembler = FFmpegAssembler()
+
+    # For subtitle removal mode, use subtitle remover as upscaler
+    if config.mode == 'remove-subtitles':
+        upscaler = subtitle_remover
 
     # Only create interpolator for video type with interp/both modes
     if config.type == 'video' and config.mode in ('interp', 'both'):

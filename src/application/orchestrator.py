@@ -197,6 +197,20 @@ class VideoProcessingOrchestrator:
                 raise VideoProcessingError(f"Interpolation failed: {result.errors}")
             return sorted(output_dir.glob("*.png"))
 
+        elif job.mode == "remove-subtitles":
+            if not self._upscaler:
+                raise VideoProcessingError("Subtitle remover not available")
+            output_dir = workspace / "subtitles_removed"
+            options = {'job_id': job.job_id}
+            if isinstance(job.config, dict):
+                options['b2_output_key'] = job.config.get('b2_output_key')
+                options['b2_bucket'] = job.config.get('b2_bucket')
+            # Use upscaler as subtitle remover (factory will create appropriate processor)
+            result = self._upscaler.process(frame_paths, output_dir, **options)
+            if not result.success:
+                raise VideoProcessingError(f"Subtitle removal failed: {result.errors}")
+            return sorted(output_dir.glob("*.png"))
+
         elif job.mode == "both":
             if not self._upscaler or not self._interpolator:
                 raise VideoProcessingError("Both processors required")
