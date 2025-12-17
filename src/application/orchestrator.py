@@ -212,10 +212,31 @@ class VideoProcessingOrchestrator:
                 options['b2_output_key'] = job.config.get('b2_output_key')
                 options['b2_bucket'] = job.config.get('b2_bucket')
             # Use subtitle remover processor
+            self._logger.info(f"Starting subtitle removal for {len(frame_paths)} frames")
             result = self._subtitle_remover.process(frame_paths, output_dir, **options)
             if not result.success:
                 raise VideoProcessingError(f"Subtitle removal failed: {result.errors}")
-            return sorted(output_dir.glob("*.png"))
+            
+            # Debug: list files in output directory
+            all_files = list(output_dir.iterdir())
+            self._logger.info(f"Subtitle removal completed. Output directory contains {len(all_files)} files")
+            if all_files:
+                self._logger.info(f"First 5 files: {[f.name for f in all_files[:5]]}")
+                # Check file extensions
+                extensions = {}
+                for f in all_files:
+                    ext = f.suffix.lower()
+                    extensions[ext] = extensions.get(ext, 0) + 1
+                self._logger.info(f"File extensions: {extensions}")
+            
+            # Look for both .png and .jpg files
+            processed_frames = sorted(output_dir.glob("*.png")) + sorted(output_dir.glob("*.jpg"))
+            self._logger.info(f"Found {len(processed_frames)} processed frames (.png + .jpg)")
+            
+            if not processed_frames:
+                raise VideoProcessingError(f"No processed frames found in {output_dir}")
+            
+            return processed_frames
 
         elif job.mode == "both":
             if not self._upscaler or not self._interpolator:
