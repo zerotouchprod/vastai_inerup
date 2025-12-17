@@ -78,8 +78,10 @@ RUN pip install --no-cache-dir \
 # --- NEW: OCR/Inpainting support (PaddleOCR/Tesseract + scikit-image) ---
 # Install PaddleOCR (CPU), pytesseract and scikit-image for subtitle detection and mask processing.
 # Use CPU paddlepaddle to avoid GPU/CUDA wheel conflicts inside the image.
+# Install specific version of paddlepaddle with noavx support for compatibility
 RUN pip install --no-cache-dir \
-    paddleocr paddlepaddle pytesseract scikit-image && \
+    paddleocr pytesseract scikit-image && \
+    pip install --no-cache-dir paddlepaddle==2.5.2 -f https://www.paddlepaddle.org.cn/whl/linux/cpu-mkl-noavx.html && \
     rm -rf /root/.cache/pip /tmp/*
 
 # Install Real-ESRGAN and RIFE as Python packages to avoid missing modules at runtime
@@ -155,6 +157,13 @@ RUN wget -q https://github.com/sczhou/ProPainter/releases/download/v0.1.0/ProPai
 WORKDIR /workspace/project
 ENV PROPAINTER_ROOT="/opt/ProPainter"
 ENV PYTHONPATH="${PYTHONPATH}:/opt/ProPainter"
+
+# Pre-download PaddleOCR models for faster startup (using simplified script)
+COPY docker/preload_paddleocr_fixed.py /tmp/preload_paddleocr.py
+RUN mkdir -p /root/.paddlex/official_models && \
+    echo "Pre-downloading PaddleOCR models (simplified)..." && \
+    DISABLE_MODEL_SOURCE_CHECK=True python3 /tmp/preload_paddleocr.py || echo "PaddleOCR pre-download completed (with possible warnings)" && \
+    echo "PaddleOCR models pre-download attempt completed"
 
 RUN chmod +x /entrypoint.sh
 
