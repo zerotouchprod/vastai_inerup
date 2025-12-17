@@ -131,6 +131,25 @@ RUN pip install --no-cache-dir --force-reinstall "numpy<2" && \
 
 ENV PYTHONPATH="/workspace/project:/workspace/project/external/Real-ESRGAN:/workspace/project/external/RIFE"
 
+# --- PROPAINTER BLOCK ---
+RUN pip install --no-cache-dir imageio scipy scikit-image
+
+# Клонируем ProPainter
+WORKDIR /opt
+RUN git clone https://github.com/sczhou/ProPainter.git
+
+# Качаем веса (3 файла)
+WORKDIR /opt/ProPainter/weights
+RUN wget -q https://github.com/sczhou/ProPainter/releases/download/v0.1.0/ProPainter.pth && \
+    wget -q https://github.com/sczhou/ProPainter/releases/download/v0.1.0/raft-things.pth && \
+    wget -q https://github.com/sczhou/ProPainter/releases/download/v0.1.0/recurrent_flow_completion.pth
+
+# Возвращаем рабочую директорию
+WORKDIR /workspace/project
+ENV PROPAINTER_ROOT="/opt/ProPainter"
+ENV PYTHONPATH="${PYTHONPATH}:/opt/ProPainter"
+
+
 # Enable strict frame count validation by default (ensures Real-ESRGAN doesn't change frame count)
 # Set to 0 to allow frame count changes (faster but less accurate)
 ENV STRICT_FRAME_COUNT=1
