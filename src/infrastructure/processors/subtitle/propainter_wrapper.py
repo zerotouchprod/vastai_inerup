@@ -81,6 +81,9 @@ class SubtitleRemoverProPainter:
         self.model.eval()
 
     def process_frames(self, input_dir: Path, output_dir: Path):
+        import time
+        start_time = time.time()
+        
         output_dir.mkdir(parents=True, exist_ok=True)
         
         # Временная папка для масок
@@ -93,11 +96,28 @@ class SubtitleRemoverProPainter:
             logger.error("No frames found!")
             return
 
-        logger.info(f"Step 1/2: Generating masks for {len(frames)} frames...")
+        total_frames = len(frames)
+        logger.info(f"Processing {total_frames} frames with ProPainter...")
+        
+        # Try to import tqdm for progress bar
+        try:
+            from tqdm import tqdm
+            use_tqdm = True
+        except ImportError:
+            use_tqdm = False
+            logger.info("tqdm not available, using simple logging")
+        
+        logger.info(f"Step 1/2: Generating masks for {total_frames} frames...")
         
         # --- PASS 1: Generate Masks ---
-        for img_path in frames:
-            self._create_mask(img_path, tmp_mask_dir / img_path.name)
+        if use_tqdm:
+            for img_path in tqdm(frames, desc="Creating masks", unit="frame"):
+                self._create_mask(img_path, tmp_mask_dir / img_path.name)
+        else:
+            for i, img_path in enumerate(frames):
+                self._create_mask(img_path, tmp_mask_dir / img_path.name)
+                if (i + 1) % 10 == 0 or i == total_frames - 1:
+                    logger.info(f"Created masks for {i + 1}/{total_frames} frames")
 
         logger.info("Step 2/2: Running AI Inpainting (ProPainter)...")
 
@@ -131,9 +151,20 @@ class SubtitleRemoverProPainter:
             masked_input = F.pad(masked_input, (0, pad_w, 0, pad_h))
             video_masks = F.pad(video_masks, (0, pad_w, 0, pad_h))
 
+        logger.info(f"Processing video with ProPainter: {t} frames, resolution: {h}x{w}")
+        logger.info(f"Using device: {self.device}")
+        
+        # Add progress indication for inference
+        inference_start = time.time()
+        
         with torch.no_grad():
             # Pred output: [1, T, 3, H, W]
+            logger.info("Starting ProPainter inference...")
             pred_frames = self.model(masked_input, video_masks)
+        
+        inference_time = time.time() - inference_start
+        logger.info(f"ProPainter inference completed in {inference_time:.1f} seconds")
+        logger.info(f"Inference speed: {t / inference_time:.1f} FPS")
 
         # Убираем паддинг и батч
         pred_frames = pred_frames[0, :, :, :h, :w]
@@ -142,14 +173,27 @@ class SubtitleRemoverProPainter:
         pred_frames = pred_frames.permute(0, 2, 3, 1).cpu().numpy() * 255.0
         pred_frames = pred_frames.astype(np.uint8)
 
-        for i, frame in enumerate(pred_frames):
-            original_name = frames[i].name
-            # Convert RGB back to BGR for OpenCV save
-            cv2.imwrite(str(output_dir / original_name), cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+        logger.info(f"Saving {len(pred_frames)} processed frames...")
+        
+        # Save frames with progress
+        if use_tqdm:
+            for i, frame in enumerate(tqdm(pred_frames, desc="Saving frames", unit="frame")):
+                original_name = frames[i].name
+                # Convert RGB back to BGR for OpenCV save
+                cv2.imwrite(str(output_dir / original_name), cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+        else:
+            for i, frame in enumerate(pred_frames):
+                original_name = frames[i].name
+                # Convert RGB back to BGR for OpenCV save
+                cv2.imwrite(str(output_dir / original_name), cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+                if (i + 1) % 10 == 0 or i == len(pred_frames) - 1:
+                    logger.info(f"Saved {i + 1}/{len(pred_frames)} frames")
 
         # Cleanup
         shutil.rmtree(tmp_mask_dir)
-        logger.info("ProPainter processing complete.")
+        total_time = time.time() - start_time
+        logger.info(f"ProPainter processing complete. Total time: {total_time:.1f} seconds")
+        logger.info(f"Average speed: {total_frames / total_time:.1f} FPS")
 
     def _create_mask(self, img_path: Path, mask_path: Path):
         img = cv2.imread(str(img_path))
