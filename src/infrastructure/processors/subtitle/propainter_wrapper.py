@@ -76,31 +76,24 @@ class SubtitleRemoverProPainter:
         ocr_device = 'gpu' if (use_gpu_for_ocr and torch.cuda.is_available()) else 'cpu'
         logger.info(f"Using {ocr_device.upper()} for PaddleOCR")
         
-        # Оптимизированные параметры для скорости:
-        # - use_angle_cls=False: отключаем классификатор угла (ускоряет)
-        # - det_db_thresh=0.3: порог детекции (можно снизить для скорости)
-        # - det_db_box_thresh=0.5: порог боксов
-        # - det_db_unclip_ratio=1.6: соотношение unclip
-        # - det_limit_side_len=960: ограничение размера для детекции
-        # Примечание: use_dilation не поддерживается в текущей версии PaddleOCR
+        # Используем минимальный набор параметров, который точно работает
+        # В текущей версии PaddleOCR (3.3.2) многие параметры не поддерживаются
+        # Основные рабочие параметры: lang, use_angle_cls, show_log
+        
         ocr_params = {
             'lang': lang,
             'use_angle_cls': False,  # Отключаем для скорости
-            'det_db_thresh': 0.3,    # Более низкий порог для детекции
-            'det_db_box_thresh': 0.5,
-            'det_db_unclip_ratio': 1.6,
-            'det_limit_side_len': 960,  # Ограничиваем максимальный размер
-            'use_gpu': (ocr_device == 'gpu'),
+            'show_log': False,       # Отключаем логи для чистоты вывода
         }
         
-        # Добавляем дополнительные параметры если они поддерживаются
-        if ocr_device == 'gpu':
-            ocr_params['gpu_mem'] = 500  # Лимит памяти GPU в MB
-        else:
-            # Параметры для CPU оптимизации
-            ocr_params['enable_mkldnn'] = True  # Ускорение на CPU
-            ocr_params['cpu_threads'] = 4  # Количество потоков CPU
-            
+        # Параметр для отключения проверки подключения к моделям
+        # Это ускоряет инициализацию
+        ocr_params['disable_model_source_check'] = True
+        
+        # В текущей версии параметры GPU могут не поддерживаться
+        # или называться по-другому. Используем только CPU для надежности
+        # Если нужен GPU, можно попробовать добавить позже
+        
         self.ocr = PaddleOCR(**ocr_params)
         
         # 2. Init ProPainter
