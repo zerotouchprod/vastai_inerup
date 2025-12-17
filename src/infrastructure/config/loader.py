@@ -46,8 +46,7 @@ class ProcessingConfig:
     # Image processing
     image_mode: str = "upscale"  # 'upscale', 'hdr', 'denoise'
 
-    # Subtitle removal
-    remove_subtitles: bool = False
+    # Subtitle removal (only for remove-subtitles mode)
     subtitle_language: str = "en"  # Default 'en', but can be 'ru', 'ch', etc.
 
     # Upload settings
@@ -156,7 +155,7 @@ class ConfigLoader:
             'interp_factor', 'target_fps', 'prefer', 'strict', 'strategy',
             'b2_bucket', 'b2_endpoint', 'b2_output_key', 'b2_key', 'b2_secret',
             'batch_args', 'smoke_seconds', 'smoke_timeout', 'keep_tmp', 'job_id',
-            'audio_mode', 'image_mode', 'remove_subtitles', 'subtitle_language'
+            'audio_mode', 'image_mode', 'subtitle_language'
         }
 
         filtered_config = {k: v for k, v in config_dict.items() if k in valid_fields}
@@ -196,10 +195,7 @@ class ConfigLoader:
         if audio_mode := os.getenv("AUDIO_MODE"):
             env_config["audio_mode"] = audio_mode.lower()
 
-        # Subtitle removal
-        if remove_subs := os.getenv("REMOVE_SUBTITLES") or os.getenv("REMOVE_SUBS"):
-            env_config["remove_subtitles"] = remove_subs.lower() in ("true", "1", "yes", "on")
-
+        # Subtitle language (for remove-subtitles mode)
         if subs_lang := os.getenv("SUBTITLE_LANGUAGE") or os.getenv("SUBS_LANG"):
             env_config["subtitle_language"] = subs_lang.lower()
 

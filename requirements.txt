@@ -19,9 +19,12 @@ pylint>=2.17.0
 mypy>=1.5.0
 flake8>=6.1.0
 
+numpy<=1.26.4
+
 # Utilities
 dataclasses-json>=0.6.0  # For easier JSON serialization
 
 # Subtitle removal
 opencv-python-headless>=4.8.0
 paddleocr>=2.7.0
+paddlepaddle>=1.2.2

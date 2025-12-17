@@ -86,8 +86,7 @@ class Job:
     target_fps: Optional[int] = None
     interp_factor: float = 2.0
     strategy: str = 'interp-then-upscale'
-    # Subtitle removal
-    remove_subtitles: bool = False
+    # Subtitle removal (only for remove-subtitles mode)
     subtitle_language: str = 'en'
     # Audio-specific
     audio_mode: str = 'remove_reverb'  # 'remove_reverb', 'enhance', 'normalize'

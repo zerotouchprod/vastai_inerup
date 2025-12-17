@@ -58,6 +58,10 @@ class VideoProcessingOrchestrator:
             input_file = self._downloader.download(job.input_url, workspace / "input.mp4")
             self._metrics.stop_timer('download')
 
+            # 2.5. For subtitle removal mode, test the processor before extracting frames
+            if job.mode == "remove-subtitles":
+                self._test_subtitle_remover()
+
             # 3. Extract frames
             self._metrics.start_timer('extraction')
             video_info = self._extractor.get_video_info(input_file)
@@ -172,25 +176,6 @@ class VideoProcessingOrchestrator:
         """Process frames based on mode."""
         frame_paths = [f.path for f in frames] if hasattr(frames[0], 'path') else frames
 
-        # Step 0: Subtitle removal (if requested) - happens BEFORE any other processing
-        if job.remove_subtitles and self._subtitle_remover:
-            self._logger.info(f"Removing subtitles (lang={job.subtitle_language})...")
-            subtitle_dir = workspace / "subtitles_removed"
-            options = {'job_id': job.job_id}
-            if isinstance(job.config, dict):
-                options['b2_output_key'] = job.config.get('b2_output_key')
-                options['b2_bucket'] = job.config.get('b2_bucket')
-            result = self._subtitle_remover.process(frame_paths, subtitle_dir, **options)
-            if not result.success:
-                self._logger.error(f"Subtitle removal failed: {result.errors}")
-                # According to task: if OCR fails, pipeline should continue without subtitle removal
-                # We'll just use original frames
-                self._logger.warning("Continuing with original frames (subtitle removal skipped)")
-            else:
-                # Use frames with subtitles removed for further processing
-                frame_paths = sorted(subtitle_dir.glob("*.png"))
-                self._logger.info(f"Subtitle removal completed, {len(frame_paths)} frames processed")
-
         if job.mode == "upscale":
             if not self._upscaler:
                 raise VideoProcessingError("Upscaler not available")
@@ -219,15 +204,15 @@ class VideoProcessingOrchestrator:
             return sorted(output_dir.glob("*.png"))
 
         elif job.mode == "remove-subtitles":
-            if not self._upscaler:
+            if not self._subtitle_remover:
                 raise VideoProcessingError("Subtitle remover not available")
             output_dir = workspace / "subtitles_removed"
             options = {'job_id': job.job_id}
             if isinstance(job.config, dict):
                 options['b2_output_key'] = job.config.get('b2_output_key')
                 options['b2_bucket'] = job.config.get('b2_bucket')
-            # Use upscaler as subtitle remover (factory will create appropriate processor)
-            result = self._upscaler.process(frame_paths, output_dir, **options)
+            # Use subtitle remover processor
+            result = self._subtitle_remover.process(frame_paths, output_dir, **options)
             if not result.success:
                 raise VideoProcessingError(f"Subtitle removal failed: {result.errors}")
             return sorted(output_dir.glob("*.png"))
@@ -382,5 +367,29 @@ class VideoProcessingOrchestrator:
             return f"upscales/{base_name}-{timestamp}.mp4"
         elif job.mode == "interp":
             return f"interp/{base_name}-{timestamp}.mp4"
+        elif job.mode == "remove-subtitles":
+            return f"subtitles_removed/{base_name}-{timestamp}.mp4"
         else:
             return f"both/{base_name}-{timestamp}.mp4"
+
+    def _test_subtitle_remover(self):
+        """Test if subtitle remover is functional before extracting frames."""
+        if not self._subtitle_remover:
+            raise VideoProcessingError("Subtitle remover not available")
+        
+        self._logger.info("Testing subtitle remover functionality...")
+        
+        # Try to create a simple test to verify the processor works
+        # We'll check if the processor has the required methods
+        if not hasattr(self._subtitle_remover, 'process'):
+            raise VideoProcessingError("Subtitle remover doesn't have required 'process' method")
+        
+        # For native subtitle remover, we can check if PaddleOCR is available
+        # by checking the wrapper's is_available method if it exists
+        if hasattr(self._subtitle_remover, 'is_available'):
+            # This is a class method on the wrapper
+            from infrastructure.processors.subtitle.wrapper import SubtitleRemoverWrapper
+            if not SubtitleRemoverWrapper.is_available():
+                raise VideoProcessingError("Subtitle remover dependencies not available (PaddleOCR, OpenCV)")
+        
+        self._logger.info("Subtitle remover test passed")

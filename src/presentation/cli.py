@@ -56,8 +56,9 @@ def create_orchestrator_from_config(config, allow_fallback: bool = False):
     interpolator = None
     subtitle_remover = None
 
-    # Create subtitle remover if needed (as preprocessing step)
-    if config.remove_subtitles:
+    # Create subtitle remover only for remove-subtitles mode
+    subtitle_remover = None
+    if config.mode == 'remove-subtitles':
         try:
             subtitle_remover = factory.create_subtitle_remover(
                 prefer=config.prefer,
@@ -170,15 +171,14 @@ def main():
     parser.add_argument('--b2-secret', help='B2 secret key (overrides B2_SECRET)')
     parser.add_argument('--b2-region', help='B2 region name (overrides B2_REGION)')
     parser.add_argument('--type', choices=['video', 'image', 'audio'], default='video', help='Media type (default: video)')
-    parser.add_argument('--mode', help='Processing mode (depends on type)')
+    parser.add_argument('--mode', help='Processing mode: for video: upscale, interp, both, remove-subtitles; for image: upscale, hdr, denoise; for audio: remove_reverb, enhance, normalize')
     parser.add_argument('--scale', type=float, help='Upscale factor')
     parser.add_argument('--target-fps', type=int, help='Target FPS')
     parser.add_argument('--prefer', choices=['auto', 'pytorch'], help='Backend')
     parser.add_argument('--strategy', choices=['interp-then-upscale', 'upscale-then-interp'], help='Processing order for "both" mode (default: interp-then-upscale)')
     parser.add_argument('--image-mode', choices=['upscale', 'hdr', 'denoise'], help='Image processing mode (default: upscale)')
     parser.add_argument('--audio-mode', choices=['remove_reverb', 'enhance', 'normalize'], help='Audio processing mode (default: remove_reverb)')
-    parser.add_argument('--remove-subs', action='store_true', help='Remove hardcoded subtitles before processing')
-    parser.add_argument('--subs-lang', type=str, default='en', help='Language code for subtitle OCR (default: en)')
+    parser.add_argument('--subs-lang', type=str, default='en', help='Language code for subtitle OCR when using remove-subtitles mode (default: en)')
     parser.add_argument('--strict', action='store_true', help='Strict mode')
     parser.add_argument('--allow-fallback', action='store_true', help='Allow ffmpeg fallback when RIFE is not available (default: disabled)')
     parser.add_argument('--verbose', '-v', action='store_true', help='Verbose')
@@ -249,9 +249,7 @@ def main():
         if args.audio_mode:
             config.audio_mode = args.audio_mode
 
-        # Subtitle removal
-        if args.remove_subs:
-            config.remove_subtitles = True
+        # Subtitle language (used when mode is remove-subtitles)
         if args.subs_lang:
             config.subtitle_language = args.subs_lang
 
@@ -309,7 +307,6 @@ def main():
             target_fps=config.target_fps,
             interp_factor=config.interp_factor,
             strategy=config.strategy,
-            remove_subtitles=getattr(config, 'remove_subtitles', False),
             subtitle_language=getattr(config, 'subtitle_language', 'en'),
             audio_mode=getattr(config, 'audio_mode', 'remove_reverb'),
             image_mode=getattr(config, 'image_mode', 'upscale'),
