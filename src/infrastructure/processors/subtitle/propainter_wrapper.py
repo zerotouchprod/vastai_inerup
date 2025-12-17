@@ -81,21 +81,27 @@ class SubtitleRemoverProPainter:
         # - det_db_thresh=0.3: порог детекции (можно снизить для скорости)
         # - det_db_box_thresh=0.5: порог боксов
         # - det_db_unclip_ratio=1.6: соотношение unclip
-        # - use_dilation=False: отключаем дилатацию (ускоряет)
         # - det_limit_side_len=960: ограничение размера для детекции
-        self.ocr = PaddleOCR(
-            lang=lang,
-            use_angle_cls=False,  # Отключаем для скорости
-            det_db_thresh=0.3,    # Более низкий порог для детекции
-            det_db_box_thresh=0.5,
-            det_db_unclip_ratio=1.6,
-            use_dilation=False,   # Отключаем дилатацию для скорости
-            det_limit_side_len=960,  # Ограничиваем максимальный размер
-            use_gpu=(ocr_device == 'gpu'),
-            gpu_mem=500,  # Лимит памяти GPU в MB
-            enable_mkldnn=True if ocr_device == 'cpu' else False,  # Ускорение на CPU
-            cpu_threads=4,  # Количество потоков CPU
-        )
+        # Примечание: use_dilation не поддерживается в текущей версии PaddleOCR
+        ocr_params = {
+            'lang': lang,
+            'use_angle_cls': False,  # Отключаем для скорости
+            'det_db_thresh': 0.3,    # Более низкий порог для детекции
+            'det_db_box_thresh': 0.5,
+            'det_db_unclip_ratio': 1.6,
+            'det_limit_side_len': 960,  # Ограничиваем максимальный размер
+            'use_gpu': (ocr_device == 'gpu'),
+        }
+        
+        # Добавляем дополнительные параметры если они поддерживаются
+        if ocr_device == 'gpu':
+            ocr_params['gpu_mem'] = 500  # Лимит памяти GPU в MB
+        else:
+            # Параметры для CPU оптимизации
+            ocr_params['enable_mkldnn'] = True  # Ускорение на CPU
+            ocr_params['cpu_threads'] = 4  # Количество потоков CPU
+            
+        self.ocr = PaddleOCR(**ocr_params)
         
         # 2. Init ProPainter
         weights_path = Path(PROPAINTER_ROOT) / "weights/ProPainter.pth"
