@@ -2,7 +2,10 @@ version: '3.8'
 
 services:
   vastai-interup:
-    image: registry.gitlab.com/gfever/vastai_interup:pytorch-fat-171225_2
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.pytorch.fat
+    image: vastai-interup:pytorch-fat-local
     container_name: vastai_interup_dev
     runtime: nvidia
     entrypoint: /bin/bash
