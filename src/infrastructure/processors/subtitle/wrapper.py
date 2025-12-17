@@ -45,30 +45,45 @@ class SubtitleRemoverWrapper(IProcessor):
         start_time = time.time()
 
         try:
+            self._logger.info(f"Starting subtitle removal for {len(input_frames)} frames")
+            
             # Create processor if not exists
             if self._processor is None:
+                self._logger.info(f"Creating SubtitleRemoverNative (lang={self._lang}, dilation={self._mask_dilation})")
                 self._processor = SubtitleRemoverNative(
                     lang=self._lang,
                     mask_dilation=self._mask_dilation,
                     confidence_threshold=self._confidence_threshold
                 )
+                self._logger.info("SubtitleRemoverNative created successfully")
 
             # Create temporary input directory
             import tempfile
             import shutil
             with tempfile.TemporaryDirectory(prefix="subs_input_") as tmp_input:
                 tmp_input_path = Path(tmp_input)
+                self._logger.info(f"Created temp directory: {tmp_input_path}")
+                
                 # Copy frames to temporary directory
+                self._logger.info(f"Copying {len(input_frames)} frames to temp directory...")
                 for frame in input_frames:
                     shutil.copy2(frame, tmp_input_path / frame.name)
+                self._logger.info("Frames copied successfully")
 
                 # Process frames
+                self._logger.info("Starting frame processing with SubtitleRemoverNative...")
                 self._processor.process_frames(tmp_input_path, output_dir)
+                self._logger.info("Frame processing completed")
 
             duration = time.time() - start_time
+            self._logger.info(f"Subtitle removal completed in {duration:.1f} seconds")
 
             # Count output frames
             output_frames = list(output_dir.glob("*.png")) + list(output_dir.glob("*.jpg"))
+            self._logger.info(f"Found {len(output_frames)} output frames in {output_dir}")
+            
+            if output_frames:
+                self._logger.info(f"First 3 output files: {[f.name for f in output_frames[:3]]}")
             
             return ProcessingResult(
                 success=True,
@@ -84,6 +99,16 @@ class SubtitleRemoverWrapper(IProcessor):
 
         except Exception as e:
             self._logger.exception(f"Subtitle removal failed: {e}")
+            # Try to see what's in the output directory
+            try:
+                if output_dir.exists():
+                    files = list(output_dir.iterdir())
+                    self._logger.error(f"Output directory contains {len(files)} files after error")
+                    if files:
+                        self._logger.error(f"First 5 files: {[f.name for f in files[:5]]}")
+            except Exception as dir_err:
+                self._logger.error(f"Could not check output directory: {dir_err}")
+                
             return ProcessingResult(
                 success=False,
                 output_path=None,
