@@ -1,32 +1,23 @@
-# Configuration for run_slim_vast.py
-# Commit this file to Git and push to GitLab
-# Container will read fresh config on every restart
-
-repo_url: "https://github.com/zerotouchprod/vastai_inerup"
-git_repo: "https://github.com/zerotouchprod/vastai_inerup.git"  # For batch_processor
-config_url: "https://gist.githubusercontent.com/zerotouchprod/56872fc774442b627dbf2e658d03d19c/raw/config.json"
-image: "ghcr.io/zerotouchprod/pytorch-fat-07110957:latest"
-
-# Git branch to use (container will git checkout this branch after git pull)
-# Use 'main' for stable, 'dev' for development, or feature branch name
-git_branch: "oop2"
-
-# ==================== PREDEFINED PRESETS ====================
+repo_url: https://github.com/zerotouchprod/vastai_inerup
+git_repo: https://github.com/zerotouchprod/vastai_inerup.git
+config_url: https://gist.githubusercontent.com/zerotouchprod/56872fc774442b627dbf2e658d03d19c/raw/config.json
+image: ghcr.io/zerotouchprod/pytorch-fat-07110957:latest
+git_branch: oop2
 presets:
   low:
-    preset: "low"
+    preset: low
     min_vram: 12
     gpu_models:
-      - "RTX_3060_Ti"
-      - "RTX_3070"
-      - "RTX_2080_Ti"
+    - RTX_3060_Ti
+    - RTX_3070
+    - RTX_2080_Ti
     gpu_whitelist: []
     gpu_blacklist: []
     gpu_required: false
     gpu_priority: true
     min_price: 0.08
     max_price: 0.1
-    min_reliability: 0.70
+    min_reliability: 0.7
     min_dlperf: 20
     min_cuda: 11.0
     compute_cap: 700
@@ -36,27 +27,26 @@ presets:
     min_cpu_ram: 16
     datacenter: false
     verified: false
-    type: "bid"
+    type: bid
     wait: false
     download: true
-
   balanced:
-    preset: "balanced"
+    preset: balanced
     min_vram: 16
     gpu_models:
-      - "RTX_3080"
-      - "RTX_3080_Ti"
-      - "RTX_3090"
-      - "RTX_4070_Ti"
-      - "RTX_4080"
-      - "A100"
+    - RTX_3080
+    - RTX_3080_Ti
+    - RTX_3090
+    - RTX_4070_Ti
+    - RTX_4080
+    - A100
     gpu_whitelist: []
     gpu_blacklist: []
     gpu_required: false
     gpu_priority: true
     min_price: 0.05
     max_price: 0.1
-    min_reliability: 0.80
+    min_reliability: 0.8
     min_dlperf: 35
     min_dlperf_per_dphtotal: 100
     min_cuda: 11.2
@@ -69,23 +59,22 @@ presets:
     min_gpu_mem_bw: 400
     datacenter: false
     verified: true
-    type: "bid"
+    type: bid
     wait: false
     download: true
-
   real:
     gpu_models:
-      - "RTX_3080"
-      - "RTX_3090"
-    gpu_whitelist: [ ]
-    gpu_blacklist: [ ]
+    - RTX_3080
+    - RTX_3090
+    gpu_whitelist: []
+    gpu_blacklist: []
     gpu_required: false
     gpu_priority: true
     min_vram: 12
     min_price: 0.05
     max_price: 0.1
-    min_reliability: 0.95      # Increased from 0.90
-    min_dlperf: 40             # Increased from 35
+    min_reliability: 0.95
+    min_dlperf: 40
     min_dlperf_per_dphtotal: 100
     min_cuda: 11.2
     compute_cap: 750
@@ -95,55 +84,52 @@ presets:
     min_cpu_ram: 20
     min_disk_bw: 100
     min_gpu_mem_bw: 400
-    datacenter: true           # Changed from false
+    datacenter: true
     verified: true
-    type: "bid"
+    type: bid
     wait: false
     download: true
-    # Request allocated storage (GB) for created instances to avoid small-disk hosts
     allocated_storage: 50
     host_whitelist:
-      - 51345
-      - 78246
-      - 124171
-      - 67268
-      - 85538
-      - 84962 #ua
-      - 264182
-      - 150602
-      - 67268
-      - 280301 #2cpu
-      - 160473 #2cpu
-    # Blacklist of host IDs to ignore when searching offers (vasts.host_blacklist)
+    - 51345
+    - 78246
+    - 124171
+    - 67268
+    - 85538
+    - 84962
+    - 264182
+    - 150602
+    - 67268
+    - 280301
+    - 160473
     host_blacklist:
-      - 160473 #$0.26/hr 2cpu
-      - 34742 #$0.23/hr
-      - 51981 #$0.215/hr
-      - 124072 #$0.198/hr
-      - 312826
-      - 155386
-      - 319870
-      - 124171
-      - 81456
-      - 28229362
-      - 85323 #ok but gpu
-      - 28230170 #expensive
-
+    - 160473
+    - 34742
+    - 51981
+    - 124072
+    - 312826
+    - 155386
+    - 319870
+    - 124171
+    - 81456
+    - 28229362
+    - 85323
+    - 28230170
   high:
-    preset: "high"
+    preset: high
     min_vram: 24
     gpu_models:
-      - "RTX_4090"
-      - "RTX_A6000"
-      - "RTX_3090"
-      - "A100"
-      - "A40"
+    - RTX_4090
+    - RTX_A6000
+    - RTX_3090
+    - A100
+    - A40
     gpu_whitelist: []
     gpu_blacklist: []
     gpu_required: false
     gpu_priority: true
     min_price: 0.25
-    max_price: 0.90
+    max_price: 0.9
     min_reliability: 0.98
     min_dlperf: 60
     min_dlperf_per_dphtotal: 150
@@ -159,17 +145,14 @@ presets:
     datacenter: true
     verified: true
     static_ip: true
-    type: "on-demand"
+    type: on-demand
     wait: false
     download: true
-
-# ==================== PRESET: BALANCED ====================
 vast:
-  preset: "balanced"
-  #num_gpus: 1
+  preset: balanced
   gpu_models:
-    - "RTX_3080"
-    - "RTX_3090"
+  - RTX_3080
+  - RTX_3090
   gpu_whitelist: []
   gpu_blacklist: []
   gpu_required: false
@@ -177,8 +160,8 @@ vast:
   min_vram: 12
   min_price: 0.05
   max_price: 0.1
-  min_reliability: 0.95      # Increased from 0.90
-  min_dlperf: 40             # Increased from 35
+  min_reliability: 0.95
+  min_dlperf: 40
   min_dlperf_per_dphtotal: 100
   min_cuda: 11.2
   compute_cap: 750
@@ -188,69 +171,53 @@ vast:
   min_cpu_ram: 20
   min_disk_bw: 100
   min_gpu_mem_bw: 400
-  datacenter: true           # Changed from false
+  datacenter: true
   verified: true
-  type: "bid"
+  type: bid
   wait: false
   download: true
-  # Request allocated storage (GB) for created instances to avoid small-disk hosts
   allocated_storage: 50
   host_whitelist:
-    - 51345
-    - 78246
-    - 124171
-    - 67268
-    - 85538
-    - 84962 #ua
-    - 264182
-    - 150602
-    - 67268
-    - 280301 #2cpu
-    - 160473 #2cpu
-  # Blacklist of host IDs to ignore when searching offers (vasts.host_blacklist)
+  - 51345
+  - 78246
+  - 124171
+  - 67268
+  - 85538
+  - 84962
+  - 264182
+  - 150602
+  - 67268
+  - 280301
+  - 160473
   host_blacklist:
-    - 160473 #$0.26/hr 2cpu
-    - 34742 #$0.23/hr
-    - 51981 #$0.215/hr
-    - 124072 #$0.198/hr
-    - 155386
-    - 155386
-    - 319870
-    - 124171
-    - 81456
-    - 28229362
-    - 85323 #ok but gpu
-    - 28230170 #expensive
-
+  - 160473
+  - 34742
+  - 51981
+  - 124072
+  - 155386
+  - 155386
+  - 319870
+  - 124171
+  - 81456
+  - 28229362
+  - 85323
+  - 28230170
 b2:
-  bucket: "noxfvr-videos"
-  endpoint: "https://s3.us-west-004.backblazeb2.com"
-
-# Advanced settings
+  bucket: noxfvr-videos
+  endpoint: https://s3.us-west-004.backblazeb2.com
 advanced:
-  # Backend preference: auto, pytorch, ncnn, ffmpeg
-  prefer: "auto"
-
-  # Strict mode: fail if GPU not available (default: false for fallback support)
-  # Set to true only if you want to fail immediately when GPU processing fails
+  prefer: auto
   strict: false
-
-  # Low-res strategy: interp-then-upscale (fast, default) or upscale-then-interp
-  lowres_strategy: "interp-then-upscale"
-
-# Batch processing settings
+  lowres_strategy: interp-then-upscale
 batch:
-  # Input directory in B2 bucket (relative to bucket root)
-  input_dir: "input/queue"
-
-  # Preset to use for batch processing
-  preset: "real"
-
-  # Skip files that already have output
+  input_dir: input/queue
+  preset: real
   skip_existing: true
-
-  # Maximum number of files to process in one batch
   max_files: 100
-
-  # Dry run mode (don't actually submit to Vast.ai)
   dry_run: false
+video:
+  input_dir: input/c5
+  mode: interp
+  scale: 2
+  target_fps: 60
+  overwrite: true

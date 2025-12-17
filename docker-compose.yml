@@ -1,0 +1,24 @@
+version: '3.8'
+
+services:
+  vastai-interup:
+    image: registry.gitlab.com/gfever/vastai_interup:pytorch-fat-171225_2
+    container_name: vastai_interup_dev
+    runtime: nvidia
+    entrypoint: /bin/bash
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - DISABLE_MODEL_SOURCE_CHECK=True
+      - PROPAINTER_ROOT=/opt/ProPainter
+      - PYTHONPATH=/workspace/project/src:/opt/ProPainter
+    volumes:
+      - .:/workspace/project
+    working_dir: /workspace/project
+    command: -c "pip install -r requirements.txt && python test_propainter.py"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

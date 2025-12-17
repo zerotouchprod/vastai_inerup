@@ -8,6 +8,7 @@ import shutil
 from pathlib import Path
 import time
 from typing import List
+from PIL import Image
 
 from domain.models import ProcessingResult
 
@@ -19,7 +20,32 @@ if PROPAINTER_ROOT not in sys.path:
 try:
     # Импорты из репозитория ProPainter
     from model.propainter import InpaintGenerator
-    from utils.video_utils import read_video
+    # read_video is not present in ProPainter; we define our own
+    from inference_propainter import read_frame_from_videos
+    
+    def read_video(path: str, gray: bool = False):
+        """
+        Read video frames from a directory or video file.
+        Returns (frames, fps) where frames is numpy array of shape (T, H, W, C)
+        with C=1 if gray else 3, values 0-255.
+        """
+        frames, fps, size, video_name = read_frame_from_videos(path)
+        # Convert PIL Images to numpy arrays
+        arrs = []
+        for f in frames:
+            if gray:
+                # Convert to grayscale
+                f = f.convert('L')
+                arr = np.array(f, dtype=np.uint8)
+                arr = arr[..., np.newaxis]  # add channel dimension
+            else:
+                # Ensure RGB
+                f = f.convert('RGB')
+                arr = np.array(f, dtype=np.uint8)
+            arrs.append(arr)
+        # Stack along time dimension
+        video = np.stack(arrs, axis=0)
+        return video, fps
 except ImportError:
     logging.warning("⚠️ ProPainter modules not found! Make sure they are in /opt/ProPainter")
 
@@ -244,7 +270,7 @@ class SubtitleRemoverProPainterWrapper:
             
             try:
                 from model.propainter import InpaintGenerator
-                from utils.video_utils import read_video
+                from inference_propainter import read_frame_from_videos
                 
                 # Check if weights exist
                 weights_path = Path(PROPAINTER_ROOT) / "weights/ProPainter.pth"
