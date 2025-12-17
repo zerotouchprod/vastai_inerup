@@ -57,11 +57,13 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 class SubtitleRemoverProPainter:
-    def __init__(self, lang: str = 'en', mask_dilation: int = 12):
+    def __init__(self, lang: str = 'en', mask_dilation: int = 12, use_gpu_for_ocr: bool = False):
         """
+        :param lang: Language for OCR
         :param mask_dilation: Насколько расширять маску. 
                               Для ProPainter лучше брать больше (10-15), 
                               чтобы он перерисовал весь ореол субтитров.
+        :param use_gpu_for_ocr: Использовать GPU для OCR если доступно (может быть быстрее)
         """
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.lang = lang
@@ -69,8 +71,31 @@ class SubtitleRemoverProPainter:
         
         logger.info(f"Initializing ProPainter Subtitle Remover (lang={lang}, dilation={mask_dilation})")
 
-        # 1. Init OCR (CPU is enough)
-        self.ocr = PaddleOCR(lang=lang)
+        # 1. Init OCR with optimized parameters
+        # Проверяем доступность GPU для OCR
+        ocr_device = 'gpu' if (use_gpu_for_ocr and torch.cuda.is_available()) else 'cpu'
+        logger.info(f"Using {ocr_device.upper()} for PaddleOCR")
+        
+        # Оптимизированные параметры для скорости:
+        # - use_angle_cls=False: отключаем классификатор угла (ускоряет)
+        # - det_db_thresh=0.3: порог детекции (можно снизить для скорости)
+        # - det_db_box_thresh=0.5: порог боксов
+        # - det_db_unclip_ratio=1.6: соотношение unclip
+        # - use_dilation=False: отключаем дилатацию (ускоряет)
+        # - det_limit_side_len=960: ограничение размера для детекции
+        self.ocr = PaddleOCR(
+            lang=lang,
+            use_angle_cls=False,  # Отключаем для скорости
+            det_db_thresh=0.3,    # Более низкий порог для детекции
+            det_db_box_thresh=0.5,
+            det_db_unclip_ratio=1.6,
+            use_dilation=False,   # Отключаем дилатацию для скорости
+            det_limit_side_len=960,  # Ограничиваем максимальный размер
+            use_gpu=(ocr_device == 'gpu'),
+            gpu_mem=500,  # Лимит памяти GPU в MB
+            enable_mkldnn=True if ocr_device == 'cpu' else False,  # Ускорение на CPU
+            cpu_threads=4,  # Количество потоков CPU
+        )
         
         # 2. Init ProPainter
         weights_path = Path(PROPAINTER_ROOT) / "weights/ProPainter.pth"
@@ -110,14 +135,22 @@ class SubtitleRemoverProPainter:
         logger.info(f"Step 1/2: Generating masks for {total_frames} frames...")
         
         # --- PASS 1: Generate Masks ---
+        # Оптимизация: обрабатываем кадры батчами для лучшей производительности
+        batch_size = 4  # Можно увеличить если есть память
+        mask_start_time = time.time()
+        
         if use_tqdm:
-            for img_path in tqdm(frames, desc="Creating masks", unit="frame"):
-                self._create_mask(img_path, tmp_mask_dir / img_path.name)
+            for i in tqdm(range(0, len(frames), batch_size), desc="Processing batches", unit="batch"):
+                batch = frames[i:i+batch_size]
+                self._create_masks_batch(batch, tmp_mask_dir)
         else:
-            for i, img_path in enumerate(frames):
-                self._create_mask(img_path, tmp_mask_dir / img_path.name)
-                if (i + 1) % 10 == 0 or i == total_frames - 1:
-                    logger.info(f"Created masks for {i + 1}/{total_frames} frames")
+            for i in range(0, len(frames), batch_size):
+                batch = frames[i:i+batch_size]
+                self._create_masks_batch(batch, tmp_mask_dir)
+                if (i + batch_size) % 40 == 0 or i + batch_size >= len(frames):
+                    elapsed = time.time() - mask_start_time
+                    speed = (i + batch_size) / elapsed if elapsed > 0 else 0
+                    logger.info(f"Created masks for {min(i + batch_size, len(frames))}/{len(frames)} frames, speed: {speed:.1f} FPS")
 
         logger.info("Step 2/2: Running AI Inpainting (ProPainter)...")
 
@@ -195,57 +228,107 @@ class SubtitleRemoverProPainter:
         logger.info(f"ProPainter processing complete. Total time: {total_time:.1f} seconds")
         logger.info(f"Average speed: {total_frames / total_time:.1f} FPS")
 
-    def _create_mask(self, img_path: Path, mask_path: Path):
-        img = cv2.imread(str(img_path))
-        if img is None: return
-        
-        h, w = img.shape[:2]
-        mask = np.zeros((h, w), dtype=np.uint8)
-        
-        result = self.ocr.ocr(img)
-        if not result:
-            cv2.imwrite(str(mask_path), mask)
+    def _create_masks_batch(self, img_paths: List[Path], output_dir: Path):
+        """Create masks for a batch of images (optimized version)."""
+        if not img_paths:
             return
+            
+        # Загружаем все изображения
+        images = []
+        valid_paths = []
+        for img_path in img_paths:
+            img = cv2.imread(str(img_path))
+            if img is not None:
+                images.append(img)
+                valid_paths.append(img_path)
         
-        # New PaddleOCR version returns a list of OCRResult objects
-        # Each element is a dict-like object with keys: rec_polys, rec_scores, rec_texts, dt_polys, etc.
-        # We'll iterate over rec_polys and rec_scores
-        for ocr_result in result:
-            if hasattr(ocr_result, 'rec_polys'):
-                polys = ocr_result.rec_polys
-                scores = ocr_result.rec_scores
-            elif isinstance(ocr_result, dict) and 'rec_polys' in ocr_result:
-                polys = ocr_result['rec_polys']
-                scores = ocr_result['rec_scores']
+        if not images:
+            return
+            
+        # Оптимизация: уменьшаем разрешение для OCR если изображения большие
+        # PaddleOCR быстрее работает с меньшим разрешением
+        max_ocr_dim = 720  # Максимальный размер для OCR
+        
+        # Подготавливаем изображения для OCR
+        ocr_images = []
+        scale_factors = []
+        original_shapes = []
+        
+        for img in images:
+            h, w = img.shape[:2]
+            original_shapes.append((h, w))
+            
+            # Если изображение слишком большое, уменьшаем его для OCR
+            if max(h, w) > max_ocr_dim:
+                scale = max_ocr_dim / max(h, w)
+                new_h, new_w = int(h * scale), int(w * scale)
+                resized = cv2.resize(img, (new_w, new_h))
+                ocr_images.append(resized)
+                scale_factors.append(scale)
             else:
-                # Old format: list of (coords, (text, conf))
-                if isinstance(ocr_result, list):
-                    for line in ocr_result:
-                        if isinstance(line, (list, tuple)) and len(line) >= 2:
-                            coords = line[0]
-                            if isinstance(line[1], (list, tuple)) and len(line[1]) >= 2:
-                                conf = line[1][1]
-                            else:
-                                conf = 0.0
-                            if conf > 0.4:
-                                pts = np.array(coords, dtype=np.int32).reshape((-1, 1, 2))
-                                cv2.fillPoly(mask, [pts], 255)
-                continue
-            
-            # Process new format
-            if polys is not None and scores is not None:
-                for poly, score in zip(polys, scores):
-                    if score > 0.4:
-                        # poly is array of shape (n, 2)
-                        pts = poly.astype(np.int32).reshape((-1, 1, 2))
-                        cv2.fillPoly(mask, [pts], 255)
+                ocr_images.append(img)
+                scale_factors.append(1.0)
         
-        # Агрессивное расширение для Glow
-        if self.mask_dilation > 0:
-            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (self.mask_dilation, self.mask_dilation))
-            mask = cv2.dilate(mask, kernel, iterations=1)
+        # Выполняем OCR для всех изображений в батче
+        # PaddleOCR поддерживает батчинг через параметр cls_batch_num и rec_batch_num
+        # Но для простоты делаем последовательно, но с оптимизированными параметрами
+        for i, (img, ocr_img, img_path, scale_factor, (orig_h, orig_w)) in enumerate(
+            zip(images, ocr_images, valid_paths, scale_factors, original_shapes)):
             
-        cv2.imwrite(str(mask_path), mask)
+            mask = np.zeros((orig_h, orig_w), dtype=np.uint8)
+            
+            # Выполняем OCR на уменьшенном изображении
+            result = self.ocr.ocr(ocr_img)
+            
+            if result:
+                # Масштабируем координаты обратно к оригинальному размеру
+                scale_inv = 1.0 / scale_factor if scale_factor != 1.0 else 1.0
+                
+                for ocr_result in result:
+                    if hasattr(ocr_result, 'rec_polys'):
+                        polys = ocr_result.rec_polys
+                        scores = ocr_result.rec_scores
+                    elif isinstance(ocr_result, dict) and 'rec_polys' in ocr_result:
+                        polys = ocr_result['rec_polys']
+                        scores = ocr_result['rec_scores']
+                    else:
+                        # Old format
+                        if isinstance(ocr_result, list):
+                            for line in ocr_result:
+                                if isinstance(line, (list, tuple)) and len(line) >= 2:
+                                    coords = line[0]
+                                    if isinstance(line[1], (list, tuple)) and len(line[1]) >= 2:
+                                        conf = line[1][1]
+                                    else:
+                                        conf = 0.0
+                                    if conf > 0.4:
+                                        # Масштабируем координаты
+                                        scaled_coords = [(int(x * scale_inv), int(y * scale_inv)) for x, y in coords]
+                                        pts = np.array(scaled_coords, dtype=np.int32).reshape((-1, 1, 2))
+                                        cv2.fillPoly(mask, [pts], 255)
+                        continue
+                    
+                    # Process new format
+                    if polys is not None and scores is not None:
+                        for poly, score in zip(polys, scores):
+                            if score > 0.4:
+                                # Масштабируем координаты
+                                scaled_poly = poly * scale_inv
+                                pts = scaled_poly.astype(np.int32).reshape((-1, 1, 2))
+                                cv2.fillPoly(mask, [pts], 255)
+            
+            # Агрессивное расширение для Glow
+            if self.mask_dilation > 0:
+                kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (self.mask_dilation, self.mask_dilation))
+                mask = cv2.dilate(mask, kernel, iterations=1)
+            
+            # Сохраняем маску
+            mask_path = output_dir / img_path.name
+            cv2.imwrite(str(mask_path), mask)
+    
+    def _create_mask(self, img_path: Path, mask_path: Path):
+        """Legacy single-image mask creation (for compatibility)."""
+        self._create_masks_batch([img_path], mask_path.parent)
 
 
 class SubtitleRemoverProPainterWrapper:
