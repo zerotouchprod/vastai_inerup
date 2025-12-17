@@ -151,8 +151,7 @@ RUN echo "Downloading ProPainter weights..." && \
 
 # Проверяем наличие GPU и настраиваем ProPainter для использования GPU
 RUN echo "Checking GPU availability for ProPainter..." && \
-    python3 -c "import torch; print(f'PyTorch CUDA available: {torch.cuda.is_available()}'); \
-    if torch.cuda.is_available(): print(f'GPU: {torch.cuda.get_device_name(0)}')"
+    python3 -c "import torch; print(f'PyTorch CUDA available: {torch.cuda.is_available()}'); print(f'GPU: {torch.cuda.get_device_name(0)}' if torch.cuda.is_available() else 'No GPU available')"
 
 # Возвращаем рабочую директорию
 WORKDIR /workspace/project
