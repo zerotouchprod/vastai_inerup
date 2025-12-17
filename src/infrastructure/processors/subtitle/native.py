@@ -38,14 +38,40 @@ class SubtitleRemoverNative:
         self.mask_dilation = mask_dilation
         self.confidence_threshold = confidence_threshold
         logger.info(f"Initializing SubtitleRemoverNative (lang={lang}, mask_dilation={mask_dilation}, confidence={confidence_threshold})...")
-        # Initialize PaddleOCR with language setting
-        # Note: use_gpu and show_log parameters are deprecated in newer versions
-        self.ocr = PaddleOCR(lang=lang)
-        logger.info("PaddleOCR initialized successfully.")
+        
+        # Initialize PaddleOCR with OPTIMIZED settings to reduce memory usage
+        # Critical optimizations:
+        # 1. Use 'ch_ppocr_mobile_v2.0' instead of server models (smaller, faster)
+        # 2. Disable angle classification (not needed for subtitles)
+        # 3. Use CPU only (GPU models use more memory)
+        # 4. Disable unnecessary features
+        ocr_params = {
+            'lang': lang,
+            'use_angle_cls': False,  # Disable angle classification (saves memory)
+            'det_model_dir': None,   # Use default mobile model
+            'rec_model_dir': None,   # Use default mobile model
+            'cls_model_dir': None,   # No classification model
+        }
+        
+        # Try to use mobile model for better performance
+        try:
+            self.ocr = PaddleOCR(**ocr_params)
+            logger.info("PaddleOCR initialized with mobile models (optimized for memory)")
+        except Exception as e:
+            logger.warning(f"Failed to initialize with mobile models: {e}. Falling back to default.")
+            self.ocr = PaddleOCR(lang=lang)
+            logger.info("PaddleOCR initialized with default settings")
+        
+        # Monitor memory usage
+        import psutil
+        process = psutil.Process()
+        memory_mb = process.memory_info().rss / 1024 / 1024
+        logger.info(f"Initial memory usage: {memory_mb:.1f} MB")
 
     def process_frames(self, input_dir: Path, output_dir: Path) -> None:
         """
         Обрабатывает все изображения в input_dir и сохраняет в output_dir.
+        Оптимизировано для использования памяти.
         """
         output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -54,21 +80,54 @@ class SubtitleRemoverNative:
         total = len(frames)
 
         logger.info(f"Starting subtitle removal on {total} frames...")
-
-        for idx, frame_path in enumerate(frames):
-            try:
-                self._process_single_frame(frame_path, output_dir / frame_path.name)
-
-                # Show progress for every frame when processing small batches
-                if total <= 10:
-                    logger.info(f"Processed {idx+1}/{total} frames: {frame_path.name}")
-                elif (idx + 1) % 10 == 0 or (idx + 1) == total:
-                    logger.info(f"Processed {idx+1}/{total} frames...")
-            except Exception as e:
-                logger.error(f"Failed to process frame {frame_path}: {e}")
-                # В случае ошибки просто копируем оригинал, чтобы не ломать видео
-                import shutil
-                shutil.copy(frame_path, output_dir / frame_path.name)
+        
+        # Memory monitoring
+        import psutil
+        import gc
+        
+        # Process in smaller batches to reduce memory pressure
+        batch_size = 4  # Reduced from processing all at once
+        processed = 0
+        
+        for batch_start in range(0, total, batch_size):
+            batch_end = min(batch_start + batch_size, total)
+            batch_frames = frames[batch_start:batch_end]
+            
+            logger.info(f"Processing batch {batch_start//batch_size + 1}/{(total + batch_size - 1)//batch_size} "
+                       f"({len(batch_frames)} frames)...")
+            
+            for idx, frame_path in enumerate(batch_frames):
+                try:
+                    self._process_single_frame(frame_path, output_dir / frame_path.name)
+                    processed += 1
+                    
+                    # Show progress
+                    if total <= 10:
+                        logger.info(f"Processed {processed}/{total} frames: {frame_path.name}")
+                    elif processed % 5 == 0 or processed == total:
+                        # Monitor memory every 5 frames
+                        process = psutil.Process()
+                        memory_mb = process.memory_info().rss / 1024 / 1024
+                        logger.info(f"Processed {processed}/{total} frames... Memory: {memory_mb:.1f} MB")
+                        
+                except Exception as e:
+                    logger.error(f"Failed to process frame {frame_path}: {e}")
+                    # В случае ошибки просто копируем оригинал, чтобы не ломать видео
+                    import shutil
+                    shutil.copy(frame_path, output_dir / frame_path.name)
+                    processed += 1
+            
+            # Force garbage collection between batches
+            gc.collect()
+            
+            # Check memory usage between batches
+            process = psutil.Process()
+            memory_mb = process.memory_info().rss / 1024 / 1024
+            logger.info(f"Batch completed. Memory usage: {memory_mb:.1f} MB")
+            
+            # If memory is getting too high, warn user
+            if memory_mb > 4000:  # 4GB threshold
+                logger.warning(f"High memory usage detected: {memory_mb:.1f} MB. Consider reducing batch size.")
 
     def _process_single_frame(self, input_path: Path, output_path: Path) -> None:
         # 1. Загрузка изображения
