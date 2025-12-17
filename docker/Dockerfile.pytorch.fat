@@ -122,7 +122,7 @@ RUN mkdir -p /opt/realesrgan_models && \
 COPY docker/preload_paddleocr.py /tmp/preload_paddleocr.py
 RUN mkdir -p /root/.paddlex/official_models && \
     echo "Pre-downloading PaddleOCR models..." && \
-    python3 /tmp/preload_paddleocr.py && \
+    DISABLE_MODEL_SOURCE_CHECK=True python3 /tmp/preload_paddleocr.py && \
     echo "PaddleOCR models pre-download completed"
 
 # Force numpy<2 again in case any package upgraded it

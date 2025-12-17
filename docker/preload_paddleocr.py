@@ -5,6 +5,8 @@ This script is executed during Docker build to download English and Russian mode
 """
 
 import sys
+import os
+os.environ['DISABLE_MODEL_SOURCE_CHECK'] = 'True'
 sys.path.insert(0, '/opt/venv/lib/python3.10/site-packages')
 
 try:
