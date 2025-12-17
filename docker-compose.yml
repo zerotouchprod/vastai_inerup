@@ -14,7 +14,7 @@ services:
     volumes:
       - .:/workspace/project
     working_dir: /workspace/project
-    command: -c "pip install -r requirements.txt && python test_propainter.py"
+    command: -c "tail -f /dev/null"
     deploy:
       resources:
         reservations:

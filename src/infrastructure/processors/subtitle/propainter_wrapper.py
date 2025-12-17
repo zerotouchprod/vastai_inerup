@@ -70,7 +70,7 @@ class SubtitleRemoverProPainter:
         logger.info(f"Initializing ProPainter Subtitle Remover (lang={lang}, dilation={mask_dilation})")
 
         # 1. Init OCR (CPU is enough)
-        self.ocr = PaddleOCR(use_angle_cls=False, lang=lang, use_gpu=False, show_log=False)
+        self.ocr = PaddleOCR(lang=lang)
         
         # 2. Init ProPainter
         weights_path = Path(PROPAINTER_ROOT) / "weights/ProPainter.pth"
@@ -158,15 +158,43 @@ class SubtitleRemoverProPainter:
         h, w = img.shape[:2]
         mask = np.zeros((h, w), dtype=np.uint8)
         
-        result = self.ocr.ocr(img, cls=False)
-        if result and result[0]:
-            for line in result[0]:
-                coords = line[0]
-                conf = line[1][1]
-                # Ловим даже неуверенный текст, чтобы ProPainter его затер
-                if conf > 0.4: 
-                    pts = np.array(coords, dtype=np.int32).reshape((-1, 1, 2))
-                    cv2.fillPoly(mask, [pts], 255)
+        result = self.ocr.ocr(img)
+        if not result:
+            cv2.imwrite(str(mask_path), mask)
+            return
+        
+        # New PaddleOCR version returns a list of OCRResult objects
+        # Each element is a dict-like object with keys: rec_polys, rec_scores, rec_texts, dt_polys, etc.
+        # We'll iterate over rec_polys and rec_scores
+        for ocr_result in result:
+            if hasattr(ocr_result, 'rec_polys'):
+                polys = ocr_result.rec_polys
+                scores = ocr_result.rec_scores
+            elif isinstance(ocr_result, dict) and 'rec_polys' in ocr_result:
+                polys = ocr_result['rec_polys']
+                scores = ocr_result['rec_scores']
+            else:
+                # Old format: list of (coords, (text, conf))
+                if isinstance(ocr_result, list):
+                    for line in ocr_result:
+                        if isinstance(line, (list, tuple)) and len(line) >= 2:
+                            coords = line[0]
+                            if isinstance(line[1], (list, tuple)) and len(line[1]) >= 2:
+                                conf = line[1][1]
+                            else:
+                                conf = 0.0
+                            if conf > 0.4:
+                                pts = np.array(coords, dtype=np.int32).reshape((-1, 1, 2))
+                                cv2.fillPoly(mask, [pts], 255)
+                continue
+            
+            # Process new format
+            if polys is not None and scores is not None:
+                for poly, score in zip(polys, scores):
+                    if score > 0.4:
+                        # poly is array of shape (n, 2)
+                        pts = poly.astype(np.int32).reshape((-1, 1, 2))
+                        cv2.fillPoly(mask, [pts], 255)
         
         # Агрессивное расширение для Glow
         if self.mask_dilation > 0:
