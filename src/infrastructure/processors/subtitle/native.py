@@ -23,18 +23,21 @@ class SubtitleRemoverNative:
     Работает на CPU, совместим с PyTorch Nightly билдами.
     """
 
-    def __init__(self, lang: str = 'en', mask_dilation: int = 5):
+    def __init__(self, lang: str = 'en', mask_dilation: int = 8, confidence_threshold: float = 0.3):
         """
         :param lang: Язык субтитров ('en', 'ru' и т.д.)
         :param mask_dilation: На сколько пикселей расширять маску вокруг текста.
                               Больше = лучше убирает края, но мылит фон.
+        :param confidence_threshold: Порог уверенности для детекции текста (0.0-1.0).
+                                     Ниже = больше текста детектируется, но больше шума.
         """
         if PaddleOCR is None:
             raise ImportError("PaddleOCR not installed. Cannot remove subtitles.")
             
         self.lang = lang
         self.mask_dilation = mask_dilation
-        logger.info(f"Initializing SubtitleRemoverNative (lang={lang}, CPU)...")
+        self.confidence_threshold = confidence_threshold
+        logger.info(f"Initializing SubtitleRemoverNative (lang={lang}, mask_dilation={mask_dilation}, confidence={confidence_threshold})...")
         # Initialize PaddleOCR with language setting
         # Note: use_gpu and show_log parameters are deprecated in newer versions
         self.ocr = PaddleOCR(lang=lang)
@@ -110,13 +113,14 @@ class SubtitleRemoverNative:
                 for poly, score in zip(polygons, scores):
                     try:
                         conf = float(score)
-                        # Filter by confidence (only process high-confidence detections)
-                        if conf > 0.5:
+                        # Filter by confidence
+                        if conf > self.confidence_threshold:
                             # Convert polygon to correct format for fillPoly
                             # poly is numpy array of shape (n, 2)
                             points = poly.astype(np.int32).reshape((-1, 1, 2))
                             cv2.fillPoly(mask, [points], 255)
                             boxes_found = True
+                            logger.debug(f"Detected text with confidence {conf:.2f}")
                     except (ValueError, TypeError) as e:
                         logger.warning(f"Failed to parse polygon or score: {e}")
                         continue
@@ -144,11 +148,12 @@ class SubtitleRemoverNative:
                             except (IndexError, TypeError, ValueError):
                                 pass
                     
-                    # Filter by confidence (only process high-confidence detections)
-                    if conf > 0.5:
+                    # Filter by confidence
+                    if conf > self.confidence_threshold:
                         points = np.array(coords, dtype=np.int32).reshape((-1, 1, 2))
                         cv2.fillPoly(mask, [points], 255)
                         boxes_found = True
+                        logger.debug(f"Detected text with confidence {conf:.2f}")
                 except (IndexError, TypeError, ValueError) as e:
                     logger.warning(f"Failed to parse OCR result line: {line}, error: {e}")
                     continue
@@ -158,13 +163,26 @@ class SubtitleRemoverNative:
             return
 
         # 4. Расширение маски (Dilation)
-        # Это нужно, чтобы убрать артефакты сжатия вокруг букв
+        # Это нужно, чтобы убрать артефакты сжатия вокруг букв, особенно для субтитров с тенью/свечением
         kernel = np.ones((self.mask_dilation, self.mask_dilation), np.uint8)
         dilated_mask = cv2.dilate(mask, kernel, iterations=1)
+        
+        # Дополнительное расширение для субтитров с сильным свечением
+        if self.mask_dilation >= 8:
+            # Для больших масок делаем дополнительное размытие для плавного перехода
+            dilated_mask = cv2.GaussianBlur(dilated_mask, (5, 5), 0)
 
         # 5. Inpainting (Закрашивание)
-        # cv2.INPAINT_TELEA или cv2.INPAINT_NS. Telea обычно быстрее и дает меньше артефактов на тексте.
-        result_img = cv2.inpaint(img, dilated_mask, inpaintRadius=3, flags=cv2.INPAINT_TELEA)
+        # cv2.INPAINT_TELEA или cv2.INPAINT_NS. 
+        # Telea обычно быстрее, NS дает лучшее качество для больших областей.
+        # Увеличиваем радиус для лучшего удаления.
+        inpaint_radius = max(5, self.mask_dilation // 2)
+        result_img = cv2.inpaint(img, dilated_mask, inpaintRadius=inpaint_radius, flags=cv2.INPAINT_NS)
+        
+        # Если результат плохой, пробуем Telea как fallback
+        if np.sum(cv2.absdiff(img, result_img)) < 1000:  # Если почти ничего не изменилось
+            logger.debug("Trying Telea inpainting as fallback...")
+            result_img = cv2.inpaint(img, dilated_mask, inpaintRadius=inpaint_radius, flags=cv2.INPAINT_TELEA)
 
         # 6. Сохранение
         cv2.imwrite(str(output_path), result_img)

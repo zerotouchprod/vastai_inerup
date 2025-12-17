@@ -14,16 +14,18 @@ logger = logging.getLogger(__name__)
 class SubtitleRemoverWrapper(IProcessor):
     """Wrapper for subtitle removal processor."""
 
-    def __init__(self, lang: str = 'en', mask_dilation: int = 5):
+    def __init__(self, lang: str = 'en', mask_dilation: int = 8, confidence_threshold: float = 0.3):
         """
         Initialize subtitle remover.
 
         Args:
             lang: Language for OCR ('en', 'ru', etc.)
             mask_dilation: Mask dilation radius in pixels
+            confidence_threshold: Confidence threshold for text detection (0.0-1.0)
         """
         self._lang = lang
         self._mask_dilation = mask_dilation
+        self._confidence_threshold = confidence_threshold
         self._processor = None
         self._logger = logging.getLogger(__name__)
 
@@ -47,7 +49,8 @@ class SubtitleRemoverWrapper(IProcessor):
             if self._processor is None:
                 self._processor = SubtitleRemoverNative(
                     lang=self._lang,
-                    mask_dilation=self._mask_dilation
+                    mask_dilation=self._mask_dilation,
+                    confidence_threshold=self._confidence_threshold
                 )
 
             # Create temporary input directory
