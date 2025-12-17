@@ -131,6 +131,13 @@ RUN pip install --no-cache-dir --force-reinstall "numpy<2" && \
 
 ENV PYTHONPATH="/workspace/project:/workspace/project/external/Real-ESRGAN:/workspace/project/external/RIFE"
 
+
+# Enable strict frame count validation by default (ensures Real-ESRGAN doesn't change frame count)
+# Set to 0 to allow frame count changes (faster but less accurate)
+ENV STRICT_FRAME_COUNT=1
+
+# Copy entrypoint script that updates project from Git on every container start
+COPY scripts/entrypoint.sh /entrypoint.sh
 # --- PROPAINTER BLOCK ---
 RUN pip install --no-cache-dir imageio scipy scikit-image
 
@@ -149,13 +156,6 @@ WORKDIR /workspace/project
 ENV PROPAINTER_ROOT="/opt/ProPainter"
 ENV PYTHONPATH="${PYTHONPATH}:/opt/ProPainter"
 
-
-# Enable strict frame count validation by default (ensures Real-ESRGAN doesn't change frame count)
-# Set to 0 to allow frame count changes (faster but less accurate)
-ENV STRICT_FRAME_COUNT=1
-
-# Copy entrypoint script that updates project from Git on every container start
-COPY scripts/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
 # Set entrypoint to update project on every start (including reboot)

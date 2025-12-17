@@ -11,11 +11,11 @@ try:
     from paddleocr import PaddleOCR
     # Initialize PaddleOCR with English model to trigger model download
     # This will download models to ~/.paddlex/official_models
-    ocr = PaddleOCR(lang='en', show_log=False)
+    ocr = PaddleOCR(lang='en')
     print('✓ PaddleOCR English models downloaded')
     
     # Also download Russian model if needed
-    ocr_ru = PaddleOCR(lang='ru', show_log=False)
+    ocr_ru = PaddleOCR(lang='ru')
     print('✓ PaddleOCR Russian models downloaded')
     
     # Test with a simple image to ensure models work
