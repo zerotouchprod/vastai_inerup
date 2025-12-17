@@ -72,9 +72,12 @@ class VideoProcessingOrchestrator:
             self._metrics.start_timer('processing')
             processed_frames = self._process_frames(job, frames, workspace)
             self._metrics.stop_timer('processing')
+            
+            self._logger.info(f"✅ Frame processing completed. Got {len(processed_frames)} processed frames")
 
             # 5. Assemble
             self._metrics.start_timer('assembly')
+            self._logger.info("Starting video assembly...")
 
             # Normalize processed frame paths to strings (Path or str accepted downstream)
             if not processed_frames:
@@ -128,7 +131,12 @@ class VideoProcessingOrchestrator:
                 self._logger.info(f"Using fallback FPS: {target_fps}")
 
             self._logger.info(f"Assembly: {processed_frame_count} frames at {target_fps:.2f} fps = {processed_frame_count/target_fps:.2f}s duration")
-            self._assembler.assemble(frames=frame_paths, output_path=output_video, fps=target_fps)
+            try:
+                self._assembler.assemble(frames=frame_paths, output_path=output_video, fps=target_fps)
+                self._logger.info(f"✅ Video assembly completed: {output_video}")
+            except Exception as e:
+                self._logger.error(f"❌ Video assembly failed: {e}")
+                raise
             self._metrics.stop_timer('assembly')
 
             # 6. Upload
@@ -136,7 +144,13 @@ class VideoProcessingOrchestrator:
             upload_key = self._generate_upload_key(job)
             # Log the resolved upload key so CLI/remote logs show where the file will be uploaded
             self._logger.info(f"Resolved upload key for B2: {upload_key}")
-            upload_result = self._uploader.upload(output_video, upload_key)
+            self._logger.info(f"Uploading {output_video} ({output_video.stat().st_size / 1024 / 1024:.1f} MB) to B2...")
+            try:
+                upload_result = self._uploader.upload(output_video, upload_key)
+                self._logger.info(f"✅ Upload completed: {upload_result.url}")
+            except Exception as e:
+                self._logger.error(f"❌ Upload failed: {e}")
+                raise
             self._metrics.stop_timer('upload')
 
             # 7. Cleanup workspace
