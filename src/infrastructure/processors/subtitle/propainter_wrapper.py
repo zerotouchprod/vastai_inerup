@@ -107,8 +107,19 @@ class SubtitleRemoverProPainter:
         if not weights_path.exists():
             raise FileNotFoundError(f"Weights not found: {weights_path}")
             
+        logger.info(f"Loading ProPainter model from {weights_path}")
+        logger.info(f"Using device: {self.device}")
+        logger.info(f"CUDA available: {torch.cuda.is_available()}")
+        if torch.cuda.is_available():
+            logger.info(f"GPU: {torch.cuda.get_device_name(0)}")
+            logger.info(f"GPU memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.2f} GB")
+            
         self.model = InpaintGenerator(model_path=str(weights_path)).to(self.device)
         self.model.eval()
+        
+        # Проверяем, что модель действительно на правильном устройстве
+        model_device = next(self.model.parameters()).device
+        logger.info(f"ProPainter model loaded on device: {model_device}")
 
     def process_frames(self, input_dir: Path, output_dir: Path):
         import time
@@ -141,7 +152,8 @@ class SubtitleRemoverProPainter:
         
         # --- PASS 1: Generate Masks ---
         # Оптимизация: обрабатываем кадры батчами для лучшей производительности
-        batch_size = 4  # Можно увеличить если есть память
+        # Увеличиваем размер батча для лучшей производительности
+        batch_size = 8  # Увеличили с 4 до 8
         mask_start_time = time.time()
         
         if use_tqdm:
@@ -154,8 +166,9 @@ class SubtitleRemoverProPainter:
                 self._create_masks_batch(batch, tmp_mask_dir)
                 if (i + batch_size) % 40 == 0 or i + batch_size >= len(frames):
                     elapsed = time.time() - mask_start_time
-                    speed = (i + batch_size) / elapsed if elapsed > 0 else 0
-                    logger.info(f"Created masks for {min(i + batch_size, len(frames))}/{len(frames)} frames, speed: {speed:.1f} FPS")
+                    processed = min(i + batch_size, len(frames))
+                    speed = processed / elapsed if elapsed > 0 else 0
+                    logger.info(f"Created masks for {processed}/{len(frames)} frames, speed: {speed:.2f} FPS")
 
         logger.info("Step 2/2: Running AI Inpainting (ProPainter)...")
 
@@ -238,21 +251,46 @@ class SubtitleRemoverProPainter:
         if not img_paths:
             return
             
-        # Загружаем все изображения
+        import concurrent.futures
+        import threading
+        
+        # Используем локальное хранилище для потоков
+        thread_local = threading.local()
+        
+        def get_ocr():
+            """Получаем экземпляр OCR для текущего потока."""
+            if not hasattr(thread_local, "ocr"):
+                # Создаем отдельный экземпляр OCR для каждого потока
+                thread_local.ocr = PaddleOCR(
+                    lang=self.lang,
+                    use_angle_cls=False,
+                    show_log=False
+                )
+            return thread_local.ocr
+        
+        # Загружаем все изображения параллельно
         images = []
         valid_paths = []
-        for img_path in img_paths:
+        
+        def load_image(img_path):
             img = cv2.imread(str(img_path))
-            if img is not None:
-                images.append(img)
-                valid_paths.append(img_path)
+            return img, img_path
+        
+        # Используем ThreadPoolExecutor для параллельной загрузки изображений
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+            future_to_path = {executor.submit(load_image, img_path): img_path for img_path in img_paths}
+            for future in concurrent.futures.as_completed(future_to_path):
+                img, img_path = future.result()
+                if img is not None:
+                    images.append(img)
+                    valid_paths.append(img_path)
         
         if not images:
             return
             
         # Оптимизация: уменьшаем разрешение для OCR если изображения большие
         # PaddleOCR быстрее работает с меньшим разрешением
-        max_ocr_dim = 720  # Максимальный размер для OCR
+        max_ocr_dim = 480  # Уменьшили с 720 до 480 для большей скорости
         
         # Подготавливаем изображения для OCR
         ocr_images = []
@@ -274,16 +312,17 @@ class SubtitleRemoverProPainter:
                 ocr_images.append(img)
                 scale_factors.append(1.0)
         
-        # Выполняем OCR для всех изображений в батче
-        # PaddleOCR поддерживает батчинг через параметр cls_batch_num и rec_batch_num
-        # Но для простоты делаем последовательно, но с оптимизированными параметрами
-        for i, (img, ocr_img, img_path, scale_factor, (orig_h, orig_w)) in enumerate(
-            zip(images, ocr_images, valid_paths, scale_factors, original_shapes)):
+        # Функция для обработки одного изображения
+        def process_single_image(args):
+            i, ocr_img, img_path, scale_factor, orig_h, orig_w = args
             
             mask = np.zeros((orig_h, orig_w), dtype=np.uint8)
             
+            # Получаем OCR для текущего потока
+            ocr = get_ocr()
+            
             # Выполняем OCR на уменьшенном изображении
-            result = self.ocr.ocr(ocr_img)
+            result = ocr.ocr(ocr_img)
             
             if result:
                 # Масштабируем координаты обратно к оригинальному размеру
@@ -330,6 +369,20 @@ class SubtitleRemoverProPainter:
             # Сохраняем маску
             mask_path = output_dir / img_path.name
             cv2.imwrite(str(mask_path), mask)
+            
+            return True
+        
+        # Подготавливаем аргументы для параллельной обработки
+        args_list = []
+        for i, (img, ocr_img, img_path, scale_factor, (orig_h, orig_w)) in enumerate(
+            zip(images, ocr_images, valid_paths, scale_factors, original_shapes)):
+            args_list.append((i, ocr_img, img_path, scale_factor, orig_h, orig_w))
+        
+        # Обрабатываем изображения параллельно
+        # Используем ThreadPoolExecutor для параллельного OCR
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            # Ограничиваем количество потоков, чтобы не перегружать систему
+            list(executor.map(process_single_image, args_list))
     
     def _create_mask(self, img_path: Path, mask_path: Path):
         """Legacy single-image mask creation (for compatibility)."""
