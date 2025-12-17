@@ -78,10 +78,11 @@ RUN pip install --no-cache-dir \
 # --- NEW: OCR/Inpainting support (PaddleOCR/Tesseract + scikit-image) ---
 # Install PaddleOCR (CPU), pytesseract and scikit-image for subtitle detection and mask processing.
 # Use CPU paddlepaddle to avoid GPU/CUDA wheel conflicts inside the image.
-# Install specific version of paddlepaddle with noavx support for compatibility
+# Try to install paddlepaddle first, then paddleocr for better compatibility
 RUN pip install --no-cache-dir \
-    paddleocr pytesseract scikit-image tqdm && \
-    pip install --no-cache-dir paddlepaddle==2.5.2 -f https://www.paddlepaddle.org.cn/whl/linux/cpu-mkl-noavx.html && \
+    scikit-image tqdm && \
+    pip install --no-cache-dir paddlepaddle -f https://www.paddlepaddle.org.cn/whl/linux/cpu-mkl-noavx.html && \
+    pip install --no-cache-dir paddleocr pytesseract && \
     rm -rf /root/.cache/pip /tmp/*
 
 # Install Real-ESRGAN and RIFE as Python packages to avoid missing modules at runtime
