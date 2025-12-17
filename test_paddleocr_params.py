@@ -21,32 +21,24 @@ def test_paddleocr_params():
         return
     
     # Test different parameter combinations
-    # Add DISABLE_MODEL_SOURCE_CHECK=True to avoid connectivity checks
-    base_params = {'lang': 'en', 'use_angle_cls': False}
-    
     test_cases = [
         {
             'name': 'Minimal parameters',
-            'params': {**base_params, 'show_log': False}
-        },
-        {
-            'name': 'Minimal with model check disabled',
-            'params': {**base_params, 'show_log': False, 'disable_model_source_check': True}
+            'params': {'lang': 'en', 'use_angle_cls': False}
         },
         {
             'name': 'With GPU (use_gpu)',
-            'params': {**base_params, 'show_log': False, 'disable_model_source_check': True, 'use_gpu': True}
+            'params': {'lang': 'en', 'use_angle_cls': False, 'use_gpu': True}
         },
         {
             'name': 'With GPU (gpu)',
-            'params': {**base_params, 'show_log': False, 'disable_model_source_check': True, 'gpu': True}
+            'params': {'lang': 'en', 'use_angle_cls': False, 'gpu': True}
         },
         {
             'name': 'With det parameters',
             'params': {
-                **base_params,
-                'show_log': False,
-                'disable_model_source_check': True,
+                'lang': 'en',
+                'use_angle_cls': False,
                 'det_db_thresh': 0.3,
                 'det_db_box_thresh': 0.5,
                 'det_db_unclip_ratio': 1.6,
@@ -56,9 +48,8 @@ def test_paddleocr_params():
         {
             'name': 'With CPU optimization',
             'params': {
-                **base_params,
-                'show_log': False,
-                'disable_model_source_check': True,
+                'lang': 'en',
+                'use_angle_cls': False,
                 'enable_mkldnn': True,
                 'cpu_threads': 4
             }
