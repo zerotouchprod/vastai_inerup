@@ -7,21 +7,23 @@ services:
       dockerfile: docker/Dockerfile.pytorch.fat
     image: vastai-interup:pytorch-fat-local
     container_name: vastai_interup_dev
-    runtime: nvidia
     entrypoint: /bin/bash
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
+      - CUDA_VISIBLE_DEVICES=0
       - DISABLE_MODEL_SOURCE_CHECK=True
       - PROPAINTER_ROOT=/opt/ProPainter
       - PYTHONPATH=/workspace/project/src:/opt/ProPainter
+      - LOG_LEVEL=INFO
+      - TQDM_DISABLE=False
     volumes:
       - .:/workspace/project
     working_dir: /workspace/project
-    command: -c "tail -f /dev/null"
+    command: -c "python docker/check_gpu.py && echo 'GPU check completed. Ready for processing.' && tail -f /dev/null"
     deploy:
       resources:
         reservations:
           devices:
             - driver: nvidia
               count: all
-              capabilities: [gpu]
+              capabilities: [gpu, compute, utility]

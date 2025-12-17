@@ -1,55 +1,113 @@
 #!/usr/bin/env python3
 """
 Pre-download PaddleOCR models for faster startup.
-Simplified version to avoid Illegal instruction errors.
+Improved version with better logging and model verification.
 """
 
 import os
 import sys
 import logging
+import time
+from pathlib import Path
 
-# Disable verbose logging
-logging.getLogger().setLevel(logging.ERROR)
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+def check_existing_models():
+    """Check if models are already downloaded."""
+    model_dir = Path.home() / '.paddlex' / 'official_models'
+    if model_dir.exists():
+        model_files = list(model_dir.rglob('*.pdparams'))
+        model_files += list(model_dir.rglob('*.pdiparams'))
+        model_files += list(model_dir.rglob('*.pdmodel'))
+        
+        if model_files:
+            total_size = sum(f.stat().st_size for f in model_files)
+            logger.info(f"Found {len(model_files)} existing model files in {model_dir}")
+            logger.info(f"Total size: {total_size / 1024**2:.1f} MB")
+            return True, model_dir, len(model_files)
+    
+    return False, model_dir, 0
 
 def main():
+    start_time = time.time()
+    
+    # Check existing models first
+    has_models, model_dir, file_count = check_existing_models()
+    
+    if has_models and file_count >= 20:  # PaddleOCR has many small files
+        logger.info("✓ PaddleOCR models already exist. Skipping download.")
+        logger.info(f"Model directory: {model_dir}")
+        return True
+    
+    # Set environment variables before importing paddle
+    os.environ['DISABLE_MODEL_SOURCE_CHECK'] = 'True'
+    os.environ['LOG_LEVEL'] = 'ERROR'
+    
     try:
-        # Set environment variables before importing paddle
-        os.environ['DISABLE_MODEL_SOURCE_CHECK'] = 'True'
-        os.environ['LOG_LEVEL'] = 'ERROR'
-        
-        print('Attempting to import PaddleOCR...')
+        logger.info("Importing PaddleOCR...")
         from paddleocr import PaddleOCR
         
-        print('Initializing PaddleOCR English model (this will download models)...')
-        # Use minimal configuration
+        # Try to use tqdm for progress if available
+        try:
+            from tqdm import tqdm
+            use_tqdm = True
+        except ImportError:
+            use_tqdm = False
+            logger.info("tqdm not available, using simple logging")
+        
+        logger.info("Initializing PaddleOCR English model...")
+        
+        # Initialize with minimal settings
         ocr = PaddleOCR(
             lang='en',
             use_angle_cls=False,
             show_log=False,
-            use_gpu=False
+            use_gpu=False,  # CPU only for model downloading
+            enable_mkldnn=True  # Use MKL-DNN for better CPU performance
         )
-        print('✓ PaddleOCR English models initialized')
         
-        # Check if model directory was created
-        model_dir = os.path.expanduser('~/.paddlex/official_models')
-        if os.path.exists(model_dir):
-            print(f'Model directory created: {model_dir}')
-            # List a few files to verify
-            import glob
-            files = glob.glob(os.path.join(model_dir, '**', '*.pdparams'), recursive=True)
-            if files:
-                print(f'Found {len(files)} model files')
-            else:
-                print('Warning: No model files found, but directory exists')
+        logger.info("✓ PaddleOCR English model initialized")
+        
+        # Also initialize Russian model if needed
+        logger.info("Initializing PaddleOCR Russian model...")
+        ocr_ru = PaddleOCR(
+            lang='ru',
+            use_angle_cls=False,
+            show_log=False,
+            use_gpu=False,
+            enable_mkldnn=True
+        )
+        logger.info("✓ PaddleOCR Russian model initialized")
+        
+        # Verify models were downloaded
+        has_models_after, model_dir_after, file_count_after = check_existing_models()
+        
+        if has_models_after:
+            elapsed = time.time() - start_time
+            logger.info(f"✓ PaddleOCR models successfully verified")
+            logger.info(f"Total model files: {file_count_after}")
+            logger.info(f"Time taken: {elapsed:.1f} seconds")
+            
+            # Create a marker file to indicate successful pre-download
+            marker_file = model_dir_after / '.preload_complete'
+            marker_file.touch()
+            logger.info(f"Created marker file: {marker_file}")
         else:
-            print('Warning: Model directory not created yet')
+            logger.warning("Models may not have been downloaded successfully")
+            logger.info("They will be downloaded on first run")
         
         return True
         
     except Exception as e:
-        print(f'Warning: PaddleOCR initialization failed: {e}')
-        print('Models will be downloaded on first run instead')
-        return True  # Return True anyway to not fail the build
+        logger.error(f"PaddleOCR initialization failed: {e}")
+        import traceback
+        logger.debug(traceback.format_exc())
+        
+        # Even if initialization fails, don't fail the build
+        logger.info("Models will be downloaded on first run instead")
+        return True
 
 if __name__ == '__main__':
     success = main()
