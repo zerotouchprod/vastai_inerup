@@ -6,6 +6,7 @@ from domain.protocols import IProcessor
 from domain.exceptions import ProcessorNotAvailableError
 from infrastructure.processors import RifePytorchWrapper, RealESRGANPytorchWrapper
 from infrastructure.processors.subtitle import SubtitleRemoverWrapper
+from infrastructure.processors.subtitle.propainter_wrapper import SubtitleRemoverProPainterWrapper
 from shared.logging import get_logger
 
 logger = get_logger(__name__)
@@ -88,25 +89,32 @@ class ProcessorFactory:
         else:
             raise ProcessorNotAvailableError(f"Unknown prefer: {prefer}")
 
-    def create_subtitle_remover(self, prefer: str = 'auto', lang: str = 'en') -> Optional[IProcessor]:
+    def create_subtitle_remover(self, prefer: str = 'auto', lang: str = 'en', backend: str = 'auto') -> Optional[IProcessor]:
         """
         Create subtitle removal processor.
 
         Args:
-            prefer: Backend preference ('auto', 'native')
+            prefer: Backend preference ('auto', 'native', 'propainter') - deprecated, use backend parameter
             lang: Language code for OCR ('en', 'ru', etc.)
+            backend: Backend preference ('auto', 'native', 'propainter')
 
         Returns:
             Subtitle remover processor instance
         """
-        # Currently only native implementation exists
-        if prefer in ('auto', 'native'):
-            if SubtitleRemoverWrapper.is_available():
-                self._logger.info(f"Using subtitle remover native backend (lang={lang})")
-                return SubtitleRemoverWrapper(lang=lang)
-            raise ProcessorNotAvailableError("Subtitle remover not available (requires paddleocr, opencv)")
-        else:
-            raise ProcessorNotAvailableError(f"Unknown prefer: {prefer}")
+        # Determine backend (prefer parameter for backward compatibility)
+        if backend == 'auto' and prefer != 'auto':
+            # If prefer is specified and backend is auto, use prefer
+            backend = prefer
+        
+        # Check for ProPainter backend (единственный рабочий вариант)
+        if backend in ('auto', 'propainter', 'native'):  # native тоже перенаправляем на ProPainter
+            if SubtitleRemoverProPainterWrapper.is_available():
+                self._logger.info(f"Using ProPainter subtitle remover backend (lang={lang})")
+                return SubtitleRemoverProPainterWrapper(lang=lang)
+            else:
+                raise ProcessorNotAvailableError("ProPainter subtitle remover not available (requires ProPainter installation in /opt/ProPainter)")
+        
+        raise ProcessorNotAvailableError(f"Unknown backend: {backend}")
 
     def create_upscaler(self, prefer: str = 'auto') -> Optional[IProcessor]:
         """
