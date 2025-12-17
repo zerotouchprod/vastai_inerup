@@ -76,25 +76,31 @@ class SubtitleRemoverProPainter:
         ocr_device = 'gpu' if (use_gpu_for_ocr and torch.cuda.is_available()) else 'cpu'
         logger.info(f"Using {ocr_device.upper()} for PaddleOCR")
         
-        # Используем минимальный набор параметров, который точно работает
-        # В текущей версии PaddleOCR (3.3.2) многие параметры не поддерживаются
-        # Основные рабочие параметры: lang, use_angle_cls, show_log
+        # Используем абсолютно минимальный набор параметров
+        # В текущей версии PaddleOCR (3.3.2) поддерживаются только базовые параметры
+        # Основные рабочие параметры: lang, use_angle_cls
         
         ocr_params = {
             'lang': lang,
             'use_angle_cls': False,  # Отключаем для скорости
-            'show_log': False,       # Отключаем логи для чистоты вывода
         }
         
-        # Параметр для отключения проверки подключения к моделям
-        # Это ускоряет инициализацию
-        ocr_params['disable_model_source_check'] = True
-        
-        # В текущей версии параметры GPU могут не поддерживаться
-        # или называться по-другому. Используем только CPU для надежности
-        # Если нужен GPU, можно попробовать добавить позже
-        
-        self.ocr = PaddleOCR(**ocr_params)
+        # Параметр show_log может не поддерживаться в некоторых версиях
+        # Пробуем добавить, но если не поддерживается - убираем
+        try:
+            # Пробуем с show_log
+            test_params = ocr_params.copy()
+            test_params['show_log'] = False
+            self.ocr = PaddleOCR(**test_params)
+            logger.info("PaddleOCR initialized with show_log=False")
+        except Exception as e:
+            if "Unknown argument" in str(e) and "show_log" in str(e):
+                # Если show_log не поддерживается, используем без него
+                logger.warning("show_log parameter not supported, using default")
+                self.ocr = PaddleOCR(**ocr_params)
+            else:
+                # Другая ошибка - пробрасываем дальше
+                raise
         
         # 2. Init ProPainter
         weights_path = Path(PROPAINTER_ROOT) / "weights/ProPainter.pth"
