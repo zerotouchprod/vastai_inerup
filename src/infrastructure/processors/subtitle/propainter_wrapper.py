@@ -85,22 +85,9 @@ class SubtitleRemoverProPainter:
             'use_angle_cls': False,  # Отключаем для скорости
         }
         
-        # Параметр show_log может не поддерживаться в некоторых версиях
-        # Пробуем добавить, но если не поддерживается - убираем
-        try:
-            # Пробуем с show_log
-            test_params = ocr_params.copy()
-            test_params['show_log'] = False
-            self.ocr = PaddleOCR(**test_params)
-            logger.info("PaddleOCR initialized with show_log=False")
-        except Exception as e:
-            if "Unknown argument" in str(e) and "show_log" in str(e):
-                # Если show_log не поддерживается, используем без него
-                logger.warning("show_log parameter not supported, using default")
-                self.ocr = PaddleOCR(**ocr_params)
-            else:
-                # Другая ошибка - пробрасываем дальше
-                raise
+        # Инициализируем PaddleOCR с минимальными параметрами
+        self.ocr = PaddleOCR(**ocr_params)
+        logger.info("PaddleOCR initialized with minimal parameters")
         
         # 2. Init ProPainter
         weights_path = Path(PROPAINTER_ROOT) / "weights/ProPainter.pth"
@@ -261,10 +248,10 @@ class SubtitleRemoverProPainter:
             """Получаем экземпляр OCR для текущего потока."""
             if not hasattr(thread_local, "ocr"):
                 # Создаем отдельный экземпляр OCR для каждого потока
+                # Используем только минимальные параметры
                 thread_local.ocr = PaddleOCR(
                     lang=self.lang,
-                    use_angle_cls=False,
-                    show_log=False
+                    use_angle_cls=False
                 )
             return thread_local.ocr
         
