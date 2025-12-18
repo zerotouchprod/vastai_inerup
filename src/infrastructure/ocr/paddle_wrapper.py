@@ -41,16 +41,17 @@ class ThreadSafeOCR:
         logger.info(f"Initialized ThreadSafeOCR (lang={lang}, use_gpu={use_gpu_for_ocr})")
     
     def _setup_paddle_logging(self) -> None:
-        """Configure PaddleOCR logging to reduce noise."""
+        """Configure PaddleOCR logging to reduce noise but keep important info."""
         import warnings
         warnings.filterwarnings('ignore')
         
-        # Configure all possible PaddleOCR loggers
-        for logger_name in ['ppocr', 'paddleocr', 'paddle', 'paddlex', 'paddle.nn', 'paddle.fluid']:
-            logging.getLogger(logger_name).setLevel(logging.WARNING)
+        # Configure PaddleOCR loggers - set to INFO to see initialization messages
+        for logger_name in ['ppocr', 'paddleocr']:
+            logging.getLogger(logger_name).setLevel(logging.INFO)
         
-        # Also disable logging for root logger from Paddle
-        logging.getLogger().setLevel(logging.WARNING)
+        # Suppress more verbose Paddle loggers
+        for logger_name in ['paddle', 'paddlex', 'paddle.nn', 'paddle.fluid']:
+            logging.getLogger(logger_name).setLevel(logging.WARNING)
     
     def _get_ocr_instance(self):
         """Get OCR instance for current thread."""

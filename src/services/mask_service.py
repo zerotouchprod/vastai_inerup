@@ -69,6 +69,10 @@ class MaskGeneratorService:
         try:
             output_dir.mkdir(parents=True, exist_ok=True)
             
+            logger.info(f"Starting mask generation for {input_dir} -> {output_dir}")
+            logger.info(f"Parameters: lang={self.lang}, dilation={self.mask_dilation}, "
+                       f"confidence={self.confidence_threshold}, batch_size={batch_size}")
+            
             # Generate masks using OCR wrapper
             mask_dir = self.ocr_wrapper.create_masks_for_directory(
                 input_dir=input_dir,
@@ -81,10 +85,13 @@ class MaskGeneratorService:
             if self.mask_dilation > 0:
                 self._apply_dilation(mask_dir)
             
-            logger.info(f"Masks generated successfully: {mask_dir}")
+            # Count generated masks
+            mask_files = list(mask_dir.glob("*.png")) + list(mask_dir.glob("*.jpg"))
+            logger.info(f"Masks generated successfully: {mask_dir} ({len(mask_files)} masks)")
             return mask_dir
             
         except Exception as e:
+            logger.error(f"Failed to generate masks: {e}")
             raise ProcessingError(f"Failed to generate masks: {e}")
     
     def _apply_dilation(self, mask_dir: Path) -> None:
