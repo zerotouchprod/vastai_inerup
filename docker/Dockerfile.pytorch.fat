@@ -161,117 +161,6 @@ ENV CUDA_VISIBLE_DEVICES="0"
 ENV NVIDIA_VISIBLE_DEVICES="all"
 ENV NVIDIA_DRIVER_CAPABILITIES="compute,utility"
 
-# Создаем улучшенный скрипт для проверки GPU при запуске с поддержкой разных GPU
-RUN cat > /usr/local/bin/check_gpu.sh << 'EOF' && chmod +x /usr/local/bin/check_gpu.sh
-#!/bin/bash
-echo "=========================================="
-echo "GPU Diagnostics (run-time check)"
-echo "=========================================="
-echo "Checking compatibility with various GPUs (RTX 2060, RTX 3080, etc.)..."
-
-python3 -c "
-import torch
-print(f\"PyTorch version: {torch.__version__}\")
-print(f\"PyTorch built with CUDA: {\"cu\" in torch.__version__}\")
-
-# Проверяем доступность CUDA
-cuda_available = torch.cuda.is_available()
-print(f\"CUDA available at runtime: {cuda_available}\")
-
-if cuda_available:
-    device_count = torch.cuda.device_count()
-    print(f\"Number of GPUs detected: {device_count}\")
-    
-    for i in range(device_count):
-        print(f\"\\n--- GPU {i} ---\")
-        print(f\"Name: {torch.cuda.get_device_name(i)}\")
-        
-        try:
-            props = torch.cuda.get_device_properties(i)
-            print(f\"Compute capability: {props.major}.{props.minor}\")
-            print(f\"GPU memory: {props.total_memory / 1e9:.2f} GB\")
-            
-            # Проверяем совместимость с разными GPU
-            gpu_name = torch.cuda.get_device_name(i).lower()
-            if \"rtx 50\" in gpu_name or \"rtx 5090\" in gpu_name or \"rtx 5080\" in gpu_name:
-                print(\"✓ RTX 5000 series detected - fully compatible with CUDA 12.1\")
-                print(\"  Architecture: Ada Lovelace (compute capability 8.9+)\")
-                print(\"  Expected performance: Excellent (16-32 GB VRAM)\")
-                print(\"  Note: Newest architecture, optimal for AI workloads\")
-            elif \"rtx 40\" in gpu_name or \"rtx 4090\" in gpu_name or \"rtx 4080\" in gpu_name:
-                print(\"✓ RTX 4000 series detected - fully compatible with CUDA 12.1\")
-                print(\"  Architecture: Ada Lovelace (compute capability 8.9)\")
-                print(\"  Expected performance: Excellent (12-24 GB VRAM)\")
-            elif \"rtx 3080\" in gpu_name or \"rtx 3090\" in gpu_name:
-                print(\"✓ RTX 3000 series detected - fully compatible with CUDA 12.1\")
-                print(\"  Architecture: Ampere (compute capability 8.6-8.9)\")
-                print(\"  Expected performance: Excellent (10-24 GB VRAM)\")
-            elif \"rtx 2060\" in gpu_name or \"rtx 2070\" in gpu_name or \"rtx 2080\" in gpu_name:
-                print(\"✓ RTX 2000 series detected - fully compatible with CUDA 12.1\")
-                print(\"  Architecture: Turing (compute capability 7.5)\")
-                print(\"  Expected performance: Good (6-11 GB VRAM)\")
-            elif \"rtx 3060\" in gpu_name or \"rtx 3070\" in gpu_name:
-                print(\"✓ RTX 3000 series (GA10x) detected - fully compatible with CUDA 12.1\")
-                print(\"  Architecture: Ampere (compute capability 8.6)\")
-                print(\"  Expected performance: Very Good (8-12 GB VRAM)\")
-            elif \"gtx\" in gpu_name or \"titan\" in gpu_name:
-                print(\"✓ Legacy NVIDIA GPU detected - may work with limitations\")
-                print(\"  Check compute capability >= 3.5\")
-            elif \"quadro\" in gpu_name or \"tesla\" in gpu_name:
-                print(\"✓ Professional/workstation GPU detected - fully compatible\")
-                print(\"  Optimized for compute workloads\")
-            else:
-                print(\"✓ NVIDIA GPU detected - should work\")
-                
-            # Проверяем compute capability
-            if props.major >= 7:
-                print(f\"✓ Compute capability {props.major}.{props.minor} is excellent for AI workloads\")
-            elif props.major >= 6:
-                print(f\"✓ Compute capability {props.major}.{props.minor} is good for AI workloads\")
-            elif props.major >= 3:
-                print(f\"⚠ Compute capability {props.major}.{props.minor} may have performance limitations\")
-            else:
-                print(f\"⚠ Compute capability {props.major}.{props.minor} may not be fully supported\")
-                
-        except Exception as e:
-            print(f\"Error getting GPU properties: {e}\")
-    
-    print(\"\\n✓ All detected GPUs are available for ProPainter and PyTorch\")
-    
-else:
-    print(\"\\n⚠️  CUDA not available at runtime!\")
-    print(\"   ProPainter will use CPU (slower but functional)\")
-    print(\"   To enable GPU, ensure:\")
-    print(\"   1. Docker is running with --gpus flag (docker run --gpus all ...)\")
-    print(\"   2. NVIDIA drivers are installed on host (nvidia-smi should work)\")
-    print(\"   3. Host has compatible GPU (NVIDIA with compute capability >= 3.5)\")
-    print(\"   4. CUDA version matches (this image uses CUDA 12.1, forward compatible with 12.2-12.4)\")
-    
-    # Проверяем nvidia-smi для диагностики
-    import subprocess
-    try:
-        result = subprocess.run([\"nvidia-smi\"], capture_output=True, text=True)
-        if result.returncode == 0:
-            print(\"\\nnvidia-smi output (first 5 lines):\")
-            for line in result.stdout.split(\"\\n\")[:5]:
-                if line.strip():
-                    print(f\"  {line.strip()}\")
-        else:
-            print(\"\\nnvidia-smi not available or failed\")
-    except:
-        print(\"\\nCould not run nvidia-smi\")
-"
-echo "=========================================="
-EOF
-
-# Добавляем проверку GPU в entrypoint для автоматической диагностики при запуске
-RUN echo '#!/bin/bash
-# Run GPU diagnostics
-/usr/local/bin/check_gpu.sh
-
-# Continue with original entrypoint
-exec "$@"
-' > /usr/local/bin/entrypoint_with_gpu_check.sh && chmod +x /usr/local/bin/entrypoint_with_gpu_check.sh
 
 # Pre-download PaddleOCR models for faster startup (using improved script)
 COPY docker/preload_paddleocr_fixed.py /tmp/preload_paddleocr.py
@@ -286,8 +175,7 @@ RUN mkdir -p /root/.paddlex/official_models && \
 
 RUN chmod +x /entrypoint.sh
 
-# Set entrypoint with GPU check
-ENTRYPOINT ["/usr/local/bin/entrypoint_with_gpu_check.sh", "/entrypoint.sh"]
+ENTRYPOINT ["/entrypoint.sh"]
 
 # Default command: start a bash shell
 CMD ["/bin/bash"]
