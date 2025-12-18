@@ -123,11 +123,44 @@ class SubtitleRemoverProPainter:
                               чтобы он перерисовал весь ореол субтитров.
         :param use_gpu_for_ocr: Использовать GPU для OCR если доступно (может быть быстрее)
         """
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        # ПРИНУДИТЕЛЬНАЯ проверка доступности CUDA для RTX 2060 6GB
+        import subprocess
+        import os
+        
+        # Проверяем наличие GPU через nvidia-smi
+        has_gpu = False
+        try:
+            result = subprocess.run(['nvidia-smi'], capture_output=True, text=True)
+            has_gpu = result.returncode == 0
+        except:
+            has_gpu = False
+        
+        # Проверяем через PyTorch
+        torch_cuda_available = torch.cuda.is_available()
+        
+        # Для RTX 2060 6GB принудительно используем GPU если доступен
+        if has_gpu or torch_cuda_available:
+            self.device = torch.device("cuda")
+            logger.info(f"GPU detected: forcing CUDA device for RTX 2060 6GB")
+        else:
+            self.device = torch.device("cpu")
+            logger.warning(f"No GPU detected, using CPU (slow!)")
+        
         self.lang = lang
         self.mask_dilation = mask_dilation
         
         logger.info(f"Initializing ProPainter Subtitle Remover (lang={lang}, dilation={mask_dilation})")
+        logger.info(f"Using device: {self.device}")
+        logger.info(f"PyTorch CUDA available: {torch.cuda.is_available()}")
+        
+        # Детальная информация о GPU если доступно
+        if self.device.type == 'cuda':
+            try:
+                logger.info(f"GPU: {torch.cuda.get_device_name(0)}")
+                logger.info(f"GPU memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.2f} GB")
+                logger.info(f"CUDA version: {torch.version.cuda}")
+            except Exception as e:
+                logger.warning(f"Could not get GPU details: {e}")
 
         # 1. Init OCR with optimized parameters
         if PaddleOCR is None:
@@ -163,17 +196,29 @@ class SubtitleRemoverProPainter:
                 # Восстанавливаем исходный уровень логирования
                 logging.getLogger('ppocr').setLevel(original_level)
         
-        # 2. Init ProPainter
+        # 2. Init ProPainter с оптимизациями для RTX 2060 6GB
         weights_path = Path(PROPAINTER_ROOT) / "weights/ProPainter.pth"
         if not weights_path.exists():
             raise FileNotFoundError(f"Weights not found: {weights_path}")
             
         logger.info(f"Loading ProPainter model from {weights_path}")
-        logger.info(f"Using device: {self.device}")
-        logger.info(f"CUDA available: {torch.cuda.is_available()}")
-        if torch.cuda.is_available():
-            logger.info(f"GPU: {torch.cuda.get_device_name(0)}")
-            logger.info(f"GPU memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.2f} GB")
+        
+        # Оптимизации для RTX 2060 6GB
+        if self.device.type == 'cuda':
+            # Очищаем кэш CUDA перед загрузкой модели
+            torch.cuda.empty_cache()
+            
+            # Мониторинг памяти перед загрузкой
+            allocated = torch.cuda.memory_allocated() / 1024**3
+            reserved = torch.cuda.memory_reserved() / 1024**3
+            logger.info(f"GPU memory before loading: {allocated:.2f} GB allocated, {reserved:.2f} GB reserved")
+            
+            # Используем mixed precision для экономии VRAM
+            from torch.cuda.amp import autocast
+            self.autocast = autocast
+            logger.info("Mixed precision (autocast) enabled for RTX 2060 6GB")
+        else:
+            self.autocast = None
             
         self.model = InpaintGenerator(model_path=str(weights_path)).to(self.device)
         self.model.eval()
@@ -181,6 +226,18 @@ class SubtitleRemoverProPainter:
         # Проверяем, что модель действительно на правильном устройстве
         model_device = next(self.model.parameters()).device
         logger.info(f"ProPainter model loaded on device: {model_device}")
+        
+        # Мониторинг памяти после загрузки
+        if self.device.type == 'cuda':
+            allocated = torch.cuda.memory_allocated() / 1024**3
+            reserved = torch.cuda.memory_reserved() / 1024**3
+            logger.info(f"GPU memory after loading: {allocated:.2f} GB allocated, {reserved:.2f} GB reserved")
+            
+            # Предупреждение если мало памяти
+            total_memory = torch.cuda.get_device_properties(0).total_memory / 1024**3
+            if allocated > total_memory * 0.8:
+                logger.warning(f"High GPU memory usage: {allocated:.2f}/{total_memory:.2f} GB ({allocated/total_memory*100:.1f}%)")
+                logger.warning("Consider reducing batch size or resolution")
 
     def process_frames(self, input_dir: Path, output_dir: Path):
         import time
@@ -272,7 +329,13 @@ class SubtitleRemoverProPainter:
         with torch.no_grad():
             # Pred output: [1, T, 3, H, W]
             logger.info("Starting ProPainter inference...")
-            pred_frames = self.model(masked_input, video_masks)
+            
+            # Используем mixed precision для RTX 2060 6GB если доступно
+            if self.autocast is not None:
+                with self.autocast():
+                    pred_frames = self.model(masked_input, video_masks)
+            else:
+                pred_frames = self.model(masked_input, video_masks)
         
         inference_time = time.time() - inference_start
         logger.info(f"ProPainter inference completed in {inference_time:.1f} seconds")
