@@ -162,7 +162,7 @@ ENV NVIDIA_VISIBLE_DEVICES="all"
 ENV NVIDIA_DRIVER_CAPABILITIES="compute,utility"
 
 # Создаем улучшенный скрипт для проверки GPU при запуске с поддержкой разных GPU
-RUN cat > /usr/local/bin/check_gpu.sh << 'EOF'
+RUN cat > /usr/local/bin/check_gpu.sh << 'EOF' && chmod +x /usr/local/bin/check_gpu.sh
 #!/bin/bash
 echo "=========================================="
 echo "GPU Diagnostics (run-time check)"
@@ -263,7 +263,6 @@ else:
 "
 echo "=========================================="
 EOF
-chmod +x /usr/local/bin/check_gpu.sh
 
 # Добавляем проверку GPU в entrypoint для автоматической диагностики при запуске
 RUN echo '#!/bin/bash
