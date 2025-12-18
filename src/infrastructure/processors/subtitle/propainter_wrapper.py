@@ -70,7 +70,13 @@ if PaddleOCR:
     # АГРЕССИВНОЕ подавление ВСЕХ выводов PaddleOCR
     try:
         import paddle
-        paddle.set_log_level(4)  # 4=CRITICAL (максимальное подавление)
+        # Проверяем, существует ли метод set_log_level
+        if hasattr(paddle, 'set_log_level'):
+            paddle.set_log_level(4)  # 4=CRITICAL (максимальное подавление)
+        else:
+            # Альтернативный способ подавления логов
+            import logging
+            logging.getLogger('paddle').setLevel(logging.WARNING)
     except ImportError:
         pass
     

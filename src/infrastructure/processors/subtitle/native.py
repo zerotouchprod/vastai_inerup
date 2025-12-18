@@ -25,8 +25,17 @@ except ImportError:
 # Дополнительная настройка после импорта
 if PaddleOCR:
     # Подавляем все информационные сообщения от PaddleOCR
-    import paddle
-    paddle.set_log_level(3)  # 0=DEBUG, 1=INFO, 2=WARNING, 3=ERROR, 4=CRITICAL
+    try:
+        import paddle
+        # Проверяем, существует ли метод set_log_level
+        if hasattr(paddle, 'set_log_level'):
+            paddle.set_log_level(3)  # 0=DEBUG, 1=INFO, 2=WARNING, 3=ERROR, 4=CRITICAL
+        else:
+            # Альтернативный способ подавления логов
+            import logging
+            logging.getLogger('paddle').setLevel(logging.WARNING)
+    except ImportError:
+        pass
     
     # Отключаем прогресс-бары и другие выводы
     import os
