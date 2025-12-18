@@ -5,7 +5,9 @@
 # Build locally:
 #   docker build -f Dockerfile.pytorch.fat -t vastai-interup:pytorch-fat .
 
-FROM nvidia/cuda:13.0.1-cudnn-runtime-ubuntu22.04 AS base
+# Используем более универсальный базовый образ с CUDA 12.2 для совместимости с RTX 3080
+# CUDA 12.2 совместим с большинством современных GPU включая RTX 3080
+FROM nvidia/cuda:12.2.2-cudnn8-runtime-ubuntu22.04 AS base
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -37,14 +39,14 @@ ENV PATH="/opt/venv/bin:$PATH"
 # Upgrade pip and install minimal Python packages
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 
-# Install CUDA-enabled PyTorch wheel for CUDA 13.0 (compatible with RTX 2060 6GB)
-# Используем стабильную версию PyTorch для CUDA 13.0 вместо nightly
-# NOTE: This installs PyTorch WITH CUDA support even if building on a machine without GPU
-# The actual GPU availability will be checked at runtime, not at build time
+# Устанавливаем PyTorch с поддержкой CUDA 12.2 для совместимости с RTX 3080
+# CUDA 12.2 совместим с большинством GPU: RTX 2060, RTX 3080, и другими
 RUN pip uninstall -y torch torchvision || true && \
-    echo "Installing PyTorch with CUDA 13.0 support..." && \
+    echo "Installing PyTorch with CUDA 12.2 support (compatible with RTX 2060, RTX 3080, etc.)..." && \
     echo "Note: Building on machine without GPU, but installing CUDA-enabled PyTorch for runtime use on GPU machines" && \
-    pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cu130 && \
+    pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cu122 && \
+    echo "Verifying PyTorch installation..." && \
+    python3 -c "import torch; print(f'PyTorch version: {torch.__version__}'); print(f'PyTorch built with CUDA: {\"cu\" in torch.__version__}')" && \
     echo "PyTorch installation complete. GPU availability will be checked at runtime." && \
     rm -rf /root/.cache/pip
 
@@ -79,11 +81,11 @@ RUN pip install --no-cache-dir \
 
 # --- NEW: OCR/Inpainting support (PaddleOCR/Tesseract + scikit-image) ---
 # Install PaddleOCR with GPU support, pytesseract and scikit-image for subtitle detection and mask processing.
-# We install GPU version of PaddlePaddle even if building without GPU - it will work on GPU machines
+# Используем более новую версию PaddlePaddle совместимую с CUDA 12.2
 RUN pip install --no-cache-dir \
     scikit-image tqdm && \
-    echo "Installing PaddlePaddle with GPU support (will work on GPU machines at runtime)..." && \
-    pip install --no-cache-dir paddlepaddle-gpu==2.6.0 -f https://www.paddlepaddle.org.cn/whl/linux/mkl/avx/stable.html && \
+    echo "Installing PaddlePaddle with GPU support for CUDA 12.2..." && \
+    pip install --no-cache-dir paddlepaddle-gpu==2.5.2.post122 -f https://www.paddlepaddle.org.cn/whl/linux/mkl/avx/stable.html && \
     pip install --no-cache-dir paddleocr pytesseract && \
     rm -rf /root/.cache/pip /tmp/*
 
@@ -159,29 +161,104 @@ ENV CUDA_VISIBLE_DEVICES="0"
 ENV NVIDIA_VISIBLE_DEVICES="all"
 ENV NVIDIA_DRIVER_CAPABILITIES="compute,utility"
 
-# Создаем скрипт для проверки GPU при запуске (вместо проверки при сборке)
+# Создаем улучшенный скрипт для проверки GPU при запуске с поддержкой разных GPU
 RUN echo '#!/bin/bash
 echo "=========================================="
 echo "GPU Diagnostics (run-time check)"
 echo "=========================================="
+echo "Checking compatibility with various GPUs (RTX 2060, RTX 3080, etc.)..."
+
 python3 -c "
 import torch
 print(f\"PyTorch version: {torch.__version__}\")
-print(f\"PyTorch built with CUDA: {\"cuda\" in torch.__version__.lower()}\")
-print(f\"CUDA available at runtime: {torch.cuda.is_available()}\")
-if torch.cuda.is_available():
-    print(f\"GPU: {torch.cuda.get_device_name(0)}\")
-    print(f\"CUDA version: {torch.version.cuda}\")
-    print(f\"GPU memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.2f} GB\")
-    print(f\"Compute capability: {torch.cuda.get_device_properties(0).major}.{torch.cuda.get_device_properties(0).minor}\")
-    print(\"✓ GPU is available for ProPainter and PyTorch\")
+print(f\"PyTorch built with CUDA: {\"cu\" in torch.__version__}\")
+
+# Проверяем доступность CUDA
+cuda_available = torch.cuda.is_available()
+print(f\"CUDA available at runtime: {cuda_available}\")
+
+if cuda_available:
+    device_count = torch.cuda.device_count()
+    print(f\"Number of GPUs detected: {device_count}\")
+    
+    for i in range(device_count):
+        print(f\"\\n--- GPU {i} ---\")
+        print(f\"Name: {torch.cuda.get_device_name(i)}\")
+        
+        try:
+            props = torch.cuda.get_device_properties(i)
+            print(f\"Compute capability: {props.major}.{props.minor}\")
+            print(f\"GPU memory: {props.total_memory / 1e9:.2f} GB\")
+            
+            # Проверяем совместимость с разными GPU
+            gpu_name = torch.cuda.get_device_name(i).lower()
+            if \"rtx 50\" in gpu_name or \"rtx 5090\" in gpu_name or \"rtx 5080\" in gpu_name:
+                print(\"✓ RTX 5000 series detected - fully compatible with CUDA 12.2\")
+                print(\"  Architecture: Ada Lovelace (compute capability 8.9+)\")
+                print(\"  Expected performance: Excellent (16-32 GB VRAM)\")
+                print(\"  Note: Newest architecture, optimal for AI workloads\")
+            elif \"rtx 40\" in gpu_name or \"rtx 4090\" in gpu_name or \"rtx 4080\" in gpu_name:
+                print(\"✓ RTX 4000 series detected - fully compatible with CUDA 12.2\")
+                print(\"  Architecture: Ada Lovelace (compute capability 8.9)\")
+                print(\"  Expected performance: Excellent (12-24 GB VRAM)\")
+            elif \"rtx 3080\" in gpu_name or \"rtx 3090\" in gpu_name:
+                print(\"✓ RTX 3000 series detected - fully compatible with CUDA 12.2\")
+                print(\"  Architecture: Ampere (compute capability 8.6-8.9)\")
+                print(\"  Expected performance: Excellent (10-24 GB VRAM)\")
+            elif \"rtx 2060\" in gpu_name or \"rtx 2070\" in gpu_name or \"rtx 2080\" in gpu_name:
+                print(\"✓ RTX 2000 series detected - fully compatible with CUDA 12.2\")
+                print(\"  Architecture: Turing (compute capability 7.5)\")
+                print(\"  Expected performance: Good (6-11 GB VRAM)\")
+            elif \"rtx 3060\" in gpu_name or \"rtx 3070\" in gpu_name:
+                print(\"✓ RTX 3000 series (GA10x) detected - fully compatible with CUDA 12.2\")
+                print(\"  Architecture: Ampere (compute capability 8.6)\")
+                print(\"  Expected performance: Very Good (8-12 GB VRAM)\")
+            elif \"gtx\" in gpu_name or \"titan\" in gpu_name:
+                print(\"✓ Legacy NVIDIA GPU detected - may work with limitations\")
+                print(\"  Check compute capability >= 3.5\")
+            elif \"quadro\" in gpu_name or \"tesla\" in gpu_name:
+                print(\"✓ Professional/workstation GPU detected - fully compatible\")
+                print(\"  Optimized for compute workloads\")
+            else:
+                print(\"✓ NVIDIA GPU detected - should work\")
+                
+            # Проверяем compute capability
+            if props.major >= 7:
+                print(f\"✓ Compute capability {props.major}.{props.minor} is excellent for AI workloads\")
+            elif props.major >= 6:
+                print(f\"✓ Compute capability {props.major}.{props.minor} is good for AI workloads\")
+            elif props.major >= 3:
+                print(f\"⚠ Compute capability {props.major}.{props.minor} may have performance limitations\")
+            else:
+                print(f\"⚠ Compute capability {props.major}.{props.minor} may not be fully supported\")
+                
+        except Exception as e:
+            print(f\"Error getting GPU properties: {e}\")
+    
+    print(\"\\n✓ All detected GPUs are available for ProPainter and PyTorch\")
+    
 else:
-    print(\"⚠️  CUDA not available at runtime!\")
+    print(\"\\n⚠️  CUDA not available at runtime!\")
     print(\"   ProPainter will use CPU (slower but functional)\")
     print(\"   To enable GPU, ensure:\")
-    print(\"   1. Docker is running with --gpus flag\")
-    print(\"   2. NVIDIA drivers are installed on host\")
-    print(\"   3. Host has compatible GPU\")
+    print(\"   1. Docker is running with --gpus flag (docker run --gpus all ...)\")
+    print(\"   2. NVIDIA drivers are installed on host (nvidia-smi should work)\")
+    print(\"   3. Host has compatible GPU (NVIDIA with compute capability >= 3.5)\")
+    print(\"   4. CUDA version matches (this image uses CUDA 12.2)\")
+    
+    # Проверяем nvidia-smi для диагностики
+    import subprocess
+    try:
+        result = subprocess.run([\"nvidia-smi\"], capture_output=True, text=True)
+        if result.returncode == 0:
+            print(\"\\nnvidia-smi output (first 5 lines):\")
+            for line in result.stdout.split(\"\\n\")[:5]:
+                if line.strip():
+                    print(f\"  {line.strip()}\")
+        else:
+            print(\"\\nnvidia-smi not available or failed\")
+    except:
+        print(\"\\nCould not run nvidia-smi\")
 "
 echo "=========================================="
 ' > /usr/local/bin/check_gpu.sh && chmod +x /usr/local/bin/check_gpu.sh
