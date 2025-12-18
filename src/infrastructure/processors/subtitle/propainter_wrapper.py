@@ -74,8 +74,7 @@ class SubtitleRemoverProPainter:
             self.ocr = PaddleOCR(
                 lang=self.lang,
                 use_angle_cls=False,
-                use_gpu=False, # Strictly CPU to save VRAM
-                show_log=False
+                use_gpu=False  # Strictly CPU to save VRAM
             )
 
     def _init_propainter(self):
