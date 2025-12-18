@@ -71,11 +71,15 @@ class SubtitleRemoverProPainter:
         from contextlib import redirect_stdout
         import io
         with redirect_stdout(io.StringIO()):
-            self.ocr = PaddleOCR(
-                lang=self.lang,
-                use_angle_cls=False,
-                use_gpu=False  # Strictly CPU to save VRAM
-            )
+            # Use minimal parameters compatible with PaddleOCR version
+            ocr_params = {
+                'lang': self.lang,
+                'use_angle_cls': False,
+                'det_model_dir': None,   # Use default mobile model
+                'rec_model_dir': None,   # Use default mobile model
+                'cls_model_dir': None,   # No classification model
+            }
+            self.ocr = PaddleOCR(**ocr_params)
 
     def _init_propainter(self):
         weights_path = Path(PROPAINTER_ROOT) / "weights/ProPainter.pth"
