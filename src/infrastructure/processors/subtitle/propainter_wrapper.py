@@ -438,28 +438,9 @@ class SubtitleRemoverProPainter:
                             pred_chunk = self.model(masked_input, masks_chunk, masks_chunk, 10)
                     except TypeError as e:
                         if "positional argument" in str(e):
-                            logger.warning(f"API mismatch: {e}. Trying alternative API...")
-                            # Вариант 2: Старый API с 2 аргументами
-                            try:
-                                if self.autocast is not None:
-                                    with self.autocast():
-                                        pred_chunk = self.model(masked_input, masks_chunk)
-                                else:
-                                    pred_chunk = self.model(masked_input, masks_chunk)
-                                logger.info("Using old ProPainter API (2 arguments)")
-                            except TypeError as e2:
-                                logger.warning(f"Old API also failed: {e2}. Trying with 3 arguments...")
-                                # Вариант 3: Промежуточный API с 3 аргументами
-                                try:
-                                    if self.autocast is not None:
-                                        with self.autocast():
-                                            pred_chunk = self.model(masked_input, masks_chunk, masks_chunk)
-                                    else:
-                                        pred_chunk = self.model(masked_input, masks_chunk, masks_chunk)
-                                    logger.info("Using intermediate ProPainter API (3 arguments)")
-                                except TypeError as e3:
-                                    logger.error(f"All API attempts failed: {e3}")
-                                    raise
+                            logger.warning(f"API mismatch: {e}. Using unified API handler...")
+                            # Используем унифицированный обработчик API
+                            pred_chunk = self._call_propainter_api(masked_input, masks_chunk)
                     except torch.cuda.OutOfMemoryError:
                         # Если не хватает памяти, уменьшаем размер чанка и пробуем снова
                         logger.warning(f"Out of memory for chunk {chunk_start}-{chunk_end}, reducing chunk size...")
@@ -760,44 +741,57 @@ class SubtitleRemoverProPainter:
         Returns:
             Результат обработки
         """
-        # Попробуем разные варианты API
-        # Вариант 1: Новый API с 4 аргументами
+        # Сначала попробуем определить сигнатуру метода forward
+        import inspect
         try:
-            return self.model(frames, masks, masks, 10)
-        except TypeError as e1:
-            if "positional argument" in str(e1):
-                logger.warning(f"API 4-args failed: {e1}")
-                # Вариант 2: Старый API с 2 аргументами
+            sig = inspect.signature(self.model.forward)
+            params = list(sig.parameters.keys())
+            logger.info(f"Model forward signature: {sig}")
+            logger.info(f"Parameters: {params}")
+            logger.info(f"Number of parameters: {len(params)}")
+            
+            # Создаем аргументы на основе сигнатуры
+            if len(params) == 2:
+                # Старый API: forward(frames, masks)
+                return self.model(frames, masks)
+            elif len(params) == 3:
+                # Промежуточный API: forward(frames, masks_in, masks_updated)
+                return self.model(frames, masks, masks)
+            elif len(params) == 4:
+                # Новый API: forward(frames, masks_in, masks_updated, num_local_frames)
+                return self.model(frames, masks, masks, 10)
+            elif len(params) == 5:
+                # Самый новый API: forward(frames, masks_in, masks_updated, num_local_frames, device)
+                # device обычно не требуется, используем значение по умолчанию
+                return self.model(frames, masks, masks, 10, self.device)
+            else:
+                raise ValueError(f"Unsupported number of parameters: {len(params)}")
+                
+        except Exception as sig_error:
+            logger.warning(f"Could not inspect signature: {sig_error}. Trying fallback...")
+            
+            # Fallback: пробуем разные варианты API
+            # Вариант 1: Самый новый API с 5 аргументами
+            try:
+                return self.model(frames, masks, masks, 10, self.device)
+            except TypeError as e1:
+                logger.warning(f"API 5-args failed: {e1}")
+                # Вариант 2: API с 4 аргументами
                 try:
-                    return self.model(frames, masks)
+                    return self.model(frames, masks, masks, 10)
                 except TypeError as e2:
-                    logger.warning(f"API 2-args failed: {e2}")
-                    # Вариант 3: Промежуточный API с 3 аргументами
+                    logger.warning(f"API 4-args failed: {e2}")
+                    # Вариант 3: API с 3 аргументами
                     try:
                         return self.model(frames, masks, masks)
                     except TypeError as e3:
-                        logger.error(f"All API attempts failed: {e3}")
-                        # Пробуем определить правильное количество аргументов
-                        import inspect
+                        logger.warning(f"API 3-args failed: {e3}")
+                        # Вариант 4: Старый API с 2 аргументами
                         try:
-                            sig = inspect.signature(self.model.forward)
-                            params = len(sig.parameters)
-                            logger.info(f"Model forward signature: {sig}")
-                            logger.info(f"Number of parameters: {params}")
-                            
-                            # Создаем аргументы на основе сигнатуры
-                            if params == 2:
-                                return self.model(frames, masks)
-                            elif params == 3:
-                                return self.model(frames, masks, masks)
-                            elif params == 4:
-                                return self.model(frames, masks, masks, 10)
-                            else:
-                                raise ValueError(f"Unsupported number of parameters: {params}")
-                        except:
-                            # Последняя попытка: используем 2 аргумента (самый старый API)
-                            logger.warning("Using fallback API with 2 arguments")
                             return self.model(frames, masks)
+                        except TypeError as e4:
+                            logger.error(f"All API attempts failed: {e4}")
+                            raise RuntimeError(f"Could not find compatible ProPainter API. Error: {e4}")
 
 
 class SubtitleRemoverProPainterWrapper:
