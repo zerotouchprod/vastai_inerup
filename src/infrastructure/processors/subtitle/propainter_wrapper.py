@@ -12,6 +12,17 @@ from PIL import Image
 
 from domain.models import ProcessingResult
 
+# СНАЧАЛА настраиваем логирование ДО импорта PaddleOCR
+import warnings
+warnings.filterwarnings('ignore')
+
+# Настраиваем все возможные логгеры PaddleOCR
+for logger_name in ['ppocr', 'paddleocr', 'paddle', 'paddlex', 'paddle.nn', 'paddle.fluid']:
+    logging.getLogger(logger_name).setLevel(logging.WARNING)
+
+# Также отключаем логирование для root логгера от Paddle
+logging.getLogger().setLevel(logging.WARNING)
+
 # Обеспечиваем доступ к модулям ProPainter
 PROPAINTER_ROOT = os.getenv("PROPAINTER_ROOT", "/opt/ProPainter")
 if PROPAINTER_ROOT not in sys.path:
@@ -52,9 +63,50 @@ except ImportError:
 try:
     from paddleocr import PaddleOCR
 except ImportError:
-    pass
+    PaddleOCR = None
+
+# Дополнительная настройка после импорта
+if PaddleOCR:
+    # АГРЕССИВНОЕ подавление ВСЕХ выводов PaddleOCR
+    try:
+        import paddle
+        paddle.set_log_level(4)  # 4=CRITICAL (максимальное подавление)
+    except ImportError:
+        pass
+    
+    # Отключаем ВСЕ выводы PaddleOCR
+    import os
+    os.environ['PADDLEOCR_LOG_LEVEL'] = '4'  # Максимальное подавление
+    os.environ['LOG_LEVEL'] = '4'
+    os.environ['PADDLE_LOG_LEVEL'] = '4'
+    os.environ['GLOG_minloglevel'] = '3'  # 0=INFO, 1=WARNING, 2=ERROR, 3=FATAL
+    
+    # Перенаправляем stderr для полного подавления
+    import sys
+    from contextlib import redirect_stderr, redirect_stdout
+    import io
+    
+    class SuppressPaddleOutput:
+        """Контекстный менеджер для подавления вывода PaddleOCR"""
+        def __enter__(self):
+            self._original_stderr = sys.stderr
+            self._original_stdout = sys.stdout
+            self._null_stream = io.StringIO()
+            sys.stderr = self._null_stream
+            sys.stdout = self._null_stream
+            return self
+        
+        def __exit__(self, exc_type, exc_val, exc_tb):
+            sys.stderr = self._original_stderr
+            sys.stdout = self._original_stdout
+            
+    # Глобальный контекстный менеджер для использования
+    global suppress_paddle_output
+    suppress_paddle_output = SuppressPaddleOutput
 
 logger = logging.getLogger(__name__)
+# Восстанавливаем нормальный уровень для нашего логгера
+logger.setLevel(logging.INFO)
 
 class SubtitleRemoverProPainter:
     def __init__(self, lang: str = 'en', mask_dilation: int = 12, use_gpu_for_ocr: bool = False):
@@ -72,6 +124,9 @@ class SubtitleRemoverProPainter:
         logger.info(f"Initializing ProPainter Subtitle Remover (lang={lang}, dilation={mask_dilation})")
 
         # 1. Init OCR with optimized parameters
+        if PaddleOCR is None:
+            raise ImportError("PaddleOCR not installed. Cannot remove subtitles.")
+            
         # Проверяем доступность GPU для OCR
         ocr_device = 'gpu' if (use_gpu_for_ocr and torch.cuda.is_available()) else 'cpu'
         logger.info(f"Using {ocr_device.upper()} for PaddleOCR")
@@ -83,11 +138,24 @@ class SubtitleRemoverProPainter:
         ocr_params = {
             'lang': lang,
             'use_angle_cls': False,  # Отключаем для скорости
+            'det_model_dir': None,   # Use default mobile model
+            'rec_model_dir': None,   # Use default mobile model
+            'cls_model_dir': None,   # No classification model
         }
         
-        # Инициализируем PaddleOCR с минимальными параметрами
-        self.ocr = PaddleOCR(**ocr_params)
-        logger.info("PaddleOCR initialized with minimal parameters")
+        # Используем контекстный менеджер для полного подавления вывода PaddleOCR
+        with suppress_paddle_output():
+            # Временно повышаем уровень логирования для подавления сообщений при инициализации
+            original_level = logging.getLogger('ppocr').level
+            logging.getLogger('ppocr').setLevel(logging.ERROR)
+            
+            try:
+                # Инициализируем PaddleOCR с минимальными параметрами
+                self.ocr = PaddleOCR(**ocr_params)
+                logger.info("PaddleOCR initialized with minimal parameters")
+            finally:
+                # Восстанавливаем исходный уровень логирования
+                logging.getLogger('ppocr').setLevel(original_level)
         
         # 2. Init ProPainter
         weights_path = Path(PROPAINTER_ROOT) / "weights/ProPainter.pth"

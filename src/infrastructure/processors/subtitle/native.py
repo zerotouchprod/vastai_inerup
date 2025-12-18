@@ -3,17 +3,39 @@ import cv2
 import numpy as np
 from typing import List, Tuple, Optional
 from pathlib import Path
-# Try-except import to allow running even if paddle is missing (optional safety)
+
+# СНАЧАЛА настраиваем логирование ДО импорта PaddleOCR
+# Это критически важно для подавления сообщений
+import warnings
+warnings.filterwarnings('ignore')
+
+# Настраиваем все возможные логгеры PaddleOCR
+for logger_name in ['ppocr', 'paddleocr', 'paddle', 'paddlex', 'paddle.nn', 'paddle.fluid']:
+    logging.getLogger(logger_name).setLevel(logging.WARNING)
+
+# Также отключаем логирование для root логгера от Paddle
+logging.getLogger().setLevel(logging.WARNING)
+
+# Теперь импортируем PaddleOCR
 try:
     from paddleocr import PaddleOCR
 except ImportError:
     PaddleOCR = None
 
-# Настройка логирования Paddle, чтобы не спамил в консоль
+# Дополнительная настройка после импорта
 if PaddleOCR:
-    logging.getLogger("ppocr").setLevel(logging.ERROR)
+    # Подавляем все информационные сообщения от PaddleOCR
+    import paddle
+    paddle.set_log_level(3)  # 0=DEBUG, 1=INFO, 2=WARNING, 3=ERROR, 4=CRITICAL
+    
+    # Отключаем прогресс-бары и другие выводы
+    import os
+    os.environ['PADDLEOCR_LOG_LEVEL'] = '3'
+    os.environ['LOG_LEVEL'] = '3'
 
 logger = logging.getLogger(__name__)
+# Восстанавливаем нормальный уровень для нашего логгера
+logger.setLevel(logging.INFO)
 
 
 class SubtitleRemoverNative:
@@ -54,6 +76,10 @@ class SubtitleRemoverNative:
         }
         
         # Try to use mobile model for better performance
+        # Временно повышаем уровень логирования для подавления сообщений при инициализации
+        original_level = logging.getLogger('ppocr').level
+        logging.getLogger('ppocr').setLevel(logging.ERROR)
+        
         try:
             self.ocr = PaddleOCR(**ocr_params)
             logger.info("PaddleOCR initialized with mobile models (optimized for memory)")
@@ -61,6 +87,9 @@ class SubtitleRemoverNative:
             logger.warning(f"Failed to initialize with mobile models: {e}. Falling back to default.")
             self.ocr = PaddleOCR(lang=lang)
             logger.info("PaddleOCR initialized with default settings")
+        finally:
+            # Восстанавливаем исходный уровень логирования
+            logging.getLogger('ppocr').setLevel(original_level)
         
         # Monitor memory usage
         import psutil
