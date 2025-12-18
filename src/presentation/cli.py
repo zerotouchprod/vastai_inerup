@@ -5,17 +5,17 @@ import argparse
 from pathlib import Path
 from datetime import datetime
 
-from domain.models import Job
-from domain.exceptions import DomainException, ProcessorNotAvailableError
-from infrastructure.config import ConfigLoader
-from infrastructure.io import HttpDownloader, B2S3Uploader
-from infrastructure.media import FFmpegExtractor, FFmpegAssembler
-from application.factories import ProcessorFactory
-from shared.logging import setup_logger, LoggerAdapter, get_logger
-from shared.metrics import MetricsCollector
+from src.domain.models import Job
+from src.domain.exceptions import DomainException, ProcessorNotAvailableError
+from src.infrastructure.config import ConfigLoader
+from src.infrastructure.io import HttpDownloader, B2S3Uploader
+from src.infrastructure.media import FFmpegExtractor, FFmpegAssembler
+from src.application.factories import ProcessorFactory
+from src.shared.logging import setup_logger, LoggerAdapter, get_logger
+from src.shared.metrics import MetricsCollector
 from botocore.exceptions import ClientError
-from application.orchestrator import VideoProcessingOrchestrator
-from application.image_orchestrator import ImageProcessingOrchestrator
+from src.application.orchestrator import VideoProcessingOrchestrator
+from src.application.image_orchestrator import ImageProcessingOrchestrator
 
 
 def create_orchestrator_from_config(config, allow_fallback: bool = False):
@@ -44,7 +44,7 @@ def create_orchestrator_from_config(config, allow_fallback: bool = False):
             raise DomainException(f"B2 pre-check failed: unexpected error when accessing bucket '{uploader.bucket}': {e}")
     else:
         # Dummy uploader
-        from domain.models import UploadResult
+        from src.domain.models import UploadResult
         class DummyUploader:
             def upload(self, file_path, key):
                 return UploadResult(success=True, url=f"file://{file_path}", bucket="local", key=key, size_bytes=0)
@@ -114,14 +114,14 @@ def create_orchestrator_from_config(config, allow_fallback: bool = False):
             # Mandatory RIFE availability probe: check both native and pytorch wrappers.
             native_ok = False
             try:
-                from infrastructure.processors.rife.native_wrapper import RIFENativeWrapper
+                from src.infrastructure.processors.rife.native_wrapper import RIFENativeWrapper
                 native_ok = RIFENativeWrapper.is_available()
             except Exception:
                 native_ok = False
 
             pytorch_ok = False
             try:
-                from infrastructure.processors.rife.pytorch_wrapper import RifePytorchWrapper
+                from src.infrastructure.processors.rife.pytorch_wrapper import RifePytorchWrapper
                 pytorch_ok = RifePytorchWrapper.is_available()
             except Exception:
                 pytorch_ok = False

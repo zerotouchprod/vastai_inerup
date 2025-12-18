@@ -4,13 +4,13 @@ from pathlib import Path
 from typing import Optional
 from datetime import datetime
 
-from domain.models import Job, ProcessingResult
-from domain.protocols import (
+from src.domain.models import Job, ProcessingResult
+from src.domain.protocols import (
     IDownloader, IExtractor, IProcessor, IAssembler,
     IUploader, ILogger, IMetricsCollector
 )
-from domain.exceptions import VideoProcessingError
-from shared.logging import get_logger
+from src.domain.exceptions import VideoProcessingError
+from src.shared.logging import get_logger
 import tempfile
 import shutil
 

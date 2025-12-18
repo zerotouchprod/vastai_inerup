@@ -2,12 +2,11 @@
 
 import os
 from typing import Optional
-from domain.protocols import IProcessor
-from domain.exceptions import ProcessorNotAvailableError
-from infrastructure.processors import RifePytorchWrapper, RealESRGANPytorchWrapper
-from infrastructure.processors.subtitle import SubtitleRemoverWrapper
-from infrastructure.processors.subtitle.propainter_wrapper import SubtitleRemoverProPainterWrapper
-from shared.logging import get_logger
+from src.domain.protocols import IProcessor
+from src.domain.exceptions import ProcessorNotAvailableError
+from src.infrastructure.processors import RifePytorchWrapper, RealESRGANPytorchWrapper
+from src.infrastructure.processors.subtitle import SubtitleRemoverWrapper
+from src.shared.logging import get_logger
 
 logger = get_logger(__name__)
 
@@ -66,7 +65,7 @@ class ProcessorFactory:
         # If native implementations requested, try native first
         if self.use_native or prefer == 'native':
             try:
-                from infrastructure.processors.rife.native_wrapper import RIFENativeWrapper
+                from src.infrastructure.processors.rife.native_wrapper import RIFENativeWrapper
                 if RIFENativeWrapper.is_available():
                     self._logger.info("Using RIFE native Python backend")
                     return RIFENativeWrapper()
@@ -106,13 +105,13 @@ class ProcessorFactory:
             # If prefer is specified and backend is auto, use prefer
             backend = prefer
         
-        # Check for ProPainter backend (единственный рабочий вариант)
+        # Check for subtitle remover backend
         if backend in ('auto', 'propainter', 'native'):  # native тоже перенаправляем на ProPainter
-            if SubtitleRemoverProPainterWrapper.is_available():
-                self._logger.info(f"Using ProPainter subtitle remover backend (lang={lang})")
-                return SubtitleRemoverProPainterWrapper(lang=lang)
+            if SubtitleRemoverWrapper.is_available():
+                self._logger.info(f"Using subtitle remover backend (lang={lang})")
+                return SubtitleRemoverWrapper(lang=lang)
             else:
-                raise ProcessorNotAvailableError("ProPainter subtitle remover not available (requires ProPainter installation in /opt/ProPainter)")
+                raise ProcessorNotAvailableError("Subtitle remover not available (requires ProPainter installation in /opt/ProPainter)")
         
         raise ProcessorNotAvailableError(f"Unknown backend: {backend}")
 
@@ -129,7 +128,7 @@ class ProcessorFactory:
         # If native implementations requested, try native first
         if self.use_native or prefer == 'native':
             try:
-                from infrastructure.processors.realesrgan.native_wrapper import RealESRGANNativeWrapper
+                from src.infrastructure.processors.realesrgan.native_wrapper import RealESRGANNativeWrapper
                 if RealESRGANNativeWrapper.is_available():
                     self._logger.info("Using Real-ESRGAN native Python backend")
                     return RealESRGANNativeWrapper()

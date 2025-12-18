@@ -1,9 +1,9 @@
 """Shared utilities package."""
 
-from shared.logging import setup_logger, get_logger, LoggerAdapter
-from shared.retry import retry_with_backoff, RetryStrategy
-from shared.metrics import MetricsCollector
-from shared.types import PathLike
+from src.shared.logging import setup_logger, get_logger, LoggerAdapter
+from src.shared.retry import retry_with_backoff, RetryStrategy
+from src.shared.metrics import MetricsCollector
+from src.shared.types import PathLike
 
 __all__ = [
     "setup_logger",
@@ -14,4 +14,3 @@ __all__ = [
     "MetricsCollector",
     "PathLike",
 ]
-

@@ -7,8 +7,8 @@ from typing import List, Dict, Any
 
 from src.domain.models import ProcessingResult
 from src.domain.exceptions import VideoProcessingError
-from shared.logging import get_logger
-from shared.metrics import MetricsCollector
+from src.shared.logging import get_logger
+from src.shared.metrics import MetricsCollector
 
 logger = get_logger(__name__)
 
