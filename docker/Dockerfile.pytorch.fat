@@ -5,7 +5,7 @@
 # Build locally:
 #   docker build -f Dockerfile.pytorch.fat -t vastai-interup:pytorch-fat .
 
-FROM nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04 AS base
+FROM nvidia/cuda:13.0.1-cudnn-runtime-ubuntu22.04 AS base
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -37,13 +37,15 @@ ENV PATH="/opt/venv/bin:$PATH"
 # Upgrade pip and install minimal Python packages
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 
-# Install CUDA-enabled PyTorch wheel (Nightly) to support newest compute capabilities (e.g. sm_120)
-# NOTE: We use the PyTorch Nightly index for cu124 (CUDA 12.4). If you prefer cu126 replace the index URL
-# with the appropriate nightly wheel index (e.g. cu126) when available.
-# torchaudio removed
+# Install CUDA-enabled PyTorch wheel for CUDA 13.0 (compatible with RTX 2060 6GB)
+# Используем стабильную версию PyTorch для CUDA 13.0 вместо nightly
+# NOTE: This installs PyTorch WITH CUDA support even if building on a machine without GPU
+# The actual GPU availability will be checked at runtime, not at build time
 RUN pip uninstall -y torch torchvision || true && \
-    pip install --no-cache-dir --pre torch --index-url https://download.pytorch.org/whl/nightly/cu124 && \
-    pip install --no-cache-dir --pre torchvision --no-deps --index-url https://download.pytorch.org/whl/nightly/cu124 && \
+    echo "Installing PyTorch with CUDA 13.0 support..." && \
+    echo "Note: Building on machine without GPU, but installing CUDA-enabled PyTorch for runtime use on GPU machines" && \
+    pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cu130 && \
+    echo "PyTorch installation complete. GPU availability will be checked at runtime." && \
     rm -rf /root/.cache/pip
 
 # Lightweight Python utilities used by scripts
@@ -76,12 +78,12 @@ RUN pip install --no-cache-dir \
     rm -rf /root/.cache/pip /tmp/*
 
 # --- NEW: OCR/Inpainting support (PaddleOCR/Tesseract + scikit-image) ---
-# Install PaddleOCR (CPU), pytesseract and scikit-image for subtitle detection and mask processing.
-# Use CPU paddlepaddle to avoid GPU/CUDA wheel conflicts inside the image.
-# Try to install paddlepaddle first, then paddleocr for better compatibility
+# Install PaddleOCR with GPU support, pytesseract and scikit-image for subtitle detection and mask processing.
+# We install GPU version of PaddlePaddle even if building without GPU - it will work on GPU machines
 RUN pip install --no-cache-dir \
     scikit-image tqdm && \
-    pip install --no-cache-dir paddlepaddle -f https://www.paddlepaddle.org.cn/whl/linux/cpu-mkl-noavx.html && \
+    echo "Installing PaddlePaddle with GPU support (will work on GPU machines at runtime)..." && \
+    pip install --no-cache-dir paddlepaddle-gpu==2.6.0 -f https://www.paddlepaddle.org.cn/whl/linux/mkl/avx/stable.html && \
     pip install --no-cache-dir paddleocr pytesseract && \
     rm -rf /root/.cache/pip /tmp/*
 
@@ -149,15 +151,49 @@ RUN echo "Downloading ProPainter weights..." && \
     wget -q --show-progress https://github.com/sczhou/ProPainter/releases/download/v0.1.0/recurrent_flow_completion.pth && \
     echo "✓ ProPainter weights downloaded"
 
-# Проверяем наличие GPU и настраиваем ProPainter для использования GPU
-RUN echo "Checking GPU availability for ProPainter..." && \
-    python3 -c "import torch; print(f'PyTorch CUDA available: {torch.cuda.is_available()}'); print(f'GPU: {torch.cuda.get_device_name(0)}' if torch.cuda.is_available() else 'No GPU available')"
-
 # Возвращаем рабочую директорию
 WORKDIR /workspace/project
 ENV PROPAINTER_ROOT="/opt/ProPainter"
 ENV PYTHONPATH="${PYTHONPATH}:/opt/ProPainter"
 ENV CUDA_VISIBLE_DEVICES="0"
+ENV NVIDIA_VISIBLE_DEVICES="all"
+ENV NVIDIA_DRIVER_CAPABILITIES="compute,utility"
+
+# Создаем скрипт для проверки GPU при запуске (вместо проверки при сборке)
+RUN echo '#!/bin/bash
+echo "=========================================="
+echo "GPU Diagnostics (run-time check)"
+echo "=========================================="
+python3 -c "
+import torch
+print(f\"PyTorch version: {torch.__version__}\")
+print(f\"PyTorch built with CUDA: {\"cuda\" in torch.__version__.lower()}\")
+print(f\"CUDA available at runtime: {torch.cuda.is_available()}\")
+if torch.cuda.is_available():
+    print(f\"GPU: {torch.cuda.get_device_name(0)}\")
+    print(f\"CUDA version: {torch.version.cuda}\")
+    print(f\"GPU memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.2f} GB\")
+    print(f\"Compute capability: {torch.cuda.get_device_properties(0).major}.{torch.cuda.get_device_properties(0).minor}\")
+    print(\"✓ GPU is available for ProPainter and PyTorch\")
+else:
+    print(\"⚠️  CUDA not available at runtime!\")
+    print(\"   ProPainter will use CPU (slower but functional)\")
+    print(\"   To enable GPU, ensure:\")
+    print(\"   1. Docker is running with --gpus flag\")
+    print(\"   2. NVIDIA drivers are installed on host\")
+    print(\"   3. Host has compatible GPU\")
+"
+echo "=========================================="
+' > /usr/local/bin/check_gpu.sh && chmod +x /usr/local/bin/check_gpu.sh
+
+# Добавляем проверку GPU в entrypoint для автоматической диагностики при запуске
+RUN echo '#!/bin/bash
+# Run GPU diagnostics
+/usr/local/bin/check_gpu.sh
+
+# Continue with original entrypoint
+exec "$@"
+' > /usr/local/bin/entrypoint_with_gpu_check.sh && chmod +x /usr/local/bin/entrypoint_with_gpu_check.sh
 
 # Pre-download PaddleOCR models for faster startup (using improved script)
 COPY docker/preload_paddleocr_fixed.py /tmp/preload_paddleocr.py
@@ -172,8 +208,8 @@ RUN mkdir -p /root/.paddlex/official_models && \
 
 RUN chmod +x /entrypoint.sh
 
-# Set entrypoint to update project on every start (including reboot)
-ENTRYPOINT ["/entrypoint.sh"]
+# Set entrypoint with GPU check
+ENTRYPOINT ["/usr/local/bin/entrypoint_with_gpu_check.sh", "/entrypoint.sh"]
 
 # Default command: start a bash shell
 CMD ["/bin/bash"]
