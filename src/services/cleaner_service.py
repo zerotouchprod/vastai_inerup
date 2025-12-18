@@ -232,6 +232,13 @@ class SubtitleRemoverService:
             
             # Clear memory between chunks
             self.device_manager.empty_cache()
+            
+            # Force garbage collection
+            import gc
+            gc.collect()
+            
+            # Small delay to allow memory cleanup
+            time.sleep(0.1)
         
         # Combine chunks
         return torch.cat(pred_chunks, dim=0)

@@ -22,8 +22,8 @@ class AppConfig(BaseSettings):
     CONFIDENCE_THRESHOLD: float = 0.3
     
     # Processing settings
-    BATCH_SIZE: int = 8
-    MAX_FRAMES_PER_CHUNK: int = 30
+    BATCH_SIZE: int = 4  # Reduced from 8 to save memory
+    MAX_FRAMES_PER_CHUNK: int = 20  # Reduced from 30 to save memory
     
     # Device settings
     FORCE_CPU: bool = False

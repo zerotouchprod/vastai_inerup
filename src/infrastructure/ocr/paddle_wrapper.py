@@ -183,8 +183,9 @@ class ThreadSafeOCR:
                 zip(ocr_images, scale_factors, original_shapes)):
             args_list.append((i, ocr_img, scale_factor, orig_h, orig_w))
         
-        # Process in parallel
-        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        # Process in parallel with limited workers to save memory
+        max_workers = min(2, len(args_list))  # Reduced from 2 to save memory
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = [executor.submit(process_single_image, args) for args in args_list]
             for future in concurrent.futures.as_completed(futures):
                 i, mask = future.result()
