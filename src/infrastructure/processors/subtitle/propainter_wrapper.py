@@ -398,14 +398,17 @@ class SubtitleRemoverProPainter:
                     masked_input = F.pad(masked_input, (0, pad_w, 0, pad_h))
                     masks_chunk = F.pad(masks_chunk, (0, pad_w, 0, pad_h))
                 
-                # Inference
+                # Inference with correct ProPainter API
                 inference_start = time.time()
                 with torch.no_grad():
                     if self.autocast is not None:
                         with self.autocast():
-                            pred_chunk = self.model(masked_input, masks_chunk)
+                            # ProPainter API requires: frames, masks_in, masks_updated, num_local_frames
+                            # For our use case: masks_in = masks_updated = masks_chunk
+                            # num_local_frames = 10 (default from ProPainter)
+                            pred_chunk = self.model(masked_input, masks_chunk, masks_chunk, 10)
                     else:
-                        pred_chunk = self.model(masked_input, masks_chunk)
+                        pred_chunk = self.model(masked_input, masks_chunk, masks_chunk, 10)
                 
                 inference_time = time.time() - inference_start
                 logger.info(f"Chunk {chunk_start}-{chunk_end} completed in {inference_time:.1f}s "
@@ -441,11 +444,14 @@ class SubtitleRemoverProPainter:
             inference_start = time.time()
             with torch.no_grad():
                 logger.info("Starting ProPainter inference...")
+                # ProPainter API requires: frames, masks_in, masks_updated, num_local_frames
+                # For our use case: masks_in = masks_updated = video_masks
+                # num_local_frames = 10 (default from ProPainter)
                 if self.autocast is not None:
                     with self.autocast():
-                        pred_frames = self.model(masked_input, video_masks)
+                        pred_frames = self.model(masked_input, video_masks, video_masks, 10)
                 else:
-                    pred_frames = self.model(masked_input, video_masks)
+                    pred_frames = self.model(masked_input, video_masks, video_masks, 10)
             
             inference_time = time.time() - inference_start
             logger.info(f"ProPainter inference completed in {inference_time:.1f} seconds")
