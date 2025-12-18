@@ -81,11 +81,11 @@ RUN pip install --no-cache-dir \
 
 # --- NEW: OCR/Inpainting support (PaddleOCR/Tesseract + scikit-image) ---
 # Install PaddleOCR with GPU support, pytesseract and scikit-image for subtitle detection and mask processing.
-# Используем версию PaddlePaddle совместимую с CUDA 12.1
+# Используем версию PaddlePaddle совместимую с CUDA 12.1 (используем CUDA 12.0 версию, которая совместима)
 RUN pip install --no-cache-dir \
     scikit-image tqdm && \
-    echo "Installing PaddlePaddle with GPU support for CUDA 12.1..." && \
-    pip install --no-cache-dir paddlepaddle-gpu==2.5.2.post121 -f https://www.paddlepaddle.org.cn/whl/linux/mkl/avx/stable.html && \
+    echo "Installing PaddlePaddle with GPU support for CUDA 12.1 (using CUDA 12.0 version)..." && \
+    pip install --no-cache-dir paddlepaddle-gpu==2.6.1.post120 -f https://www.paddlepaddle.org.cn/whl/linux/mkl/avx/stable.html && \
     pip install --no-cache-dir paddleocr pytesseract && \
     rm -rf /root/.cache/pip /tmp/*
 
