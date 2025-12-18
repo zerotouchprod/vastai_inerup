@@ -123,44 +123,87 @@ class SubtitleRemoverProPainter:
                               чтобы он перерисовал весь ореол субтитров.
         :param use_gpu_for_ocr: Использовать GPU для OCR если доступно (может быть быстрее)
         """
-        # ПРИНУДИТЕЛЬНАЯ проверка доступности CUDA для RTX 2060 6GB
-        import subprocess
-        import os
-        
-        # Проверяем наличие GPU через nvidia-smi
-        has_gpu = False
-        try:
-            result = subprocess.run(['nvidia-smi'], capture_output=True, text=True)
-            has_gpu = result.returncode == 0
-        except:
-            has_gpu = False
-        
-        # Проверяем через PyTorch
-        torch_cuda_available = torch.cuda.is_available()
-        
-        # Для RTX 2060 6GB принудительно используем GPU если доступен
-        if has_gpu or torch_cuda_available:
-            self.device = torch.device("cuda")
-            logger.info(f"GPU detected: forcing CUDA device for RTX 2060 6GB")
-        else:
-            self.device = torch.device("cpu")
-            logger.warning(f"No GPU detected, using CPU (slow!)")
+        # БЕЗОПАСНАЯ проверка и инициализация устройства
+        # Проблема: PyTorch может быть установлен без поддержки CUDA
+        # Решение: безопасный fallback на CPU если CUDA не работает
         
         self.lang = lang
         self.mask_dilation = mask_dilation
         
         logger.info(f"Initializing ProPainter Subtitle Remover (lang={lang}, dilation={mask_dilation})")
-        logger.info(f"Using device: {self.device}")
+        
+        # 1. Проверяем доступность CUDA безопасным способом
+        cuda_available = False
+        cuda_error = None
+        
+        try:
+            # Пробуем импортировать torch.cuda
+            import torch.cuda as cuda
+            # Проверяем доступность CUDA
+            cuda_available = torch.cuda.is_available()
+            if cuda_available:
+                # Пробуем получить информацию о GPU
+                try:
+                    device_count = torch.cuda.device_count()
+                    if device_count > 0:
+                        # Пробуем получить имя устройства
+                        device_name = torch.cuda.get_device_name(0)
+                        logger.info(f"CUDA GPU detected: {device_name}")
+                        logger.info(f"CUDA version: {torch.version.cuda}")
+                    else:
+                        cuda_available = False
+                        logger.warning("CUDA available but no GPU devices found")
+                except Exception as e:
+                    cuda_available = False
+                    cuda_error = str(e)
+                    logger.warning(f"CUDA check failed: {e}")
+        except Exception as e:
+            cuda_available = False
+            cuda_error = str(e)
+            logger.warning(f"CUDA module not available: {e}")
+        
+        # 2. Выбираем устройство с безопасным fallback
+        if cuda_available:
+            try:
+                # Пробуем инициализировать CUDA устройство
+                self.device = torch.device("cuda")
+                # Тестируем устройство простой операцией
+                test_tensor = torch.tensor([1.0]).cuda()
+                del test_tensor
+                torch.cuda.empty_cache()
+                logger.info(f"Using CUDA device: {self.device}")
+                logger.info(f"GPU memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.2f} GB")
+            except Exception as e:
+                # Fallback на CPU если CUDA не работает
+                logger.error(f"CUDA device failed: {e}. Falling back to CPU.")
+                self.device = torch.device("cpu")
+                cuda_available = False
+        else:
+            self.device = torch.device("cpu")
+            if cuda_error:
+                logger.warning(f"CUDA not available: {cuda_error}. Using CPU.")
+            else:
+                logger.info("Using CPU device")
+        
+        # 3. Проверяем PyTorch версию и CUDA поддержку
+        logger.info(f"PyTorch version: {torch.__version__}")
         logger.info(f"PyTorch CUDA available: {torch.cuda.is_available()}")
         
-        # Детальная информация о GPU если доступно
-        if self.device.type == 'cuda':
-            try:
-                logger.info(f"GPU: {torch.cuda.get_device_name(0)}")
-                logger.info(f"GPU memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.2f} GB")
-                logger.info(f"CUDA version: {torch.version.cuda}")
-            except Exception as e:
-                logger.warning(f"Could not get GPU details: {e}")
+        # 4. Проверяем nvidia-smi для дополнительной диагностики
+        try:
+            import subprocess
+            result = subprocess.run(['nvidia-smi'], capture_output=True, text=True)
+            if result.returncode == 0:
+                logger.info("nvidia-smi detected GPU")
+                # Извлекаем информацию о GPU из вывода
+                lines = result.stdout.split('\n')
+                for line in lines[:5]:  # Первые 5 строк
+                    if line.strip():
+                        logger.info(f"nvidia-smi: {line.strip()}")
+            else:
+                logger.warning("nvidia-smi not available or failed")
+        except Exception as e:
+            logger.debug(f"Could not run nvidia-smi: {e}")
 
         # 1. Init OCR with optimized parameters
         if PaddleOCR is None:
@@ -196,48 +239,59 @@ class SubtitleRemoverProPainter:
                 # Восстанавливаем исходный уровень логирования
                 logging.getLogger('ppocr').setLevel(original_level)
         
-        # 2. Init ProPainter с оптимизациями для RTX 2060 6GB
+        # 2. Init ProPainter с безопасной загрузкой на устройство
         weights_path = Path(PROPAINTER_ROOT) / "weights/ProPainter.pth"
         if not weights_path.exists():
             raise FileNotFoundError(f"Weights not found: {weights_path}")
             
         logger.info(f"Loading ProPainter model from {weights_path}")
         
-        # Оптимизации для RTX 2060 6GB
-        if self.device.type == 'cuda':
-            # Очищаем кэш CUDA перед загрузкой модели
-            torch.cuda.empty_cache()
+        # Безопасная загрузка модели с обработкой ошибок CUDA
+        try:
+            # Создаем модель на CPU сначала
+            logger.info("Creating ProPainter model on CPU...")
+            self.model = InpaintGenerator(model_path=str(weights_path))
             
-            # Мониторинг памяти перед загрузкой
-            allocated = torch.cuda.memory_allocated() / 1024**3
-            reserved = torch.cuda.memory_reserved() / 1024**3
-            logger.info(f"GPU memory before loading: {allocated:.2f} GB allocated, {reserved:.2f} GB reserved")
+            # Пробуем переместить на GPU если доступно
+            if self.device.type == 'cuda':
+                try:
+                    logger.info("Moving model to CUDA device...")
+                    self.model = self.model.to(self.device)
+                    
+                    # Проверяем, что модель действительно на GPU
+                    model_device = next(self.model.parameters()).device
+                    if model_device.type == 'cuda':
+                        # Очищаем кэш CUDA
+                        torch.cuda.empty_cache()
+                        
+                        # Мониторинг памяти
+                        allocated = torch.cuda.memory_allocated() / 1024**3
+                        reserved = torch.cuda.memory_reserved() / 1024**3
+                        logger.info(f"GPU memory after loading: {allocated:.2f} GB allocated, {reserved:.2f} GB reserved")
+                        
+                        # Используем mixed precision для экономии VRAM
+                        from torch.cuda.amp import autocast
+                        self.autocast = autocast
+                        logger.info("Mixed precision (autocast) enabled")
+                    else:
+                        logger.warning(f"Model loaded on {model_device}, expected cuda")
+                        self.autocast = None
+                except Exception as e:
+                    logger.error(f"Failed to move model to CUDA: {e}. Keeping on CPU.")
+                    self.device = torch.device("cpu")
+                    self.autocast = None
+            else:
+                self.autocast = None
+                
+            self.model.eval()
             
-            # Используем mixed precision для экономии VRAM
-            from torch.cuda.amp import autocast
-            self.autocast = autocast
-            logger.info("Mixed precision (autocast) enabled for RTX 2060 6GB")
-        else:
-            self.autocast = None
+            # Проверяем устройство модели
+            model_device = next(self.model.parameters()).device
+            logger.info(f"ProPainter model loaded on device: {model_device}")
             
-        self.model = InpaintGenerator(model_path=str(weights_path)).to(self.device)
-        self.model.eval()
-        
-        # Проверяем, что модель действительно на правильном устройстве
-        model_device = next(self.model.parameters()).device
-        logger.info(f"ProPainter model loaded on device: {model_device}")
-        
-        # Мониторинг памяти после загрузки
-        if self.device.type == 'cuda':
-            allocated = torch.cuda.memory_allocated() / 1024**3
-            reserved = torch.cuda.memory_reserved() / 1024**3
-            logger.info(f"GPU memory after loading: {allocated:.2f} GB allocated, {reserved:.2f} GB reserved")
-            
-            # Предупреждение если мало памяти
-            total_memory = torch.cuda.get_device_properties(0).total_memory / 1024**3
-            if allocated > total_memory * 0.8:
-                logger.warning(f"High GPU memory usage: {allocated:.2f}/{total_memory:.2f} GB ({allocated/total_memory*100:.1f}%)")
-                logger.warning("Consider reducing batch size or resolution")
+        except Exception as e:
+            logger.error(f"Failed to load ProPainter model: {e}")
+            raise
 
     def process_frames(self, input_dir: Path, output_dir: Path):
         import time
