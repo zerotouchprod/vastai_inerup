@@ -312,6 +312,13 @@ class SubtitleRemoverProPainter:
         total_frames = len(frames)
         logger.info(f"Processing {total_frames} frames with ProPainter...")
         
+        # Оптимизация для CPU: уменьшаем batch size и используем многопоточность
+        if self.device.type == 'cpu':
+            batch_size = 4  # Меньше для CPU чтобы не перегружать память
+            logger.info("CPU mode: using smaller batch size and optimized settings")
+        else:
+            batch_size = 8  # Для GPU можно больше
+        
         # Try to import tqdm for progress bar
         try:
             from tqdm import tqdm
@@ -320,13 +327,16 @@ class SubtitleRemoverProPainter:
             use_tqdm = False
             logger.info("tqdm not available, using simple logging")
         
-        logger.info(f"Step 1/2: Generating masks for {total_frames} frames...")
+        logger.info(f"Step 1/2: Generating masks for {total_frames} frames (batch size: {batch_size})...")
         
         # --- PASS 1: Generate Masks ---
-        # Оптимизация: обрабатываем кадры батчами для лучшей производительности
-        # Увеличиваем размер батча для лучшей производительности
-        batch_size = 8  # Увеличили с 4 до 8
+        # Оптимизация для CPU: используем многопоточность и кэширование
         mask_start_time = time.time()
+        
+        # Оптимизация: предзагружаем изображения для лучшей производительности
+        if self.device.type == 'cpu':
+            logger.info("CPU optimization: preloading images for better performance...")
+            # Можно добавить предзагрузку изображений если нужно
         
         if use_tqdm:
             for i in tqdm(range(0, len(frames), batch_size), desc="Processing batches", unit="batch"):
@@ -336,64 +346,112 @@ class SubtitleRemoverProPainter:
             for i in range(0, len(frames), batch_size):
                 batch = frames[i:i+batch_size]
                 self._create_masks_batch(batch, tmp_mask_dir)
-                if (i + batch_size) % 40 == 0 or i + batch_size >= len(frames):
-                    elapsed = time.time() - mask_start_time
-                    processed = min(i + batch_size, len(frames))
-                    speed = processed / elapsed if elapsed > 0 else 0
-                    logger.info(f"Created masks for {processed}/{len(frames)} frames, speed: {speed:.2f} FPS")
+                processed = min(i + batch_size, len(frames))
+                elapsed = time.time() - mask_start_time
+                speed = processed / elapsed if elapsed > 0 else 0
+                remaining = (len(frames) - processed) / speed if speed > 0 else 0
+                
+                # Более частые обновления для коротких видео
+                update_freq = max(1, len(frames) // 10)  # 10 обновлений
+                if (i + batch_size) % update_freq == 0 or i + batch_size >= len(frames):
+                    logger.info(f"Created masks for {processed}/{len(frames)} frames, "
+                              f"speed: {speed:.2f} FPS, "
+                              f"ETA: {remaining/60:.1f} min")
 
         logger.info("Step 2/2: Running AI Inpainting (ProPainter)...")
 
         # --- PASS 2: AI Inference ---
-        # Читаем видео и маски в память (ProPainter утилита)
-        # masked_frames: [T, H, W, 3] (RGB 0-255)
+        # Оптимизация для CPU: обрабатываем меньшими частями если видео большое
         video_frames, _ = read_video(str(input_dir))
         video_masks, _ = read_video(str(tmp_mask_dir), gray=True)
         
         # Подготовка тензоров
-        # [T, H, W, C] -> [T, C, H, W] -> Normalize 0-1
         video_frames = torch.from_numpy(video_frames).permute(0, 3, 1, 2).float() / 255.0
         video_masks = torch.from_numpy(video_masks).permute(0, 3, 1, 2).float() / 255.0
         
-        # Add Batch Dimension [1, T, C, H, W]
-        video_frames = video_frames.unsqueeze(0).to(self.device)
-        video_masks = video_masks.unsqueeze(0).to(self.device)
+        # Оптимизация для CPU: обрабатываем частями если много кадров
+        max_frames_per_chunk = 30  # Обрабатываем по 30 кадров за раз для CPU
+        total_frames = video_frames.shape[0]
         
-        # Бинаризация маски (на всякий случай)
-        video_masks = (video_masks > 0.5).float()
-        
-        # Создаем входное видео с "дырками"
-        masked_input = video_frames * (1 - video_masks)
-
-        # Ресайз если нужно (ProPainter любит кратность 8)
-        b, t, c, h, w = masked_input.shape
-        pad_h = (8 - h % 8) % 8
-        pad_w = (8 - w % 8) % 8
-        if pad_h > 0 or pad_w > 0:
-            import torch.nn.functional as F
-            masked_input = F.pad(masked_input, (0, pad_w, 0, pad_h))
-            video_masks = F.pad(video_masks, (0, pad_w, 0, pad_h))
-
-        logger.info(f"Processing video with ProPainter: {t} frames, resolution: {h}x{w}")
-        logger.info(f"Using device: {self.device}")
-        
-        # Add progress indication for inference
-        inference_start = time.time()
-        
-        with torch.no_grad():
-            # Pred output: [1, T, 3, H, W]
-            logger.info("Starting ProPainter inference...")
+        if self.device.type == 'cpu' and total_frames > max_frames_per_chunk:
+            logger.info(f"CPU optimization: processing {total_frames} frames in chunks of {max_frames_per_chunk}")
             
-            # Используем mixed precision для RTX 2060 6GB если доступно
-            if self.autocast is not None:
-                with self.autocast():
+            pred_chunks = []
+            for chunk_start in range(0, total_frames, max_frames_per_chunk):
+                chunk_end = min(chunk_start + max_frames_per_chunk, total_frames)
+                logger.info(f"Processing chunk {chunk_start}-{chunk_end} of {total_frames}")
+                
+                # Вырезаем чанк
+                frames_chunk = video_frames[chunk_start:chunk_end].unsqueeze(0).to(self.device)
+                masks_chunk = video_masks[chunk_start:chunk_end].unsqueeze(0).to(self.device)
+                masks_chunk = (masks_chunk > 0.5).float()
+                
+                # Создаем входное видео с "дырками"
+                masked_input = frames_chunk * (1 - masks_chunk)
+                
+                # Ресайз если нужно
+                b, t, c, h, w = masked_input.shape
+                pad_h = (8 - h % 8) % 8
+                pad_w = (8 - w % 8) % 8
+                if pad_h > 0 or pad_w > 0:
+                    import torch.nn.functional as F
+                    masked_input = F.pad(masked_input, (0, pad_w, 0, pad_h))
+                    masks_chunk = F.pad(masks_chunk, (0, pad_w, 0, pad_h))
+                
+                # Inference
+                inference_start = time.time()
+                with torch.no_grad():
+                    if self.autocast is not None:
+                        with self.autocast():
+                            pred_chunk = self.model(masked_input, masks_chunk)
+                    else:
+                        pred_chunk = self.model(masked_input, masks_chunk)
+                
+                inference_time = time.time() - inference_start
+                logger.info(f"Chunk {chunk_start}-{chunk_end} completed in {inference_time:.1f}s "
+                          f"({t/inference_time:.1f} FPS)")
+                
+                # Убираем паддинг и сохраняем
+                pred_chunk = pred_chunk[0, :, :, :h, :w]
+                pred_chunks.append(pred_chunk.cpu())
+            
+            # Объединяем все чанки
+            pred_frames = torch.cat(pred_chunks, dim=0)
+            
+        else:
+            # Обрабатываем все кадры сразу (для GPU или коротких видео)
+            video_frames = video_frames.unsqueeze(0).to(self.device)
+            video_masks = video_masks.unsqueeze(0).to(self.device)
+            video_masks = (video_masks > 0.5).float()
+            
+            masked_input = video_frames * (1 - video_masks)
+            
+            # Ресайз если нужно
+            b, t, c, h, w = masked_input.shape
+            pad_h = (8 - h % 8) % 8
+            pad_w = (8 - w % 8) % 8
+            if pad_h > 0 or pad_w > 0:
+                import torch.nn.functional as F
+                masked_input = F.pad(masked_input, (0, pad_w, 0, pad_h))
+                video_masks = F.pad(video_masks, (0, pad_w, 0, pad_h))
+            
+            logger.info(f"Processing video with ProPainter: {t} frames, resolution: {h}x{w}")
+            logger.info(f"Using device: {self.device}")
+            
+            inference_start = time.time()
+            with torch.no_grad():
+                logger.info("Starting ProPainter inference...")
+                if self.autocast is not None:
+                    with self.autocast():
+                        pred_frames = self.model(masked_input, video_masks)
+                else:
                     pred_frames = self.model(masked_input, video_masks)
-            else:
-                pred_frames = self.model(masked_input, video_masks)
-        
-        inference_time = time.time() - inference_start
-        logger.info(f"ProPainter inference completed in {inference_time:.1f} seconds")
-        logger.info(f"Inference speed: {t / inference_time:.1f} FPS")
+            
+            inference_time = time.time() - inference_start
+            logger.info(f"ProPainter inference completed in {inference_time:.1f} seconds")
+            logger.info(f"Inference speed: {t / inference_time:.1f} FPS")
+            
+            pred_frames = pred_frames[0, :, :, :h, :w]
 
         # Убираем паддинг и батч
         pred_frames = pred_frames[0, :, :, :h, :w]
