@@ -425,18 +425,41 @@ class SubtitleRemoverProPainter:
                     masked_input = F.pad(masked_input, (0, pad_w, 0, pad_h))
                     masks_chunk = F.pad(masks_chunk, (0, pad_w, 0, pad_h))
                 
-                # Inference with correct ProPainter API и управлением памятью
+                # Inference with flexible ProPainter API support
                 inference_start = time.time()
                 with torch.no_grad():
                     try:
+                        # Попробуем разные варианты API ProPainter
+                        # Вариант 1: Новый API с 4 аргументами
                         if self.autocast is not None:
                             with self.autocast():
-                                # ProPainter API requires: frames, masks_in, masks_updated, num_local_frames
-                                # For our use case: masks_in = masks_updated = masks_chunk
-                                # num_local_frames = 10 (default from ProPainter)
                                 pred_chunk = self.model(masked_input, masks_chunk, masks_chunk, 10)
                         else:
                             pred_chunk = self.model(masked_input, masks_chunk, masks_chunk, 10)
+                    except TypeError as e:
+                        if "positional argument" in str(e):
+                            logger.warning(f"API mismatch: {e}. Trying alternative API...")
+                            # Вариант 2: Старый API с 2 аргументами
+                            try:
+                                if self.autocast is not None:
+                                    with self.autocast():
+                                        pred_chunk = self.model(masked_input, masks_chunk)
+                                else:
+                                    pred_chunk = self.model(masked_input, masks_chunk)
+                                logger.info("Using old ProPainter API (2 arguments)")
+                            except TypeError as e2:
+                                logger.warning(f"Old API also failed: {e2}. Trying with 3 arguments...")
+                                # Вариант 3: Промежуточный API с 3 аргументами
+                                try:
+                                    if self.autocast is not None:
+                                        with self.autocast():
+                                            pred_chunk = self.model(masked_input, masks_chunk, masks_chunk)
+                                    else:
+                                        pred_chunk = self.model(masked_input, masks_chunk, masks_chunk)
+                                    logger.info("Using intermediate ProPainter API (3 arguments)")
+                                except TypeError as e3:
+                                    logger.error(f"All API attempts failed: {e3}")
+                                    raise
                     except torch.cuda.OutOfMemoryError:
                         # Если не хватает памяти, уменьшаем размер чанка и пробуем снова
                         logger.warning(f"Out of memory for chunk {chunk_start}-{chunk_end}, reducing chunk size...")
@@ -454,11 +477,20 @@ class SubtitleRemoverProPainter:
                             sub_masks = masks_chunk[:, sub_start:sub_end]
                             sub_masked = sub_frames * (1 - sub_masks)
                             
-                            if self.autocast is not None:
-                                with self.autocast():
+                            # Используем гибкий API для sub-чанков
+                            try:
+                                if self.autocast is not None:
+                                    with self.autocast():
+                                        sub_pred = self.model(sub_masked, sub_masks, sub_masks, 10)
+                                else:
                                     sub_pred = self.model(sub_masked, sub_masks, sub_masks, 10)
-                            else:
-                                sub_pred = self.model(sub_masked, sub_masks, sub_masks, 10)
+                            except TypeError:
+                                # Fallback на старый API
+                                if self.autocast is not None:
+                                    with self.autocast():
+                                        sub_pred = self.model(sub_masked, sub_masks)
+                                else:
+                                    sub_pred = self.model(sub_masked, sub_masks)
                             
                             sub_pred = sub_pred[0, :, :, :h, :w]
                             pred_chunks_half.append(sub_pred.cpu())
@@ -511,14 +543,12 @@ class SubtitleRemoverProPainter:
                 logger.info(f"Tensor shape: {masked_input.shape}")
                 
                 try:
-                    # ProPainter API requires: frames, masks_in, masks_updated, num_local_frames
-                    # For our use case: masks_in = masks_updated = video_masks
-                    # num_local_frames = 10 (default from ProPainter)
+                    # Гибкий вызов API ProPainter с поддержкой разных версий
                     if self.autocast is not None:
                         with self.autocast():
-                            pred_frames = self.model(masked_input, video_masks, video_masks, 10)
+                            pred_frames = self._call_propainter_api(masked_input, video_masks)
                     else:
-                        pred_frames = self.model(masked_input, video_masks, video_masks, 10)
+                        pred_frames = self._call_propainter_api(masked_input, video_masks)
                 except torch.cuda.OutOfMemoryError as e:
                     logger.error(f"CUDA out of memory: {e}")
                     logger.info("Falling back to CPU processing...")
@@ -532,7 +562,7 @@ class SubtitleRemoverProPainter:
                     torch.cuda.empty_cache()
                     
                     # Обрабатываем на CPU
-                    pred_frames = self.model(masked_input_cpu, video_masks_cpu, video_masks_cpu, 10)
+                    pred_frames = self._call_propainter_api(masked_input_cpu, video_masks_cpu)
                     
                     # Возвращаем модель на GPU если нужно
                     if self.device.type == 'cuda':
@@ -718,6 +748,56 @@ class SubtitleRemoverProPainter:
     def _create_mask(self, img_path: Path, mask_path: Path):
         """Legacy single-image mask creation (for compatibility)."""
         self._create_masks_batch([img_path], mask_path.parent)
+    
+    def _call_propainter_api(self, frames, masks):
+        """
+        Гибкий вызов API ProPainter с поддержкой разных версий.
+        
+        Args:
+            frames: Входные кадры
+            masks: Маски
+            
+        Returns:
+            Результат обработки
+        """
+        # Попробуем разные варианты API
+        # Вариант 1: Новый API с 4 аргументами
+        try:
+            return self.model(frames, masks, masks, 10)
+        except TypeError as e1:
+            if "positional argument" in str(e1):
+                logger.warning(f"API 4-args failed: {e1}")
+                # Вариант 2: Старый API с 2 аргументами
+                try:
+                    return self.model(frames, masks)
+                except TypeError as e2:
+                    logger.warning(f"API 2-args failed: {e2}")
+                    # Вариант 3: Промежуточный API с 3 аргументами
+                    try:
+                        return self.model(frames, masks, masks)
+                    except TypeError as e3:
+                        logger.error(f"All API attempts failed: {e3}")
+                        # Пробуем определить правильное количество аргументов
+                        import inspect
+                        try:
+                            sig = inspect.signature(self.model.forward)
+                            params = len(sig.parameters)
+                            logger.info(f"Model forward signature: {sig}")
+                            logger.info(f"Number of parameters: {params}")
+                            
+                            # Создаем аргументы на основе сигнатуры
+                            if params == 2:
+                                return self.model(frames, masks)
+                            elif params == 3:
+                                return self.model(frames, masks, masks)
+                            elif params == 4:
+                                return self.model(frames, masks, masks, 10)
+                            else:
+                                raise ValueError(f"Unsupported number of parameters: {params}")
+                        except:
+                            # Последняя попытка: используем 2 аргумента (самый старый API)
+                            logger.warning("Using fallback API with 2 arguments")
+                            return self.model(frames, masks)
 
 
 class SubtitleRemoverProPainterWrapper:
