@@ -369,12 +369,39 @@ class SubtitleRemoverProPainter:
         video_frames = torch.from_numpy(video_frames).permute(0, 3, 1, 2).float() / 255.0
         video_masks = torch.from_numpy(video_masks).permute(0, 3, 1, 2).float() / 255.0
         
-        # Оптимизация для CPU: обрабатываем частями если много кадров
-        max_frames_per_chunk = 30  # Обрабатываем по 30 кадров за раз для CPU
+        # Оптимизация для обработки частями чтобы избежать нехватки памяти
+        # Автоматически определяем максимальное количество кадров на основе доступной памяти
         total_frames = video_frames.shape[0]
         
-        if self.device.type == 'cpu' and total_frames > max_frames_per_chunk:
-            logger.info(f"CPU optimization: processing {total_frames} frames in chunks of {max_frames_per_chunk}")
+        # Определяем максимальное количество кадров для обработки за раз
+        if self.device.type == 'cuda':
+            try:
+                # Получаем информацию о доступной памяти
+                total_memory = torch.cuda.get_device_properties(0).total_memory / 1e9  # GB
+                allocated_memory = torch.cuda.memory_allocated() / 1e9
+                free_memory = total_memory - allocated_memory
+                
+                logger.info(f"GPU memory: {total_memory:.2f} GB total, {free_memory:.2f} GB free")
+                
+                # Эмпирическая формула: каждый кадр 720p требует ~0.1 GB памяти
+                # Безопасный коэффициент: используем только 70% свободной памяти
+                safe_memory = free_memory * 0.7
+                estimated_frames_per_gb = 10  # 10 кадров на GB для 720p
+                max_frames_per_chunk = int(safe_memory * estimated_frames_per_gb)
+                
+                # Ограничения: минимум 5, максимум 30 кадров
+                max_frames_per_chunk = max(5, min(max_frames_per_chunk, 30))
+                
+                logger.info(f"GPU optimization: processing {total_frames} frames in chunks of {max_frames_per_chunk}")
+            except Exception as e:
+                logger.warning(f"Could not determine GPU memory, using default: {e}")
+                max_frames_per_chunk = 15  # Безопасное значение по умолчанию
+        else:
+            max_frames_per_chunk = 30  # Для CPU можно больше
+            
+        # Всегда обрабатываем частями для безопасности
+        if total_frames > max_frames_per_chunk:
+            logger.info(f"Memory optimization: processing {total_frames} frames in chunks of {max_frames_per_chunk}")
             
             pred_chunks = []
             for chunk_start in range(0, total_frames, max_frames_per_chunk):
@@ -398,17 +425,47 @@ class SubtitleRemoverProPainter:
                     masked_input = F.pad(masked_input, (0, pad_w, 0, pad_h))
                     masks_chunk = F.pad(masks_chunk, (0, pad_w, 0, pad_h))
                 
-                # Inference with correct ProPainter API
+                # Inference with correct ProPainter API и управлением памятью
                 inference_start = time.time()
                 with torch.no_grad():
-                    if self.autocast is not None:
-                        with self.autocast():
-                            # ProPainter API requires: frames, masks_in, masks_updated, num_local_frames
-                            # For our use case: masks_in = masks_updated = masks_chunk
-                            # num_local_frames = 10 (default from ProPainter)
+                    try:
+                        if self.autocast is not None:
+                            with self.autocast():
+                                # ProPainter API requires: frames, masks_in, masks_updated, num_local_frames
+                                # For our use case: masks_in = masks_updated = masks_chunk
+                                # num_local_frames = 10 (default from ProPainter)
+                                pred_chunk = self.model(masked_input, masks_chunk, masks_chunk, 10)
+                        else:
                             pred_chunk = self.model(masked_input, masks_chunk, masks_chunk, 10)
-                    else:
-                        pred_chunk = self.model(masked_input, masks_chunk, masks_chunk, 10)
+                    except torch.cuda.OutOfMemoryError:
+                        # Если не хватает памяти, уменьшаем размер чанка и пробуем снова
+                        logger.warning(f"Out of memory for chunk {chunk_start}-{chunk_end}, reducing chunk size...")
+                        torch.cuda.empty_cache()
+                        
+                        # Уменьшаем размер чанка вдвое
+                        half_chunk = t // 2
+                        pred_chunks_half = []
+                        
+                        for sub_start in range(0, t, half_chunk):
+                            sub_end = min(sub_start + half_chunk, t)
+                            logger.info(f"Processing sub-chunk {sub_start}-{sub_end} of chunk {chunk_start}-{chunk_end}")
+                            
+                            sub_frames = frames_chunk[:, sub_start:sub_end]
+                            sub_masks = masks_chunk[:, sub_start:sub_end]
+                            sub_masked = sub_frames * (1 - sub_masks)
+                            
+                            if self.autocast is not None:
+                                with self.autocast():
+                                    sub_pred = self.model(sub_masked, sub_masks, sub_masks, 10)
+                            else:
+                                sub_pred = self.model(sub_masked, sub_masks, sub_masks, 10)
+                            
+                            sub_pred = sub_pred[0, :, :, :h, :w]
+                            pred_chunks_half.append(sub_pred.cpu())
+                            torch.cuda.empty_cache()
+                        
+                        # Объединяем sub-чанки
+                        pred_chunk = torch.cat(pred_chunks_half, dim=0).unsqueeze(0)
                 
                 inference_time = time.time() - inference_start
                 logger.info(f"Chunk {chunk_start}-{chunk_end} completed in {inference_time:.1f}s "
@@ -417,6 +474,12 @@ class SubtitleRemoverProPainter:
                 # Убираем паддинг и сохраняем
                 pred_chunk = pred_chunk[0, :, :, :h, :w]
                 pred_chunks.append(pred_chunk.cpu())
+                
+                # Очищаем кэш CUDA после каждого чанка
+                if self.device.type == 'cuda':
+                    torch.cuda.empty_cache()
+                    allocated = torch.cuda.memory_allocated() / 1e9
+                    logger.info(f"GPU memory after chunk: {allocated:.2f} GB allocated")
             
             # Объединяем все чанки
             pred_frames = torch.cat(pred_chunks, dim=0)
@@ -444,20 +507,46 @@ class SubtitleRemoverProPainter:
             inference_start = time.time()
             with torch.no_grad():
                 logger.info("Starting ProPainter inference...")
-                # ProPainter API requires: frames, masks_in, masks_updated, num_local_frames
-                # For our use case: masks_in = masks_updated = video_masks
-                # num_local_frames = 10 (default from ProPainter)
-                if self.autocast is not None:
-                    with self.autocast():
+                logger.info(f"Video resolution: {h}x{w}, frames: {t}")
+                logger.info(f"Tensor shape: {masked_input.shape}")
+                
+                try:
+                    # ProPainter API requires: frames, masks_in, masks_updated, num_local_frames
+                    # For our use case: masks_in = masks_updated = video_masks
+                    # num_local_frames = 10 (default from ProPainter)
+                    if self.autocast is not None:
+                        with self.autocast():
+                            pred_frames = self.model(masked_input, video_masks, video_masks, 10)
+                    else:
                         pred_frames = self.model(masked_input, video_masks, video_masks, 10)
-                else:
-                    pred_frames = self.model(masked_input, video_masks, video_masks, 10)
+                except torch.cuda.OutOfMemoryError as e:
+                    logger.error(f"CUDA out of memory: {e}")
+                    logger.info("Falling back to CPU processing...")
+                    
+                    # Перемещаем данные на CPU
+                    masked_input_cpu = masked_input.cpu()
+                    video_masks_cpu = video_masks.cpu()
+                    self.model.cpu()
+                    
+                    # Очищаем GPU память
+                    torch.cuda.empty_cache()
+                    
+                    # Обрабатываем на CPU
+                    pred_frames = self.model(masked_input_cpu, video_masks_cpu, video_masks_cpu, 10)
+                    
+                    # Возвращаем модель на GPU если нужно
+                    if self.device.type == 'cuda':
+                        self.model.to(self.device)
             
             inference_time = time.time() - inference_start
             logger.info(f"ProPainter inference completed in {inference_time:.1f} seconds")
             logger.info(f"Inference speed: {t / inference_time:.1f} FPS")
             
             pred_frames = pred_frames[0, :, :, :h, :w]
+            
+            # Очищаем кэш CUDA
+            if self.device.type == 'cuda':
+                torch.cuda.empty_cache()
 
         # Убираем паддинг и батч
         pred_frames = pred_frames[0, :, :, :h, :w]
