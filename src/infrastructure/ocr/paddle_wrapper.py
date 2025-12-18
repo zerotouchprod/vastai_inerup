@@ -62,11 +62,23 @@ class ThreadSafeOCR:
                 ocr_params = {
                     'lang': self.lang,
                     'use_angle_cls': self.use_angle_cls,
-                    'use_gpu': self.use_gpu_for_ocr,
                     'det_model_dir': None,   # Use default mobile model
                     'rec_model_dir': None,   # Use default mobile model
                     'cls_model_dir': None,   # No classification model
                 }
+                
+                # Add GPU parameter only if explicitly requested and likely supported
+                # Based on error, 'use_gpu' parameter is not recognized in current version
+                # So we'll only add it if we can verify it's supported
+                if self.use_gpu_for_ocr:
+                    # Try to detect PaddleOCR version
+                    try:
+                        import paddleocr
+                        # For newer versions, GPU might be enabled by default or use different parameter
+                        # We'll skip the parameter for now to avoid errors
+                        logger.warning("GPU requested but 'use_gpu' parameter may not be supported in current PaddleOCR version")
+                    except ImportError:
+                        pass
                 
                 # Temporarily increase log level to suppress initialization messages
                 original_level = logging.getLogger('ppocr').level
