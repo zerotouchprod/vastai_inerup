@@ -3,11 +3,11 @@
 from pathlib import Path
 from typing import List
 
-from domain.protocols import IExtractor
-from domain.models import Video, Frame
-from domain.exceptions import ExtractionError
-from shared.logging import get_logger
-from infrastructure.media.ffmpeg import FFmpegWrapper
+from src.domain.protocols import IExtractor
+from src.domain.models import Video, Frame
+from src.domain.exceptions import ExtractionError
+from src.shared.logging import get_logger
+from src.infrastructure.media.ffmpeg import FFmpegWrapper
 
 logger = get_logger(__name__)
 

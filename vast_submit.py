@@ -86,7 +86,7 @@ if not API_KEY:
 
 HEADERS = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
 
-# Load host blacklist from config.yaml (optional). This allows setting e.g.:
+# Load host blacklist from src.config.yaml (optional). This allows setting e.g.:
 # vast:
 #   host_blacklist: [155386]
 VAST_HOST_BLACKLIST = []
@@ -108,7 +108,7 @@ try:
                     # coerce to ints and filter invalid values
                     VAST_HOST_BLACKLIST = [int(x) for x in _hb if x is not None]
                     if VAST_HOST_BLACKLIST:
-                        print(f"Info: loaded host blacklist from config.yaml: {VAST_HOST_BLACKLIST}")
+                        print(f"Info: loaded host blacklist from src.config.yaml: {VAST_HOST_BLACKLIST}")
         except Exception as _e:
             print(f"Warning: failed to parse config.yaml for host_blacklist: {_e}")
 except Exception:
@@ -401,7 +401,7 @@ def pick_offer(offers: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     BLACKLISTED_HOSTS = [
         67349,  # fiber1.kmidata.es - Spain (CDI device errors with slim image)
     ]
-    # extend with values loaded from config.yaml (VAST_HOST_BLACKLIST)
+    # extend with values loaded from src.config.yaml (VAST_HOST_BLACKLIST)
     try:
         for h in VAST_HOST_BLACKLIST:
             if h not in BLACKLISTED_HOSTS:

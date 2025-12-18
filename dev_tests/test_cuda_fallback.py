@@ -35,8 +35,8 @@ except ImportError:
 # Test the RIFE native wrapper compatibility check
 print("\nTesting RIFE native wrapper:")
 try:
-    from infrastructure.processors.rife.native import RIFENative
-    from shared.logging import setup_logger
+    from src.infrastructure.processors.rife.native import RIFENative
+    from src.shared.logging import setup_logger
 
     logger = setup_logger('test', 'INFO')
     processor = RIFENative(factor=2.0, logger=logger)

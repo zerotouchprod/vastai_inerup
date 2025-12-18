@@ -7,8 +7,8 @@ from pathlib import Path
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
-from infrastructure.processors.rife.native import RIFENative
-from shared.logging import setup_logger
+from src.infrastructure.processors.rife.native import RIFENative
+from src.shared.logging import setup_logger
 
 setup_logger(debug=True)
 

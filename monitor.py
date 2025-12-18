@@ -27,8 +27,8 @@ try:
 except ImportError:
     pass
 
-from infrastructure.vastai.client import VastAIClient
-from shared.logging import get_logger
+from src.infrastructure.vastai.client import VastAIClient
+from src.shared.logging import get_logger
 
 logger = get_logger(__name__)
 

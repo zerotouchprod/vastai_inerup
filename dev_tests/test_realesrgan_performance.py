@@ -11,7 +11,7 @@ from pathlib import Path
 # Setup path
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
-from infrastructure.processors.realesrgan.native import RealESRGANNative, GPUMemoryDetector
+from src.infrastructure.processors.realesrgan.native import RealESRGANNative, GPUMemoryDetector
 
 # Setup logging
 logging.basicConfig(

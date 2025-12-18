@@ -287,7 +287,7 @@ def main():
 
     # Extract settings
     video_config = config.get('video', {})
-    # Per user request: never use `video.input` или `video.output` from config.yaml — игнорировать/удалять их, чтобы избежать случайного использования
+    # Per user request: never use `video.input` или `video.output` from src.config.yaml — игнорировать/удалять их, чтобы избежать случайного использования
     for _k in ('input', 'output'):
         if _k in video_config:
             try:

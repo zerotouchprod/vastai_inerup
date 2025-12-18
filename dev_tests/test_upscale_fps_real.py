@@ -8,8 +8,8 @@ import shutil
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
-from domain.models import ProcessingJob
-from application.orchestrator import VideoProcessingOrchestrator
+from src.domain.models import ProcessingJob
+from src.application.orchestrator import VideoProcessingOrchestrator
 
 
 def test_upscale_fps_preserved():

@@ -6,8 +6,8 @@ from unittest.mock import Mock, patch, MagicMock
 import tempfile
 import shutil
 
-from infrastructure.io.downloader import HttpDownloader
-from domain.exceptions import DownloadError
+from src.infrastructure.io.downloader import HttpDownloader
+from src.domain.exceptions import DownloadError
 
 
 class TestHttpDownloaderLocalFiles:

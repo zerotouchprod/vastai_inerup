@@ -19,7 +19,7 @@ from src.application.image_orchestrator import ImageProcessingOrchestrator
 
 
 def create_orchestrator_from_config(config, allow_fallback: bool = False):
-    """Create orchestrator with all dependencies from config."""
+    """Create orchestrator with all dependencies from src.config."""
     downloader = HttpDownloader()
     
     # Create uploader if configured

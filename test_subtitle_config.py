@@ -22,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 def test_config_loader():
     """Test that ConfigLoader handles subtitle fields."""
-    from infrastructure.config import ConfigLoader
+    from src.infrastructure.config import ConfigLoader
     
     config_data = {
         'input_url': 'file://test.mp4',
@@ -60,7 +60,7 @@ def test_config_loader():
 def test_job_model():
     """Test that Job model includes subtitle fields."""
     # Need to mock the imports for domain.models too
-    from domain.models import Job
+    from src.domain.models import Job
     
     job = Job(
         job_id="test",
@@ -84,7 +84,7 @@ def test_job_model():
 def test_environment_variables():
     """Test that environment variables are loaded for subtitle fields."""
     import os
-    from infrastructure.config import ConfigLoader
+    from src.infrastructure.config import ConfigLoader
     
     # Set environment variables
     os.environ['INPUT_URL'] = 'file://test.mp4'

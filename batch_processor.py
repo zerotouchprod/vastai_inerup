@@ -46,12 +46,12 @@ if str(_SRC_DIR) not in sys.path:
     sys.path.insert(0, str(_SRC_DIR))
 
 try:
-    from domain.b2_storage import B2Credentials, B2Object
-    from domain.vastai import VastInstanceConfig
-    from infrastructure.storage.b2_client import B2Client
-    from infrastructure.vastai.client import VastAIClient
-    from shared.logging import get_logger
-    from shared.remote_config import load_config_with_remote
+    from src.domain.b2_storage import B2Credentials, B2Object
+    from src.domain.vastai import VastInstanceConfig
+    from src.infrastructure.storage.b2_client import B2Client
+    from src.infrastructure.vastai.client import VastAIClient
+    from src.shared.logging import get_logger
+    from src.shared.remote_config import load_config_with_remote
 
     # Get logger
     logger = get_logger(__name__)
@@ -483,7 +483,7 @@ class BatchProcessor:
 def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(
-        description='Unified Batch Processor for Vast.ai - reads defaults from config.yaml'
+        description='Unified Batch Processor for Vast.ai - reads defaults from src.config.yaml'
     )
 
     parser.add_argument('--config', default='config.yaml',
@@ -503,7 +503,7 @@ def main():
         # Initialize processor
         processor = BatchProcessor(config_path=args.config)
 
-        # Get batch config from config.yaml
+        # Get batch config from src.config.yaml
         batch_config = processor.config.get('batch', {})
         video_config = processor.config.get('video', {})
 

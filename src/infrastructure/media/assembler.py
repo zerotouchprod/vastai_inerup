@@ -3,10 +3,10 @@
 from pathlib import Path
 from typing import List
 
-from domain.protocols import IAssembler
-from domain.exceptions import AssemblyError
-from shared.logging import get_logger
-from infrastructure.media.ffmpeg import FFmpegWrapper
+from src.domain.protocols import IAssembler
+from src.domain.exceptions import AssemblyError
+from src.shared.logging import get_logger
+from src.infrastructure.media.ffmpeg import FFmpegWrapper
 
 logger = get_logger(__name__)
 

@@ -12,14 +12,14 @@ def test_imports():
     print("Testing imports...")
     
     try:
-        from infrastructure.processors.subtitle.wrapper import SubtitleRemoverWrapper
+        from src.infrastructure.processors.subtitle.wrapper import SubtitleRemoverWrapper
         print("SUCCESS: SubtitleRemoverWrapper imported")
     except ImportError as e:
         print(f"FAIL: Could not import SubtitleRemoverWrapper: {e}")
         return False
     
     try:
-        from application.factories import ProcessorFactory
+        from src.application.factories import ProcessorFactory
         print("SUCCESS: ProcessorFactory imported")
     except ImportError as e:
         print(f"FAIL: Could not import ProcessorFactory: {e}")
@@ -31,7 +31,7 @@ def test_factory():
     """Test factory creation."""
     print("\nTesting factory...")
     
-    from application.factories import ProcessorFactory
+    from src.application.factories import ProcessorFactory
     
     factory = ProcessorFactory()
     print(f"Factory created, use_native={factory.use_native}")
@@ -55,7 +55,7 @@ def test_job_validation():
     """Test job validation for subtitle removal mode."""
     print("\nTesting job validation...")
     
-    from domain.models import Job
+    from src.domain.models import Job
     
     try:
         job = Job(
@@ -77,7 +77,7 @@ def test_config():
     """Test config validation for subtitle removal."""
     print("\nTesting config validation...")
     
-    from infrastructure.config import ConfigLoader
+    from src.infrastructure.config import ConfigLoader
     import tempfile
     import yaml
     

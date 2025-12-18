@@ -7,9 +7,9 @@ import tempfile
 import shutil
 from botocore.exceptions import ClientError
 
-from infrastructure.io.uploader import B2S3Uploader
-from domain.models import UploadResult
-from domain.exceptions import UploadError
+from src.infrastructure.io.uploader import B2S3Uploader
+from src.domain.models import UploadResult
+from src.domain.exceptions import UploadError
 
 
 class TestB2S3Uploader:

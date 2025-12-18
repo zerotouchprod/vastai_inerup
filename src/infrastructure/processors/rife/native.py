@@ -5,7 +5,7 @@ Replaces run_rife_pytorch.sh with pure Python code.
 Provides same functionality but with full Python debugging support.
 
 Usage:
-    from infrastructure.processors.rife.native import RIFENative
+    from src.infrastructure.processors.rife.native import RIFENative
 
     processor = RIFENative(factor=2)
     output_frames = processor.process_frames(input_frames, output_dir)

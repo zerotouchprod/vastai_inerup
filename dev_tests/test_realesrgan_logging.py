@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 logger.info("Testing Real-ESRGAN native processor logging...")
 
 try:
-    from infrastructure.processors.realesrgan.native import RealESRGANNative, GPUMemoryDetector
+    from src.infrastructure.processors.realesrgan.native import RealESRGANNative, GPUMemoryDetector
 
     # Test GPU detection
     logger.info("Testing GPU memory detection...")

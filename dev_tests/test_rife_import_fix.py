@@ -13,7 +13,7 @@ def test_import():
     print("Testing RIFE native wrapper import fix...")
 
     # This should not raise NameError anymore
-    from infrastructure.processors.rife.native_wrapper import RIFENativeWrapper
+    from src.infrastructure.processors.rife.native_wrapper import RIFENativeWrapper
 
     print(f"✓ RIFENativeWrapper imported successfully")
 

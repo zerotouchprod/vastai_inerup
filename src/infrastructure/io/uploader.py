@@ -7,12 +7,12 @@ from botocore.exceptions import ClientError
 from pathlib import Path
 from typing import Optional, List
 
-from domain.protocols import IUploader
-from domain.models import UploadResult
-from domain.exceptions import UploadError
-from shared.logging import get_logger
-from shared.retry import retry_with_backoff
-from infrastructure.storage.pending_marker import PendingMarker
+from src.domain.protocols import IUploader
+from src.domain.models import UploadResult
+from src.domain.exceptions import UploadError
+from src.shared.logging import get_logger
+from src.shared.retry import retry_with_backoff
+from src.infrastructure.storage.pending_marker import PendingMarker
 
 logger = get_logger(__name__)
 

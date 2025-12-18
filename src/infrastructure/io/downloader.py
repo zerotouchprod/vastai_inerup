@@ -6,10 +6,10 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
 
-from domain.protocols import IDownloader
-from domain.exceptions import DownloadError
-from shared.logging import get_logger
-from shared.retry import retry_with_backoff
+from src.domain.protocols import IDownloader
+from src.domain.exceptions import DownloadError
+from src.shared.logging import get_logger
+from src.shared.retry import retry_with_backoff
 
 logger = get_logger(__name__)
 

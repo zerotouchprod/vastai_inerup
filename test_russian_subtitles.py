@@ -36,7 +36,7 @@ def test_russian_subtitles():
     print(f"\nOutput will be saved to: {output_dir}")
     
     try:
-        from infrastructure.processors.subtitle.native import SubtitleRemoverNative
+        from src.infrastructure.processors.subtitle.native import SubtitleRemoverNative
         
         print("\nInitializing subtitle remover for Russian language...")
         remover = SubtitleRemoverNative(lang='ru')

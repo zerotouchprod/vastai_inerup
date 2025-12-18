@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
-from presentation.cli import main
+from src.presentation.cli import main
 import argparse
 
 def test_argparse():
@@ -65,7 +65,7 @@ def test_argparse():
 
 def test_config_loading():
     """Test that config loads subtitle fields."""
-    from infrastructure.config import ConfigLoader
+    from src.infrastructure.config import ConfigLoader
     import tempfile
     import yaml
     
@@ -99,7 +99,7 @@ def test_config_loading():
 
 def test_job_creation():
     """Test that Job object includes subtitle fields."""
-    from domain.models import Job
+    from src.domain.models import Job
     
     job = Job(
         job_id="test",

@@ -9,12 +9,12 @@ from dataclasses import dataclass
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
-from domain.models import ImageJob, ProcessingResult
-from domain.protocols import IProcessor, IDownloader, IUploader, ILogger, IMetricsCollector
-from infrastructure.io import HttpDownloader
-from shared.logging import setup_logger, LoggerAdapter, get_logger
-from shared.metrics import MetricsCollector
-from application.image_orchestrator import ImageProcessingOrchestrator
+from src.domain.models import ImageJob, ProcessingResult
+from src.domain.protocols import IProcessor, IDownloader, IUploader, ILogger, IMetricsCollector
+from src.infrastructure.io import HttpDownloader
+from src.shared.logging import setup_logger, LoggerAdapter, get_logger
+from src.shared.metrics import MetricsCollector
+from src.application.image_orchestrator import ImageProcessingOrchestrator
 
 # Mock processor for testing
 class MockUpscaler(IProcessor):
@@ -48,7 +48,7 @@ class MockUpscaler(IProcessor):
 # Mock uploader
 class MockUploader(IUploader):
     def upload(self, file_path: Path, key: str) -> Any:
-        from domain.models import UploadResult
+        from src.domain.models import UploadResult
         return UploadResult(
             success=True,
             url=f"mock://{key}",
@@ -155,7 +155,7 @@ def test_cli_image_mode():
         orchestrator = create_orchestrator_from_config(config, allow_fallback=False)
         
         # For image mode, it should return ImageProcessingOrchestrator
-        from application.image_orchestrator import ImageProcessingOrchestrator
+        from src.application.image_orchestrator import ImageProcessingOrchestrator
         if isinstance(orchestrator, ImageProcessingOrchestrator):
             print("SUCCESS: create_orchestrator_from_config correctly creates ImageProcessingOrchestrator for image mode")
         else:

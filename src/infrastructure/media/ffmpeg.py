@@ -5,8 +5,8 @@ import re
 from pathlib import Path
 from typing import Optional, List, Tuple
 
-from domain.exceptions import ExtractionError, AssemblyError
-from shared.logging import get_logger
+from src.domain.exceptions import ExtractionError, AssemblyError
+from src.shared.logging import get_logger
 
 logger = get_logger(__name__)
 

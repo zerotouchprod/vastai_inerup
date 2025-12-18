@@ -7,8 +7,8 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
 
-from infrastructure.config import ConfigLoader, ProcessingConfig
-from domain.exceptions import ConfigurationError
+from src.infrastructure.config import ConfigLoader, ProcessingConfig
+from src.domain.exceptions import ConfigurationError
 
 
 def test_config_loader_from_env():

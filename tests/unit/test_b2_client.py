@@ -8,9 +8,9 @@ from unittest.mock import Mock, MagicMock, patch
 import tempfile
 import shutil
 
-from infrastructure.storage.b2_client import B2Client
-from domain.b2_storage import B2Object, B2Credentials
-from domain.exceptions import VideoProcessingError
+from src.infrastructure.storage.b2_client import B2Client
+from src.domain.b2_storage import B2Object, B2Credentials
+from src.domain.exceptions import VideoProcessingError
 
 
 @pytest.fixture

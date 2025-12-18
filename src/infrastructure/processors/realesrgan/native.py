@@ -11,7 +11,7 @@ Performance optimizations:
 - Aggressive batch size defaults for modern GPUs
 
 Usage:
-    from infrastructure.processors.realesrgan.native import RealESRGANNative
+    from src.infrastructure.processors.realesrgan.native import RealESRGANNative
 
     processor = RealESRGANNative(scale=2, tile_size=256)
     output_frames = processor.process_frames(input_frames, output_dir)
@@ -436,7 +436,7 @@ class RealESRGANNative:
         Returns:
             Output video path
         """
-        from infrastructure.media.ffmpeg import FFmpegExtractor, FFmpegAssembler
+        from src.infrastructure.media.ffmpeg import FFmpegExtractor, FFmpegAssembler
 
         # Create temporary directories
         import tempfile

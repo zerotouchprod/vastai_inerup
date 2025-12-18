@@ -22,7 +22,7 @@ def fix_imports_in_file(file_path):
     content = re.sub(r'from \.\.infrastructure', 'from infrastructure', content)
     content = re.sub(r'from \.\.application', 'from application', content)
 
-    # Replace single-dot imports for subdirectories (from .storage -> from infrastructure.storage)
+    # Replace single-dot imports for subdirectories (from .storage -> from src.infrastructure.storage)
     # This needs context awareness, skipping for now
 
     if content != original_content:

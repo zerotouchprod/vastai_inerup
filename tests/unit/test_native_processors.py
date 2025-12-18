@@ -12,14 +12,14 @@ class TestGPUMemoryDetector:
 
     def test_suggest_batch_size_low_vram(self):
         """Test batch size suggestion for low VRAM."""
-        from infrastructure.processors.realesrgan.native import GPUMemoryDetector
+        from src.infrastructure.processors.realesrgan.native import GPUMemoryDetector
 
         # <12GB -> batch 1
         assert GPUMemoryDetector.suggest_batch_size(8 * 1024) == 1
 
     def test_suggest_batch_size_medium_vram(self):
         """Test batch size suggestion for medium VRAM."""
-        from infrastructure.processors.realesrgan.native import GPUMemoryDetector
+        from src.infrastructure.processors.realesrgan.native import GPUMemoryDetector
 
         # 12-16GB -> batch 2
         assert GPUMemoryDetector.suggest_batch_size(14 * 1024) == 2
@@ -29,7 +29,7 @@ class TestGPUMemoryDetector:
 
     def test_suggest_batch_size_high_vram(self):
         """Test batch size suggestion for high VRAM."""
-        from infrastructure.processors.realesrgan.native import GPUMemoryDetector
+        from src.infrastructure.processors.realesrgan.native import GPUMemoryDetector
 
         # 24-32GB -> batch 8
         assert GPUMemoryDetector.suggest_batch_size(28 * 1024) == 8
@@ -43,7 +43,7 @@ class TestRealESRGANNative:
 
     def test_initialization(self):
         """Test processor initialization."""
-        from infrastructure.processors.realesrgan.native import RealESRGANNative
+        from src.infrastructure.processors.realesrgan.native import RealESRGANNative
 
         processor = RealESRGANNative(
             scale=2,
@@ -58,7 +58,7 @@ class TestRealESRGANNative:
 
     def test_batch_size_auto_detection(self):
         """Test auto batch size detection."""
-        from infrastructure.processors.realesrgan.native import RealESRGANNative
+        from src.infrastructure.processors.realesrgan.native import RealESRGANNative
 
         # Should auto-detect
         processor = RealESRGANNative(batch_size=None)
@@ -74,7 +74,7 @@ class TestRIFENative:
         """Test processor initialization."""
         # May raise FileNotFoundError if model not present
         try:
-            from infrastructure.processors.rife.native import RIFENative
+            from src.infrastructure.processors.rife.native import RIFENative
 
             processor = RIFENative(factor=2.0)
 
@@ -86,7 +86,7 @@ class TestRIFENative:
     def test_mids_calculation(self):
         """Test intermediate frames calculation."""
         try:
-            from infrastructure.processors.rife.native import RIFENative
+            from src.infrastructure.processors.rife.native import RIFENative
 
             processor = RIFENative(factor=2.0)
             mids = processor._calculate_mids_per_pair()
@@ -105,7 +105,7 @@ class TestNativeWrappers:
     def test_realesrgan_native_wrapper(self):
         """Test Real-ESRGAN native wrapper."""
         try:
-            from infrastructure.processors.realesrgan.native_wrapper import RealESRGANNativeWrapper
+            from src.infrastructure.processors.realesrgan.native_wrapper import RealESRGANNativeWrapper
 
             # Should not raise if dependencies available
             if RealESRGANNativeWrapper.is_available():
@@ -119,7 +119,7 @@ class TestNativeWrappers:
     def test_rife_native_wrapper(self):
         """Test RIFE native wrapper."""
         try:
-            from infrastructure.processors.rife.native_wrapper import RIFENativeWrapper
+            from src.infrastructure.processors.rife.native_wrapper import RIFENativeWrapper
 
             # Should not raise if dependencies available
             if RIFENativeWrapper.is_available():
@@ -136,14 +136,14 @@ class TestFactoryNativeSupport:
 
     def test_factory_with_native_flag(self):
         """Test factory with use_native=True."""
-        from application.factories import ProcessorFactory
+        from src.application.factories import ProcessorFactory
 
         factory = ProcessorFactory(use_native=True)
         assert factory.use_native is True
 
     def test_factory_env_variable(self, monkeypatch):
         """Test factory reads USE_NATIVE_PROCESSORS env."""
-        from application.factories import ProcessorFactory
+        from src.application.factories import ProcessorFactory
 
         monkeypatch.setenv('USE_NATIVE_PROCESSORS', '1')
         factory = ProcessorFactory()
@@ -151,7 +151,7 @@ class TestFactoryNativeSupport:
 
     def test_create_native_upscaler(self):
         """Test creating native upscaler."""
-        from application.factories import ProcessorFactory
+        from src.application.factories import ProcessorFactory
 
         factory = ProcessorFactory(use_native=True)
 
@@ -163,7 +163,7 @@ class TestFactoryNativeSupport:
 
     def test_create_native_interpolator(self):
         """Test creating native interpolator."""
-        from application.factories import ProcessorFactory
+        from src.application.factories import ProcessorFactory
 
         factory = ProcessorFactory(use_native=True)
 

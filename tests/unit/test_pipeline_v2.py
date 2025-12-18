@@ -21,8 +21,8 @@ class TestPipelineV2EntryPoint:
         assert pipeline_v2 is not None
 
     def test_has_main_function(self):
-        """Test that main function is imported from presentation.cli."""
-        from presentation.cli import main
+        """Test that main function is imported from src.presentation.cli."""
+        from src.presentation.cli import main
         assert callable(main)
 
     def test_path_setup(self):
@@ -63,7 +63,7 @@ class TestCLIMain:
     @pytest.fixture
     def mock_result_success(self):
         """Create mock successful ProcessingResult."""
-        from domain.models import ProcessingResult
+        from src.domain.models import ProcessingResult
         result = ProcessingResult(
             success=True,
             output_path=Path("/tmp/output.mp4"),
@@ -76,7 +76,7 @@ class TestCLIMain:
     @pytest.fixture
     def mock_result_failure(self):
         """Create mock failed ProcessingResult."""
-        from domain.models import ProcessingResult
+        from src.domain.models import ProcessingResult
         result = ProcessingResult(
             success=False,
             output_path=None,
@@ -91,7 +91,7 @@ class TestCLIMain:
     @patch('sys.argv', ['pipeline_v2.py', '--input', 'https://example.com/video.mp4', '--mode', 'upscale'])
     def test_main_success(self, mock_config_loader_class, mock_create_orchestrator, mock_config, mock_result_success):
         """Test successful pipeline execution."""
-        from presentation.cli import main
+        from src.presentation.cli import main
 
         # Setup mocks
         mock_loader = Mock()
@@ -115,7 +115,7 @@ class TestCLIMain:
     @patch('sys.argv', ['pipeline_v2.py', '--input', 'https://example.com/video.mp4', '--mode', 'upscale'])
     def test_main_failure(self, mock_config_loader_class, mock_create_orchestrator, mock_config, mock_result_failure):
         """Test failed pipeline execution."""
-        from presentation.cli import main
+        from src.presentation.cli import main
 
         # Setup mocks
         mock_loader = Mock()
@@ -137,8 +137,8 @@ class TestCLIMain:
     @patch('sys.argv', ['pipeline_v2.py', '--input', 'https://example.com/video.mp4'])
     def test_main_domain_exception(self, mock_config_loader_class):
         """Test handling of DomainException."""
-        from presentation.cli import main
-        from domain.exceptions import DomainException
+        from src.presentation.cli import main
+        from src.domain.exceptions import DomainException
 
         # Setup mock to raise exception
         mock_loader = Mock()
@@ -156,7 +156,7 @@ class TestCLIMain:
     @patch('presentation.cli.create_orchestrator_from_config')
     def test_cli_arguments_parsed(self, mock_create_orchestrator, mock_config_loader_class, mock_config, mock_result_success):
         """Test that CLI arguments are correctly parsed and applied to config."""
-        from presentation.cli import main
+        from src.presentation.cli import main
 
         # Setup mocks
         mock_loader = Mock()
@@ -184,7 +184,7 @@ class TestCLIMain:
     @patch('sys.argv', ['pipeline_v2.py', '--help'])
     def test_help_argument(self):
         """Test --help argument."""
-        from presentation.cli import main
+        from src.presentation.cli import main
 
         # --help should raise SystemExit
         with pytest.raises(SystemExit) as exc_info:
@@ -196,7 +196,7 @@ class TestCLIMain:
     @patch('sys.argv', ['pipeline_v2.py'])
     def test_no_arguments_uses_defaults(self):
         """Test that pipeline uses config defaults when no CLI arguments provided."""
-        from presentation.cli import main
+        from src.presentation.cli import main
 
         # Should load config.yaml and fail because no input_url
         # Returns exit code 1 (error) instead of raising
@@ -224,7 +224,7 @@ class TestCreateOrchestratorFromConfig:
 
     def test_creates_orchestrator_without_b2(self, minimal_config):
         """Test creating orchestrator without B2 credentials."""
-        from presentation.cli import create_orchestrator_from_config
+        from src.presentation.cli import create_orchestrator_from_config
 
         orchestrator = create_orchestrator_from_config(minimal_config)
 
@@ -236,7 +236,7 @@ class TestCreateOrchestratorFromConfig:
 
     def test_creates_orchestrator_with_b2(self):
         """Test creating orchestrator with B2 credentials."""
-        from presentation.cli import create_orchestrator_from_config
+        from src.presentation.cli import create_orchestrator_from_config
 
         config = Mock()
         config.b2_bucket = "test-bucket"
@@ -255,7 +255,7 @@ class TestCreateOrchestratorFromConfig:
 
     def test_creates_upscaler_when_mode_upscale(self):
         """Test that upscaler is created when mode is 'upscale'."""
-        from presentation.cli import create_orchestrator_from_config
+        from src.presentation.cli import create_orchestrator_from_config
 
         config = Mock()
         config.b2_bucket = None
@@ -279,7 +279,7 @@ class TestCreateOrchestratorFromConfig:
 
     def test_creates_interpolator_when_mode_interp(self):
         """Test that interpolator is created when mode is 'interp'."""
-        from presentation.cli import create_orchestrator_from_config
+        from src.presentation.cli import create_orchestrator_from_config
 
         config = Mock()
         config.b2_bucket = None
@@ -303,7 +303,7 @@ class TestCreateOrchestratorFromConfig:
 
     def test_creates_both_processors_when_mode_both(self):
         """Test that both processors are created when mode is 'both'."""
-        from presentation.cli import create_orchestrator_from_config
+        from src.presentation.cli import create_orchestrator_from_config
 
         config = Mock()
         config.b2_bucket = None
@@ -328,7 +328,7 @@ class TestCreateOrchestratorFromConfig:
 
     def test_handles_processor_creation_failure_non_strict(self):
         """Test that processor creation failure is handled in non-strict mode."""
-        from presentation.cli import create_orchestrator_from_config
+        from src.presentation.cli import create_orchestrator_from_config
 
         config = Mock()
         config.b2_bucket = None
@@ -350,7 +350,7 @@ class TestCreateOrchestratorFromConfig:
 
     def test_raises_processor_creation_failure_strict(self):
         """Test that processor creation failure raises in strict mode."""
-        from presentation.cli import create_orchestrator_from_config
+        from src.presentation.cli import create_orchestrator_from_config
 
         config = Mock()
         config.b2_bucket = None
@@ -394,8 +394,8 @@ class TestSuccessMarker:
     @patch('sys.stdout', new_callable=StringIO)
     def test_success_marker_printed(self, mock_stdout, mock_config_loader_class, mock_create_orchestrator):
         """Test that VASTAI_PIPELINE_COMPLETED_SUCCESSFULLY marker is printed on success."""
-        from presentation.cli import main
-        from domain.models import ProcessingResult
+        from src.presentation.cli import main
+        from src.domain.models import ProcessingResult
 
         # Setup mocks
         mock_config = Mock()

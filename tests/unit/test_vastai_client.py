@@ -6,9 +6,9 @@ import pytest
 from unittest.mock import Mock, MagicMock, patch
 from datetime import datetime
 
-from infrastructure.vastai.client import VastAIClient
-from domain.vastai import VastOffer, VastInstance, VastInstanceConfig
-from domain.exceptions import VideoProcessingError
+from src.infrastructure.vastai.client import VastAIClient
+from src.domain.vastai import VastOffer, VastInstance, VastInstanceConfig
+from src.domain.exceptions import VideoProcessingError
 
 
 @pytest.fixture

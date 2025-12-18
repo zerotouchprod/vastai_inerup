@@ -185,7 +185,7 @@ def main():
 
     video_config = config.get('video', {})
     input_dir = video_config.get('input_dir')
-    # Do not override input_dir from CLI; batch script should read input_dir from config.yaml
+    # Do not override input_dir from CLI; batch script should read input_dir from src.config.yaml
     # Keep running even if input_dir is missing (container/run_with_config.py will read config)
 
     # Immediate B2 credential check (fail-fast): ensure we have credentials before doing any work

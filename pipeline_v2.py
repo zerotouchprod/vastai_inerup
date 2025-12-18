@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).parent / "src"))
 if 'USE_NATIVE_PROCESSORS' not in os.environ:
     os.environ['USE_NATIVE_PROCESSORS'] = '1'
 
-from presentation.cli import main
+from src.presentation.cli import main
 
 if __name__ == '__main__':
     sys.exit(main())

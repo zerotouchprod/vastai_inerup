@@ -7,8 +7,8 @@ This is expected to fail locally (no PyTorch/CUDA) but work in Docker containers
 import sys
 sys.path.insert(0, 'src')
 
-from infrastructure.processors.rife.native_wrapper import RIFENativeWrapper
-from infrastructure.processors.realesrgan.native_wrapper import RealESRGANNativeWrapper
+from src.infrastructure.processors.rife.native_wrapper import RIFENativeWrapper
+from src.infrastructure.processors.realesrgan.native_wrapper import RealESRGANNativeWrapper
 
 print("=" * 70)
 print("Native Processor Availability Check")

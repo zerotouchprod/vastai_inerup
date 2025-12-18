@@ -7,12 +7,12 @@ from pathlib import Path
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
-from domain.models import ImageJob
-from infrastructure.io import HttpDownloader
-from application.factories import ProcessorFactory
-from shared.logging import setup_logger
-from shared.metrics import MetricsCollector
-from application.image_orchestrator import ImageProcessingOrchestrator
+from src.domain.models import ImageJob
+from src.infrastructure.io import HttpDownloader
+from src.application.factories import ProcessorFactory
+from src.shared.logging import setup_logger
+from src.shared.metrics import MetricsCollector
+from src.application.image_orchestrator import ImageProcessingOrchestrator
 
 def test_image_processing():
     """Test image processing with local file."""
@@ -20,7 +20,7 @@ def test_image_processing():
     setup_logger('test', level='INFO')
     
     # Create a dummy uploader that just saves locally
-    from domain.models import UploadResult
+    from src.domain.models import UploadResult
     class LocalUploader:
         def upload(self, file_path, key):
             # Just copy to test output
@@ -57,7 +57,7 @@ def test_image_processing():
     uploader = LocalUploader()
     
     # Create orchestrator
-    from shared.logging import LoggerAdapter, get_logger
+    from src.shared.logging import LoggerAdapter, get_logger
     logger = LoggerAdapter(get_logger('test_orchestrator'))
     metrics = MetricsCollector()
     

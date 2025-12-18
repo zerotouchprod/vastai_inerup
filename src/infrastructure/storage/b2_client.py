@@ -9,12 +9,12 @@ from pathlib import Path
 from typing import List, Optional, Dict, Any
 import logging
 
-from domain.b2_storage import (
+from src.domain.b2_storage import (
     IB2Client,
     B2Object,
     B2Credentials
 )
-from domain.exceptions import VideoProcessingError
+from src.domain.exceptions import VideoProcessingError
 
 try:
     import boto3

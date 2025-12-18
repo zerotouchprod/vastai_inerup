@@ -22,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 def test_mode_remove_subtitles():
     """Test that remove-subtitles mode works."""
-    from infrastructure.config import ConfigLoader
+    from src.infrastructure.config import ConfigLoader
     
     config_data = {
         'input_url': 'file://test.mp4',
@@ -58,7 +58,7 @@ def test_mode_remove_subtitles():
 
 def test_preprocessing_subtitles():
     """Test that remove_subtitles flag works for preprocessing."""
-    from infrastructure.config import ConfigLoader
+    from src.infrastructure.config import ConfigLoader
     
     config_data = {
         'input_url': 'file://test.mp4',
@@ -97,7 +97,7 @@ def test_preprocessing_subtitles():
 
 def test_job_mode_validation():
     """Test that Job validates remove-subtitles mode."""
-    from domain.models import Job
+    from src.domain.models import Job
     
     # Test remove-subtitles mode
     job1 = Job(

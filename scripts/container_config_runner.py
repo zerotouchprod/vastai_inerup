@@ -574,7 +574,7 @@ def run_pipeline(input_path: str, output_dir: str, config: dict) -> str:
         print(f"⚠️  Could not calculate ETA: {e}", flush=True)
         print("", flush=True)
 
-    print("⏳ Processing started (no live progress bar from pipeline.py)...", flush=True)
+    print("⏳ Processing started (no live progress bar from src.pipeline.py)...", flush=True)
     print("   - For 'both' mode: interpolation first, then upscale", flush=True)
     print("   - Check container logs for detailed progress", flush=True)
     print("", flush=True)

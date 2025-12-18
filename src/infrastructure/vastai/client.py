@@ -9,13 +9,13 @@ import time
 from typing import List, Dict, Any, Optional
 import logging
 
-from domain.vastai import (
+from src.domain.vastai import (
     IVastClient,
     VastOffer,
     VastInstance,
     VastInstanceConfig
 )
-from domain.exceptions import VideoProcessingError
+from src.domain.exceptions import VideoProcessingError
 
 try:
     import requests

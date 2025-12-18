@@ -35,7 +35,7 @@ print()
 # 3. Try to import RIFENative
 print("3. RIFENative import:")
 try:
-    from infrastructure.processors.rife.native import RIFENative
+    from src.infrastructure.processors.rife.native import RIFENative
     print(f"   ✓ RIFENative imported successfully")
 except ImportError as e:
     print(f"   ✗ RIFENative import failed: {e}")
@@ -47,7 +47,7 @@ print()
 # 4. Try to import RIFENativeWrapper
 print("4. RIFENativeWrapper import:")
 try:
-    from infrastructure.processors.rife.native_wrapper import RIFENativeWrapper
+    from src.infrastructure.processors.rife.native_wrapper import RIFENativeWrapper
     print(f"   ✓ RIFENativeWrapper imported successfully")
 except ImportError as e:
     print(f"   ✗ RIFENativeWrapper import failed: {e}")
@@ -86,7 +86,7 @@ print()
 # 7. Check factory
 print("7. ProcessorFactory with use_native=True:")
 try:
-    from application.factories import ProcessorFactory
+    from src.application.factories import ProcessorFactory
     factory = ProcessorFactory(use_native=True)
     print(f"   ✓ Factory created with use_native=True")
 

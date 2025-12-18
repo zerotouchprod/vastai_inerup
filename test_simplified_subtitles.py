@@ -22,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 def test_mode_only():
     """Test that only mode-based subtitle removal works."""
-    from infrastructure.config import ConfigLoader
+    from src.infrastructure.config import ConfigLoader
     
     # Test 1: remove-subtitles mode with language
     config_data = {
@@ -62,7 +62,7 @@ def test_mode_only():
 
 def test_no_preprocessing():
     """Test that preprocessing subtitle removal is not available."""
-    from infrastructure.config import ConfigLoader
+    from src.infrastructure.config import ConfigLoader
     
     # Test 2: upscale mode should NOT have subtitle removal
     config_data = {
@@ -99,7 +99,7 @@ def test_no_preprocessing():
 
 def test_job_model():
     """Test that Job model reflects simplified approach."""
-    from domain.models import Job
+    from src.domain.models import Job
     
     # Test remove-subtitles mode
     job = Job(

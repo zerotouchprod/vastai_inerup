@@ -3,7 +3,7 @@ import sys
 sys.path.insert(0, 'src')
 from dotenv import load_dotenv
 load_dotenv()
-from infrastructure.vastai.client import VastAIClient
+from src.infrastructure.vastai.client import VastAIClient
 
 print("Testing log fetching...", flush=True)
 

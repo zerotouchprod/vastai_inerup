@@ -5,7 +5,7 @@ Unit tests for domain models.
 import pytest
 from pathlib import Path
 
-from domain.models import (
+from src.domain.models import (
     ProcessingJob,
     Video,
     UploadResult,

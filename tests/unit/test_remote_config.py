@@ -8,7 +8,7 @@ from unittest.mock import Mock, patch, MagicMock
 import tempfile
 import shutil
 
-from shared.remote_config import (
+from src.shared.remote_config import (
     deep_merge,
     download_remote_config,
     load_config_with_remote,

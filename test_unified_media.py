@@ -7,7 +7,7 @@ from pathlib import Path
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
-from domain.models import Job
+from src.domain.models import Job
 
 def test_job_validation():
     """Test Job validation for different types."""
@@ -116,7 +116,7 @@ def test_config_loader():
     """Test config loader with new type field."""
     print("\nTesting config loader...")
     
-    from infrastructure.config import ConfigLoader
+    from src.infrastructure.config import ConfigLoader
     import tempfile
     import yaml
     

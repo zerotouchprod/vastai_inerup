@@ -7,9 +7,9 @@ This adapter uses the pure Python implementation instead of shell scripts.
 from pathlib import Path
 from typing import List, Dict, Any
 
-from infrastructure.processors.base import BaseProcessor
-from domain.exceptions import VideoProcessingError, ProcessorNotAvailableError
-from shared.logging import get_logger
+from src.infrastructure.processors.base import BaseProcessor
+from src.domain.exceptions import VideoProcessingError, ProcessorNotAvailableError
+from src.shared.logging import get_logger
 
 
 logger = get_logger(__name__)
@@ -42,7 +42,7 @@ class RIFENativeWrapper(BaseProcessor):
                 return False
 
             # Check that we can import the native module (don't instantiate yet)
-            from infrastructure.processors.rife.native import RIFENative
+            from src.infrastructure.processors.rife.native import RIFENative
 
             # Basic availability check - actual model loading happens in _execute_processing
             logger.debug("RIFE native is available (PyTorch + CUDA detected)")
@@ -86,7 +86,7 @@ class RIFENativeWrapper(BaseProcessor):
 
         try:
             # Import at runtime to avoid circular dependencies
-            from infrastructure.processors.rife.native import RIFENative
+            from src.infrastructure.processors.rife.native import RIFENative
 
             # Create processor if not exists
             if self._processor is None:

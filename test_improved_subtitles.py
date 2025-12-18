@@ -37,7 +37,7 @@ def test_improved_subtitles():
     print(f"\nOutput will be saved to: {output_dir}")
     
     try:
-        from infrastructure.processors.subtitle.native import SubtitleRemoverNative
+        from src.infrastructure.processors.subtitle.native import SubtitleRemoverNative
         
         print("\nInitializing IMPROVED subtitle remover for Russian language...")
         print("Parameters: mask_dilation=8, confidence_threshold=0.3")

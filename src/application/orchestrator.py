@@ -423,7 +423,7 @@ class VideoProcessingOrchestrator:
         # by checking the wrapper's is_available method if it exists
         if hasattr(self._subtitle_remover, 'is_available'):
             # This is a class method on the wrapper
-            from infrastructure.processors.subtitle.wrapper import SubtitleRemoverWrapper
+            from src.infrastructure.processors.subtitle.wrapper import SubtitleRemoverWrapper
             if not SubtitleRemoverWrapper.is_available():
                 raise VideoProcessingError("Subtitle remover dependencies not available (PaddleOCR, OpenCV)")
         

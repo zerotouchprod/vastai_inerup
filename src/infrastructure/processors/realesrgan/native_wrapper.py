@@ -7,10 +7,10 @@ This adapter uses the pure Python implementation instead of shell scripts.
 from pathlib import Path
 from typing import List, Dict, Any
 
-from infrastructure.processors.base import BaseProcessor
-from infrastructure.processors.realesrgan.native import RealESRGANNative
-from domain.exceptions import VideoProcessingError, ProcessorNotAvailableError
-from shared.logging import get_logger
+from src.infrastructure.processors.base import BaseProcessor
+from src.infrastructure.processors.realesrgan.native import RealESRGANNative
+from src.domain.exceptions import VideoProcessingError, ProcessorNotAvailableError
+from src.shared.logging import get_logger
 
 logger = get_logger(__name__)
 

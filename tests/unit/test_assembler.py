@@ -6,8 +6,8 @@ import pytest
 from pathlib import Path
 from unittest.mock import Mock, MagicMock, patch
 
-from infrastructure.media.assembler import FFmpegAssembler
-from domain.exceptions import AssemblyError
+from src.infrastructure.media.assembler import FFmpegAssembler
+from src.domain.exceptions import AssemblyError
 
 
 class TestFFmpegAssembler:

@@ -24,15 +24,15 @@ import shutil
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
 
-from infrastructure.config import ConfigLoader, ProcessingConfig
-from application.orchestrator import VideoProcessingOrchestrator
-from application.factories import ProcessorFactory
-from infrastructure.io import HttpDownloader, B2S3Uploader
-from infrastructure.media import FFmpegExtractor, FFmpegAssembler
-from infrastructure.storage import TempStorage
-from shared.logging import setup_logger, get_logger
-from shared.metrics import MetricsCollector
-from domain.models import ProcessingJob
+from src.infrastructure.config import ConfigLoader, ProcessingConfig
+from src.application.orchestrator import VideoProcessingOrchestrator
+from src.application.factories import ProcessorFactory
+from src.infrastructure.io import HttpDownloader, B2S3Uploader
+from src.infrastructure.media import FFmpegExtractor, FFmpegAssembler
+from src.infrastructure.storage import TempStorage
+from src.shared.logging import setup_logger, get_logger
+from src.shared.metrics import MetricsCollector
+from src.domain.models import ProcessingJob
 
 
 # Test video path
@@ -77,7 +77,7 @@ def mock_orchestrator(temp_workspace):
     # Mock uploader (doesn't actually upload)
     class MockUploader:
         def upload(self, file_path, bucket, key, endpoint=None):
-            from domain.models import UploadResult
+            from src.domain.models import UploadResult
             logger.info(f"[MOCK] Would upload {file_path} to s3://{bucket}/{key}")
             return UploadResult(
                 success=True,
@@ -113,7 +113,7 @@ class TestBasicVideoProcessing:
     
     def test_video_info_extraction(self, test_video):
         """Test that we can extract video info."""
-        from infrastructure.media import FFmpegExtractor
+        from src.infrastructure.media import FFmpegExtractor
         
         extractor = FFmpegExtractor()
         info = extractor.get_video_info(test_video)
@@ -128,7 +128,7 @@ class TestBasicVideoProcessing:
     
     def test_frame_extraction(self, test_video, temp_workspace):
         """Test frame extraction."""
-        from infrastructure.media import FFmpegExtractor
+        from src.infrastructure.media import FFmpegExtractor
         
         extractor = FFmpegExtractor()
         output_dir = temp_workspace / "frames"
@@ -143,7 +143,7 @@ class TestBasicVideoProcessing:
     
     def test_frame_assembly(self, test_video, temp_workspace):
         """Test assembling frames back to video."""
-        from infrastructure.media import FFmpegExtractor, FFmpegAssembler
+        from src.infrastructure.media import FFmpegExtractor, FFmpegAssembler
         
         # Extract frames
         extractor = FFmpegExtractor()
@@ -285,7 +285,7 @@ class TestDebugMode:
         # Enable debug mode
         monkeypatch.setenv('DEBUG_PROCESSORS', '1')
         
-        from infrastructure.processors.debug import ProcessorDebugger
+        from src.infrastructure.processors.debug import ProcessorDebugger
         
         debugger = ProcessorDebugger('test')
         assert debugger.is_enabled()
