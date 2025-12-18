@@ -123,9 +123,10 @@ class SubtitleRemoverProPainter:
                               чтобы он перерисовал весь ореол субтитров.
         :param use_gpu_for_ocr: Использовать GPU для OCR если доступно (может быть быстрее)
         """
-        # БЕЗОПАСНАЯ проверка и инициализация устройства
-        # Проблема: PyTorch может быть установлен без поддержки CUDA
-        # Решение: безопасный fallback на CPU если CUDA не работает
+        # Настраиваем переменные окружения PyTorch для лучшего управления памятью
+        import os
+        os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True,max_split_size_mb:128'
+        os.environ['CUDA_LAUNCH_BLOCKING'] = '0'
         
         self.lang = lang
         self.mask_dilation = mask_dilation
