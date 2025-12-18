@@ -4,8 +4,33 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 from datetime import datetime
+from pydantic import BaseModel, Field
 
 
+# Pydantic models for subtitle removal (as specified in requirements)
+class ProcessingStats(BaseModel):
+    """Statistics for processing operation."""
+    frames_total: int
+    duration_seconds: float
+    device_used: str
+
+
+class InpaintingRequest(BaseModel):
+    """Request for inpainting operation."""
+    input_dir: Path
+    output_dir: Path
+
+
+class ProcessingResult(BaseModel):
+    """Result of a processing operation (Pydantic version)."""
+    success: bool
+    output_path: Optional[Path] = None
+    frames_processed: int = 0
+    errors: List[str] = Field(default_factory=list)
+    stats: Optional[ProcessingStats] = None
+
+
+# Original dataclass models (preserved for backward compatibility)
 @dataclass(frozen=True)
 class Video:
     """Represents a video file with metadata."""
@@ -28,8 +53,8 @@ class Video:
 
 
 @dataclass
-class ProcessingResult:
-    """Result of a processing operation."""
+class LegacyProcessingResult:
+    """Result of a processing operation (legacy dataclass version)."""
 
     success: bool
     output_path: Optional[Path] = None
@@ -45,6 +70,24 @@ class ProcessingResult:
     def add_metric(self, key: str, value: Any) -> None:
         """Add a metric to the result."""
         self.metrics[key] = value
+    
+    def to_pydantic(self) -> ProcessingResult:
+        """Convert to Pydantic ProcessingResult."""
+        stats = None
+        if self.duration_seconds > 0:
+            stats = ProcessingStats(
+                frames_total=self.frames_processed,
+                duration_seconds=self.duration_seconds,
+                device_used=self.metrics.get('device', 'cpu')
+            )
+        
+        return ProcessingResult(
+            success=self.success,
+            output_path=self.output_path,
+            frames_processed=self.frames_processed,
+            errors=self.errors,
+            stats=stats
+        )
 
 
 @dataclass
