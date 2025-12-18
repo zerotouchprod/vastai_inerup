@@ -1,20 +1,20 @@
-"""Wrapper for subtitle removal processor."""
+"""Wrapper for subtitle removal processor using refactored architecture."""
 
 import logging
 from pathlib import Path
 from typing import List, Dict, Any
 
-from domain.protocols import IProcessor
-from domain.models import ProcessingResult
-from .native import SubtitleRemoverNative
+from src.domain.protocols import IProcessor
+from src.domain.models import ProcessingResult
+from src.services.wrapper import SubtitleRemoverProPainterWrapper
 
 logger = logging.getLogger(__name__)
 
 
 class SubtitleRemoverWrapper(IProcessor):
-    """Wrapper for subtitle removal processor."""
+    """Wrapper for subtitle removal processor using new refactored architecture."""
 
-    def __init__(self, lang: str = 'en', mask_dilation: int = 8, confidence_threshold: float = 0.3):
+    def __init__(self, lang: str = 'en', mask_dilation: int = 12, confidence_threshold: float = 0.3):
         """
         Initialize subtitle remover.
 
@@ -31,7 +31,7 @@ class SubtitleRemoverWrapper(IProcessor):
 
     def process(self, input_frames: List[Path], output_dir: Path, **options) -> ProcessingResult:
         """
-        Process frames to remove subtitles.
+        Process frames to remove subtitles using refactored ProPainter architecture.
 
         Args:
             input_frames: List of input frame paths
@@ -45,57 +45,43 @@ class SubtitleRemoverWrapper(IProcessor):
         start_time = time.time()
 
         try:
-            self._logger.info(f"Starting subtitle removal for {len(input_frames)} frames")
+            self._logger.info(f"Starting subtitle removal for {len(input_frames)} frames using refactored architecture")
             
             # Create processor if not exists
             if self._processor is None:
-                self._logger.info(f"Creating SubtitleRemoverNative (lang={self._lang}, dilation={self._mask_dilation})")
-                self._processor = SubtitleRemoverNative(
+                self._logger.info(f"Creating SubtitleRemoverProPainterWrapper (lang={self._lang}, dilation={self._mask_dilation})")
+                self._processor = SubtitleRemoverProPainterWrapper(
                     lang=self._lang,
-                    mask_dilation=self._mask_dilation,
-                    confidence_threshold=self._confidence_threshold
+                    mask_dilation=self._mask_dilation
                 )
-                self._logger.info("SubtitleRemoverNative created successfully")
+                self._logger.info("SubtitleRemoverProPainterWrapper created successfully")
 
-            # Create temporary input directory
-            import tempfile
-            import shutil
-            with tempfile.TemporaryDirectory(prefix="subs_input_") as tmp_input:
-                tmp_input_path = Path(tmp_input)
-                self._logger.info(f"Created temp directory: {tmp_input_path}")
-                
-                # Copy frames to temporary directory
-                self._logger.info(f"Copying {len(input_frames)} frames to temp directory...")
-                for frame in input_frames:
-                    shutil.copy2(frame, tmp_input_path / frame.name)
-                self._logger.info("Frames copied successfully")
-
-                # Process frames
-                self._logger.info("Starting frame processing with SubtitleRemoverNative...")
-                self._processor.process_frames(tmp_input_path, output_dir)
-                self._logger.info("Frame processing completed")
-
+            # Process frames using the new wrapper
+            result = self._processor.process(input_frames, output_dir, **options)
+            
             duration = time.time() - start_time
             self._logger.info(f"Subtitle removal completed in {duration:.1f} seconds")
-
-            # Count output frames
-            output_frames = list(output_dir.glob("*.png")) + list(output_dir.glob("*.jpg"))
-            self._logger.info(f"Found {len(output_frames)} output frames in {output_dir}")
             
-            if output_frames:
-                self._logger.info(f"First 3 output files: {[f.name for f in output_frames[:3]]}")
-            
-            return ProcessingResult(
-                success=True,
-                output_path=output_dir,
-                frames_processed=len(output_frames),
-                duration_seconds=duration,
-                metrics={
-                    'frames_processed': len(output_frames),
-                    'duration_per_frame': duration / len(input_frames) if input_frames else 0,
-                    'processor': 'subtitle_remover'
-                }
-            )
+            # Convert legacy result to ProcessingResult if needed
+            if hasattr(result, 'to_pydantic'):
+                # This is LegacyProcessingResult, convert to ProcessingResult
+                pydantic_result = result.to_pydantic()
+                return ProcessingResult(
+                    success=pydantic_result.success,
+                    output_path=pydantic_result.output_path,
+                    frames_processed=pydantic_result.frames_processed,
+                    duration_seconds=duration,
+                    metrics={
+                        'frames_processed': pydantic_result.frames_processed,
+                        'duration_per_frame': duration / len(input_frames) if input_frames else 0,
+                        'processor': 'subtitle_remover_propainter_refactored',
+                        'device_used': pydantic_result.stats.device_used if pydantic_result.stats else 'unknown'
+                    },
+                    errors=pydantic_result.errors
+                )
+            else:
+                # Already a ProcessingResult
+                return result
 
         except Exception as e:
             self._logger.exception(f"Subtitle removal failed: {e}")
@@ -120,14 +106,12 @@ class SubtitleRemoverWrapper(IProcessor):
     @classmethod
     def is_available(cls) -> bool:
         """Check if subtitle remover is available."""
-        try:
-            import cv2
-            import numpy as np
-            from paddleocr import PaddleOCR  # noqa: F401
-            return True
-        except ImportError:
-            return False
+        return SubtitleRemoverProPainterWrapper.is_available()
 
     def supports_gpu(self) -> bool:
-        """Check if GPU is supported (currently CPU only)."""
-        return False
+        """Check if GPU is supported (ProPainter uses GPU if available)."""
+        try:
+            import torch
+            return torch.cuda.is_available()
+        except ImportError:
+            return False

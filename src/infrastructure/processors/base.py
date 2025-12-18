@@ -5,8 +5,8 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import List, Dict, Any
 
-from domain.models import ProcessingResult
-from domain.exceptions import VideoProcessingError
+from src.domain.models import ProcessingResult
+from src.domain.exceptions import VideoProcessingError
 from shared.logging import get_logger
 from shared.metrics import MetricsCollector
 
@@ -191,4 +191,3 @@ class BaseProcessor(ABC):
     def supports_gpu(self) -> bool:
         """Check if GPU acceleration is available (default: False)."""
         return False
-
