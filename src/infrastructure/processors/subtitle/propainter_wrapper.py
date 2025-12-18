@@ -735,8 +735,8 @@ class SubtitleRemoverProPainter:
         Гибкий вызов API ProPainter с поддержкой разных версий.
         
         Args:
-            frames: Входные кадры
-            masks: Маски
+            frames: Входные кадры (masked_frames)
+            masks: Маски (masks_in)
             
         Returns:
             Результат обработки
@@ -761,9 +761,14 @@ class SubtitleRemoverProPainter:
                 # Новый API: forward(frames, masks_in, masks_updated, num_local_frames)
                 return self.model(frames, masks, masks, 10)
             elif len(params) == 5:
-                # Самый новый API: forward(frames, masks_in, masks_updated, num_local_frames, device)
-                # device обычно не требуется, используем значение по умолчанию
+                # API: forward(frames, masks_in, masks_updated, num_local_frames, device)
                 return self.model(frames, masks, masks, 10, self.device)
+            elif len(params) == 7:
+                # Самый новый API: forward(masked_frames, completed_flows, masks_in, masks_updated, num_local_frames, interpolation, t_dilation)
+                # Создаем пустой тензор для completed_flows
+                b, t, c, h, w = frames.shape
+                completed_flows = torch.zeros((b, t-1, 2, h, w), device=frames.device)
+                return self.model(frames, completed_flows, masks, masks, 10, 'bilinear', 2)
             else:
                 raise ValueError(f"Unsupported number of parameters: {len(params)}")
                 
@@ -771,27 +776,34 @@ class SubtitleRemoverProPainter:
             logger.warning(f"Could not inspect signature: {sig_error}. Trying fallback...")
             
             # Fallback: пробуем разные варианты API
-            # Вариант 1: Самый новый API с 5 аргументами
+            # Вариант 1: API с 7 аргументами (самый новый)
             try:
-                return self.model(frames, masks, masks, 10, self.device)
-            except TypeError as e1:
-                logger.warning(f"API 5-args failed: {e1}")
-                # Вариант 2: API с 4 аргументами
+                b, t, c, h, w = frames.shape
+                completed_flows = torch.zeros((b, t-1, 2, h, w), device=frames.device)
+                return self.model(frames, completed_flows, masks, masks, 10, 'bilinear', 2)
+            except (TypeError, AttributeError) as e1:
+                logger.warning(f"API 7-args failed: {e1}")
+                # Вариант 2: API с 5 аргументами
                 try:
-                    return self.model(frames, masks, masks, 10)
+                    return self.model(frames, masks, masks, 10, self.device)
                 except TypeError as e2:
-                    logger.warning(f"API 4-args failed: {e2}")
-                    # Вариант 3: API с 3 аргументами
+                    logger.warning(f"API 5-args failed: {e2}")
+                    # Вариант 3: API с 4 аргументами
                     try:
-                        return self.model(frames, masks, masks)
+                        return self.model(frames, masks, masks, 10)
                     except TypeError as e3:
-                        logger.warning(f"API 3-args failed: {e3}")
-                        # Вариант 4: Старый API с 2 аргументами
+                        logger.warning(f"API 4-args failed: {e3}")
+                        # Вариант 4: API с 3 аргументами
                         try:
-                            return self.model(frames, masks)
+                            return self.model(frames, masks, masks)
                         except TypeError as e4:
-                            logger.error(f"All API attempts failed: {e4}")
-                            raise RuntimeError(f"Could not find compatible ProPainter API. Error: {e4}")
+                            logger.warning(f"API 3-args failed: {e4}")
+                            # Вариант 5: Старый API с 2 аргументами
+                            try:
+                                return self.model(frames, masks)
+                            except TypeError as e5:
+                                logger.error(f"All API attempts failed: {e5}")
+                                raise RuntimeError(f"Could not find compatible ProPainter API. Error: {e5}")
 
 
 class SubtitleRemoverProPainterWrapper:
