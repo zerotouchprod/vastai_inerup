@@ -28,6 +28,11 @@ class ProcessingResult(BaseModel):
     frames_processed: int = 0
     errors: List[str] = Field(default_factory=list)
     stats: Optional[ProcessingStats] = None
+    metrics: Dict[str, Any] = Field(default_factory=dict)
+    
+    def add_metric(self, key: str, value: Any) -> None:
+        """Add a metric to the result."""
+        self.metrics[key] = value
 
 
 # Original dataclass models (preserved for backward compatibility)

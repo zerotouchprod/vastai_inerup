@@ -32,6 +32,10 @@ class AppConfig(BaseSettings):
     AUTO_DOWNSCALE: bool = True  # Automatically downscale high-resolution videos to prevent OOM
     MAX_HEIGHT: int = 720  # Maximum frame height before downscaling (pixels)
     
+    # ROI (Region of Interest) settings
+    USE_ROI_OPTIMIZATION: bool = True  # Process only bottom region where subtitles appear
+    ROI_HEIGHT_RATIO: float = 0.35  # Bottom 35% of frame
+    
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

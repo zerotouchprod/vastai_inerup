@@ -88,6 +88,10 @@ class StreamingSubtitleRemoverService:
         self.scale_factor = 1.0
         self.auto_downscale = config.AUTO_DOWNSCALE
         
+        # ROI state
+        self.use_roi_optimization = config.USE_ROI_OPTIMIZATION
+        self.roi_height_ratio = config.ROI_HEIGHT_RATIO
+        
         logger.info(f"StreamingSubtitleRemoverService initialized (lang={self.lang}, "
                    f"dilation={self.mask_dilation}, device={self.device})")
     
@@ -190,6 +194,39 @@ class StreamingSubtitleRemoverService:
         masks_t = torch.from_numpy(downscaled_masks).unsqueeze(1).float() / 255.0
         
         return frames_t.to(frames.device), masks_t.to(masks.device), scale_factor
+    
+    def _process_roi_chunk(self, frames: torch.Tensor, masks: torch.Tensor) -> torch.Tensor:
+        """
+        Process only the bottom region of interest (where subtitles appear).
+        
+        Args:
+            frames: Frames tensor of shape (T, C, H, W)
+            masks: Masks tensor of shape (T, 1, H, W)
+            
+        Returns:
+            Processed frames tensor of shape (T, C, H, W) with inpainted ROI.
+        """
+        T, C, H, W = frames.shape
+        roi_start = int(H * (1 - self.roi_height_ratio))
+        roi_height = H - roi_start
+        
+        logger.info(
+            f"Applying ROI optimization: cropping bottom {roi_height}px "
+            f"(height ratio {self.roi_height_ratio})"
+        )
+        
+        # Crop ROI
+        frames_roi = frames[:, :, roi_start:, :]  # (T, C, roi_height, W)
+        masks_roi = masks[:, :, roi_start:, :]    # (T, 1, roi_height, W)
+        
+        # Process ROI
+        processed_roi = self.model_adapter.process_chunk(frames_roi, masks_roi)
+        
+        # Stitch back into full frames
+        processed_frames = frames.clone()
+        processed_frames[:, :, roi_start:, :] = processed_roi
+        
+        return processed_frames
     
     def _maybe_downscale_numpy(self, frames: list[np.ndarray], masks: list[np.ndarray]) -> tuple[list[np.ndarray], list[np.ndarray], float]:
         """
@@ -537,6 +574,13 @@ class StreamingSubtitleRemoverService:
         original_frames = frames
         original_masks = masks
         
+        # Determine if ROI should be attempted (high resolution and ROI enabled)
+        use_roi = (
+            self.use_roi_optimization and 
+            original_frames.shape[2] > self.target_height and
+            not self.downscaled
+        )
+        
         while current_batch_size >= 1:
             try:
                 # If we've reduced batch size, we need to split the chunk further
@@ -548,8 +592,11 @@ class StreamingSubtitleRemoverService:
                         sub_frames = original_frames[sub_start:sub_end]
                         sub_masks = original_masks[sub_start:sub_end]
                         
-                        # Process sub-chunk
-                        sub_pred = self.model_adapter.process_chunk(sub_frames, sub_masks)
+                        # Process sub-chunk (with ROI if applicable)
+                        if use_roi:
+                            sub_pred = self._process_roi_chunk(sub_frames, sub_masks)
+                        else:
+                            sub_pred = self.model_adapter.process_chunk(sub_frames, sub_masks)
                         sub_preds.append(sub_pred)
                         
                         # Clear cache after each sub-chunk
@@ -559,8 +606,11 @@ class StreamingSubtitleRemoverService:
                     # Combine sub-chunks
                     return torch.cat(sub_preds, dim=0)
                 else:
-                    # Process whole chunk
-                    return self.model_adapter.process_chunk(original_frames, original_masks)
+                    # Process whole chunk (with ROI if applicable)
+                    if use_roi:
+                        return self._process_roi_chunk(original_frames, original_masks)
+                    else:
+                        return self.model_adapter.process_chunk(original_frames, original_masks)
                     
             except torch.OutOfMemoryError:
                 # Clear cache and reduce batch size
