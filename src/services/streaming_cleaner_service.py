@@ -81,6 +81,11 @@ class StreamingSubtitleRemoverService:
         # CPU fallback state
         self.cpu_fallback_active = False
         
+        # Downscaling state
+        self.downscaled = False
+        self.target_height = 720  # target height for downscaling
+        self.scale_factor = 1.0
+        
         logger.info(f"StreamingSubtitleRemoverService initialized (lang={self.lang}, "
                    f"dilation={self.mask_dilation}, device={self.device})")
     
@@ -128,6 +133,61 @@ class StreamingSubtitleRemoverService:
             torch.cuda.empty_cache()
         
         logger.info("CPU fallback activated. Processing will continue on CPU.")
+    
+    def _downscale_frames(self, frames: torch.Tensor, masks: torch.Tensor, target_height: int = 720):
+        """
+        Downscale frames and masks to target height while maintaining aspect ratio.
+        
+        Args:
+            frames: Frames tensor of shape (T, C, H, W)
+            masks: Masks tensor of shape (T, 1, H, W)
+            target_height: Target height in pixels
+            
+        Returns:
+            Tuple of (downscaled_frames, downscaled_masks, scale_factor)
+        """
+        T, C, H, W = frames.shape
+        if H <= target_height:
+            # Already at or below target height
+            return frames, masks, 1.0
+        
+        # Calculate new dimensions maintaining aspect ratio
+        scale_factor = target_height / H
+        new_h = target_height
+        new_w = int(W * scale_factor)
+        # Ensure dimensions are divisible by 8 for ProPainter
+        new_h = ((new_h + 7) // 8) * 8
+        new_w = ((new_w + 7) // 8) * 8
+        
+        logger.warning(
+            f"VRAM insufficient for {H}x{W}. Auto-downscaling to {new_h}x{new_w} "
+            f"(scale factor {scale_factor:.2f}) to keep GPU acceleration."
+        )
+        
+        # Convert tensors to numpy for OpenCV resize
+        frames_np = frames.permute(0, 2, 3, 1).cpu().numpy()  # (T, H, W, C)
+        masks_np = masks.squeeze(1).cpu().numpy()  # (T, H, W)
+        
+        downscaled_frames = []
+        downscaled_masks = []
+        for i in range(T):
+            frame = (frames_np[i] * 255).astype(np.uint8)
+            mask = (masks_np[i] * 255).astype(np.uint8)
+            
+            frame_resized = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+            mask_resized = cv2.resize(mask, (new_w, new_h), interpolation=cv2.INTER_NEAREST)
+            
+            downscaled_frames.append(frame_resized)
+            downscaled_masks.append(mask_resized)
+        
+        # Convert back to tensors
+        downscaled_frames = np.stack(downscaled_frames)  # (T, new_h, new_w, C)
+        downscaled_masks = np.stack(downscaled_masks)  # (T, new_h, new_w)
+        
+        frames_t = torch.from_numpy(downscaled_frames).permute(0, 3, 1, 2).float() / 255.0
+        masks_t = torch.from_numpy(downscaled_masks).unsqueeze(1).float() / 255.0
+        
+        return frames_t.to(frames.device), masks_t.to(masks.device), scale_factor
     
     def process(self, request: InpaintingRequest) -> ProcessingResult:
         """
@@ -462,17 +522,29 @@ class StreamingSubtitleRemoverService:
                 )
                 
                 if new_batch_size == current_batch_size:
-                    # Can't reduce further - activate CPU fallback
+                    # Can't reduce batch size further - try downscaling before CPU fallback
+                    if not self.downscaled and original_frames.shape[2] > self.target_height:
+                        # Downscale frames and masks
+                        logger.warning(
+                            f"VRAM insufficient for {original_frames.shape[2]}x{original_frames.shape[3]}. "
+                            f"Auto-downscaling to {self.target_height}p to keep GPU acceleration."
+                        )
+                        downscaled_frames, downscaled_masks, scale_factor = self._downscale_frames(
+                            original_frames, original_masks, self.target_height
+                        )
+                        # Update original frames and masks for retry
+                        original_frames = downscaled_frames
+                        original_masks = downscaled_masks
+                        self.downscaled = True
+                        self.scale_factor = scale_factor
+                        # Reset batch size to initial (maybe we can increase batch size after downscaling)
+                        current_batch_size = initial_batch_size
+                        continue
+                    
+                    # If already downscaled or resolution already low, fallback to CPU
                     if not self.cpu_fallback_active:
                         self._enable_cpu_fallback()
                         # After moving to CPU, retry the same chunk
-                        # Note: we break out of the loop and retry with CPU
-                        # Since device is now CPU, we can just call process_chunk directly
-                        # but we need to ensure tensors are on CPU (they are)
-                        # We'll recursively call this method with CPU fallback active
-                        # but we need to avoid infinite recursion.
-                        # Instead, we'll just process the chunk with the updated adapter.
-                        # Reset batch size to initial (or 1) and continue.
                         current_batch_size = initial_batch_size
                         continue
                     else:
@@ -527,7 +599,26 @@ class StreamingSubtitleRemoverService:
                 new_batch_size = current_batch_size // 2
                 logger.warning(f"OOM detected on single frame. Retrying with batch size {new_batch_size}")
                 if new_batch_size == 0:
-                    # Can't reduce further - activate CPU fallback
+                    # Can't reduce batch size further - try downscaling before CPU fallback
+                    if not self.downscaled and frame_t.shape[2] > self.target_height:
+                        # Downscale single frame
+                        logger.warning(
+                            f"VRAM insufficient for {frame_t.shape[2]}x{frame_t.shape[3]}. "
+                            f"Auto-downscaling to {self.target_height}p to keep GPU acceleration."
+                        )
+                        downscaled_frames, downscaled_masks, scale_factor = self._downscale_frames(
+                            frame_t, mask_t, self.target_height
+                        )
+                        # Update tensors
+                        frame_t = downscaled_frames
+                        mask_t = downscaled_masks
+                        self.downscaled = True
+                        self.scale_factor = scale_factor
+                        # Reset batch size and continue loop
+                        current_batch_size = 1
+                        continue
+                    
+                    # If already downscaled or resolution already low, fallback to CPU
                     if not self.cpu_fallback_active:
                         self._enable_cpu_fallback()
                         # After moving to CPU, retry the same frame
