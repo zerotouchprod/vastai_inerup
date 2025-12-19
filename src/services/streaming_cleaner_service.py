@@ -207,13 +207,25 @@ class StreamingSubtitleRemoverService:
             Processed frames tensor of shape (T, C, H, W) with inpainted ROI.
         """
         T, C, H, W = frames.shape
-        roi_start = int(H * (1 - self.roi_height_ratio))
-        roi_height = H - roi_start
+        # Calculate raw ROI height based on coverage ratio
+        raw_roi_height = int(H * self.roi_height_ratio)
+        # Snap to nearest multiple of 8 (ProPainter requirement)
+        roi_height = (raw_roi_height // 8) * 8
+        if roi_height == 0:
+            roi_height = 8  # minimum safe height
+        roi_start = H - roi_height
         
         logger.info(
-            f"Applying ROI optimization: cropping bottom {roi_height}px "
-            f"(height ratio {self.roi_height_ratio})"
+            f"ROI Grid Snap: Processing {W}x{roi_height} (Start Y: {roi_start}) "
+            f"(coverage {self.roi_height_ratio:.2f})"
         )
+        
+        # Debug: check mask sum in ROI
+        masks_roi = masks[:, :, roi_start:, :]
+        mask_sum = masks_roi.sum().item()
+        logger.debug(f"Mask sum in ROI: {mask_sum:.1f}")
+        if mask_sum == 0:
+            logger.warning("Mask sum is zero in ROI - subtitles may be outside cropped area!")
         
         # Crop ROI
         frames_roi = frames[:, :, roi_start:, :]  # (T, C, roi_height, W)
@@ -221,6 +233,12 @@ class StreamingSubtitleRemoverService:
         
         # Process ROI
         processed_roi = self.model_adapter.process_chunk(frames_roi, masks_roi)
+        
+        # Ensure same dtype and device as original frames
+        if processed_roi.dtype != frames.dtype:
+            processed_roi = processed_roi.to(frames.dtype)
+        if processed_roi.device != frames.device:
+            processed_roi = processed_roi.to(frames.device)
         
         # Stitch back into full frames
         processed_frames = frames.clone()

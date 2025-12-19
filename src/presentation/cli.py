@@ -179,7 +179,7 @@ def main():
     parser.add_argument('--image-mode', choices=['upscale', 'hdr', 'denoise'], help='Image processing mode (default: upscale)')
     parser.add_argument('--audio-mode', choices=['remove_reverb', 'enhance', 'normalize'], help='Audio processing mode (default: remove_reverb)')
     parser.add_argument('--subs-lang', type=str, default='en', help='Language code for subtitle OCR when using remove-subtitles mode (default: en)')
-    parser.add_argument('--roi-coverage', type=float, default=0.4, help='Fraction of screen height from bottom to process (0.0-1.0, default: 0.4)')
+    parser.add_argument('--roi-coverage', type=float, default=0.45, help='Fraction of screen height from bottom to process (0.0-1.0, default: 0.45)')
     parser.add_argument('--strict', action='store_true', help='Strict mode')
     parser.add_argument('--allow-fallback', action='store_true', help='Allow ffmpeg fallback when RIFE is not available (default: disabled)')
     parser.add_argument('--verbose', '-v', action='store_true', help='Verbose')
