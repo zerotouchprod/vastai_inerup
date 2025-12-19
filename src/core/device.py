@@ -3,6 +3,10 @@ Device utilities for GPU/CPU selection and memory management.
 """
 
 import os
+# Configure PyTorch environment variables for better memory management BEFORE importing torch
+os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True,max_split_size_mb:128'
+os.environ['CUDA_LAUNCH_BLOCKING'] = '0'
+
 import torch
 import logging
 from typing import Optional
@@ -27,9 +31,7 @@ class DeviceManager:
         
     def _init_device(self) -> torch.device:
         """Initialize device (CPU/CUDA) with safe fallback."""
-        # Configure PyTorch environment variables for better memory management
-        os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True,max_split_size_mb:128'
-        os.environ['CUDA_LAUNCH_BLOCKING'] = '0'
+        # Environment variables already set at module level
         
         if self.force_cpu:
             logger.info("CPU forced by configuration")

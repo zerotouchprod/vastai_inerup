@@ -242,6 +242,113 @@ class StreamingSubtitleRemoverService:
                 )
             )
     
+    def process(self, request: InpaintingRequest) -> ProcessingResult:
+        """
+        Main pipeline orchestrator: loads model, generates masks, processes frames in chunks.
+        """
+        start_time = time.time()
+        errors = []
+        try:
+            # 1. Setup
+            logger.info(f"Starting pipeline: {request.input_dir.name}")
+            self.load_model()
+
+            # 2. Masks
+            temp_mask_dir = request.output_dir.parent / "tmp_masks"
+            mask_dir = self.mask_service.generate_masks(request.input_dir, temp_mask_dir)
+
+            # 3. Prepare I/O
+            frame_paths = sorted(list(request.input_dir.glob("*.png")) + list(request.input_dir.glob("*.jpg")))
+            mask_paths = sorted(list(mask_dir.glob("*.png")) + list(mask_dir.glob("*.jpg")))
+
+            # Ensure output directory exists
+            request.output_dir.mkdir(parents=True, exist_ok=True)
+
+            # 4. Streaming Loop
+            batch_size = 5  # Start optimistic
+            chunk_start = 0
+            total_frames = len(frame_paths)
+
+            while chunk_start < total_frames:
+                chunk_end = min(chunk_start + batch_size, total_frames)
+                logger.info(f"Processing chunk {chunk_start}-{chunk_end} of {total_frames}")
+
+                # Load frames and masks
+                frames = []
+                masks = []
+                for i in range(chunk_start, chunk_end):
+                    frame = cv2.imread(str(frame_paths[i]))
+                    mask = cv2.imread(str(mask_paths[i]), cv2.IMREAD_GRAYSCALE)
+                    if frame is None or mask is None:
+                        raise ProcessingError(f"Failed to load frame or mask: {frame_paths[i]}, {mask_paths[i]}")
+                    frames.append(frame)
+                    masks.append(mask)
+
+                # Convert to tensors
+                frames_t = torch.stack([torch.from_numpy(f).permute(2, 0, 1).float() / 255.0 for f in frames])
+                masks_t = torch.stack([torch.from_numpy(m).unsqueeze(0).float() / 255.0 for m in masks])
+                frames_t = frames_t.to(self.device)
+                masks_t = masks_t.to(self.device)
+
+                # DELEGATION TO STRATEGY with OOM recovery
+                try:
+                    processed_t = self._process_chunk_with_oom_recovery(frames_t, masks_t, batch_size)
+                except Exception as e:
+                    logger.error(f"Chunk processing failed: {e}")
+                    errors.append(f"Chunk {chunk_start}-{chunk_end}: {e}")
+                    # Continue to next chunk
+                    chunk_start = chunk_end
+                    continue
+
+                # Save processed frames
+                for i, pred_t in enumerate(processed_t):
+                    pred = pred_t.permute(1, 2, 0).cpu().numpy() * 255.0
+                    pred = pred.astype(np.uint8)
+                    output_path = request.output_dir / frame_paths[chunk_start + i].name
+                    cv2.imwrite(str(output_path), pred)
+
+                # Cleanup
+                del frames, masks, frames_t, masks_t, processed_t
+                self.device_manager.empty_cache()
+                gc.collect()
+
+                chunk_start = chunk_end
+
+            # Cleanup temporary mask directory
+            if temp_mask_dir.exists():
+                shutil.rmtree(temp_mask_dir)
+
+            duration = time.time() - start_time
+            logger.info(f"Pipeline completed successfully in {duration:.2f}s")
+            return ProcessingResult(
+                success=True,
+                output_path=request.output_dir,
+                frames_processed=total_frames,
+                errors=errors,
+                stats=ProcessingStats(
+                    frames_total=total_frames,
+                    duration_seconds=duration,
+                    device_used=str(self.device)
+                )
+            )
+
+        except Exception as e:
+            duration = time.time() - start_time
+            error_msg = f"Critical failure: {e}"
+            logger.error(error_msg, exc_info=True)
+            errors.append(error_msg)
+            return ProcessingResult(
+                success=False,
+                output_path=None,
+                frames_processed=0,
+                errors=errors,
+                stats=ProcessingStats(
+                    frames_total=0,
+                    duration_seconds=duration,
+                    device_used=str(self.device)
+                )
+            )
+    
     def _process_chunk_with_oom_recovery(self, frames: torch.Tensor, masks: torch.Tensor, initial_batch_size: int) -> torch.Tensor:
         """
         Process a chunk of frames with OOM recovery.
@@ -375,6 +482,14 @@ class StreamingSubtitleRemoverService:
             "Failed to process chunk even with batch size 1. " 
             "GPU VRAM insufficient for this resolution."
         )
+    
+    def _process_chunk_with_oom(self, frames: torch.Tensor, masks: torch.Tensor) -> torch.Tensor:
+        """
+        Process chunk using strategy (without OOM recovery).
+        This is a simple wrapper that delegates to the strategy.
+        """
+        return self.strategy.process_chunk(frames, masks, self.model_adapter)
+    
     def _process_single_frame(self, frame_path: Path, mask_path: Path, output_dir: Path) -> None:
         """
         Process a single frame with OOM recovery.
