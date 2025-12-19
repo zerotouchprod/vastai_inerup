@@ -240,7 +240,7 @@ class StreamingSubtitleRemoverService:
     def _process_roi_chunk(self, frames: torch.Tensor, masks: torch.Tensor) -> torch.Tensor:
         """
         Process only the bottom region of interest (where subtitles appear).
-        If subtitles are outside ROI, fall back to full-frame downscaled processing.
+        If subtitles are outside ROI or intersect the ROI border, fall back to full-frame downscaled processing.
         
         Args:
             frames: Frames tensor of shape (T, C, H, W)
@@ -263,23 +263,31 @@ class StreamingSubtitleRemoverService:
             f"(coverage {self.roi_height_ratio:.2f})"
         )
         
-        # Check mask sum in ROI vs total mask sum
+        # Extract ROI mask
         masks_roi = masks[:, :, roi_start:, :]
         mask_sum_roi = masks_roi.sum().item()
         mask_sum_total = masks.sum().item()
         logger.debug(f"Mask sum in ROI: {mask_sum_roi:.1f}, total: {mask_sum_total:.1f}")
         
-        # If there are subtitles in the frame but none in ROI, fallback to full-frame downscaled
-        if mask_sum_total > 10.0 and mask_sum_roi < 10.0:
+        # 1. Empty ROI check: subtitles are entirely above the crop
+        if mask_sum_roi < 10.0:
             logger.warning(
-                f"Subtitles detected outside ROI (total={mask_sum_total:.1f}, ROI={mask_sum_roi:.1f}). "
-                f"Switching to full-frame downscaled processing."
+                f"[Fallback] ROI empty (mask_sum_roi={mask_sum_roi:.1f}). "
+                f"Subtitles are higher up. Falling back to full-frame downscaled."
             )
             return self._process_full_frame_downscaled(frames, masks)
         
-        if mask_sum_roi == 0:
-            logger.warning("Mask sum is zero in ROI - subtitles may be outside cropped area!")
+        # 2. Border intersection check: subtitles are cut by the ROI top edge
+        # Check the first 4 rows of the ROI (top edge) for any mask pixels
+        border_check = masks_roi[:, :, 0:4, :].sum().item()
+        if border_check > 0:
+            logger.warning(
+                f"[Fallback] Subtitle intersects ROI border (border_sum={border_check:.1f}). "
+                f"Falling back to full-frame downscaled to avoid cutting text."
+            )
+            return self._process_full_frame_downscaled(frames, masks)
         
+        # 3. Safe to proceed with ROI
         # Crop ROI
         frames_roi = frames[:, :, roi_start:, :]  # (T, C, roi_height, W)
         masks_roi = masks[:, :, roi_start:, :]    # (T, 1, roi_height, W)
