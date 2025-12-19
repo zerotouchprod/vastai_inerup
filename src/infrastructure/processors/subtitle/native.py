@@ -106,6 +106,31 @@ class SubtitleRemoverNative:
         memory_mb = process.memory_info().rss / 1024 / 1024
         logger.info(f"Initial memory usage: {memory_mb:.1f} MB")
 
+    def _preprocess_for_ocr(self, image: np.ndarray) -> np.ndarray:
+        """
+        Preprocess image for better OCR detection of colored/fading text.
+        
+        Args:
+            image: Input BGR image
+            
+        Returns:
+            Preprocessed BGR image with enhanced contrast
+        """
+        # Convert to grayscale
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        
+        # Apply CLAHE to handle colored text on complex backgrounds
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        enhanced = clahe.apply(gray)
+        
+        # Optional: Thresholding to isolate bright text
+        _, thresh = cv2.threshold(enhanced, 200, 255, cv2.THRESH_BINARY)
+        
+        # Convert back to BGR (3-channel) for OCR compatibility
+        bgr_thresh = cv2.cvtColor(thresh, cv2.COLOR_GRAY2BGR)
+        
+        return bgr_thresh
+    
     def process_frames(self, input_dir: Path, output_dir: Path) -> None:
         """
         Обрабатывает все изображения в input_dir и сохраняет в output_dir.
@@ -123,9 +148,17 @@ class SubtitleRemoverNative:
         import psutil
         import gc
         
-        # Process in smaller batches to reduce memory pressure
+        # Process in smaller batches to reduce memory pressure but maintain temporal context
         batch_size = 4  # Reduced from processing all at once
         processed = 0
+        
+        # We need to collect masks for temporal smearing
+        all_masks = []
+        all_frame_paths = []
+        all_images = []
+        
+        # First pass: detect text and create masks for all frames
+        logger.info("First pass: Detecting text and creating masks...")
         
         for batch_start in range(0, total, batch_size):
             batch_end = min(batch_start + batch_size, total)
@@ -134,25 +167,101 @@ class SubtitleRemoverNative:
             logger.info(f"Processing batch {batch_start//batch_size + 1}/{(total + batch_size - 1)//batch_size} "
                        f"({len(batch_frames)} frames)...")
             
-            for idx, frame_path in enumerate(batch_frames):
+            for frame_path in batch_frames:
                 try:
-                    self._process_single_frame(frame_path, output_dir / frame_path.name)
+                    # Load image
+                    img = cv2.imread(str(frame_path))
+                    if img is None:
+                        logger.warning(f"Could not read image: {frame_path}")
+                        # Create empty mask
+                        h, w = 100, 100  # Default size
+                        if all_images:
+                            h, w = all_images[0].shape[:2]
+                        mask = np.zeros((h, w), dtype=np.uint8)
+                        all_masks.append(mask)
+                        all_frame_paths.append(frame_path)
+                        all_images.append(np.zeros((h, w, 3), dtype=np.uint8))
+                        continue
+                    
+                    # Store image for later processing
+                    all_images.append(img)
+                    all_frame_paths.append(frame_path)
+                    
+                    # Preprocess image for better OCR detection
+                    preprocessed_img = self._preprocess_for_ocr(img)
+                    
+                    # Detect text
+                    if hasattr(self.ocr, 'predict'):
+                        result = self.ocr.predict(preprocessed_img)
+                    else:
+                        result = self.ocr.ocr(preprocessed_img)
+                    
+                    # Create mask
+                    h, w = img.shape[:2]
+                    mask = np.zeros((h, w), dtype=np.uint8)
+                    boxes_found = False
+                    
+                    if result and result[0] is not None:
+                        ocr_result = result[0]
+                        
+                        # Handle new PaddleOCR result structure
+                        if isinstance(ocr_result, dict):
+                            if 'rec_polys' in ocr_result and 'rec_scores' in ocr_result:
+                                polygons = ocr_result['rec_polys']
+                                scores = ocr_result['rec_scores']
+                                
+                                for poly, score in zip(polygons, scores):
+                                    try:
+                                        conf = float(score)
+                                        if conf > self.confidence_threshold:
+                                            points = poly.astype(np.int32).reshape((-1, 1, 2))
+                                            cv2.fillPoly(mask, [points], 255)
+                                            boxes_found = True
+                                    except (ValueError, TypeError) as e:
+                                        continue
+                        else:
+                            # Old structure
+                            for line in ocr_result:
+                                try:
+                                    coords = line[0]
+                                    conf = 0.0
+                                    if len(line) > 1:
+                                        second_item = line[1]
+                                        if isinstance(second_item, (list, tuple)) and len(second_item) > 1:
+                                            conf = float(second_item[1])
+                                        elif hasattr(second_item, '__getitem__'):
+                                            try:
+                                                conf = float(second_item[1])
+                                            except (IndexError, TypeError, ValueError):
+                                                pass
+                                    
+                                    if conf > self.confidence_threshold:
+                                        points = np.array(coords, dtype=np.int32).reshape((-1, 1, 2))
+                                        cv2.fillPoly(mask, [points], 255)
+                                        boxes_found = True
+                                except (IndexError, TypeError, ValueError):
+                                    continue
+                    
+                    all_masks.append(mask)
                     processed += 1
                     
                     # Show progress
-                    if total <= 10:
-                        logger.info(f"Processed {processed}/{total} frames: {frame_path.name}")
-                    elif processed % 5 == 0 or processed == total:
-                        # Monitor memory every 5 frames
+                    if processed % 5 == 0 or processed == total:
                         process = psutil.Process()
                         memory_mb = process.memory_info().rss / 1024 / 1024
-                        logger.info(f"Processed {processed}/{total} frames... Memory: {memory_mb:.1f} MB")
+                        logger.info(f"Processed {processed}/{total} frames for mask detection... Memory: {memory_mb:.1f} MB")
                         
                 except Exception as e:
-                    logger.error(f"Failed to process frame {frame_path}: {e}")
-                    # В случае ошибки просто копируем оригинал, чтобы не ломать видео
-                    import shutil
-                    shutil.copy(frame_path, output_dir / frame_path.name)
+                    logger.error(f"Failed to process frame {frame_path} for mask detection: {e}")
+                    # Create empty mask
+                    h, w = 100, 100
+                    if all_images:
+                        h, w = all_images[0].shape[:2]
+                    mask = np.zeros((h, w), dtype=np.uint8)
+                    all_masks.append(mask)
+                    all_frame_paths.append(frame_path)
+                    if len(all_images) < len(all_masks):
+                        all_images.append(np.zeros((h, w, 3), dtype=np.uint8))
                     processed += 1
             
             # Force garbage collection between batches
@@ -163,9 +272,75 @@ class SubtitleRemoverNative:
             memory_mb = process.memory_info().rss / 1024 / 1024
             logger.info(f"Batch completed. Memory usage: {memory_mb:.1f} MB")
             
-            # If memory is getting too high, warn user
             if memory_mb > 4000:  # 4GB threshold
                 logger.warning(f"High memory usage detected: {memory_mb:.1f} MB. Consider reducing batch size.")
+        
+        # Apply temporal smearing (rolling window of ±2 frames)
+        logger.info("Applying temporal smearing to masks...")
+        window_size = 2  # Look 2 frames back and 2 frames forward
+        smeared_masks = []
+        
+        for i in range(len(all_masks)):
+            # Get indices for the window
+            start_idx = max(0, i - window_size)
+            end_idx = min(len(all_masks), i + window_size + 1)
+            
+            # Combine masks in the window using logical OR (max)
+            window_masks = all_masks[start_idx:end_idx]
+            if window_masks:
+                # Use logical OR to combine masks (equivalent to max for binary masks)
+                combined_mask = window_masks[0].copy()
+                for mask in window_masks[1:]:
+                    combined_mask = cv2.bitwise_or(combined_mask, mask)
+                smeared_masks.append(combined_mask)
+            else:
+                smeared_masks.append(all_masks[i])
+        
+        # Second pass: apply dilation and inpainting with smeared masks
+        logger.info("Second pass: Applying dilation and inpainting...")
+        processed = 0
+        
+        for i, (frame_path, img, mask) in enumerate(zip(all_frame_paths, all_images, smeared_masks)):
+            try:
+                output_path = output_dir / frame_path.name
+                
+                # Skip if no text detected (empty mask)
+                if np.max(mask) == 0:
+                    cv2.imwrite(str(output_path), img)
+                    processed += 1
+                    continue
+                
+                # Apply dilation
+                kernel = np.ones((self.mask_dilation, self.mask_dilation), np.uint8)
+                dilated_mask = cv2.dilate(mask, kernel, iterations=1)
+                
+                # Additional processing for large dilation
+                if self.mask_dilation >= 8:
+                    dilated_mask = cv2.GaussianBlur(dilated_mask, (5, 5), 0)
+                
+                # Inpainting
+                inpaint_radius = max(5, self.mask_dilation // 2)
+                result_img = cv2.inpaint(img, dilated_mask, inpaintRadius=inpaint_radius, flags=cv2.INPAINT_NS)
+                
+                # Fallback to Telea if result is poor
+                if np.sum(cv2.absdiff(img, result_img)) < 1000:
+                    result_img = cv2.inpaint(img, dilated_mask, inpaintRadius=inpaint_radius, flags=cv2.INPAINT_TELEA)
+                
+                # Save result
+                cv2.imwrite(str(output_path), result_img)
+                processed += 1
+                
+                # Show progress
+                if processed % 5 == 0 or processed == total:
+                    logger.info(f"Processed {processed}/{total} frames for inpainting...")
+                    
+            except Exception as e:
+                logger.error(f"Failed to process frame {frame_path} for inpainting: {e}")
+                # Save original as fallback
+                cv2.imwrite(str(output_dir / frame_path.name), img)
+                processed += 1
+        
+        logger.info(f"Completed subtitle removal on {total} frames with temporal smearing.")
 
     def _process_single_frame(self, input_path: Path, output_path: Path) -> None:
         # 1. Загрузка изображения
