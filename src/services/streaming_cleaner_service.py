@@ -6,6 +6,7 @@ Processes frames one by one or in small batches to minimize memory usage.
 import logging
 import time
 import shutil
+import sys
 from pathlib import Path
 from typing import Optional, List, Generator
 import gc
@@ -83,8 +84,9 @@ class StreamingSubtitleRemoverService:
         
         # Downscaling state
         self.downscaled = False
-        self.target_height = 720  # target height for downscaling
+        self.target_height = config.MAX_HEIGHT  # target height for downscaling
         self.scale_factor = 1.0
+        self.auto_downscale = config.AUTO_DOWNSCALE
         
         logger.info(f"StreamingSubtitleRemoverService initialized (lang={self.lang}, "
                    f"dilation={self.mask_dilation}, device={self.device})")
@@ -189,6 +191,49 @@ class StreamingSubtitleRemoverService:
         
         return frames_t.to(frames.device), masks_t.to(masks.device), scale_factor
     
+    def _maybe_downscale_numpy(self, frames: list[np.ndarray], masks: list[np.ndarray]) -> tuple[list[np.ndarray], list[np.ndarray], float]:
+        """
+        Proactively downscale frames and masks if auto_downscale is enabled and height exceeds target.
+        
+        Args:
+            frames: List of frame arrays (H, W, 3)
+            masks: List of mask arrays (H, W)
+            
+        Returns:
+            Tuple of (downscaled_frames, downscaled_masks, scale_factor)
+        """
+        if not self.auto_downscale or len(frames) == 0:
+            return frames, masks, 1.0
+        
+        h, w = frames[0].shape[:2]
+        if h <= self.target_height:
+            return frames, masks, 1.0
+        
+        # Calculate new dimensions maintaining aspect ratio
+        scale_factor = self.target_height / h
+        new_h = self.target_height
+        new_w = int(w * scale_factor)
+        # Ensure dimensions are divisible by 8 for ProPainter
+        new_h = ((new_h + 7) // 8) * 8
+        new_w = ((new_w + 7) // 8) * 8
+        
+        logger.warning(
+            f"High resolution detected ({h}x{w}). "
+            f"Auto-downscaling to {new_h}x{new_w} (scale factor {scale_factor:.2f}) for stability."
+        )
+        
+        downscaled_frames = []
+        downscaled_masks = []
+        for frame, mask in zip(frames, masks):
+            frame_resized = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+            mask_resized = cv2.resize(mask, (new_w, new_h), interpolation=cv2.INTER_NEAREST)
+            downscaled_frames.append(frame_resized)
+            downscaled_masks.append(mask_resized)
+        
+        self.downscaled = True
+        self.scale_factor = scale_factor
+        return downscaled_frames, downscaled_masks, scale_factor
+    
     def process(self, request: InpaintingRequest) -> ProcessingResult:
         """
         Process subtitle removal request with streaming approach.
@@ -204,6 +249,7 @@ class StreamingSubtitleRemoverService:
         
         try:
             logger.info(f"Starting streaming subtitle removal: {request.input_dir} -> {request.output_dir}")
+            sys.stdout.flush()
             
             # Load model
             logger.info("Loading ProPainter model...")
@@ -285,11 +331,17 @@ class StreamingSubtitleRemoverService:
                     mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
                     if frame is None or mask is None:
                         logger.warning(f"Failed to load frame or mask: {frame_path}, {mask_path}")
-                        # Use zero frame/mask as placeholder
+                        # Use zero frame/mask as placeholder (dimensions will be updated after downscaling)
                         frame = np.zeros((h, w, 3), dtype=np.uint8)
                         mask = np.zeros((h, w), dtype=np.uint8)
                     frames_list.append(frame)
                     masks_list.append(mask)
+                
+                # Proactively downscale if enabled and resolution is high
+                frames_list, masks_list, scale_factor = self._maybe_downscale_numpy(frames_list, masks_list)
+                if scale_factor != 1.0:
+                    # Update dimensions for placeholder zero frames (if any)
+                    h, w = frames_list[0].shape[:2]
                 
                 # Convert to tensors - shape (T, C, H, W) and (T, 1, H, W)
                 frames_t = torch.stack([

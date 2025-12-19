@@ -28,6 +28,10 @@ class AppConfig(BaseSettings):
     # Device settings
     FORCE_CPU: bool = False  # Force CPU usage to avoid GPU memory issues
     
+    # Downscaling settings
+    AUTO_DOWNSCALE: bool = True  # Automatically downscale high-resolution videos to prevent OOM
+    MAX_HEIGHT: int = 720  # Maximum frame height before downscaling (pixels)
+    
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
