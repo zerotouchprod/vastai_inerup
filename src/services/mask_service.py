@@ -73,11 +73,13 @@ class MaskGeneratorService:
             logger.info(f"Parameters: lang={self.lang}, dilation={self.mask_dilation}, "
                        f"confidence={self.confidence_threshold}, batch_size={batch_size}")
             
-            # Generate masks using OCR wrapper
+            # Generate masks using OCR wrapper with minimal batch size
+            # Use batch_size=1 for absolute minimum memory usage
+            minimal_batch_size = min(batch_size, 2)  # Max 2 frames at a time
             mask_dir = self.ocr_wrapper.create_masks_for_directory(
                 input_dir=input_dir,
                 output_dir=output_dir,
-                batch_size=batch_size,
+                batch_size=minimal_batch_size,
                 confidence_threshold=self.confidence_threshold
             )
             

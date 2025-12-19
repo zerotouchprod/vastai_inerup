@@ -21,9 +21,9 @@ class AppConfig(BaseSettings):
     USE_GPU_FOR_OCR: bool = False
     CONFIDENCE_THRESHOLD: float = 0.3
     
-    # Processing settings
-    BATCH_SIZE: int = 4  # Reduced from 8 to save memory
-    MAX_FRAMES_PER_CHUNK: int = 20  # Reduced from 30 to save memory
+    # Processing settings - extremely conservative for memory-limited environments
+    BATCH_SIZE: int = 1  # Process 1 frame at a time for minimal memory
+    MAX_FRAMES_PER_CHUNK: int = 5  # Very small chunks for memory efficiency
     
     # Device settings
     FORCE_CPU: bool = False

@@ -144,64 +144,60 @@ class StreamingSubtitleRemoverService:
             if len(frame_paths) != len(mask_paths):
                 raise ProcessingError(f"Frame count mismatch: {len(frame_paths)} frames vs {len(mask_paths)} masks")
             
-            # Process in micro-batches (1-2 frames at a time)
+            # Process frames ONE BY ONE for absolute minimum memory usage
             processed_count = 0
-            micro_batch_size = 1  # Process 1 frame at a time for minimal memory
             
-            for i in range(0, len(frame_paths), micro_batch_size):
-                batch_end = min(i + micro_batch_size, len(frame_paths))
-                batch_frames = frame_paths[i:batch_end]
-                batch_masks = mask_paths[i:batch_end]
+            for i in range(len(frame_paths)):
+                frame_path = frame_paths[i]
+                mask_path = mask_paths[i]
                 
-                # Load batch
-                frames_batch = []
-                masks_batch = []
+                logger.info(f"Processing frame {i+1}/{len(frame_paths)}: {frame_path.name}")
                 
-                for frame_path, mask_path in zip(batch_frames, batch_masks):
-                    frame = cv2.imread(str(frame_path))
-                    mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
-                    
-                    if frame is None or mask is None:
-                        logger.warning(f"Failed to load frame or mask: {frame_path}, {mask_path}")
-                        continue
-                    
-                    frames_batch.append(frame)
-                    masks_batch.append(mask)
+                # Load single frame and mask
+                frame = cv2.imread(str(frame_path))
+                mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
                 
-                if not frames_batch:
+                if frame is None or mask is None:
+                    logger.warning(f"Failed to load frame or mask: {frame_path}, {mask_path}")
                     continue
                 
-                # Convert to tensors
-                frames_t = torch.from_numpy(np.array(frames_batch)).permute(0, 3, 1, 2).float() / 255.0
-                masks_t = torch.from_numpy(np.array(masks_batch)).unsqueeze(1).float() / 255.0
+                # Convert to tensors - SINGLE FRAME
+                frame_t = torch.from_numpy(frame).permute(2, 0, 1).float() / 255.0
+                mask_t = torch.from_numpy(mask).unsqueeze(0).float() / 255.0
+                
+                # Add batch dimension
+                frame_t = frame_t.unsqueeze(0)  # Shape: [1, C, H, W]
+                mask_t = mask_t.unsqueeze(0)    # Shape: [1, 1, H, W]
                 
                 # Move to device
-                frames_t = frames_t.to(self.device)
-                masks_t = masks_t.to(self.device)
+                frame_t = frame_t.to(self.device)
+                mask_t = mask_t.to(self.device)
                 
-                # Process batch
+                # Process single frame
                 with torch.no_grad():
-                    pred_batch = self.model_adapter.process_chunk(frames_t, masks_t)
+                    pred_t = self.model_adapter.process_chunk(frame_t, mask_t)
                 
                 # Convert back to numpy and save
-                pred_batch = pred_batch.permute(0, 2, 3, 1).cpu().numpy() * 255.0
-                pred_batch = pred_batch.astype(np.uint8)
+                pred = pred_t.squeeze(0).permute(1, 2, 0).cpu().numpy() * 255.0
+                pred = pred.astype(np.uint8)
                 
-                # Save processed frames
-                for j, frame_path in enumerate(batch_frames):
-                    output_path = request.output_dir / frame_path.name
-                    cv2.imwrite(str(output_path), pred_batch[j])
+                # Save processed frame
+                output_path = request.output_dir / frame_path.name
+                cv2.imwrite(str(output_path), pred)
                 
-                processed_count += len(batch_frames)
+                processed_count += 1
                 
-                # Log progress
-                if processed_count % 10 == 0 or processed_count == len(frame_paths):
+                # Log progress every 5 frames
+                if processed_count % 5 == 0 or processed_count == len(frame_paths):
                     logger.info(f"Processed {processed_count}/{len(frame_paths)} frames")
                 
-                # Clear memory
-                del frames_t, masks_t, pred_batch
+                # Aggressive memory cleanup
+                del frame, mask, frame_t, mask_t, pred_t, pred
                 self.device_manager.empty_cache()
                 gc.collect()
+                
+                # Small delay to allow memory cleanup
+                time.sleep(0.05)
             
             # Cleanup
             self.mask_service.cleanup_temp_dir(temp_mask_dir)
