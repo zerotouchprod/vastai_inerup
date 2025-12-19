@@ -5,13 +5,14 @@ Wrapper interface for backward compatibility with original API.
 import logging
 import tempfile
 import shutil
+import time
 from pathlib import Path
 from typing import List, Optional
 
 from src.core.config import get_config
 from src.domain.models import ProcessingResult as PydanticProcessingResult
 from src.domain.models import LegacyProcessingResult
-from src.services.cleaner_service import SubtitleRemoverService
+from src.services.streaming_cleaner_service import StreamingSubtitleRemoverService
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +33,7 @@ class SubtitleRemoverProPainterWrapper:
         """
         self._lang = lang
         self._mask_dilation = mask_dilation
-        self._service: Optional[SubtitleRemoverService] = None
+        self._service: Optional[StreamingSubtitleRemoverService] = None
         self._logger = logging.getLogger(__name__)
         
         # Get configuration
@@ -40,10 +41,10 @@ class SubtitleRemoverProPainterWrapper:
         
         self._logger.info(f"SubtitleRemoverProPainterWrapper initialized (lang={lang}, dilation={mask_dilation})")
     
-    def _get_service(self) -> SubtitleRemoverService:
+    def _get_service(self) -> StreamingSubtitleRemoverService:
         """Get or create the underlying service."""
         if self._service is None:
-            self._service = SubtitleRemoverService(
+            self._service = StreamingSubtitleRemoverService(
                 lang=self._lang,
                 mask_dilation=self._mask_dilation,
                 use_gpu=self._config.USE_GPU,
@@ -145,7 +146,7 @@ class SubtitleRemoverProPainterWrapper:
             from paddleocr import PaddleOCR  # noqa: F401
             
             # Check ProPainter via service
-            service = SubtitleRemoverService()
+            service = StreamingSubtitleRemoverService()
             return service.is_available()
             
         except ImportError:
@@ -161,8 +162,8 @@ class SubtitleRemoverProPainterWrapper:
     
     # Additional methods for direct access to new service
     
-    def get_service(self) -> SubtitleRemoverService:
-        """Get the underlying SubtitleRemoverService instance."""
+    def get_service(self) -> StreamingSubtitleRemoverService:
+        """Get the underlying StreamingSubtitleRemoverService instance."""
         return self._get_service()
     
     def process_with_new_api(self, input_dir: Path, output_dir: Path) -> PydanticProcessingResult:
