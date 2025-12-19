@@ -196,10 +196,65 @@ class StreamingSubtitleRemoverService:
         
         return frames_t.to(frames.device), masks_t.to(masks.device), scale_factor
     
+    def _process_split_frame(self, frames: torch.Tensor, masks: torch.Tensor) -> torch.Tensor:
+        """
+        Process full frame by splitting into top and bottom halves at native resolution.
+        Used as fallback when dynamic ROI fails (masks in multiple zones).
+        
+        Args:
+            frames: Frames tensor of shape (T, C, H, W)
+            masks: Masks tensor of shape (T, 1, H, W)
+            
+        Returns:
+            Processed frames tensor of shape (T, C, H, W)
+        """
+        T, C, H, W = frames.shape
+        logger.info(
+            f"High‑Res Fallback: Processing frame in 2 splits (Top/Bottom) to maintain {H}p quality."
+        )
+        
+        # Determine split height (60% of frame, aligned to 8)
+        split_h = (int(H * 0.6) // 8) * 8
+        if split_h == 0:
+            split_h = 8
+        
+        # Top split: 0 to split_h
+        frames_top = frames[:, :, :split_h, :]
+        masks_top = masks[:, :, :split_h, :]
+        
+        # Bottom split: H - split_h to H
+        start_bottom = H - split_h
+        frames_bot = frames[:, :, start_bottom:, :]
+        masks_bot = masks[:, :, start_bottom:, :]
+        
+        # Process splits sequentially (only if they contain masks)
+        processed_frames = frames.clone()
+        
+        if masks_top.sum().item() > 10.0:
+            logger.debug(f"Processing top split (height {split_h})")
+            out_top = self.model_adapter.process_chunk(frames_top, masks_top)
+            # Ensure dtype/device match
+            if out_top.dtype != frames.dtype:
+                out_top = out_top.to(frames.dtype)
+            if out_top.device != frames.device:
+                out_top = out_top.to(frames.device)
+            processed_frames[:, :, :split_h, :] = out_top
+        
+        if masks_bot.sum().item() > 10.0:
+            logger.debug(f"Processing bottom split (height {split_h})")
+            out_bot = self.model_adapter.process_chunk(frames_bot, masks_bot)
+            if out_bot.dtype != frames.dtype:
+                out_bot = out_bot.to(frames.dtype)
+            if out_bot.device != frames.device:
+                out_bot = out_bot.to(frames.device)
+            processed_frames[:, :, start_bottom:, :] = out_bot
+        
+        return processed_frames
+    
     def _process_full_frame_downscaled(self, frames: torch.Tensor, masks: torch.Tensor) -> torch.Tensor:
         """
         Process full frames by downscaling to target height (720p), then upscaling back.
-        Used as fallback when ROI misses subtitles.
+        Used as fallback when split processing fails (OOM) or when resolution is too high.
         
         Args:
             frames: Frames tensor of shape (T, C, H, W)
@@ -210,7 +265,7 @@ class StreamingSubtitleRemoverService:
         """
         T, C, H, W = frames.shape
         logger.warning(
-            f"Subtitles outside ROI. Falling back to full-frame downscaled processing "
+            f"VRAM insufficient for split processing. Falling back to downscaled processing "
             f"({H}x{W} -> {self.target_height}p)."
         )
         
@@ -316,14 +371,14 @@ class StreamingSubtitleRemoverService:
             # No clean zone, or masks intersect borders
             logger.warning(
                 f"Dynamic Zone: No clean zone found (mask spans borders or empty). "
-                f"Falling back to full-frame downscaled."
+                f"Falling back to split‑frame processing."
             )
-            return None, 0, 0
+            return 'split', 0, 0
     
     def _process_roi_chunk(self, frames: torch.Tensor, masks: torch.Tensor) -> torch.Tensor:
         """
         Process the best ROI zone (top, middle, bottom) based on mask distribution.
-        If no suitable zone found, fall back to full-frame downscaled processing.
+        If no suitable zone found, fall back to split‑frame or full‑frame downscaled processing.
         
         Args:
             frames: Frames tensor of shape (T, C, H, W)
@@ -343,8 +398,13 @@ class StreamingSubtitleRemoverService:
                 logger.debug("No subtitles detected, returning original frames")
                 return frames
             else:
-                # Fallback to full-frame downscaled
+                # Fallback to full-frame downscaled (should not happen with current logic)
                 return self._process_full_frame_downscaled(frames, masks)
+        
+        # Handle split‑frame fallback
+        if zone_type == 'split':
+            logger.info("Dynamic Zone: Using split‑frame processing (masks span multiple zones)")
+            return self._process_split_frame(frames, masks)
         
         logger.info(
             f"Dynamic Zone: Processing {zone_type} ROI {W}x{roi_height} (Start Y: {y_start})"

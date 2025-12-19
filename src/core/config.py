@@ -16,7 +16,7 @@ class AppConfig(BaseSettings):
     
     # OCR settings
     OCR_LANG: str = "en"
-    MASK_DILATION: int = 12
+    MASK_DILATION: int = 24  # Increased to cover text shadows/artifacts
     USE_GPU: bool = True  # Disable GPU completely to save memory
     USE_GPU_FOR_OCR: bool = True
     CONFIDENCE_THRESHOLD: float = 0.3
