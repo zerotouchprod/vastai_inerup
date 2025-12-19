@@ -608,6 +608,9 @@ class StreamingSubtitleRemoverService:
             not self.downscaled
         )
         
+        # Debug logging for first chunk
+        debug_logged = False
+        
         while current_batch_size >= 1:
             try:
                 # If we've reduced batch size, we need to split the chunk further
@@ -618,6 +621,21 @@ class StreamingSubtitleRemoverService:
                         sub_end = min(sub_start + current_batch_size, original_frames.shape[0])
                         sub_frames = original_frames[sub_start:sub_end]
                         sub_masks = original_masks[sub_start:sub_end]
+                        
+                        # Log debug info for first sub-chunk
+                        if not debug_logged:
+                            if use_roi:
+                                logger.info(
+                                    f"[ROI DEBUG] Input Shape: {sub_frames.shape}. "
+                                    f"ROI active, processing on device: {self.device}"
+                                )
+                            else:
+                                logger.info(
+                                    f"[ROI DEBUG] Input Shape: {sub_frames.shape}. "
+                                    f"Full-frame processing on device: {self.device}"
+                                )
+                            sys.stdout.flush()
+                            debug_logged = True
                         
                         # Process sub-chunk (with ROI if applicable)
                         if use_roi:
@@ -633,6 +651,21 @@ class StreamingSubtitleRemoverService:
                     # Combine sub-chunks
                     return torch.cat(sub_preds, dim=0)
                 else:
+                    # Log debug info for whole chunk
+                    if not debug_logged:
+                        if use_roi:
+                            logger.info(
+                                f"[ROI DEBUG] Input Shape: {original_frames.shape}. "
+                                f"ROI active, processing on device: {self.device}"
+                            )
+                        else:
+                            logger.info(
+                                f"[ROI DEBUG] Input Shape: {original_frames.shape}. "
+                                f"Full-frame processing on device: {self.device}"
+                            )
+                        sys.stdout.flush()
+                        debug_logged = True
+                    
                     # Process whole chunk (with ROI if applicable)
                     if use_roi:
                         return self._process_roi_chunk(original_frames, original_masks)
