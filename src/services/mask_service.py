@@ -250,14 +250,19 @@ class MaskGeneratorService:
         # Apply Gradient detection (edge layer)
         gradient_mask = get_gradient_mask(image)
         
+        # Clean MSER and Gradient masks before combining
+        mser_cleaned = filter_mask_by_geometry(mser_mask)
+        gradient_cleaned = filter_mask_by_geometry(gradient_mask)
+        
         # Combine all masks: OCR is the anchor, MSER fills the body, Gradient fixes edges
-        combined = cv2.bitwise_or(ocr_mask, mser_mask)
-        combined = cv2.bitwise_or(combined, gradient_mask)
+        combined = cv2.bitwise_or(ocr_mask, mser_cleaned)
+        combined = cv2.bitwise_or(combined, gradient_cleaned)
         
-        # Filter by geometry to remove non-text regions
-        filtered = filter_mask_by_geometry(combined)
+        # Apply safety clamp to prevent "global hallucination"
+        from src.infrastructure.image_processing.mask_cleaning import apply_safety_clamp
+        safe_mask = apply_safety_clamp(combined, ocr_mask, safety_threshold=0.20)
         
-        return filtered
+        return safe_mask
     
     def _process_batch_with_hybrid_detection(self, images: list[np.ndarray]) -> list[np.ndarray]:
         """

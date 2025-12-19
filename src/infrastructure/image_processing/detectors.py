@@ -182,50 +182,18 @@ def get_hybrid_mask(image: np.ndarray,
     return combined
 
 
-def filter_mask_by_geometry(mask: np.ndarray,
-                            min_aspect_ratio: float = 0.2,
-                            max_aspect_ratio: float = 3.0,
-                            min_area: int = 50,
-                            max_area_ratio: float = 0.05) -> np.ndarray:
+def filter_mask_by_geometry(mask: np.ndarray) -> np.ndarray:
     """
-    Filter mask regions based on geometric properties.
+    Filter mask by geometry (wrapper for mask_cleaning module).
     
     Args:
         mask: Input binary mask
-        min_aspect_ratio: Minimum aspect ratio for valid regions
-        max_aspect_ratio: Maximum aspect ratio for valid regions
-        min_area: Minimum area in pixels
-        max_area_ratio: Maximum area as ratio of total image area
         
     Returns:
         Filtered binary mask
     """
-    h, w = mask.shape
-    total_area = h * w
-    max_area = int(total_area * max_area_ratio)
-    
-    # Find contours
-    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    
-    # Create new mask
-    filtered = np.zeros_like(mask)
-    
-    for contour in contours:
-        # Get bounding rectangle
-        x, y, rw, rh = cv2.boundingRect(contour)
-        area = rw * rh
-        
-        # Calculate aspect ratio
-        aspect_ratio = max(rw, rh) / (min(rw, rh) + 1e-6)
-        
-        # Apply filters
-        if (min_area <= area <= max_area and
-            min_aspect_ratio <= aspect_ratio <= max_aspect_ratio):
-            
-            # Draw filled contour
-            cv2.drawContours(filtered, [contour], -1, 255, -1)
-    
-    return filtered
+    from .mask_cleaning import clean_mask
+    return clean_mask(mask, max_blob_area_ratio=0.01)
 
 
 def enhance_contrast_for_detection(image: np.ndarray) -> np.ndarray:
