@@ -23,7 +23,7 @@ class AppConfig(BaseSettings):
     
     # Dynamic cropping settings
     PADDING_PX: int = 64  # Padding around subtitle bounding box for context
-    MAX_CROP_AREA_RATIO: float = 0.6  # Maximum allowed crop area as ratio of total frame area (60%)
+    MAX_CROP_AREA_RATIO: float = 0.4  # Maximum allowed crop area as ratio of total frame area (40%)
     
     # Processing settings - optimized for RTX 3080 Ti 12GB
     BATCH_SIZE: int = 4  # Process 4 frames at a time for better GPU utilization

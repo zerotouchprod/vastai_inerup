@@ -89,8 +89,8 @@ class StreamingSubtitleRemoverService:
         self.scale_factor = 1.0
         self.auto_downscale = config.AUTO_DOWNSCALE
         
-        # ROI state
-        self.use_roi_optimization = config.USE_ROI_OPTIMIZATION
+        # ROI state (deprecated - kept for compatibility but not used)
+        self.use_roi_optimization = False  # Always disabled for strict dynamic tiling
         self.roi_height_ratio = config.ROI_HEIGHT_RATIO
         self.roi_zone_height_ratio = config.ROI_ZONE_HEIGHT_RATIO
         
@@ -365,13 +365,6 @@ class StreamingSubtitleRemoverService:
         original_frames = frames
         original_masks = masks
         
-        # Determine if ROI should be attempted (high resolution and ROI enabled)
-        use_roi = (
-            self.use_roi_optimization and 
-            original_frames.shape[2] > self.target_height and
-            not self.downscaled
-        )
-        
         # Debug logging for first chunk
         debug_logged = False
         
@@ -388,16 +381,10 @@ class StreamingSubtitleRemoverService:
                         
                         # Log debug info for first sub-chunk
                         if not debug_logged:
-                            if use_roi:
-                                logger.info(
-                                    f"[ROI DEBUG] Input Shape: {sub_frames.shape}. " 
-                                    f"ROI active, processing on device: {self.device}"
-                                )
-                            else:
-                                logger.info(
-                                    f"[ROI DEBUG] Input Shape: {sub_frames.shape}. " 
-                                    f"Full-frame processing on device: {self.device}"
-                                )
+                            logger.info(
+                                f"[Surgeon Mode] Input Shape: {sub_frames.shape}. "
+                                f"Processing on device: {self.device}"
+                            )
                             sys.stdout.flush()
                             debug_logged = True
                         
@@ -414,16 +401,10 @@ class StreamingSubtitleRemoverService:
                 else:
                     # Log debug info for whole chunk
                     if not debug_logged:
-                        if use_roi:
-                            logger.info(
-                                f"[ROI DEBUG] Input Shape: {original_frames.shape}. " 
-                                f"ROI active, processing on device: {self.device}"
-                            )
-                        else:
-                            logger.info(
-                                f"[ROI DEBUG] Input Shape: {original_frames.shape}. " 
-                                f"Full-frame processing on device: {self.device}"
-                            )
+                        logger.info(
+                            f"[Surgeon Mode] Input Shape: {original_frames.shape}. "
+                            f"Processing on device: {self.device}"
+                        )
                         sys.stdout.flush()
                         debug_logged = True
                     
