@@ -16,10 +16,14 @@ class AppConfig(BaseSettings):
     
     # OCR settings
     OCR_LANG: str = "en"
-    MASK_DILATION: int = 24  # Increased to cover text shadows/artifacts
+    MASK_DILATION: int = 30  # Increased to cover text shadows/artifacts (sledgehammer approach)
     USE_GPU: bool = True  # Disable GPU completely to save memory
     USE_GPU_FOR_OCR: bool = True
     CONFIDENCE_THRESHOLD: float = 0.3
+    
+    # Dynamic cropping settings
+    PADDING_PX: int = 64  # Padding around subtitle bounding box for context
+    MAX_CROP_AREA_RATIO: float = 0.6  # Maximum allowed crop area as ratio of total frame area (60%)
     
     # Processing settings - optimized for RTX 3080 Ti 12GB
     BATCH_SIZE: int = 4  # Process 4 frames at a time for better GPU utilization
