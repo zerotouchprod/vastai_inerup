@@ -1,5 +1,6 @@
 """
-Mask generation service for subtitle removal.
+Mask generation service for subtitle removal with universal text detection.
+Combines PaddleOCR (semantic), MSER (structure), and Gradient Morphology (edges).
 """
 
 import logging
@@ -13,6 +14,13 @@ import numpy as np
 from src.core.config import get_config
 from src.core.exceptions import ProcessingError
 from src.infrastructure.ocr.paddle_wrapper import ThreadSafeOCR
+from src.infrastructure.image_processing.detectors import (
+    get_mser_mask,
+    get_gradient_mask,
+    get_hybrid_mask,
+    filter_mask_by_geometry,
+    enhance_contrast_for_detection
+)
 
 logger = logging.getLogger(__name__)
 
@@ -103,11 +111,8 @@ class MaskGeneratorService:
                 if not images:
                     continue
                 
-                # Preprocess images for better OCR detection
-                preprocessed_images = [self._preprocess_for_ocr(img) for img in images]
-                
-                # Generate masks for this batch
-                batch_masks = self.ocr_wrapper.process_batch(preprocessed_images, self.confidence_threshold)
+                # Generate masks with hybrid detection
+                batch_masks = self._process_batch_with_hybrid_detection(images)
                 
                 # Store masks and paths for temporal smearing
                 all_masks.extend(batch_masks)
@@ -225,20 +230,58 @@ class MaskGeneratorService:
         Returns:
             Preprocessed BGR image with enhanced contrast
         """
-        # Convert to grayscale
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        # Use the enhanced contrast function from detectors
+        return enhance_contrast_for_detection(image)
+    
+    def _generate_hybrid_mask(self, image: np.ndarray, ocr_mask: np.ndarray) -> np.ndarray:
+        """
+        Generate hybrid mask combining OCR, MSER, and Gradient detection.
         
-        # Apply CLAHE to handle colored text on complex backgrounds
-        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-        enhanced = clahe.apply(gray)
+        Args:
+            image: Input BGR image
+            ocr_mask: Mask from PaddleOCR
+            
+        Returns:
+            Combined binary mask
+        """
+        # Apply MSER detection (structure layer)
+        mser_mask = get_mser_mask(image)
         
-        # Optional: Thresholding to isolate bright text
-        _, thresh = cv2.threshold(enhanced, 200, 255, cv2.THRESH_BINARY)
+        # Apply Gradient detection (edge layer)
+        gradient_mask = get_gradient_mask(image)
         
-        # Convert back to BGR (3-channel) for OCR compatibility
-        bgr_thresh = cv2.cvtColor(thresh, cv2.COLOR_GRAY2BGR)
+        # Combine all masks: OCR is the anchor, MSER fills the body, Gradient fixes edges
+        combined = cv2.bitwise_or(ocr_mask, mser_mask)
+        combined = cv2.bitwise_or(combined, gradient_mask)
         
-        return bgr_thresh
+        # Filter by geometry to remove non-text regions
+        filtered = filter_mask_by_geometry(combined)
+        
+        return filtered
+    
+    def _process_batch_with_hybrid_detection(self, images: list[np.ndarray]) -> list[np.ndarray]:
+        """
+        Process batch of images with hybrid detection.
+        
+        Args:
+            images: List of BGR images
+            
+        Returns:
+            List of binary masks
+        """
+        # Preprocess images for OCR
+        preprocessed_images = [self._preprocess_for_ocr(img) for img in images]
+        
+        # Get OCR masks
+        ocr_masks = self.ocr_wrapper.process_batch(preprocessed_images, self.confidence_threshold)
+        
+        # Apply hybrid detection to each image
+        hybrid_masks = []
+        for img, ocr_mask in zip(images, ocr_masks):
+            hybrid_mask = self._generate_hybrid_mask(img, ocr_mask)
+            hybrid_masks.append(hybrid_mask)
+        
+        return hybrid_masks
     
     def generate_masks_for_frames(self, frame_paths: list[Path], output_dir: Path) -> list[Path]:
         """
@@ -270,11 +313,8 @@ class MaskGeneratorService:
             if not images:
                 raise ProcessingError("No valid images found")
             
-            # Preprocess images for better OCR detection of colored/fading text
-            preprocessed_images = [self._preprocess_for_ocr(img) for img in images]
-            
-            # Generate masks using preprocessed images
-            masks = self.ocr_wrapper.process_batch(preprocessed_images, self.confidence_threshold)
+            # Generate masks with hybrid detection
+            masks = self._process_batch_with_hybrid_detection(images)
             
             # Apply temporal smearing (rolling window of ±2 frames)
             window_size = 2  # Look 2 frames back and 2 frames forward

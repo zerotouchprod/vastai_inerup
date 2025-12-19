@@ -131,6 +131,37 @@ class SubtitleRemoverNative:
         
         return bgr_thresh
     
+    def _generate_hybrid_mask(self, image: np.ndarray, ocr_mask: np.ndarray) -> np.ndarray:
+        """
+        Generate hybrid mask combining OCR, MSER, and Gradient detection.
+        
+        Args:
+            image: Input BGR image
+            ocr_mask: Mask from PaddleOCR
+            
+        Returns:
+            Combined binary mask
+        """
+        # Import here to avoid circular imports
+        from src.infrastructure.image_processing.detectors import (
+            get_mser_mask, get_gradient_mask, filter_mask_by_geometry
+        )
+        
+        # Apply MSER detection (structure layer)
+        mser_mask = get_mser_mask(image)
+        
+        # Apply Gradient detection (edge layer)
+        gradient_mask = get_gradient_mask(image)
+        
+        # Combine all masks: OCR is the anchor, MSER fills the body, Gradient fixes edges
+        combined = cv2.bitwise_or(ocr_mask, mser_mask)
+        combined = cv2.bitwise_or(combined, gradient_mask)
+        
+        # Filter by geometry to remove non-text regions
+        filtered = filter_mask_by_geometry(combined)
+        
+        return filtered
+    
     def process_frames(self, input_dir: Path, output_dir: Path) -> None:
         """
         Обрабатывает все изображения в input_dir и сохраняет в output_dir.
@@ -190,16 +221,15 @@ class SubtitleRemoverNative:
                     # Preprocess image for better OCR detection
                     preprocessed_img = self._preprocess_for_ocr(img)
                     
-                    # Detect text
+                    # Detect text with OCR
                     if hasattr(self.ocr, 'predict'):
                         result = self.ocr.predict(preprocessed_img)
                     else:
                         result = self.ocr.ocr(preprocessed_img)
                     
-                    # Create mask
+                    # Create OCR mask
                     h, w = img.shape[:2]
-                    mask = np.zeros((h, w), dtype=np.uint8)
-                    boxes_found = False
+                    ocr_mask = np.zeros((h, w), dtype=np.uint8)
                     
                     if result and result[0] is not None:
                         ocr_result = result[0]
@@ -215,8 +245,7 @@ class SubtitleRemoverNative:
                                         conf = float(score)
                                         if conf > self.confidence_threshold:
                                             points = poly.astype(np.int32).reshape((-1, 1, 2))
-                                            cv2.fillPoly(mask, [points], 255)
-                                            boxes_found = True
+                                            cv2.fillPoly(ocr_mask, [points], 255)
                                     except (ValueError, TypeError) as e:
                                         continue
                         else:
@@ -237,12 +266,13 @@ class SubtitleRemoverNative:
                                     
                                     if conf > self.confidence_threshold:
                                         points = np.array(coords, dtype=np.int32).reshape((-1, 1, 2))
-                                        cv2.fillPoly(mask, [points], 255)
-                                        boxes_found = True
+                                        cv2.fillPoly(ocr_mask, [points], 255)
                                 except (IndexError, TypeError, ValueError):
                                     continue
                     
-                    all_masks.append(mask)
+                    # Generate hybrid mask combining OCR, MSER, and Gradient
+                    hybrid_mask = self._generate_hybrid_mask(img, ocr_mask)
+                    all_masks.append(hybrid_mask)
                     processed += 1
                     
                     # Show progress
