@@ -113,7 +113,9 @@ class StreamingSubtitleRemoverService:
             logger.info(f"Starting streaming subtitle removal: {request.input_dir} -> {request.output_dir}")
             
             # Load model
+            logger.info("Loading ProPainter model...")
             self.load_model()
+            logger.info("ProPainter model loaded successfully")
             
             # Step 1: Generate masks (streaming)
             logger.info("Step 1/3: Generating masks...")
@@ -121,11 +123,13 @@ class StreamingSubtitleRemoverService:
             if temp_mask_dir.exists():
                 shutil.rmtree(temp_mask_dir)
             
+            logger.info(f"Generating masks for frames in {request.input_dir}")
             mask_dir = self.mask_service.generate_masks(
                 input_dir=request.input_dir,
                 output_dir=temp_mask_dir,
                 batch_size=2  # Very small batch size for memory efficiency
             )
+            logger.info(f"Masks generated successfully in {mask_dir}")
             
             # Step 2: Process frames in streaming mode
             logger.info("Step 2/3: Processing frames in streaming mode...")
