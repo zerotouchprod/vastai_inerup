@@ -133,15 +133,15 @@ class DeviceManager:
                     actual_frame_size = frame_height * frame_width
                     scale_factor = actual_frame_size / base_frame_size
                     
-                    # Safe coefficient: use only 70% of free memory
-                    safe_memory = free_memory * 0.7
+                    # Safe coefficient: use only 50% of free memory for ProPainter (Transformer attention O(T^2))
+                    safe_memory = free_memory * 0.5
                     available_for_frames = max(0, safe_memory - model_memory_gb)
                     
                     estimated_frames_per_gb = 10 / scale_factor  # Adjusted for frame size
                     max_frames_per_chunk = int(available_for_frames * estimated_frames_per_gb)
                     
-                    # Limits: minimum 5, maximum 30 frames
-                    max_frames_per_chunk = max(5, min(max_frames_per_chunk, 30))
+                    # Limits: minimum 1, maximum 20 frames (more conservative)
+                    max_frames_per_chunk = max(1, min(max_frames_per_chunk, 20))
                     
                     logger.info(f"Estimated max batch size: {max_frames_per_chunk} frames "
                                f"(free memory: {free_memory:.2f} GB)")

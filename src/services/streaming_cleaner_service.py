@@ -144,60 +144,88 @@ class StreamingSubtitleRemoverService:
             if len(frame_paths) != len(mask_paths):
                 raise ProcessingError(f"Frame count mismatch: {len(frame_paths)} frames vs {len(mask_paths)} masks")
             
-            # Process frames ONE BY ONE for absolute minimum memory usage
-            processed_count = 0
+            # Estimate optimal chunk size for streaming
+            # Use a sample frame to get dimensions
+            sample_frame = cv2.imread(str(frame_paths[0]))
+            if sample_frame is None:
+                raise ProcessingError(f"Failed to load sample frame: {frame_paths[0]}")
+            h, w = sample_frame.shape[:2]
+            max_frames_per_chunk = self.device_manager.estimate_max_batch_size(
+                frame_height=h,
+                frame_width=w,
+                model_memory_gb=2.0
+            )
+            # Limit chunk size for streaming (max 5 frames)
+            max_frames_per_chunk = min(max_frames_per_chunk, 5)
+            logger.info(f"Streaming chunk size: {max_frames_per_chunk} frames")
             
-            for i in range(len(frame_paths)):
-                frame_path = frame_paths[i]
-                mask_path = mask_paths[i]
+            processed_count = 0
+            chunk_start = 0
+            
+            while chunk_start < len(frame_paths):
+                chunk_end = min(chunk_start + max_frames_per_chunk, len(frame_paths))
+                chunk_frame_paths = frame_paths[chunk_start:chunk_end]
+                chunk_mask_paths = mask_paths[chunk_start:chunk_end]
                 
-                logger.info(f"Processing frame {i+1}/{len(frame_paths)}: {frame_path.name}")
+                logger.info(f"Processing chunk {chunk_start}-{chunk_end} of {len(frame_paths)}")
                 
-                # Load single frame and mask
-                frame = cv2.imread(str(frame_path))
-                mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+                # Load chunk frames and masks
+                frames_list = []
+                masks_list = []
+                for frame_path, mask_path in zip(chunk_frame_paths, chunk_mask_paths):
+                    frame = cv2.imread(str(frame_path))
+                    mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+                    if frame is None or mask is None:
+                        logger.warning(f"Failed to load frame or mask: {frame_path}, {mask_path}")
+                        # Use zero frame/mask as placeholder
+                        frame = np.zeros((h, w, 3), dtype=np.uint8)
+                        mask = np.zeros((h, w), dtype=np.uint8)
+                    frames_list.append(frame)
+                    masks_list.append(mask)
                 
-                if frame is None or mask is None:
-                    logger.warning(f"Failed to load frame or mask: {frame_path}, {mask_path}")
+                # Convert to tensors - shape (T, C, H, W) and (T, 1, H, W)
+                frames_t = torch.stack([
+                    torch.from_numpy(f).permute(2, 0, 1).float() / 255.0
+                    for f in frames_list
+                ])  # (T, C, H, W)
+                masks_t = torch.stack([
+                    torch.from_numpy(m).unsqueeze(0).float() / 255.0
+                    for m in masks_list
+                ])  # (T, 1, H, W)
+                
+                # Process chunk with OOM recovery
+                try:
+                    pred_t = self._process_chunk_with_oom_recovery(frames_t, masks_t, max_frames_per_chunk)
+                except Exception as e:
+                    logger.error(f"Failed to process chunk {chunk_start}-{chunk_end}: {e}")
+                    # Fallback to processing frames one by one
+                    for idx, (frame_path, mask_path) in enumerate(zip(chunk_frame_paths, chunk_mask_paths)):
+                        try:
+                            self._process_single_frame(frame_path, mask_path, request.output_dir)
+                            processed_count += 1
+                        except Exception as single_error:
+                            logger.error(f"Failed to process single frame {frame_path}: {single_error}")
+                    chunk_start = chunk_end
                     continue
                 
-                # Convert to tensors - SINGLE FRAME
-                frame_t = torch.from_numpy(frame).permute(2, 0, 1).float() / 255.0
-                mask_t = torch.from_numpy(mask).unsqueeze(0).float() / 255.0
+                # Save processed frames
+                pred_frames = pred_t.permute(0, 2, 3, 1).cpu().numpy() * 255.0
+                pred_frames = pred_frames.astype(np.uint8)
+                for idx, frame_path in enumerate(chunk_frame_paths):
+                    output_path = request.output_dir / frame_path.name
+                    cv2.imwrite(str(output_path), pred_frames[idx])
+                    processed_count += 1
                 
-                # Add batch dimension
-                frame_t = frame_t.unsqueeze(0)  # Shape: [1, C, H, W]
-                mask_t = mask_t.unsqueeze(0)    # Shape: [1, 1, H, W]
-                
-                # Move to device
-                frame_t = frame_t.to(self.device)
-                mask_t = mask_t.to(self.device)
-                
-                # Process single frame
-                with torch.no_grad():
-                    pred_t = self.model_adapter.process_chunk(frame_t, mask_t)
-                
-                # Convert back to numpy and save
-                pred = pred_t.squeeze(0).permute(1, 2, 0).cpu().numpy() * 255.0
-                pred = pred.astype(np.uint8)
-                
-                # Save processed frame
-                output_path = request.output_dir / frame_path.name
-                cv2.imwrite(str(output_path), pred)
-                
-                processed_count += 1
-                
-                # Log progress every 5 frames
-                if processed_count % 5 == 0 or processed_count == len(frame_paths):
-                    logger.info(f"Processed {processed_count}/{len(frame_paths)} frames")
+                # Log progress
+                logger.info(f"Processed {processed_count}/{len(frame_paths)} frames")
                 
                 # Aggressive memory cleanup
-                del frame, mask, frame_t, mask_t, pred_t, pred
+                del frames_list, masks_list, frames_t, masks_t, pred_t, pred_frames
                 self.device_manager.empty_cache()
                 gc.collect()
-                
-                # Small delay to allow memory cleanup
                 time.sleep(0.05)
+                
+                chunk_start = chunk_end
             
             # Cleanup
             self.mask_service.cleanup_temp_dir(temp_mask_dir)
@@ -321,6 +349,131 @@ class StreamingSubtitleRemoverService:
                     device_used=str(self.device)
                 )
             )
+    
+    def _process_chunk_with_oom_recovery(self, frames: torch.Tensor, masks: torch.Tensor, initial_batch_size: int) -> torch.Tensor:
+        """
+        Process a chunk of frames with OOM recovery.
+        
+        Args:
+            frames: Frames tensor of shape (T, C, H, W)
+            masks: Masks tensor of shape (T, 1, H, W)
+            initial_batch_size: Initial batch size to try
+            
+        Returns:
+            Processed frames tensor of shape (T, C, H, W)
+        """
+        current_batch_size = initial_batch_size
+        original_frames = frames
+        original_masks = masks
+        
+        while current_batch_size >= 1:
+            try:
+                # If we've reduced batch size, we need to split the chunk further
+                if current_batch_size < original_frames.shape[0]:
+                    # Process in sub-chunks of current_batch_size
+                    sub_preds = []
+                    for sub_start in range(0, original_frames.shape[0], current_batch_size):
+                        sub_end = min(sub_start + current_batch_size, original_frames.shape[0])
+                        sub_frames = original_frames[sub_start:sub_end]
+                        sub_masks = original_masks[sub_start:sub_end]
+                        
+                        # Process sub-chunk
+                        sub_pred = self.model_adapter.process_chunk(sub_frames, sub_masks)
+                        sub_preds.append(sub_pred)
+                        
+                        # Clear cache after each sub-chunk
+                        self.device_manager.empty_cache()
+                        gc.collect()
+                    
+                    # Combine sub-chunks
+                    return torch.cat(sub_preds, dim=0)
+                else:
+                    # Process whole chunk
+                    return self.model_adapter.process_chunk(original_frames, original_masks)
+                    
+            except torch.OutOfMemoryError:
+                # Clear cache and reduce batch size
+                torch.cuda.empty_cache()
+                gc.collect()
+                
+                new_batch_size = max(1, current_batch_size // 2)
+                logger.warning(
+                    f"OOM detected while processing chunk of size {current_batch_size}. "
+                    f"Retrying with batch size {new_batch_size}"
+                )
+                
+                if new_batch_size == current_batch_size:
+                    # Can't reduce further
+                    raise ProcessingError(
+                        f"GPU VRAM insufficient for this resolution even with batch size 1. "
+                        f"Try reducing video resolution or using CPU mode."
+                    )
+                
+                current_batch_size = new_batch_size
+                continue
+        
+        # If we exit loop, batch size < 1 (should not happen)
+        raise ProcessingError(
+            "Failed to process chunk even with batch size 1. "
+            "GPU VRAM insufficient for this resolution."
+        )
+    
+    def _process_single_frame(self, frame_path: Path, mask_path: Path, output_dir: Path) -> None:
+        """
+        Process a single frame with OOM recovery.
+        
+        Args:
+            frame_path: Path to frame image
+            mask_path: Path to mask image
+            output_dir: Output directory
+        """
+        frame = cv2.imread(str(frame_path))
+        mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+        if frame is None or mask is None:
+            raise ProcessingError(f"Failed to load frame or mask: {frame_path}, {mask_path}")
+        
+        # Convert to tensors
+        frame_t = torch.from_numpy(frame).permute(2, 0, 1).float() / 255.0
+        mask_t = torch.from_numpy(mask).unsqueeze(0).float() / 255.0
+        frame_t = frame_t.unsqueeze(0)  # Shape: [1, C, H, W]
+        mask_t = mask_t.unsqueeze(0)    # Shape: [1, 1, H, W]
+        
+        frame_t = frame_t.to(self.device)
+        mask_t = mask_t.to(self.device)
+        
+        # Process with OOM recovery
+        current_batch_size = 1
+        while current_batch_size >= 1:
+            try:
+                with torch.no_grad():
+                    pred_t = self.model_adapter.process_chunk(frame_t, mask_t)
+                break
+            except torch.OutOfMemoryError:
+                torch.cuda.empty_cache()
+                gc.collect()
+                new_batch_size = current_batch_size // 2
+                logger.warning(f"OOM detected on single frame. Retrying with batch size {new_batch_size}")
+                if new_batch_size == 0:
+                    raise ProcessingError(
+                        "GPU VRAM insufficient for single frame processing. "
+                        "Try reducing video resolution or using CPU mode."
+                    )
+                current_batch_size = new_batch_size
+                # Note: batch size reduction doesn't make sense for single frame,
+                # but we can try to downscale resolution (optional)
+                # For now, just retry with cleared cache
+                continue
+        
+        # Save processed frame
+        pred = pred_t.squeeze(0).permute(1, 2, 0).cpu().numpy() * 255.0
+        pred = pred.astype(np.uint8)
+        output_path = output_dir / frame_path.name
+        cv2.imwrite(str(output_path), pred)
+        
+        # Cleanup
+        del frame, mask, frame_t, mask_t, pred_t, pred
+        self.device_manager.empty_cache()
+        gc.collect()
     
     def is_available(self) -> bool:
         """Check if subtitle remover is available (ProPainter + OCR)."""

@@ -211,8 +211,8 @@ class SubtitleRemoverService:
         )
         
         if total_frames <= max_frames_per_chunk:
-            # Process all frames at once
-            return self.model_adapter.process_chunk(frames, masks)
+            # Process all frames at once with OOM recovery
+            return self._process_chunk_with_oom_recovery(frames, masks, max_frames_per_chunk)
         
         # Process in chunks
         logger.info(f"Processing {total_frames} frames in chunks of {max_frames_per_chunk}")
@@ -226,8 +226,8 @@ class SubtitleRemoverService:
             frames_chunk = frames[chunk_start:chunk_end]
             masks_chunk = masks[chunk_start:chunk_end]
             
-            # Process chunk
-            pred_chunk = self.model_adapter.process_chunk(frames_chunk, masks_chunk)
+            # Process chunk with OOM recovery
+            pred_chunk = self._process_chunk_with_oom_recovery(frames_chunk, masks_chunk, max_frames_per_chunk)
             pred_chunks.append(pred_chunk.cpu())
             
             # Clear memory between chunks
@@ -242,6 +242,74 @@ class SubtitleRemoverService:
         
         # Combine chunks
         return torch.cat(pred_chunks, dim=0)
+    
+    def _process_chunk_with_oom_recovery(self, frames: torch.Tensor, masks: torch.Tensor, initial_batch_size: int) -> torch.Tensor:
+        """
+        Process a chunk of frames with OOM recovery.
+        
+        Args:
+            frames: Frames tensor of shape (T, C, H, W)
+            masks: Masks tensor of shape (T, 1, H, W)
+            initial_batch_size: Initial batch size to try
+            
+        Returns:
+            Processed frames tensor of shape (T, C, H, W)
+        """
+        current_batch_size = initial_batch_size
+        original_frames = frames
+        original_masks = masks
+        
+        while current_batch_size >= 1:
+            try:
+                # If we've reduced batch size, we need to split the chunk further
+                if current_batch_size < original_frames.shape[0]:
+                    # Process in sub-chunks of current_batch_size
+                    sub_preds = []
+                    for sub_start in range(0, original_frames.shape[0], current_batch_size):
+                        sub_end = min(sub_start + current_batch_size, original_frames.shape[0])
+                        sub_frames = original_frames[sub_start:sub_end]
+                        sub_masks = original_masks[sub_start:sub_end]
+                        
+                        # Process sub-chunk
+                        sub_pred = self.model_adapter.process_chunk(sub_frames, sub_masks)
+                        sub_preds.append(sub_pred)
+                        
+                        # Clear cache after each sub-chunk
+                        self.device_manager.empty_cache()
+                        gc.collect()
+                    
+                    # Combine sub-chunks
+                    return torch.cat(sub_preds, dim=0)
+                else:
+                    # Process whole chunk
+                    return self.model_adapter.process_chunk(original_frames, original_masks)
+                    
+            except torch.OutOfMemoryError:
+                # Clear cache and reduce batch size
+                torch.cuda.empty_cache()
+                gc.collect()
+                
+                new_batch_size = max(1, current_batch_size // 2)
+                logger.warning(
+                    f"OOM detected while processing chunk of size {current_batch_size}. "
+                    f"Retrying with batch size {new_batch_size}"
+                )
+                
+                if new_batch_size == current_batch_size:
+                    # Can't reduce further
+                    raise ProcessingError(
+                        f"GPU VRAM insufficient for this resolution even with batch size 1. "
+                        f"Try reducing video resolution or using CPU mode."
+                    )
+                
+                current_batch_size = new_batch_size
+                continue
+        
+        # If we exit loop, batch size < 1 (should not happen)
+        raise ProcessingError(
+            "Failed to process chunk even with batch size 1. "
+            "GPU VRAM insufficient for this resolution."
+        )
     
     def process_frames_direct(self, frame_paths: list[Path], output_dir: Path) -> ProcessingResult:
         """
