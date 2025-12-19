@@ -14,6 +14,13 @@ import cv2
 import numpy as np
 import torch
 
+try:
+    from tqdm import tqdm
+    TQDM_AVAILABLE = True
+except ImportError:
+    tqdm = None
+    TQDM_AVAILABLE = False
+
 from src.core.config import get_config
 from src.core.device import get_device_manager
 from src.core.exceptions import ProcessingError, ModelLoadingError
@@ -185,15 +192,28 @@ class StreamingSubtitleRemoverService:
             max_frames_per_chunk = min(max_frames_per_chunk, 5)
             logger.info(f"Streaming chunk size: {max_frames_per_chunk} frames")
             
+            total_frames = len(frame_paths)
             processed_count = 0
             chunk_start = 0
             
-            while chunk_start < len(frame_paths):
-                chunk_end = min(chunk_start + max_frames_per_chunk, len(frame_paths))
+            # Initialize progress bar
+            if TQDM_AVAILABLE:
+                pbar = tqdm(total=total_frames, desc="Processing Video", unit="frame")
+            else:
+                pbar = None
+            
+            # Heartbeat logging
+            heartbeat_interval = 30.0  # seconds
+            last_heartbeat_time = time.time()
+            last_logged_percentage = 0
+            
+            while chunk_start < total_frames:
+                chunk_end = min(chunk_start + max_frames_per_chunk, total_frames)
                 chunk_frame_paths = frame_paths[chunk_start:chunk_end]
                 chunk_mask_paths = mask_paths[chunk_start:chunk_end]
                 
-                logger.info(f"Processing chunk {chunk_start}-{chunk_end} of {len(frame_paths)}")
+                # Log chunk start (debug level)
+                logger.debug(f"Processing chunk {chunk_start}-{chunk_end} of {total_frames}")
                 
                 # Load chunk frames and masks
                 frames_list = []
@@ -229,6 +249,9 @@ class StreamingSubtitleRemoverService:
                         try:
                             self._process_single_frame(frame_path, mask_path, request.output_dir)
                             processed_count += 1
+                            # Update progress bar
+                            if pbar is not None:
+                                pbar.update(1)
                         except Exception as single_error:
                             logger.error(f"Failed to process single frame {frame_path}: {single_error}")
                     chunk_start = chunk_end
@@ -237,13 +260,28 @@ class StreamingSubtitleRemoverService:
                 # Save processed frames
                 pred_frames = pred_t.permute(0, 2, 3, 1).cpu().numpy() * 255.0
                 pred_frames = pred_frames.astype(np.uint8)
+                chunk_size = len(chunk_frame_paths)
                 for idx, frame_path in enumerate(chunk_frame_paths):
                     output_path = request.output_dir / frame_path.name
                     cv2.imwrite(str(output_path), pred_frames[idx])
                     processed_count += 1
                 
-                # Log progress
-                logger.info(f"Processed {processed_count}/{len(frame_paths)} frames")
+                # Update progress bar
+                if pbar is not None:
+                    pbar.update(chunk_size)
+                
+                # Heartbeat logging (every 30 seconds or 10% progress)
+                current_time = time.time()
+                current_percentage = int((processed_count / total_frames) * 100)
+                if (current_time - last_heartbeat_time >= heartbeat_interval) or (current_percentage >= last_logged_percentage + 10):
+                    elapsed = current_time - start_time
+                    fps = processed_count / elapsed if elapsed > 0 else 0
+                    logger.info(
+                        f"Processed {processed_count}/{total_frames} frames ({current_percentage}%) - "
+                        f"Speed: {fps:.1f} fps - Device: {self.device}"
+                    )
+                    last_heartbeat_time = current_time
+                    last_logged_percentage = current_percentage
                 
                 # Aggressive memory cleanup
                 del frames_list, masks_list, frames_t, masks_t, pred_t, pred_frames
@@ -252,6 +290,10 @@ class StreamingSubtitleRemoverService:
                 time.sleep(0.05)
                 
                 chunk_start = chunk_end
+            
+            # Close progress bar
+            if pbar is not None:
+                pbar.close()
             
             # Cleanup
             self.mask_service.cleanup_temp_dir(temp_mask_dir)
