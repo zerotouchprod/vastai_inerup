@@ -34,7 +34,7 @@ class AppConfig(BaseSettings):
     
     # ROI (Region of Interest) settings
     USE_ROI_OPTIMIZATION: bool = True  # Process only bottom region where subtitles appear
-    ROI_HEIGHT_RATIO: float = 0.45  # Bottom 45% of frame (safe default for subtitles)
+    ROI_HEIGHT_RATIO: float = 0.55  # Bottom 55% of frame (safer default for subtitles)
     
     model_config = SettingsConfigDict(
         env_file=".env",

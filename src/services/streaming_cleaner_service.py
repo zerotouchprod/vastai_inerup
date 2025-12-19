@@ -195,9 +195,52 @@ class StreamingSubtitleRemoverService:
         
         return frames_t.to(frames.device), masks_t.to(masks.device), scale_factor
     
+    def _process_full_frame_downscaled(self, frames: torch.Tensor, masks: torch.Tensor) -> torch.Tensor:
+        """
+        Process full frames by downscaling to target height (720p), then upscaling back.
+        Used as fallback when ROI misses subtitles.
+        
+        Args:
+            frames: Frames tensor of shape (T, C, H, W)
+            masks: Masks tensor of shape (T, 1, H, W)
+            
+        Returns:
+            Processed frames tensor of shape (T, C, H, W)
+        """
+        T, C, H, W = frames.shape
+        logger.warning(
+            f"Subtitles outside ROI. Falling back to full-frame downscaled processing "
+            f"({H}x{W} -> {self.target_height}p)."
+        )
+        
+        # Downscale frames and masks
+        downscaled_frames, downscaled_masks, scale_factor = self._downscale_frames(
+            frames, masks, self.target_height
+        )
+        
+        # Process downscaled frames
+        processed_downscaled = self.model_adapter.process_chunk(downscaled_frames, downscaled_masks)
+        
+        # Upscale back to original dimensions
+        # Convert to numpy for OpenCV resize
+        processed_np = processed_downscaled.permute(0, 2, 3, 1).cpu().numpy()  # (T, H_ds, W_ds, C)
+        upscaled_frames = []
+        for i in range(T):
+            frame = (processed_np[i] * 255).astype(np.uint8)
+            frame_resized = cv2.resize(frame, (W, H), interpolation=cv2.INTER_LINEAR)
+            upscaled_frames.append(frame_resized)
+        
+        # Convert back to tensor
+        upscaled_frames = np.stack(upscaled_frames)  # (T, H, W, C)
+        upscaled_t = torch.from_numpy(upscaled_frames).permute(0, 3, 1, 2).float() / 255.0
+        upscaled_t = upscaled_t.to(frames.device)
+        
+        return upscaled_t
+    
     def _process_roi_chunk(self, frames: torch.Tensor, masks: torch.Tensor) -> torch.Tensor:
         """
         Process only the bottom region of interest (where subtitles appear).
+        If subtitles are outside ROI, fall back to full-frame downscaled processing.
         
         Args:
             frames: Frames tensor of shape (T, C, H, W)
@@ -220,11 +263,21 @@ class StreamingSubtitleRemoverService:
             f"(coverage {self.roi_height_ratio:.2f})"
         )
         
-        # Debug: check mask sum in ROI
+        # Check mask sum in ROI vs total mask sum
         masks_roi = masks[:, :, roi_start:, :]
-        mask_sum = masks_roi.sum().item()
-        logger.debug(f"Mask sum in ROI: {mask_sum:.1f}")
-        if mask_sum == 0:
+        mask_sum_roi = masks_roi.sum().item()
+        mask_sum_total = masks.sum().item()
+        logger.debug(f"Mask sum in ROI: {mask_sum_roi:.1f}, total: {mask_sum_total:.1f}")
+        
+        # If there are subtitles in the frame but none in ROI, fallback to full-frame downscaled
+        if mask_sum_total > 10.0 and mask_sum_roi < 10.0:
+            logger.warning(
+                f"Subtitles detected outside ROI (total={mask_sum_total:.1f}, ROI={mask_sum_roi:.1f}). "
+                f"Switching to full-frame downscaled processing."
+            )
+            return self._process_full_frame_downscaled(frames, masks)
+        
+        if mask_sum_roi == 0:
             logger.warning("Mask sum is zero in ROI - subtitles may be outside cropped area!")
         
         # Crop ROI
