@@ -150,6 +150,15 @@ class ProPainterModelAdapter:
         
         # Apply padding if needed (multiple of 8)
         b, t, c, h, w = masked_input.shape
+        
+        # Handle single frame case (T=1)
+        if t == 1:
+            # For single frame, duplicate it to create a sequence of 2 frames
+            # This allows ProPainter to work with optical flow
+            masked_input = torch.cat([masked_input, masked_input], dim=1)
+            masks = torch.cat([masks, masks], dim=1)
+            t = 2  # Update t to new value
+        
         pad_h = (8 - h % 8) % 8
         pad_w = (8 - w % 8) % 8
         
@@ -168,7 +177,15 @@ class ProPainterModelAdapter:
                 pred_frames = self.forward_method(masked_input, masks)
         
         # Remove padding
-        pred_frames = pred_frames[0, :, :, :h, :w]
+        if pad_h > 0 or pad_w > 0:
+            pred_frames = pred_frames[..., :h, :w]
+        
+        # If we duplicated frames for single frame case, take only the first one
+        if pred_frames.shape[1] > 1 and frames.shape[1] == 1:
+            pred_frames = pred_frames[:, 0:1, :, :, :]
+        
+        # Remove batch dimension
+        pred_frames = pred_frames[0]
         
         return pred_frames
     
