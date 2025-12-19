@@ -206,6 +206,20 @@ class ProPainterModelAdapter:
         
         return pred_frames
     
+    def to_device(self, device: torch.device) -> None:
+        """
+        Move model to specified device.
+        
+        Args:
+            device: Target device (e.g., torch.device('cpu') or torch.device('cuda'))
+        """
+        self.device = device
+        self.model = self.model.to(self.device)
+        self.autocast_enabled = device.type == 'cuda'
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        logger.info(f"ProPainter model moved to {device}")
+    
     def process_chunk(self, frames: torch.Tensor, masks: torch.Tensor) -> torch.Tensor:
         """
         Process a chunk of frames.

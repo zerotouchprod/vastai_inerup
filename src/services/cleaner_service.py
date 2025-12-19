@@ -5,6 +5,7 @@ Main orchestration service for subtitle removal with ProPainter.
 import logging
 import time
 import shutil
+import gc
 from pathlib import Path
 from typing import Optional
 
@@ -69,6 +70,9 @@ class SubtitleRemoverService:
         self.model_adapter = None
         self.model_loaded = False
         
+        # CPU fallback state
+        self.cpu_fallback_active = False
+        
         logger.info(f"SubtitleRemoverService initialized (lang={self.lang}, "
                    f"dilation={self.mask_dilation}, device={self.device})")
     
@@ -93,6 +97,29 @@ class SubtitleRemoverService:
             
         except Exception as e:
             raise ModelLoadingError(f"Failed to load ProPainter model: {e}")
+    
+    def _enable_cpu_fallback(self) -> None:
+        """
+        Enable CPU fallback mode by moving model to CPU and updating device.
+        """
+        if self.cpu_fallback_active:
+            return
+        
+        logger.warning("GPU failed even at batch_size=1. Switching to CPU Fallback Mode.")
+        
+        # Move model to CPU
+        cpu_device = torch.device("cpu")
+        self.model_adapter.to_device(cpu_device)
+        
+        # Update service device
+        self.device = cpu_device
+        self.cpu_fallback_active = True
+        
+        # Clear GPU cache
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        
+        logger.info("CPU fallback activated. Processing will continue on CPU.")
     
     def process(self, request: InpaintingRequest) -> ProcessingResult:
         """
@@ -234,7 +261,6 @@ class SubtitleRemoverService:
             self.device_manager.empty_cache()
             
             # Force garbage collection
-            import gc
             gc.collect()
             
             # Small delay to allow memory cleanup
@@ -296,11 +322,19 @@ class SubtitleRemoverService:
                 )
                 
                 if new_batch_size == current_batch_size:
-                    # Can't reduce further
-                    raise ProcessingError(
-                        f"GPU VRAM insufficient for this resolution even with batch size 1. "
-                        f"Try reducing video resolution or using CPU mode."
-                    )
+                    # Can't reduce further - activate CPU fallback
+                    if not self.cpu_fallback_active:
+                        self._enable_cpu_fallback()
+                        # After moving to CPU, retry the same chunk
+                        # Reset batch size to initial and continue loop
+                        current_batch_size = initial_batch_size
+                        continue
+                    else:
+                        # Already on CPU but still OOM? Should not happen, but raise
+                        raise ProcessingError(
+                            "CPU fallback active but still out of memory. "
+                            "This may indicate insufficient system RAM."
+                        )
                 
                 current_batch_size = new_batch_size
                 continue

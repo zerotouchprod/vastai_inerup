@@ -71,6 +71,9 @@ class StreamingSubtitleRemoverService:
         self.model_adapter = None
         self.model_loaded = False
         
+        # CPU fallback state
+        self.cpu_fallback_active = False
+        
         logger.info(f"StreamingSubtitleRemoverService initialized (lang={self.lang}, "
                    f"dilation={self.mask_dilation}, device={self.device})")
     
@@ -95,6 +98,29 @@ class StreamingSubtitleRemoverService:
             
         except Exception as e:
             raise ModelLoadingError(f"Failed to load ProPainter model: {e}")
+    
+    def _enable_cpu_fallback(self) -> None:
+        """
+        Enable CPU fallback mode by moving model to CPU and updating device.
+        """
+        if self.cpu_fallback_active:
+            return
+        
+        logger.warning("GPU failed even at batch_size=1. Switching to CPU Fallback Mode.")
+        
+        # Move model to CPU
+        cpu_device = torch.device("cpu")
+        self.model_adapter.to_device(cpu_device)
+        
+        # Update service device
+        self.device = cpu_device
+        self.cpu_fallback_active = True
+        
+        # Clear GPU cache
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        
+        logger.info("CPU fallback activated. Processing will continue on CPU.")
     
     def process(self, request: InpaintingRequest) -> ProcessingResult:
         """
@@ -403,11 +429,25 @@ class StreamingSubtitleRemoverService:
                 )
                 
                 if new_batch_size == current_batch_size:
-                    # Can't reduce further
-                    raise ProcessingError(
-                        f"GPU VRAM insufficient for this resolution even with batch size 1. "
-                        f"Try reducing video resolution or using CPU mode."
-                    )
+                    # Can't reduce further - activate CPU fallback
+                    if not self.cpu_fallback_active:
+                        self._enable_cpu_fallback()
+                        # After moving to CPU, retry the same chunk
+                        # Note: we break out of the loop and retry with CPU
+                        # Since device is now CPU, we can just call process_chunk directly
+                        # but we need to ensure tensors are on CPU (they are)
+                        # We'll recursively call this method with CPU fallback active
+                        # but we need to avoid infinite recursion.
+                        # Instead, we'll just process the chunk with the updated adapter.
+                        # Reset batch size to initial (or 1) and continue.
+                        current_batch_size = initial_batch_size
+                        continue
+                    else:
+                        # Already on CPU but still OOM? Should not happen, but raise
+                        raise ProcessingError(
+                            "CPU fallback active but still out of memory. "
+                            "This may indicate insufficient system RAM."
+                        )
                 
                 current_batch_size = new_batch_size
                 continue
@@ -454,10 +494,22 @@ class StreamingSubtitleRemoverService:
                 new_batch_size = current_batch_size // 2
                 logger.warning(f"OOM detected on single frame. Retrying with batch size {new_batch_size}")
                 if new_batch_size == 0:
-                    raise ProcessingError(
-                        "GPU VRAM insufficient for single frame processing. "
-                        "Try reducing video resolution or using CPU mode."
-                    )
+                    # Can't reduce further - activate CPU fallback
+                    if not self.cpu_fallback_active:
+                        self._enable_cpu_fallback()
+                        # After moving to CPU, retry the same frame
+                        # Update tensors to CPU device
+                        frame_t = frame_t.to(self.device)
+                        mask_t = mask_t.to(self.device)
+                        # Reset batch size and continue loop
+                        current_batch_size = 1
+                        continue
+                    else:
+                        # Already on CPU but still OOM? Should not happen, but raise
+                        raise ProcessingError(
+                            "CPU fallback active but still out of memory. "
+                            "This may indicate insufficient system RAM."
+                        )
                 current_batch_size = new_batch_size
                 # Note: batch size reduction doesn't make sense for single frame,
                 # but we can try to downscale resolution (optional)
