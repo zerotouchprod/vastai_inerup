@@ -17,7 +17,7 @@ class AppConfig(BaseSettings):
     # OCR settings
     OCR_LANG: str = "en"
     MASK_DILATION: int = 12
-    USE_GPU: bool = True
+    USE_GPU: bool = False  # Disable GPU completely to save memory
     USE_GPU_FOR_OCR: bool = False
     CONFIDENCE_THRESHOLD: float = 0.3
     
@@ -26,7 +26,7 @@ class AppConfig(BaseSettings):
     MAX_FRAMES_PER_CHUNK: int = 5  # Very small chunks for memory efficiency
     
     # Device settings
-    FORCE_CPU: bool = False
+    FORCE_CPU: bool = True  # Force CPU usage to avoid GPU memory issues
     
     model_config = SettingsConfigDict(
         env_file=".env",
