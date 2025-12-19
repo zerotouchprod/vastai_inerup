@@ -76,8 +76,11 @@ class ProPainterModelAdapter:
                 # Latest API: forward(masked_frames, completed_flows, masks_in, masks_updated, num_local_frames, interpolation, t_dilation)
                 def forward_adapter(frames, masks):
                     b, t, c, h, w = frames.shape
-                    completed_flows = torch.zeros((b, t - 1, 2, h, w), device=frames.device)
-                    return self.model(frames, completed_flows, masks, masks, 10, 'bilinear', 2)
+                    # ProPainter expects completed_flows for num_local_frames-1 flows
+                    # When num_local_frames=10, we need 9 flow tensors
+                    num_local_frames = 10
+                    completed_flows = torch.zeros((b, num_local_frames - 1, 2, h, w), device=frames.device)
+                    return self.model(frames, completed_flows, masks, masks, num_local_frames, 'bilinear', 2)
                     
             else:
                 raise ValueError(f"Unsupported number of parameters: {len(params)}")
@@ -98,8 +101,10 @@ class ProPainterModelAdapter:
             # Version 1: API with 7 arguments (latest)
             try:
                 b, t, c, h, w = frames.shape
-                completed_flows = torch.zeros((b, t - 1, 2, h, w), device=frames.device)
-                return self.model(frames, completed_flows, masks, masks, 10, 'bilinear', 2)
+                # ProPainter expects completed_flows for num_local_frames-1 flows
+                num_local_frames = 10
+                completed_flows = torch.zeros((b, num_local_frames - 1, 2, h, w), device=frames.device)
+                return self.model(frames, completed_flows, masks, masks, num_local_frames, 'bilinear', 2)
             except (TypeError, AttributeError) as e1:
                 logger.debug(f"API 7-args failed: {e1}")
                 
