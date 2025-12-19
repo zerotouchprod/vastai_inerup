@@ -196,11 +196,9 @@ class StreamingSubtitleRemoverService:
             processed_count = 0
             chunk_start = 0
             
-            # Initialize progress bar
-            if TQDM_AVAILABLE:
-                pbar = tqdm(total=total_frames, desc="Processing Video", unit="frame")
-            else:
-                pbar = None
+            # Calculate total chunks for logging
+            total_chunks = (total_frames + max_frames_per_chunk - 1) // max_frames_per_chunk
+            current_chunk = 0
             
             # Heartbeat logging
             heartbeat_interval = 30.0  # seconds
@@ -212,8 +210,12 @@ class StreamingSubtitleRemoverService:
                 chunk_frame_paths = frame_paths[chunk_start:chunk_end]
                 chunk_mask_paths = mask_paths[chunk_start:chunk_end]
                 
-                # Log chunk start (debug level)
-                logger.debug(f"Processing chunk {chunk_start}-{chunk_end} of {total_frames}")
+                # Log chunk start BEFORE heavy processing (critical for observability)
+                current_chunk += 1
+                logger.info(
+                    f"Processing chunk {current_chunk}/{total_chunks} "
+                    f"(Frames {chunk_start}-{chunk_end-1})..."
+                )
                 
                 # Load chunk frames and masks
                 frames_list = []
@@ -249,9 +251,6 @@ class StreamingSubtitleRemoverService:
                         try:
                             self._process_single_frame(frame_path, mask_path, request.output_dir)
                             processed_count += 1
-                            # Update progress bar
-                            if pbar is not None:
-                                pbar.update(1)
                         except Exception as single_error:
                             logger.error(f"Failed to process single frame {frame_path}: {single_error}")
                     chunk_start = chunk_end
@@ -265,10 +264,6 @@ class StreamingSubtitleRemoverService:
                     output_path = request.output_dir / frame_path.name
                     cv2.imwrite(str(output_path), pred_frames[idx])
                     processed_count += 1
-                
-                # Update progress bar
-                if pbar is not None:
-                    pbar.update(chunk_size)
                 
                 # Heartbeat logging (every 30 seconds or 10% progress)
                 current_time = time.time()
@@ -290,10 +285,6 @@ class StreamingSubtitleRemoverService:
                 time.sleep(0.05)
                 
                 chunk_start = chunk_end
-            
-            # Close progress bar
-            if pbar is not None:
-                pbar.close()
             
             # Cleanup
             self.mask_service.cleanup_temp_dir(temp_mask_dir)
