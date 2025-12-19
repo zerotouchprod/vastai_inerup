@@ -21,9 +21,9 @@ class AppConfig(BaseSettings):
     USE_GPU_FOR_OCR: bool = True
     CONFIDENCE_THRESHOLD: float = 0.3
     
-    # Processing settings - extremely conservative for memory-limited environments
-    BATCH_SIZE: int = 1  # Process 1 frame at a time for minimal memory
-    MAX_FRAMES_PER_CHUNK: int = 5  # Very small chunks for memory efficiency
+    # Processing settings - optimized for RTX 3080 Ti 12GB
+    BATCH_SIZE: int = 4  # Process 4 frames at a time for better GPU utilization
+    MAX_FRAMES_PER_CHUNK: int = 20  # Larger chunks for better performance
     
     # Device settings
     FORCE_CPU: bool = False  # Force CPU usage to avoid GPU memory issues

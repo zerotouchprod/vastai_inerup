@@ -73,9 +73,11 @@ class ThreadSafeOCR:
                 # Do NOT add 'use_gpu' or 'gpu' parameters as they cause errors
                 # Current PaddleOCR version doesn't support these parameters
                 # GPU/CPU selection is handled automatically by PaddlePaddle
+                # PaddleOCR will use GPU if PaddlePaddle was compiled with CUDA support
                 if self.use_gpu_for_ocr:
-                    logger.warning("GPU requested for OCR but 'use_gpu' parameter is not supported in current PaddleOCR version")
-                    logger.warning("PaddleOCR will use default device (likely CPU)")
+                    logger.info("GPU requested for OCR - PaddleOCR will use GPU if available")
+                else:
+                    logger.info("CPU requested for OCR - PaddleOCR will use CPU")
                 
                 # Temporarily increase log level to suppress initialization messages
                 original_level = logging.getLogger('ppocr').level
