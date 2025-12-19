@@ -42,7 +42,8 @@ class StreamingSubtitleRemoverService:
                  mask_dilation: Optional[int] = None,
                  use_gpu: Optional[bool] = None,
                  use_gpu_for_ocr: Optional[bool] = None,
-                 confidence_threshold: Optional[float] = None):
+                 confidence_threshold: Optional[float] = None,
+                 debug_masks: bool = False):
         """
         Initialize streaming subtitle remover service.
         
@@ -52,6 +53,7 @@ class StreamingSubtitleRemoverService:
             use_gpu: Use GPU for inpainting (default from config)
             use_gpu_for_ocr: Use GPU for OCR (default from config)
             confidence_threshold: Confidence threshold for text detection (default from config)
+            debug_masks: Enable debug mask saving (default False)
         """
         config = get_config()
         
@@ -60,6 +62,7 @@ class StreamingSubtitleRemoverService:
         self.use_gpu = use_gpu if use_gpu is not None else config.USE_GPU
         self.use_gpu_for_ocr = use_gpu_for_ocr if use_gpu_for_ocr is not None else config.USE_GPU_FOR_OCR
         self.confidence_threshold = confidence_threshold or config.CONFIDENCE_THRESHOLD
+        self.debug_masks = debug_masks
         
         # Initialize device manager
         force_cpu = not self.use_gpu
@@ -255,6 +258,42 @@ class StreamingSubtitleRemoverService:
         
         return processed_frames
     
+    def _save_debug_masks(self, frames: torch.Tensor, masks: torch.Tensor, batch_idx: int, output_dir: Path) -> None:
+        """
+        Save debug masks for visual inspection.
+        
+        Args:
+            frames: Frames tensor of shape (T, C, H, W)
+            masks: Masks tensor of shape (T, 1, H, W)
+            batch_idx: Batch index for naming
+            output_dir: Output directory for debug masks
+        """
+        if not self.debug_masks:
+            return
+        
+        debug_dir = output_dir / "masks_debug"
+        debug_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Convert tensors to numpy
+        frames_np = frames.permute(0, 2, 3, 1).cpu().numpy()  # (T, H, W, C)
+        masks_np = masks.squeeze(1).cpu().numpy()  # (T, H, W)
+        
+        for i in range(frames.shape[0]):
+            # Save mask
+            mask = (masks_np[i] * 255).astype(np.uint8)
+            mask_path = debug_dir / f"mask_batch{batch_idx:03d}_frame{i:03d}.png"
+            cv2.imwrite(str(mask_path), mask)
+            
+            # Save frame with mask overlay for visualization
+            frame = (frames_np[i] * 255).astype(np.uint8)
+            overlay = frame.copy()
+            # Create red overlay where mask is non-zero
+            overlay[masks_np[i] > 0.5] = [0, 0, 255]  # BGR red
+            overlay_path = debug_dir / f"overlay_batch{batch_idx:03d}_frame{i:03d}.png"
+            cv2.imwrite(str(overlay_path), overlay)
+        
+        logger.debug(f"Saved debug masks to {debug_dir}")
+    
     def _process_full_frame_downscaled(self, frames: torch.Tensor, masks: torch.Tensor) -> torch.Tensor:
         """
         Process full frames by downscaling to target height (720p), then upscaling back.
@@ -296,6 +335,95 @@ class StreamingSubtitleRemoverService:
         upscaled_t = upscaled_t.to(frames.device)
         
         return upscaled_t
+
+    def _process_downscaled_crop(self, frames: torch.Tensor, masks: torch.Tensor, 
+                                 y1: int, y2: int, x1: int, x2: int) -> torch.Tensor:
+        """
+        Process a large crop by downscaling it to safe size, inpainting, then upscaling back.
+        Used as fallback when crop area exceeds safe limit.
+        
+        Args:
+            frames: Frames tensor of shape (T, C, H, W)
+            masks: Masks tensor of shape (T, 1, H, W)
+            y1, y2, x1, x2: Crop coordinates
+            
+        Returns:
+            Processed frames tensor with inpainted crop region
+        """
+        T, C, H, W = frames.shape
+        crop_h = y2 - y1
+        crop_w = x2 - x1
+        
+        # Calculate safe limit (60% of total frame area)
+        total_area = H * W
+        max_safe_pixels = self.max_crop_area_ratio * total_area
+        current_area = crop_h * crop_w
+        
+        # Calculate scale factor to fit within safe limit
+        scale = np.sqrt(max_safe_pixels / current_area)
+        scale = min(scale, 1.0)  # Don't upscale
+        
+        # Calculate new dimensions (divisible by 8)
+        new_h = int(crop_h * scale)
+        new_w = int(crop_w * scale)
+        new_h = ((new_h + 7) // 8) * 8
+        new_w = ((new_w + 7) // 8) * 8
+        
+        logger.warning(
+            f"Crop too large ({current_area} px). Downscaling crop by factor {scale:.2f} "
+            f"to {new_h}x{new_w} to force removal."
+        )
+        
+        # Extract crop
+        crop_frames = frames[:, :, y1:y2, x1:x2]
+        crop_masks = masks[:, :, y1:y2, x1:x2]
+        
+        # Convert to numpy for OpenCV resize
+        crop_frames_np = crop_frames.permute(0, 2, 3, 1).cpu().numpy()  # (T, crop_h, crop_w, C)
+        crop_masks_np = crop_masks.squeeze(1).cpu().numpy()  # (T, crop_h, crop_w)
+        
+        downscaled_frames = []
+        downscaled_masks = []
+        for i in range(T):
+            frame = (crop_frames_np[i] * 255).astype(np.uint8)
+            mask = (crop_masks_np[i] * 255).astype(np.uint8)
+            
+            frame_resized = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+            mask_resized = cv2.resize(mask, (new_w, new_h), interpolation=cv2.INTER_NEAREST)
+            
+            downscaled_frames.append(frame_resized)
+            downscaled_masks.append(mask_resized)
+        
+        # Convert back to tensors
+        downscaled_frames = np.stack(downscaled_frames)  # (T, new_h, new_w, C)
+        downscaled_masks = np.stack(downscaled_masks)  # (T, new_h, new_w)
+        
+        downscaled_frames_t = torch.from_numpy(downscaled_frames).permute(0, 3, 1, 2).float() / 255.0
+        downscaled_masks_t = torch.from_numpy(downscaled_masks).unsqueeze(1).float() / 255.0
+        downscaled_frames_t = downscaled_frames_t.to(frames.device)
+        downscaled_masks_t = downscaled_masks_t.to(masks.device)
+        
+        # Process downscaled crop
+        processed_downscaled = self.model_adapter.process_chunk(downscaled_frames_t, downscaled_masks_t)
+        
+        # Upscale back to original crop dimensions
+        processed_np = processed_downscaled.permute(0, 2, 3, 1).cpu().numpy()  # (T, new_h, new_w, C)
+        upscaled_crop = []
+        for i in range(T):
+            frame = (processed_np[i] * 255).astype(np.uint8)
+            frame_resized = cv2.resize(frame, (crop_w, crop_h), interpolation=cv2.INTER_LINEAR)
+            upscaled_crop.append(frame_resized)
+        
+        # Convert back to tensor
+        upscaled_crop = np.stack(upscaled_crop)  # (T, crop_h, crop_w, C)
+        upscaled_t = torch.from_numpy(upscaled_crop).permute(0, 3, 1, 2).float() / 255.0
+        upscaled_t = upscaled_t.to(frames.device)
+        
+        # Stitch back into full frames
+        processed_frames = frames.clone()
+        processed_frames[:, :, y1:y2, x1:x2] = upscaled_t
+        
+        return processed_frames
 
     def _process_dynamic_crop(self, frames: torch.Tensor, masks: torch.Tensor) -> torch.Tensor:
         """
@@ -341,9 +469,9 @@ class StreamingSubtitleRemoverService:
         if crop_area > max_safe_pixels:
             logger.warning(
                 f"Crop area {crop_area} exceeds safe limit {max_safe_pixels:.0f} "
-                f"({self.max_crop_area_ratio*100:.0f}% of frame). Falling back to split processing."
+                f"({self.max_crop_area_ratio*100:.0f}% of frame). Falling back to downscaled crop processing."
             )
-            return self._process_split_frame(frames, masks)
+            return self._process_downscaled_crop(frames, masks, y1, y2, x1, x2)
         
         # Log the crop region
         logger.info(
@@ -676,6 +804,9 @@ class StreamingSubtitleRemoverService:
                     torch.from_numpy(m).unsqueeze(0).float() / 255.0
                     for m in masks_list
                 ])  # (T, 1, H, W)
+                
+                # Save debug masks if enabled
+                self._save_debug_masks(frames_t, masks_t, current_chunk, request.output_dir)
                 
                 # Process chunk with OOM recovery
                 try:

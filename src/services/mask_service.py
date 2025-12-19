@@ -97,8 +97,8 @@ class MaskGeneratorService:
             raise ProcessingError(f"Failed to generate masks: {e}")
     
     def _apply_dilation(self, mask_dir: Path) -> None:
-        """Apply dilation to all masks in directory."""
-        logger.info(f"Applying dilation (radius={self.mask_dilation}) to masks...")
+        """Apply dilation and morphological closing to all masks in directory."""
+        logger.info(f"Applying dilation (radius={self.mask_dilation}) and morphological closing to masks...")
         
         # Get all mask files
         mask_files = sorted(list(mask_dir.glob("*.png")) + list(mask_dir.glob("*.jpg")))
@@ -109,6 +109,8 @@ class MaskGeneratorService:
         
         # Create dilation kernel
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (self.mask_dilation, self.mask_dilation))
+        # Kernel for morphological closing (merge individual letters into solid blocks)
+        closing_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
         
         # Process each mask
         for mask_file in mask_files:
@@ -117,8 +119,12 @@ class MaskGeneratorService:
                 if mask is None:
                     continue
                 
-                # Apply dilation
+                # Apply morphological closing to merge individual letters
+                mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, closing_kernel)
+                # Apply dilation to expand the mask
                 dilated_mask = cv2.dilate(mask, kernel, iterations=1)
+                # Additional dilation to ensure coverage
+                dilated_mask = cv2.dilate(dilated_mask, kernel, iterations=2)
                 
                 # Additional smoothing for large dilation
                 if self.mask_dilation >= 8:
@@ -128,9 +134,9 @@ class MaskGeneratorService:
                 cv2.imwrite(str(mask_file), dilated_mask)
                 
             except Exception as e:
-                logger.warning(f"Failed to dilate mask {mask_file}: {e}")
+                logger.warning(f"Failed to process mask {mask_file}: {e}")
         
-        logger.info(f"Dilation applied to {len(mask_files)} masks")
+        logger.info(f"Dilation and morphological closing applied to {len(mask_files)} masks")
     
     def generate_masks_for_frames(self, frame_paths: list[Path], output_dir: Path) -> list[Path]:
         """
@@ -165,16 +171,23 @@ class MaskGeneratorService:
             # Generate masks
             masks = self.ocr_wrapper.process_batch(images, self.confidence_threshold)
             
-            # Apply dilation and save
+            # Apply dilation and morphological closing
             mask_paths = []
-            kernel = None
             if self.mask_dilation > 0:
                 kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (self.mask_dilation, self.mask_dilation))
+                closing_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+            else:
+                kernel = None
+                closing_kernel = None
             
             for frame_path, mask in zip(valid_paths, masks):
+                # Apply morphological closing to merge individual letters
+                if closing_kernel is not None:
+                    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, closing_kernel)
                 # Apply dilation if needed
                 if kernel is not None:
                     mask = cv2.dilate(mask, kernel, iterations=1)
+                    mask = cv2.dilate(mask, kernel, iterations=2)  # Additional dilation for coverage
                     if self.mask_dilation >= 8:
                         mask = cv2.GaussianBlur(mask, (5, 5), 0)
                 
