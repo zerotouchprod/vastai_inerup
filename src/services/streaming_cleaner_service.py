@@ -98,14 +98,13 @@ class StreamingSubtitleRemoverService:
         self.padding_px = config.PADDING_PX
         self.max_crop_area_ratio = config.MAX_CROP_AREA_RATIO
         
-        logger.info(f"StreamingSubtitleRemoverService initialized (lang={self.lang}, "
-                   f"dilation={self.mask_dilation}, device={self.device})")
         # Initialize strategy
         self.strategy = DynamicTilingStrategy(config)
         
         # Initialize debug visualizer
         self.visualizer = MaskVisualizer(Path("."), enabled=self.debug_masks)
-
+        logger.info(f"StreamingSubtitleRemoverService initialized (lang={self.lang}, "
+                   f"dilation={self.mask_dilation}, device={self.device})")
     def load_model(self) -> None:
         """Load ProPainter model if not already loaded."""
         if self.model_loaded and self.model_adapter is not None:
@@ -164,7 +163,6 @@ class StreamingSubtitleRemoverService:
             Tuple of (downscaled_frames, downscaled_masks, scale_factor)
         """
         return tensor_ops.downscale_batch(frames, masks, target_height)
-    
     def _stream_frames_and_masks(self, frame_dir: Path, mask_dir: Path) -> Generator:
         """Stream frames and masks one by one."""
         frame_paths = sorted(list(frame_dir.glob("*.png")) + 
