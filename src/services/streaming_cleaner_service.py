@@ -246,6 +246,15 @@ class StreamingSubtitleRemoverService:
         if h <= self.target_height:
             return frames, masks, 1.0
         
+        # If ROI optimization is enabled, we'll process only the bottom region at full resolution
+        # Skip downscaling to preserve quality
+        if self.use_roi_optimization:
+            logger.info(
+                f"High resolution detected ({h}x{w}). "
+                f"ROI optimization active, keeping full resolution for bottom {self.roi_height_ratio*100:.0f}%."
+            )
+            return frames, masks, 1.0
+        
         # Calculate new dimensions maintaining aspect ratio
         scale_factor = self.target_height / h
         new_h = self.target_height
