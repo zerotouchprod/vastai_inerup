@@ -91,6 +91,7 @@ class StreamingSubtitleRemoverService:
         # ROI state
         self.use_roi_optimization = config.USE_ROI_OPTIMIZATION
         self.roi_height_ratio = config.ROI_HEIGHT_RATIO
+        self.roi_zone_height_ratio = config.ROI_ZONE_HEIGHT_RATIO
         
         logger.info(f"StreamingSubtitleRemoverService initialized (lang={self.lang}, "
                    f"dilation={self.mask_dilation}, device={self.device})")
@@ -237,10 +238,92 @@ class StreamingSubtitleRemoverService:
         
         return upscaled_t
     
+    def _select_roi_zone(self, masks: torch.Tensor) -> tuple[str, int, int]:
+        """
+        Select the best ROI zone (top, middle, bottom) based on mask distribution.
+        
+        Args:
+            masks: Masks tensor of shape (T, 1, H, W)
+            
+        Returns:
+            Tuple of (zone_type, y_start, roi_height)
+            If no suitable zone found, returns (None, 0, 0)
+        """
+        T, _, H, W = masks.shape
+        # Zone height (40% of frame height, aligned to 8)
+        raw_zone_height = int(H * self.roi_zone_height_ratio)
+        roi_height = (raw_zone_height // 8) * 8
+        if roi_height == 0:
+            roi_height = 8
+        
+        # Define candidate zones
+        candidates = []
+        
+        # Bottom zone
+        y_bottom = H - roi_height
+        mask_bottom = masks[:, :, y_bottom:, :]
+        sum_bottom = mask_bottom.sum().item()
+        # Check top border (first 4 rows) of bottom zone
+        border_bottom = mask_bottom[:, :, 0:4, :].sum().item()
+        clean_bottom = border_bottom == 0
+        candidates.append(('bottom', y_bottom, roi_height, sum_bottom, clean_bottom))
+        
+        # Top zone
+        y_top = 0
+        mask_top = masks[:, :, :roi_height, :]
+        sum_top = mask_top.sum().item()
+        # Check bottom border (last 4 rows) of top zone
+        border_top = mask_top[:, :, -4:, :].sum().item()
+        clean_top = border_top == 0
+        candidates.append(('top', y_top, roi_height, sum_top, clean_top))
+        
+        # Middle zone (centered)
+        y_mid = (H - roi_height) // 2
+        # Align to 8
+        y_mid = (y_mid // 8) * 8
+        mask_mid = masks[:, :, y_mid:y_mid+roi_height, :]
+        sum_mid = mask_mid.sum().item()
+        # Check both borders (first 4 and last 4 rows)
+        border_mid_top = mask_mid[:, :, 0:4, :].sum().item()
+        border_mid_bottom = mask_mid[:, :, -4:, :].sum().item()
+        clean_mid = (border_mid_top == 0) and (border_mid_bottom == 0)
+        candidates.append(('middle', y_mid, roi_height, sum_mid, clean_mid))
+        
+        # Decision logic
+        # 1. If total mask sum is zero, no subtitles -> return None (skip processing)
+        total_sum = masks.sum().item()
+        if total_sum < 10.0:
+            logger.debug("No subtitles detected in frame, skipping ROI processing")
+            return None, 0, 0
+        
+        # 2. Find zones with mask and clean borders
+        valid_zones = [(zone, y, h) for zone, y, h, s, clean in candidates if s > 10.0 and clean]
+        
+        if len(valid_zones) == 1:
+            zone, y, h = valid_zones[0]
+            logger.info(f"Dynamic Zone: Selected '{zone}' ROI (mask contained fully)")
+            return zone, y, h
+        elif len(valid_zones) > 1:
+            # Multiple zones have masks, choose the one with highest sum
+            best = max(candidates, key=lambda x: x[3] if x[3] > 10.0 and x[4] else -1)
+            zone, y, h, _, _ = best
+            logger.warning(
+                f"Dynamic Zone: Multiple zones contain subtitles. "
+                f"Choosing '{zone}' (highest mask sum)."
+            )
+            return zone, y, h
+        else:
+            # No clean zone, or masks intersect borders
+            logger.warning(
+                f"Dynamic Zone: No clean zone found (mask spans borders or empty). "
+                f"Falling back to full-frame downscaled."
+            )
+            return None, 0, 0
+    
     def _process_roi_chunk(self, frames: torch.Tensor, masks: torch.Tensor) -> torch.Tensor:
         """
-        Process only the bottom region of interest (where subtitles appear).
-        If subtitles are outside ROI or intersect the ROI border, fall back to full-frame downscaled processing.
+        Process the best ROI zone (top, middle, bottom) based on mask distribution.
+        If no suitable zone found, fall back to full-frame downscaled processing.
         
         Args:
             frames: Frames tensor of shape (T, C, H, W)
@@ -250,47 +333,26 @@ class StreamingSubtitleRemoverService:
             Processed frames tensor of shape (T, C, H, W) with inpainted ROI.
         """
         T, C, H, W = frames.shape
-        # Calculate raw ROI height based on coverage ratio
-        raw_roi_height = int(H * self.roi_height_ratio)
-        # Snap to nearest multiple of 8 (ProPainter requirement)
-        roi_height = (raw_roi_height // 8) * 8
-        if roi_height == 0:
-            roi_height = 8  # minimum safe height
-        roi_start = H - roi_height
+        
+        # Select best zone
+        zone_type, y_start, roi_height = self._select_roi_zone(masks)
+        if zone_type is None:
+            # No subtitles or fallback
+            if masks.sum().item() < 10.0:
+                # No subtitles, return original frames
+                logger.debug("No subtitles detected, returning original frames")
+                return frames
+            else:
+                # Fallback to full-frame downscaled
+                return self._process_full_frame_downscaled(frames, masks)
         
         logger.info(
-            f"ROI Grid Snap: Processing {W}x{roi_height} (Start Y: {roi_start}) "
-            f"(coverage {self.roi_height_ratio:.2f})"
+            f"Dynamic Zone: Processing {zone_type} ROI {W}x{roi_height} (Start Y: {y_start})"
         )
         
-        # Extract ROI mask
-        masks_roi = masks[:, :, roi_start:, :]
-        mask_sum_roi = masks_roi.sum().item()
-        mask_sum_total = masks.sum().item()
-        logger.debug(f"Mask sum in ROI: {mask_sum_roi:.1f}, total: {mask_sum_total:.1f}")
-        
-        # 1. Empty ROI check: subtitles are entirely above the crop
-        if mask_sum_roi < 10.0:
-            logger.warning(
-                f"[Fallback] ROI empty (mask_sum_roi={mask_sum_roi:.1f}). "
-                f"Subtitles are higher up. Falling back to full-frame downscaled."
-            )
-            return self._process_full_frame_downscaled(frames, masks)
-        
-        # 2. Border intersection check: subtitles are cut by the ROI top edge
-        # Check the first 4 rows of the ROI (top edge) for any mask pixels
-        border_check = masks_roi[:, :, 0:4, :].sum().item()
-        if border_check > 0:
-            logger.warning(
-                f"[Fallback] Subtitle intersects ROI border (border_sum={border_check:.1f}). "
-                f"Falling back to full-frame downscaled to avoid cutting text."
-            )
-            return self._process_full_frame_downscaled(frames, masks)
-        
-        # 3. Safe to proceed with ROI
         # Crop ROI
-        frames_roi = frames[:, :, roi_start:, :]  # (T, C, roi_height, W)
-        masks_roi = masks[:, :, roi_start:, :]    # (T, 1, roi_height, W)
+        frames_roi = frames[:, :, y_start:y_start+roi_height, :]  # (T, C, roi_height, W)
+        masks_roi = masks[:, :, y_start:y_start+roi_height, :]    # (T, 1, roi_height, W)
         
         # Process ROI
         processed_roi = self.model_adapter.process_chunk(frames_roi, masks_roi)
@@ -303,7 +365,7 @@ class StreamingSubtitleRemoverService:
         
         # Stitch back into full frames
         processed_frames = frames.clone()
-        processed_frames[:, :, roi_start:, :] = processed_roi
+        processed_frames[:, :, y_start:y_start+roi_height, :] = processed_roi
         
         return processed_frames
     
