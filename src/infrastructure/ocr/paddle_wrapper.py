@@ -60,6 +60,8 @@ class ThreadSafeOCR:
                 from paddleocr import PaddleOCR
                 
                 # Initialize with optimized settings
+                # Note: 'use_gpu' parameter is not supported in current PaddleOCR version
+                # Based on error, we should not include it at all
                 ocr_params = {
                     'lang': self.lang,
                     'use_angle_cls': self.use_angle_cls,
@@ -68,28 +70,12 @@ class ThreadSafeOCR:
                     'cls_model_dir': None,   # No classification model
                 }
                 
-                # Add GPU parameter only if explicitly requested and likely supported
-                # Based on error, 'use_gpu' parameter is not recognized in current version
-                # So we'll only add it if we can verify it's supported
+                # Do NOT add 'use_gpu' or 'gpu' parameters as they cause errors
+                # Current PaddleOCR version doesn't support these parameters
+                # GPU/CPU selection is handled automatically by PaddlePaddle
                 if self.use_gpu_for_ocr:
-                    # Try to detect PaddleOCR version
-                    try:
-                        import paddleocr
-                        # For newer versions, GPU might be enabled by default or use different parameter
-                        # We'll skip the parameter for now to avoid errors
-                        logger.warning("GPU requested but 'use_gpu' parameter may not be supported in current PaddleOCR version")
-                    except ImportError:
-                        pass
-                else:
-                    # Explicitly disable GPU for CPU mode
-                    # Try different parameter names for different PaddleOCR versions
-                    try:
-                        ocr_params['use_gpu'] = False
-                    except:
-                        try:
-                            ocr_params['gpu'] = False
-                        except:
-                            pass  # Parameter not supported in this version
+                    logger.warning("GPU requested for OCR but 'use_gpu' parameter is not supported in current PaddleOCR version")
+                    logger.warning("PaddleOCR will use default device (likely CPU)")
                 
                 # Temporarily increase log level to suppress initialization messages
                 original_level = logging.getLogger('ppocr').level
