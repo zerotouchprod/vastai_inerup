@@ -233,15 +233,15 @@ class MaskGeneratorService:
         # Use the enhanced contrast function from detectors
         return enhance_contrast_for_detection(image)
     
-    def _generate_hybrid_mask(self, image: np.ndarray, ocr_mask: np.ndarray, roi_mask: np.ndarray = None) -> np.ndarray:
+    def _generate_hybrid_mask(self, image: np.ndarray, ocr_mask: np.ndarray, roi_str: str = None) -> np.ndarray:
         """
-        Generate hybrid mask using OCR-Anchored Masking with optional ROI constraint.
+        Generate hybrid mask using OCR-Anchored Masking with ROI constraint.
         MSER/Gradient detectors only operate within OCR-defined regions.
         
         Args:
             image: Input BGR image
             ocr_mask: Mask from PaddleOCR
-            roi_mask: Optional ROI mask (binary, 0 or 255). If provided, final mask is constrained to ROI.
+            roi_str: ROI string (preset or coordinates). If provided, final mask is constrained to ROI.
             
         Returns:
             Combined binary mask
@@ -274,23 +274,27 @@ class MaskGeneratorService:
         from src.infrastructure.image_processing.mask_cleaning import apply_safety_clamp
         safe_mask = apply_safety_clamp(combined, ocr_mask, safety_threshold=0.20)
         
-        # Step 8: Apply ROI constraint if provided (HARD CONSTRAINT)
-        if roi_mask is not None:
-            # Ensure roi_mask is same size as safe_mask
-            if roi_mask.shape != safe_mask.shape:
-                roi_mask = cv2.resize(roi_mask, (safe_mask.shape[1], safe_mask.shape[0]))
+        # Step 8: Apply ROI constraint if provided (HARD CONSTRAINT - "Mask Guillotine")
+        if roi_str:
+            from src.infrastructure.image_processing.geometry import resolve_roi
+            
+            h, w = image.shape[:2]
+            x, y, roi_w, roi_h = resolve_roi(roi_str, w, h)
+            
+            # Create ROI mask (black canvas with white ROI rectangle)
+            roi_mask = np.zeros_like(safe_mask)
+            cv2.rectangle(roi_mask, (x, y), (x + roi_w, y + roi_h), 255, -1)
             
             # Apply hard constraint: mask ONLY inside ROI
             safe_mask = cv2.bitwise_and(safe_mask, roi_mask)
             
             # Log ROI constraint
-            h, w = safe_mask.shape
             total_pixels = h * w
             roi_pixels = np.sum(roi_mask > 0)
             safe_pixels = np.sum(safe_mask > 0)
             
             logger.info(
-                f"ROI Constraint: ROI covers {roi_pixels/total_pixels*100:.1f}% of screen, "
+                f"ROI Constraint ({roi_str}): ROI covers {roi_pixels/total_pixels*100:.1f}% of screen, "
                 f"final mask covers {safe_pixels/total_pixels*100:.1f}%"
             )
         
@@ -311,13 +315,13 @@ class MaskGeneratorService:
         
         return safe_mask
     
-    def _process_batch_with_hybrid_detection(self, images: list[np.ndarray], roi_masks: list[np.ndarray] = None) -> list[np.ndarray]:
+    def _process_batch_with_hybrid_detection(self, images: list[np.ndarray], roi_str: str = None) -> list[np.ndarray]:
         """
         Process batch of images with hybrid detection.
         
         Args:
             images: List of BGR images
-            roi_masks: Optional list of ROI masks (binary, 0 or 255). If provided, each mask is constrained to its ROI.
+            roi_str: Optional ROI string (preset or coordinates). If provided, masks are constrained to ROI.
             
         Returns:
             List of binary masks
@@ -330,9 +334,8 @@ class MaskGeneratorService:
         
         # Apply hybrid detection to each image
         hybrid_masks = []
-        for i, (img, ocr_mask) in enumerate(zip(images, ocr_masks)):
-            roi_mask = roi_masks[i] if roi_masks and i < len(roi_masks) else None
-            hybrid_mask = self._generate_hybrid_mask(img, ocr_mask, roi_mask)
+        for img, ocr_mask in zip(images, ocr_masks):
+            hybrid_mask = self._generate_hybrid_mask(img, ocr_mask, roi_str)
             hybrid_masks.append(hybrid_mask)
         
         return hybrid_masks

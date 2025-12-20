@@ -91,7 +91,7 @@ class StreamingSubtitleRemoverService:
         
         # ROI state (deprecated - kept for compatibility but not used)
         self.use_roi_optimization = False  # Always disabled for strict dynamic tiling
-        self.roi_height_ratio = config.ROI_HEIGHT_RATIO
+        self.roi_str = config.ROI  # New ROI string parameter
         self.roi_zone_height_ratio = config.ROI_ZONE_HEIGHT_RATIO
         
         # Dynamic cropping settings

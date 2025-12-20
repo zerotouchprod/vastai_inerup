@@ -179,8 +179,7 @@ def main():
     parser.add_argument('--image-mode', choices=['upscale', 'hdr', 'denoise'], help='Image processing mode (default: upscale)')
     parser.add_argument('--audio-mode', choices=['remove_reverb', 'enhance', 'normalize'], help='Audio processing mode (default: remove_reverb)')
     parser.add_argument('--subs-lang', type=str, default='en', help='Language code for subtitle OCR when using remove-subtitles mode (default: en)')
-    parser.add_argument('--roi-coverage', type=float, default=0.55, help='Fraction of screen height from bottom to process (0.0-1.0, default: 0.55)')
-    parser.add_argument('--roi', type=str, default='bottom', help='Region of Interest: bottom (bottom 20%%), top (top 20%%), x,y,w,h (0.0-1.0 coordinates), or global (search everywhere) (default: bottom)')
+    parser.add_argument('--roi', type=str, default='bottom', help='Region of Interest. Presets: "bottom" (default), "top", "full". Or coords "x,y,w,h" (0.0-1.0).')
     parser.add_argument('--strict', action='store_true', help='Strict mode')
     parser.add_argument('--allow-fallback', action='store_true', help='Allow ffmpeg fallback when RIFE is not available (default: disabled)')
     parser.add_argument('--verbose', '-v', action='store_true', help='Verbose')
@@ -195,8 +194,6 @@ def main():
 
     logger = get_logger(__name__)
     os.environ.setdefault('USE_NATIVE_PROCESSORS', '1')
-    # Set ROI_HEIGHT_RATIO from CLI argument
-    os.environ['ROI_HEIGHT_RATIO'] = str(args.roi_coverage)
     try:
         config_loader = ConfigLoader(config_path=args.config)
         # Pass CLI-provided input as an override so loader validation accepts it

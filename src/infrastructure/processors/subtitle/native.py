@@ -131,15 +131,15 @@ class SubtitleRemoverNative:
         
         return bgr_thresh
     
-    def _generate_hybrid_mask(self, image: np.ndarray, ocr_mask: np.ndarray, roi_mask: np.ndarray = None) -> np.ndarray:
+    def _generate_hybrid_mask(self, image: np.ndarray, ocr_mask: np.ndarray, roi_str: str = None) -> np.ndarray:
         """
-        Generate hybrid mask using OCR-Anchored Masking with optional ROI constraint.
+        Generate hybrid mask using OCR-Anchored Masking with ROI constraint.
         MSER/Gradient detectors only operate within OCR-defined regions.
         
         Args:
             image: Input BGR image
             ocr_mask: Mask from PaddleOCR
-            roi_mask: Optional ROI mask (binary, 0 or 255). If provided, final mask is constrained to ROI.
+            roi_str: ROI string (preset or coordinates). If provided, final mask is constrained to ROI.
             
         Returns:
             Combined binary mask
@@ -177,23 +177,27 @@ class SubtitleRemoverNative:
         # Step 7: Apply safety clamp to prevent "global hallucination"
         safe_mask = apply_safety_clamp(combined, ocr_mask, safety_threshold=0.20)
         
-        # Step 8: Apply ROI constraint if provided (HARD CONSTRAINT)
-        if roi_mask is not None:
-            # Ensure roi_mask is same size as safe_mask
-            if roi_mask.shape != safe_mask.shape:
-                roi_mask = cv2.resize(roi_mask, (safe_mask.shape[1], safe_mask.shape[0]))
+        # Step 8: Apply ROI constraint if provided (HARD CONSTRAINT - "Mask Guillotine")
+        if roi_str:
+            from src.infrastructure.image_processing.geometry import resolve_roi
+            
+            h, w = image.shape[:2]
+            x, y, roi_w, roi_h = resolve_roi(roi_str, w, h)
+            
+            # Create ROI mask (black canvas with white ROI rectangle)
+            roi_mask = np.zeros_like(safe_mask)
+            cv2.rectangle(roi_mask, (x, y), (x + roi_w, y + roi_h), 255, -1)
             
             # Apply hard constraint: mask ONLY inside ROI
             safe_mask = cv2.bitwise_and(safe_mask, roi_mask)
             
             # Log ROI constraint
-            h, w = safe_mask.shape
             total_pixels = h * w
             roi_pixels = np.sum(roi_mask > 0)
             safe_pixels = np.sum(safe_mask > 0)
             
             logger.info(
-                f"ROI Constraint: ROI covers {roi_pixels/total_pixels*100:.1f}% of screen, "
+                f"ROI Constraint ({roi_str}): ROI covers {roi_pixels/total_pixels*100:.1f}% of screen, "
                 f"final mask covers {safe_pixels/total_pixels*100:.1f}%"
             )
         

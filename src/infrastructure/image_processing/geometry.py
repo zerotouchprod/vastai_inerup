@@ -150,6 +150,55 @@ def get_roi_candidates(height: int, roi_height: int) -> list[tuple[str, int, int
     return candidates
 
 
+def resolve_roi(roi_str: str, img_w: int, img_h: int) -> tuple[int, int, int, int]:
+    """
+    Returns absolute x, y, w, h for ROI.
+    
+    Args:
+        roi_str: ROI string (preset or coordinates)
+        img_w: Image width
+        img_h: Image height
+        
+    Returns:
+        Tuple of (x, y, w, h) in pixels
+    """
+    roi_str = roi_str.lower().strip()
+
+    # 1. Presets
+    if roi_str == 'full':
+        return 0, 0, img_w, img_h
+    elif roi_str == 'bottom':
+        # Legacy "0.55" equivalent: Bottom 45-55%
+        h = int(img_h * 0.45)  # Safety margin
+        return 0, img_h - h, img_w, h
+    elif roi_str == 'top':
+        h = int(img_h * 0.30)
+        return 0, 0, img_w, h
+
+    # 2. Custom Coordinates "x,y,w,h"
+    try:
+        parts = [float(p) for p in roi_str.split(',')]
+        if len(parts) != 4:
+            raise ValueError(f"Invalid ROI format: {roi_str}. Expected 'x,y,w,h'")
+        
+        x = int(parts[0] * img_w)
+        y = int(parts[1] * img_h)
+        w = int(parts[2] * img_w)
+        h = int(parts[3] * img_h)
+        
+        # Validate bounds
+        if not (0.0 <= parts[0] <= 1.0 and 0.0 <= parts[1] <= 1.0 and 
+                0.0 <= parts[2] <= 1.0 and 0.0 <= parts[3] <= 1.0):
+            raise ValueError(f"ROI ratios must be between 0.0 and 1.0: {roi_str}")
+        
+        return x, y, w, h
+    except Exception as e:
+        logger.warning(f"Invalid ROI format '{roi_str}': {e}. Fallback to bottom.")
+        # Fallback to bottom preset
+        h = int(img_h * 0.45)
+        return 0, img_h - h, img_w, h
+
+
 def parse_roi_string(roi_str: str, width: int, height: int) -> tuple[int, int, int, int]:
     """
     Parse ROI string into pixel coordinates.
