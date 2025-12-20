@@ -192,6 +192,24 @@ class HybridMaskService:
         else:
             logger.warning(f"Directory does not exist: {dir_path}")
     
+    def _process_batch_with_hybrid_detection(self, frames: List[np.ndarray]) -> List[np.ndarray]:
+        """
+        Process a batch of frames using hybrid detection.
+        Returns list of masks (binary uint8).
+        
+        This method is kept for backward compatibility with diagnostic code.
+        """
+        masks = []
+        for frame in frames:
+            h, w = frame.shape[:2]
+            mask_ocr = np.zeros((h, w), dtype=np.uint8)
+            if self.ocr_engine:
+                mask_ocr = self.ocr_engine.detect(frame)
+            mask_cv = self.cv_engine.detect(frame)
+            final_mask = cv2.bitwise_or(mask_ocr, mask_cv)
+            masks.append(final_mask)
+        return masks
+
     def is_available(self) -> bool:
         """
         Check if the service is available (at least one detector works).
