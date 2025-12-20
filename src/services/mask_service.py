@@ -171,8 +171,8 @@ class MaskGeneratorService:
 
     def _process_batch_with_hybrid_detection(self, frames: List[np.ndarray]) -> List[np.ndarray]:
         """
-        Process a batch of frames to generate text masks using OCR.
-        Includes Pre-processing (Enhancement).
+        Process a batch using Dual-Pass OCR (Normal + Inverted).
+        This ensures we catch text even if contrast polarity is difficult.
         """
         if self.ocr is None:
             return [np.zeros((f.shape[0], f.shape[1]), dtype=np.uint8) for f in frames]
@@ -182,27 +182,41 @@ class MaskGeneratorService:
             h, w = frame.shape[:2]
             mask = np.zeros((h, w), dtype=np.uint8)
             
-            # --- STEP 1: ENHANCE IMAGE (The Fix) ---
-            # Explicitly enhance the image before giving it to OCR
+            # 1. Enhance (CLAHE)
             ocr_input = self._enhance_image_for_ocr(frame)
             
-            try:
-                # --- STEP 2: DETECT ---
-                # ocr_input is now high-contrast
-                result = self.ocr.ocr(ocr_input)
-                
-                # --- STEP 3: DRAW MASK ---
-                if result and result[0] is not None:
-                    ocr_result = result[0]
-                    self._process_ocr_result(ocr_result, mask, self.confidence_threshold)
-                
-                # --- STEP 4: DILATE (Expand mask to cover artifacts) ---
-                if self.mask_dilation > 0:
-                    kernel = np.ones((self.mask_dilation, self.mask_dilation), np.uint8)
-                    mask = cv2.dilate(mask, kernel, iterations=1)
-                    
-            except Exception as e:
-                logger.error(f"OCR failed on frame: {e}")
+            # 2. Create Negative (Inverted) version
+            # Subtitles are often white-on-dark. Inverting makes them black-on-white (easier for OCR).
+            ocr_input_inverted = cv2.bitwise_not(ocr_input)
+            
+            inputs_to_check = [ocr_input, ocr_input_inverted]
+            
+            # 3. Run OCR on BOTH versions
+            found_boxes = []
+            
+            for img_variant in inputs_to_check:
+                try:
+                    result = self.ocr.ocr(img_variant, cls=True, rec=True)
+                    if result and result[0]:
+                        for line in result[0]:
+                            # line structure: [coords, (text, conf)]
+                            found_boxes.append(line[0])
+                except Exception:
+                    continue
+
+            # 4. Draw ALL found boxes onto the mask
+            if found_boxes:
+                for coords in found_boxes:
+                    points = np.array(coords, dtype=np.int32)
+                    cv2.fillPoly(mask, [points], 255)
+            
+            # 5. Heavy Dilation (Connect the dots)
+            # If we only found fragments, this connects them into a block
+            if self.mask_dilation > 0:
+                # Use a horizontal kernel to connect letters in a line
+                # Kernel size: (Height, Width) -> (10, 30) makes it grow sideways
+                kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (self.mask_dilation, self.mask_dilation * 2))
+                mask = cv2.dilate(mask, kernel, iterations=1)
                 
             masks.append(mask)
             
