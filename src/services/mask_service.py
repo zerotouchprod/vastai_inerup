@@ -3,6 +3,7 @@ import os
 import re
 import cv2
 import numpy as np
+from pathlib import Path
 from paddleocr import PaddleOCR
 from typing import List, Tuple, Union, Optional, Dict, Any
 
@@ -17,13 +18,15 @@ class MaskService:
        Detects 'texture clusters' organized in horizontal lines.
     """
     def __init__(self,
-                 use_gpu: bool = False,
                  lang: str = 'ru',
-                 mask_dilation: int = 15):
+                 mask_dilation: int = 15,
+                 use_gpu_for_ocr: bool = False,
+                 confidence_threshold: float = 0.1):
 
-        self.use_gpu = use_gpu
         self.lang = lang
         self.mask_dilation = mask_dilation
+        self.use_gpu = use_gpu_for_ocr  # Map to internal attribute
+        self.confidence_threshold = confidence_threshold
 
         logger.info(f"Initializing Hybrid MaskService. GPU={self.use_gpu}, Lang={self.lang}")
 
@@ -199,23 +202,17 @@ class MaskService:
             logger.error(f"Masking failed: {e}", exc_info=True)
             return image_input if isinstance(image_input, np.ndarray) else cv2.imread(image_input), []
 
-    def generate_masks(self,
-                       frames: List[np.ndarray],
-                       output_dir: str) -> List[str]:
+    def _process_batch_with_hybrid_detection(self, frames: List[np.ndarray]) -> List[np.ndarray]:
         """
-        Batch processing helper. Saves masks to output_dir.
+        Process a batch of frames using the same hybrid detection logic.
+        Returns list of masks (binary uint8).
         """
-        os.makedirs(output_dir, exist_ok=True)
-        mask_paths = []
-
-        logger.info(f"Generating masks for {len(frames)} frames using Hybrid Engine...")
-
-        for idx, frame in enumerate(frames):
-            # Generate mask (we only need the binary mask here, not the blacked-out image)
-            # Re-using internal logic for efficiency
-            mask_cv = self._morphological_text_hunter(frame)
-
-            mask_ocr = np.zeros(frame.shape[:2], dtype=np.uint8)
+        masks = []
+        for frame in frames:
+            h, w = frame.shape[:2]
+            mask_ocr = np.zeros((h, w), dtype=np.uint8)
+            ocr_hits = 0
+            
             if self.ocr:
                 try:
                     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -223,22 +220,80 @@ class MaskService:
                     inverted_bgr = cv2.cvtColor(inverted, cv2.COLOR_GRAY2BGR)
                     result = self.ocr.ocr(inverted_bgr, det=True, rec=False, cls=False)
                     boxes = result[0] if (isinstance(result, list) and len(result) > 0) else []
-                    for box in boxes:
-                        points = np.array(box, dtype=np.int32)
-                        cv2.fillPoly(mask_ocr, [points], 255)
-                    k = cv2.getStructuringElement(cv2.MORPH_RECT, (self.mask_dilation, self.mask_dilation))
-                    mask_ocr = cv2.dilate(mask_ocr, k, iterations=1)
-                except:
-                    pass
-
+                    if boxes:
+                        ocr_hits = len(boxes)
+                        for box in boxes:
+                            points = np.array(box, dtype=np.int32)
+                            cv2.fillPoly(mask_ocr, [points], 255)
+                        k = cv2.getStructuringElement(cv2.MORPH_RECT, (self.mask_dilation, self.mask_dilation))
+                        mask_ocr = cv2.dilate(mask_ocr, k, iterations=1)
+                except Exception as e:
+                    logger.warning(f"OCR step failed in batch: {e}")
+            
+            mask_cv = self._morphological_text_hunter(frame)
             final_mask = cv2.bitwise_or(mask_ocr, mask_cv)
+            masks.append(final_mask)
+        
+        return masks
 
+    def generate_masks(self,
+                       input_dir: Union[str, Path],
+                       output_dir: Union[str, Path],
+                       batch_size: Optional[int] = None) -> Path:
+        """
+        Generate masks for all frames in input_dir using hybrid detection.
+        Saves masks to output_dir and returns output_dir Path.
+        """
+        from pathlib import Path
+        
+        input_path = Path(input_dir)
+        output_path = Path(output_dir)
+        
+        if not input_path.exists():
+            raise FileNotFoundError(f"Input directory not found: {input_path}")
+        
+        output_path.mkdir(parents=True, exist_ok=True)
+        
+        # Collect frame paths
+        frame_paths = sorted(list(input_path.glob("*.png")) + list(input_path.glob("*.jpg")))
+        if not frame_paths:
+            logger.warning(f"No frames found in {input_path}")
+            return output_path
+        
+        logger.info(f"Generating masks for {len(frame_paths)} frames from {input_path}")
+        
+        # Load frames in batches
+        frames = []
+        for frame_path in frame_paths:
+            frame = cv2.imread(str(frame_path))
+            if frame is None:
+                logger.warning(f"Failed to load frame: {frame_path}")
+                continue
+            frames.append(frame)
+        
+        # Process all frames at once (or in batches if needed)
+        masks = self._process_batch_with_hybrid_detection(frames)
+        
+        # Save masks
+        for idx, mask in enumerate(masks):
             mask_filename = f"mask_{idx:05d}.png"
-            mask_path = os.path.join(output_dir, mask_filename)
-            cv2.imwrite(mask_path, final_mask)
-            mask_paths.append(mask_path)
+            mask_path = output_path / mask_filename
+            cv2.imwrite(str(mask_path), mask)
+        
+        logger.info(f"Saved {len(masks)} masks to {output_path}")
+        return output_path
 
-        return mask_paths
+    def cleanup_temp_dir(self, dir_path: Union[str, Path]):
+        """
+        Remove temporary directory created during mask generation.
+        """
+        import shutil
+        dir_path = Path(dir_path)
+        if dir_path.exists():
+            shutil.rmtree(dir_path)
+            logger.info(f"Cleaned up temporary directory: {dir_path}")
+        else:
+            logger.warning(f"Directory does not exist: {dir_path}")
 
 
 # Alias for backward compatibility
