@@ -55,6 +55,15 @@ class MaskGeneratorService:
 
         # Robust initialization
         self.ocr = self._init_ocr_robust(ideal_config)
+        
+        # FORCE attributes (Hack for PaddleOCR versions that ignore kwargs in init)
+        try:
+            self.ocr.det_db_thresh = 0.05
+            self.ocr.det_db_box_thresh = 0.2
+            self.ocr.det_db_unclip_ratio = 2.5
+            logger.info("Forced OCR attributes: det_db_thresh=0.05")
+        except Exception:
+            pass  # Attribute might not exist in some versions, ignore
 
     def _init_ocr_robust(self, params: Dict[str, Any]):
         """
@@ -145,6 +154,44 @@ class MaskGeneratorService:
 
         return variants
 
+    def _fallback_simple_masking(self, image: np.ndarray) -> Tuple[np.ndarray, List[str]]:
+        """
+        FALLBACK: If OCR fails, assume subtitles are bright white/yellow pixels.
+        """
+        logger.warning("Engaging CV2 Fallback Masking (Bright Pixel Detection)...")
+        
+        h, w = image.shape[:2]
+        
+        # Convert to HSV to find bright colors (White/Yellow)
+        hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+        
+        # Mask 1: High brightness (White text)
+        lower_white = np.array([0, 0, 200])
+        upper_white = np.array([180, 50, 255])
+        mask_white = cv2.inRange(hsv, lower_white, upper_white)
+        
+        # Mask 2: Yellowish text (often used in subs)
+        lower_yellow = np.array([20, 100, 100])
+        upper_yellow = np.array([40, 255, 255])
+        mask_yellow = cv2.inRange(hsv, lower_yellow, upper_yellow)
+        
+        # Combine
+        combined_mask = cv2.bitwise_or(mask_white, mask_yellow)
+        
+        # Noise removal
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+        combined_mask = cv2.morphologyEx(combined_mask, cv2.MORPH_OPEN, kernel)
+        
+        # Dilate to cover edges
+        dilate_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (15, 5))  # Wide dilation for text lines
+        final_mask = cv2.dilate(combined_mask, dilate_kernel, iterations=2)
+        
+        # Apply to image
+        masked_img = image.copy()
+        masked_img[final_mask > 0] = (0, 0, 0)
+        
+        return masked_img, ["<fallback_blob>"]
+
     def process_image(self, image_input: Union[str, np.ndarray]) -> Tuple[np.ndarray, List[str]]:
         """
         Process a single image: run triple-pass OCR detection-only, generate mask, black out text.
@@ -190,8 +237,8 @@ class MaskGeneratorService:
                         cv2.fillPoly(mask_accum, [points], 255)
 
             if not found_any:
-                logger.info("PaddleOCR (Detection Only) found 0 regions.")
-                return img, []
+                logger.warning("PaddleOCR found 0 regions. Trying Fallback.")
+                return self._fallback_simple_masking(img)
 
             # 4. Downscale Mask to original size
             mask_final_bin = cv2.resize(mask_accum, (w_orig, h_orig), interpolation=cv2.INTER_NEAREST)
