@@ -166,12 +166,27 @@ class ThreadSafeOCR:
             mask = np.zeros((orig_h, orig_w), dtype=np.uint8)
             ocr = self._get_ocr_instance()
             
-            # Perform OCR
-            try:
+            # Helper to run OCR on an image
+            def run_ocr(img):
                 if hasattr(ocr, 'predict'):
-                    result = ocr.predict(ocr_img)
+                    return ocr.predict(img)
                 else:
-                    result = ocr.ocr(ocr_img)
+                    return ocr.ocr(img)
+            
+            # Perform OCR with preprocessing
+            try:
+                # Apply CLAHE contrast enhancement
+                gray = cv2.cvtColor(ocr_img, cv2.COLOR_BGR2GRAY)
+                clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+                enhanced = clahe.apply(gray)
+                enhanced_bgr = cv2.cvtColor(enhanced, cv2.COLOR_GRAY2BGR)
+                
+                result = run_ocr(enhanced_bgr)
+                
+                # If no detections, try inverted image
+                if not result or (isinstance(result, list) and not result[0]):
+                    inverted = cv2.bitwise_not(enhanced_bgr)
+                    result = run_ocr(inverted)
                 
                 if result and result[0] is not None:
                     ocr_result = result[0]
