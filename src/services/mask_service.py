@@ -40,25 +40,25 @@ class MaskGeneratorService:
 
         logger.info(f"Initializing PaddleOCR (Aggressive Mode)... Lang={self.lang}, GPU={self.use_gpu}")
         
-        # AGGRESSIVE PADDLE CONFIGURATION
+        # AGGRESSIVE PADDLE CONFIGURATION (using parameter names from paddle_wrapper)
         try:
             self.ocr = PaddleOCR(
                 use_angle_cls=True,
                 lang=self.lang,
-                use_gpu=self.use_gpu,
                 show_log=False,
                 
                 # --- DETECTION TUNING (The "Berserk" Mode) ---
-                det_db_thresh=0.1,      # Detect faint text (Standard is 0.3)
-                det_db_box_thresh=0.1,  # Keep low-confidence boxes (Standard is 0.6)
-                det_db_unclip_ratio=2.5,# Expand boxes significantly to cover edges
-                det_db_score_mode="slow", # More accurate, slightly slower
+                text_det_thresh=0.1,          # Lower binarization threshold (default 0.3)
+                text_det_box_thresh=0.1,      # Lower box threshold (default 0.6)
+                text_det_unclip_ratio=2.5,    # Expand detection boxes (default 1.5)
+                text_det_limit_side_len=960,  # Increase side length limit
+                text_det_limit_type='max',    # Limit by max side
                 
                 # --- RECOGNITION TUNING ---
-                rec_thresh=0.01,        # Don't drop text if you can't read it perfectly
+                text_rec_score_thresh=0.01,   # Keep recognition result even if confidence low (default 0.5)
                 
                 # --- MEMORY/CPU TUNING ---
-                enable_mkldnn=True      # Optimization for CPU
+                enable_mkldnn=True            # Optimization for CPU
             )
         except Exception as e:
             logger.error(f"Failed to initialize PaddleOCR: {e}")
