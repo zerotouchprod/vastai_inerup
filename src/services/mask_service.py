@@ -2,6 +2,8 @@ import logging
 import shutil
 import cv2
 import numpy as np
+import re
+import os
 from pathlib import Path
 from typing import List, Optional, Union, Dict, Any
 
@@ -37,12 +39,10 @@ class MaskGeneratorService:
             self.ocr = None
             return
 
-        logger.info(f"Initializing PaddleOCR with forced thresholds... Lang={self.lang}")
+        logger.info(f"Initializing PaddleOCR with auto-healing configuration... Lang={self.lang}")
 
-        # DIRECTLY pass parameters. Do not check if they exist.
-        # PaddleOCR uses **kwargs to pass these to the underlying TextSystem.
-        # Force the critical thresholds to ensure detection.
-        forced_config = {
+        # Ideal configuration (wishlist)
+        ideal_config = {
             "use_angle_cls": True,
             "lang": self.lang,
             "use_gpu": self.use_gpu,
@@ -54,27 +54,52 @@ class MaskGeneratorService:
             "rec_thresh": 0.6,
         }
 
-        # Try hard, then fail gracefully
-        try:
-            self.ocr = PaddleOCR(**forced_config)
-            logger.info("OCR initialized successfully with custom thresholds")
-            logger.debug(f"Active configuration: {forced_config}")
-        except TypeError as e:
-            # If TypeError occurs (unexpected keyword argument), fallback to minimal initialization
-            logger.warning(f"PaddleOCR rejected some forced parameters: {e}")
-            logger.warning("Falling back to minimal initialization (detection may be weaker)")
-            # Keep only the most essential parameters
-            fallback_config = {
-                "use_angle_cls": True,
-                "lang": self.lang,
-                "use_gpu": self.use_gpu,
-                "show_log": False,
-            }
-            self.ocr = PaddleOCR(**fallback_config)
-            logger.info("OCR initialized with fallback config")
-        except Exception as e:
-            logger.error(f"Failed to initialize PaddleOCR: {e}")
-            self.ocr = None
+        # Robust initialization
+        self.ocr = self._init_ocr_robust(ideal_config)
+
+    def _init_ocr_robust(self, params: Dict[str, Any]):
+        """
+        Attempts to initialize PaddleOCR. If an 'unexpected keyword argument'
+        error occurs, it strips the offending argument and retries recursively.
+        """
+        attempts = 0
+        max_attempts = len(params) + 2
+
+        current_params = params.copy()
+
+        while attempts < max_attempts:
+            try:
+                logger.debug(f"Attempting PaddleOCR init with: {list(current_params.keys())}")
+                ocr_instance = PaddleOCR(**current_params)
+                logger.info(f"PaddleOCR initialized successfully. Active config: {current_params}")
+                return ocr_instance
+
+            except TypeError as e:
+                error_msg = str(e)
+                # Regex to find the unknown argument in standard Python TypeError messages
+                # Matches: "got an unexpected keyword argument 'xyz'"
+                match = re.search(r"unexpected keyword argument ['\"]([^'\"]+)['\"]", error_msg)
+
+                if match:
+                    bad_arg = match.group(1)
+                    logger.warning(f"PaddleOCR rejected parameter '{bad_arg}'. Removing and retrying...")
+                    if bad_arg in current_params:
+                        del current_params[bad_arg]
+                    else:
+                        # Should not happen, but prevents infinite loop
+                        logger.critical(f"Detected bad arg '{bad_arg}' but it's not in params. Aborting.")
+                        raise e
+                else:
+                    # Not a param error (maybe missing positional arg?), re-raise
+                    logger.error(f"PaddleOCR init failed with non-param TypeError: {e}")
+                    raise e
+            except Exception as e:
+                logger.critical(f"Critical failure initializing PaddleOCR: {e}")
+                raise e
+
+            attempts += 1
+
+        raise RuntimeError("PaddleOCR failed to initialize after exhausting parameter stripping attempts.")
 
     def _enhance_variants(self, image: np.ndarray) -> List[np.ndarray]:
         """
