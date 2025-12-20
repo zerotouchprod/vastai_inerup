@@ -45,7 +45,6 @@ class MaskGeneratorService:
             self.ocr = PaddleOCR(
                 use_angle_cls=True,
                 lang=self.lang,
-                show_log=False,
                 
                 # --- DETECTION TUNING (The "Berserk" Mode) ---
                 text_det_thresh=0.1,          # Lower binarization threshold (default 0.3)
