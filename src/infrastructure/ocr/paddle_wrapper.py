@@ -175,9 +175,9 @@ class ThreadSafeOCR:
             
             # Perform OCR with preprocessing
             try:
-                # Apply CLAHE contrast enhancement
+                # Apply CLAHE contrast enhancement (aggressive)
                 gray = cv2.cvtColor(ocr_img, cv2.COLOR_BGR2GRAY)
-                clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+                clahe = cv2.createCLAHE(clipLimit=4.0, tileGridSize=(8, 8))
                 enhanced = clahe.apply(gray)
                 enhanced_bgr = cv2.cvtColor(enhanced, cv2.COLOR_GRAY2BGR)
                 

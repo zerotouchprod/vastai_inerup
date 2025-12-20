@@ -548,12 +548,21 @@ class StreamingSubtitleRemoverService:
                             crop = frame[y:y+rh, x:x+rw]
                             cv2.imwrite(str(diag_debug_dir / "02_roi_crop.jpg"), crop)
                             
+                            # 3. Enhance Crop for OCR (CLAHE)
+                            # Convert to grayscale
+                            gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+                            clahe = cv2.createCLAHE(clipLimit=4.0, tileGridSize=(8, 8))
+                            enhanced = clahe.apply(gray)
+                            enhanced_bgr = cv2.cvtColor(enhanced, cv2.COLOR_GRAY2BGR)
+                            cv2.imwrite(str(diag_debug_dir / "05_ocr_enhanced_input.jpg"), enhanced_bgr)
+                            print(f"!!! OCR ENHANCEMENT: Saved enhanced image for OCR")
+                            
                             # Save Box on Original
                             boxed = frame.copy()
                             cv2.rectangle(boxed, (x, y), (x+rw, y+rh), (0, 0, 255), 5)
                             cv2.imwrite(str(diag_debug_dir / "03_roi_placement.jpg"), boxed)
                             
-                            # 3. Generate and Save Mask for this Crop (Test OCR)
+                            # 4. Generate and Save Mask for this Crop (Test OCR)
                             # We manually call mask service here to verify it works
                             try:
                                 # Use the batch processing method with a single image
