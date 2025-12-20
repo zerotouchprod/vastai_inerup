@@ -5,7 +5,7 @@ import numpy as np
 import re
 import os
 from pathlib import Path
-from typing import List, Optional, Union, Dict, Any
+from typing import List, Optional, Union, Dict, Any, Tuple
 
 # Try importing PaddleOCR
 try:
@@ -41,17 +41,17 @@ class MaskGeneratorService:
 
         logger.info(f"Initializing PaddleOCR with auto-healing configuration... Lang={self.lang}")
 
-        # Ideal configuration (wishlist)
+        # Ideal configuration (wishlist) - Ultra sensitive detection
         ideal_config = {
             "use_angle_cls": True,
             "lang": self.lang,
             "use_gpu": self.use_gpu,
             "show_log": False,
             "enable_mkldnn": True,
-            "det_db_thresh": 0.3,
-            "det_db_box_thresh": 0.6,
-            "det_db_unclip_ratio": 1.5,
-            "rec_thresh": 0.6,
+            "det_db_thresh": 0.1,        # Ultra sensitive detection
+            "det_db_box_thresh": 0.3,    # Keep low confidence boxes
+            "det_db_unclip_ratio": 2.0,  # Expand boxes significantly
+            "rec_thresh": 0.5,
         }
 
         # Robust initialization
@@ -115,42 +115,102 @@ class MaskGeneratorService:
 
     def _enhance_variants(self, image: np.ndarray) -> List[np.ndarray]:
         """
-        Generates 3 variants of the image to force OCR detection:
-        1. Enhanced (CLAHE)
-        2. Inverted (Negative)
-        3. Binary Threshold (Pure B&W)
+        Returns list of image variants for Triple-Pass OCR.
+        ALL variants are upscaled 2x for better small text detection.
         """
         if image is None:
             return []
 
-        # 0. UPSCALE (Critical for small text)
-        # Resize 2x to make text clearer
+        # 1. Upscale
         h, w = image.shape[:2]
         upscaled = cv2.resize(image, (w * 2, h * 2), interpolation=cv2.INTER_CUBIC)
-
-        # Convert to Grayscale
+        
         if len(upscaled.shape) == 3:
             gray = cv2.cvtColor(upscaled, cv2.COLOR_BGR2GRAY)
         else:
             gray = upscaled
 
         variants = []
+        
+        # Variant 1: Standard Grayscale (Converted back to BGR for Paddle)
+        variants.append(cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR))
 
-        # Variant 1: CLAHE (Contrast)
+        # Variant 2: Inverted (Negative)
+        inverted = cv2.bitwise_not(gray)
+        variants.append(cv2.cvtColor(inverted, cv2.COLOR_GRAY2BGR))
+
+        # Variant 3: CLAHE (High Contrast)
         clahe = cv2.createCLAHE(clipLimit=4.0, tileGridSize=(8, 8))
         enhanced = clahe.apply(gray)
         variants.append(cv2.cvtColor(enhanced, cv2.COLOR_GRAY2BGR))
 
-        # Variant 2: Inverted (Negative)
-        inverted = cv2.bitwise_not(enhanced)
-        variants.append(cv2.cvtColor(inverted, cv2.COLOR_GRAY2BGR))
-
-        # Variant 3: Binary Threshold (Hard edges)
-        # Otsu's binarization
-        _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        variants.append(cv2.cvtColor(binary, cv2.COLOR_GRAY2BGR))
-
         return variants
+
+    def process_image(self, image_input: Union[str, np.ndarray]) -> Tuple[np.ndarray, List[str]]:
+        """
+        Process a single image: run triple-pass OCR, generate mask, black out text.
+        Returns masked image and list of detected texts.
+        """
+        try:
+            # 1. Load Image
+            if isinstance(image_input, str):
+                if not os.path.exists(image_input):
+                    raise FileNotFoundError(f"Image not found at {image_input}")
+                img = cv2.imread(image_input)
+                if img is None:
+                    raise ValueError("Failed to read image via cv2.")
+            else:
+                img = image_input
+
+            # 2. Prepare Accumulator for Masks (2x size)
+            h_orig, w_orig = img.shape[:2]
+            mask_accum = np.zeros((h_orig * 2, w_orig * 2), dtype=np.uint8)
+            
+            detected_texts = []
+            variants = self._enhance_variants(img)
+
+            # 3. Run OCR on all variants
+            found_any = False
+            for i, variant in enumerate(variants):
+                result = self.ocr.ocr(variant, cls=True)
+                
+                # Handle Paddle result structure
+                scan_result = result[0] if (isinstance(result, list) and len(result) > 0) else result
+
+                if scan_result:
+                    found_any = True
+                    for line in scan_result:
+                        if not line: continue
+                        coords = line[0]     # [[x1,y1], ...]
+                        text = line[1][0]    # "detected text"
+                        detected_texts.append(text)
+                        
+                        # Draw filled polygon on accumulator
+                        points = np.array(coords, dtype=np.int32)
+                        cv2.fillPoly(mask_accum, [points], 255)
+
+            if not found_any:
+                logger.info("PaddleOCR found 0 text regions in all passes.")
+                # Return original image and empty list (No masking)
+                return img, []
+
+            # 4. Downscale Mask to original size
+            mask_final_bin = cv2.resize(mask_accum, (w_orig, h_orig), interpolation=cv2.INTER_NEAREST)
+
+            # 5. Dilate Mask (Make it thicker to cover glow/shadows)
+            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (self.mask_dilation, self.mask_dilation))
+            mask_dilated = cv2.dilate(mask_final_bin, kernel, iterations=1)
+
+            # 6. Apply Black Mask to Original Image
+            # Where mask is white (255), set image pixels to black (0)
+            masked_img = img.copy()
+            masked_img[mask_dilated > 0] = (0, 0, 0) # Black out text
+
+            return masked_img, list(set(detected_texts))
+
+        except Exception as e:
+            logger.error(f"Error during masking process: {e}", exc_info=True)
+            raise
 
     def generate_masks(self, input_dir: Path, output_dir: Path) -> Path:
         output_dir.mkdir(parents=True, exist_ok=True)
