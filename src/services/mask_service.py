@@ -4,7 +4,6 @@ import cv2
 import numpy as np
 from pathlib import Path
 from typing import List, Optional, Union, Dict, Any
-import inspect
 
 # Try importing PaddleOCR
 try:
@@ -22,19 +21,6 @@ class MaskGeneratorService:
     Optimized for CPU usage and hard-to-read subtitles.
     """
 
-    # Target configuration we would like to use if supported
-    TARGET_CONFIG = {
-        "use_angle_cls": True,
-        "lang": "en",
-        "show_log": False,
-        "enable_mkldnn": True,
-        "det_db_thresh": 0.3,
-        "det_db_box_thresh": 0.6,
-        "det_db_unclip_ratio": 1.5,
-        "rec_thresh": 0.6,
-        "use_gpu": False,  # will be overridden by init argument
-    }
-
     def __init__(self,
                  lang: str = 'ru',
                  mask_dilation: int = 15,
@@ -43,61 +29,52 @@ class MaskGeneratorService:
 
         self.lang = lang
         self.mask_dilation = mask_dilation
-        self.use_gpu = False  # FORCE CPU for stability
-        self.confidence_threshold = 0.01  # Ultra-low threshold
+        self.use_gpu = use_gpu_for_ocr  # Use GPU if requested
+        self.confidence_threshold = confidence_threshold
 
         if not PADDLE_AVAILABLE:
             logger.warning("PaddleOCR not installed. Text detection will be disabled.")
             self.ocr = None
             return
 
-        logger.info(f"Initializing PaddleOCR (Dynamic Config)... Lang={self.lang}")
+        logger.info(f"Initializing PaddleOCR with forced thresholds... Lang={self.lang}")
 
-        # Prepare configuration dictionary
-        config = self.TARGET_CONFIG.copy()
-        # Override with instance-specific values
-        config['lang'] = self.lang
-        config['use_gpu'] = self.use_gpu
+        # DIRECTLY pass parameters. Do not check if they exist.
+        # PaddleOCR uses **kwargs to pass these to the underlying TextSystem.
+        # Force the critical thresholds to ensure detection.
+        forced_config = {
+            "use_angle_cls": True,
+            "lang": self.lang,
+            "use_gpu": self.use_gpu,
+            "show_log": False,
+            "enable_mkldnn": True,
+            "det_db_thresh": 0.3,
+            "det_db_box_thresh": 0.6,
+            "det_db_unclip_ratio": 1.5,
+            "rec_thresh": 0.6,
+        }
 
-        # Filter parameters to only those accepted by the installed PaddleOCR version
-        filtered_config = self._filter_valid_params(config)
-        logger.info(f"Filtered PaddleOCR parameters: {filtered_config}")
-
+        # Try hard, then fail gracefully
         try:
-            self.ocr = PaddleOCR(**filtered_config)
-            logger.info("PaddleOCR initialized successfully")
+            self.ocr = PaddleOCR(**forced_config)
+            logger.info("OCR initialized successfully with custom thresholds")
+            logger.debug(f"Active configuration: {forced_config}")
+        except TypeError as e:
+            # If TypeError occurs (unexpected keyword argument), fallback to minimal initialization
+            logger.warning(f"PaddleOCR rejected some forced parameters: {e}")
+            logger.warning("Falling back to minimal initialization (detection may be weaker)")
+            # Keep only the most essential parameters
+            fallback_config = {
+                "use_angle_cls": True,
+                "lang": self.lang,
+                "use_gpu": self.use_gpu,
+                "show_log": False,
+            }
+            self.ocr = PaddleOCR(**fallback_config)
+            logger.info("OCR initialized with fallback config")
         except Exception as e:
             logger.error(f"Failed to initialize PaddleOCR: {e}")
             self.ocr = None
-
-    def _filter_valid_params(self, config: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Inspect PaddleOCR.__init__ signature and keep only parameters that are accepted.
-        Log warnings for dropped parameters.
-        """
-        try:
-            # Get signature of PaddleOCR.__init__
-            sig = inspect.signature(PaddleOCR.__init__)
-            valid_params = set(sig.parameters.keys())
-        except Exception as e:
-            logger.warning(f"Could not inspect PaddleOCR signature: {e}. Using all config keys.")
-            return config
-
-        filtered = {}
-        dropped = []
-
-        for key, value in config.items():
-            if key in valid_params:
-                filtered[key] = value
-            else:
-                dropped.append(key)
-
-        if dropped:
-            logger.warning(
-                f"Parameters not supported by this PaddleOCR version and will be dropped: {dropped}"
-            )
-
-        return filtered
 
     def _enhance_variants(self, image: np.ndarray) -> List[np.ndarray]:
         """
