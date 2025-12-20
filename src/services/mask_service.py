@@ -1,434 +1,169 @@
-"""
-Mask generation service for subtitle removal with universal text detection.
-Combines PaddleOCR (semantic), MSER (structure), and Gradient Morphology (edges).
-"""
-
 import logging
 import shutil
-from pathlib import Path
-from typing import Optional
-
 import cv2
 import numpy as np
+from pathlib import Path
+from typing import List, Optional, Union
+import torch
 
-from src.core.config import get_config
-from src.core.exceptions import ProcessingError
-from src.infrastructure.ocr.paddle_wrapper import ThreadSafeOCR
-from src.infrastructure.image_processing.detectors import (
-    get_mser_mask,
-    get_gradient_mask,
-    get_hybrid_mask,
-    filter_mask_by_geometry,
-    enhance_contrast_for_detection
-)
+# Try importing PaddleOCR
+try:
+    from paddleocr import PaddleOCR
+    PADDLE_AVAILABLE = True
+except ImportError:
+    PADDLE_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
-
 class MaskGeneratorService:
-    """Service for generating subtitle masks."""
-    
+    """
+    Generates text masks using aggressive OCR settings.
+    Optimized for CPU usage and hard-to-read subtitles.
+    """
+
     def __init__(self, 
-                 lang: Optional[str] = None,
-                 mask_dilation: Optional[int] = None,
-                 use_gpu_for_ocr: Optional[bool] = None,
-                 confidence_threshold: Optional[float] = None):
-        """
-        Initialize mask generator service.
+                 lang: str = 'ru', 
+                 mask_dilation: int = 15,
+                 use_gpu_for_ocr: bool = False,
+                 confidence_threshold: float = 0.1): 
         
-        Args:
-            lang: Language for OCR (default from config)
-            mask_dilation: Mask dilation radius (default from config)
-            use_gpu_for_ocr: Use GPU for OCR (default from config)
-            confidence_threshold: Confidence threshold for text detection (default from config)
-        """
-        config = get_config()
+        self.lang = lang
+        self.mask_dilation = mask_dilation
+        # FORCE CPU for stability since the environment has CUDA errors
+        self.use_gpu = False 
+        self.confidence_threshold = 0.01 # Ultra-low threshold
         
-        self.lang = lang or config.OCR_LANG
-        self.mask_dilation = mask_dilation or config.MASK_DILATION
-        self.use_gpu_for_ocr = use_gpu_for_ocr if use_gpu_for_ocr is not None else config.USE_GPU_FOR_OCR
-        self.confidence_threshold = confidence_threshold or config.CONFIDENCE_THRESHOLD
-        
-        # Initialize OCR wrapper
-        self.ocr_wrapper = ThreadSafeOCR(
-            lang=self.lang,
-            use_gpu_for_ocr=self.use_gpu_for_ocr,
-            use_angle_cls=False
-        )
-        
-        logger.info(f"MaskGeneratorService initialized (lang={self.lang}, "
-                   f"dilation={self.mask_dilation}, confidence={self.confidence_threshold})")
-    
-    def generate_masks(self, input_dir: Path, output_dir: Path, batch_size: int = 8) -> Path:
-        """
-        Generate masks for all frames in directory.
-        
-        Args:
-            input_dir: Directory with input frames
-            output_dir: Directory to save masks
-            batch_size: Batch size for processing
-            
-        Returns:
-            Path to directory with masks
-            
-        Raises:
-            ProcessingError: If mask generation fails
-        """
-        try:
-            output_dir.mkdir(parents=True, exist_ok=True)
-            
-            logger.info(f"Starting mask generation for {input_dir} -> {output_dir}")
-            logger.info(f"Parameters: lang={self.lang}, dilation={self.mask_dilation}, "
-                       f"confidence={self.confidence_threshold}, batch_size={batch_size}")
-            
-            # Get all frame files
-            frames = sorted(list(input_dir.glob("*.png")) + list(input_dir.glob("*.jpg")))
-            if not frames:
-                raise ProcessingError(f"No frames found in directory: {input_dir}")
-            
-            # Process in smaller batches to manage memory but maintain temporal context
-            # We need to process all frames to apply temporal smearing
-            # Use a larger batch size for efficiency but process sequentially
-            effective_batch_size = min(batch_size, 16)  # Limit batch size
-            
-            all_masks = []
-            all_frame_paths = []
-            
-            # Process frames in batches
-            for i in range(0, len(frames), effective_batch_size):
-                batch_frames = frames[i:i + effective_batch_size]
-                
-                # Load images
-                images = []
-                valid_paths = []
-                
-                for frame_path in batch_frames:
-                    img = cv2.imread(str(frame_path))
-                    if img is not None:
-                        images.append(img)
-                        valid_paths.append(frame_path)
-                
-                if not images:
-                    continue
-                
-                # Generate masks with hybrid detection
-                batch_masks = self._process_batch_with_hybrid_detection(images)
-                
-                # Store masks and paths for temporal smearing
-                all_masks.extend(batch_masks)
-                all_frame_paths.extend(valid_paths)
-                
-                # Log progress
-                processed = min(i + effective_batch_size, len(frames))
-                if (i + effective_batch_size) % (effective_batch_size * 5) == 0 or processed == len(frames):
-                    logger.info(f"Processed {processed}/{len(frames)} frames for mask generation")
-            
-            if not all_masks:
-                raise ProcessingError("No masks generated")
-            
-            # Apply temporal smearing (rolling window of ±2 frames)
-            window_size = 2  # Look 2 frames back and 2 frames forward
-            smeared_masks = []
-            
-            for i in range(len(all_masks)):
-                # Get indices for the window
-                start_idx = max(0, i - window_size)
-                end_idx = min(len(all_masks), i + window_size + 1)
-                
-                # Combine masks in the window using logical OR (max)
-                window_masks = all_masks[start_idx:end_idx]
-                if window_masks:
-                    # Use logical OR to combine masks (equivalent to max for binary masks)
-                    combined_mask = window_masks[0].copy()
-                    for mask in window_masks[1:]:
-                        combined_mask = cv2.bitwise_or(combined_mask, mask)
-                    smeared_masks.append(combined_mask)
-                else:
-                    smeared_masks.append(all_masks[i])
-            
-            # Apply dilation and morphological closing, then save masks
-            if self.mask_dilation > 0:
-                kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (self.mask_dilation, self.mask_dilation))
-                closing_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
-            else:
-                kernel = None
-                closing_kernel = None
-            
-            for frame_path, mask in zip(all_frame_paths, smeared_masks):
-                # Apply morphological closing to merge individual letters
-                if closing_kernel is not None:
-                    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, closing_kernel)
-                # Apply dilation if needed
-                if kernel is not None:
-                    mask = cv2.dilate(mask, kernel, iterations=1)
-                    mask = cv2.dilate(mask, kernel, iterations=2)  # Additional dilation for coverage
-                    if self.mask_dilation >= 8:
-                        mask = cv2.GaussianBlur(mask, (5, 5), 0)
-                
-                # Save mask
-                mask_path = output_dir / frame_path.name
-                cv2.imwrite(str(mask_path), mask)
-            
-            # Count generated masks
-            mask_files = list(output_dir.glob("*.png")) + list(output_dir.glob("*.jpg"))
-            logger.info(f"Masks generated successfully with temporal smearing: {output_dir} ({len(mask_files)} masks)")
-            return output_dir
-            
-        except Exception as e:
-            logger.error(f"Failed to generate masks: {e}")
-            raise ProcessingError(f"Failed to generate masks: {e}")
-    
-    def _apply_dilation(self, mask_dir: Path) -> None:
-        """Apply dilation and morphological closing to all masks in directory."""
-        logger.info(f"Applying dilation (radius={self.mask_dilation}) and morphological closing to masks...")
-        
-        # Get all mask files
-        mask_files = sorted(list(mask_dir.glob("*.png")) + list(mask_dir.glob("*.jpg")))
-        
-        if not mask_files:
-            logger.warning(f"No mask files found in {mask_dir}")
+        if not PADDLE_AVAILABLE:
+            logger.warning("PaddleOCR not installed. Text detection will be disabled.")
+            self.ocr = None
             return
+
+        logger.info(f"Initializing PaddleOCR (Aggressive Mode)... Lang={self.lang}, GPU={self.use_gpu}")
         
-        # Create dilation kernel
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (self.mask_dilation, self.mask_dilation))
-        # Kernel for morphological closing (merge individual letters into solid blocks)
-        closing_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
-        
-        # Process each mask
-        for mask_file in mask_files:
-            try:
-                mask = cv2.imread(str(mask_file), cv2.IMREAD_GRAYSCALE)
-                if mask is None:
-                    continue
-                
-                # Apply morphological closing to merge individual letters
-                mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, closing_kernel)
-                # Apply dilation to expand the mask
-                dilated_mask = cv2.dilate(mask, kernel, iterations=1)
-                # Additional dilation to ensure coverage
-                dilated_mask = cv2.dilate(dilated_mask, kernel, iterations=2)
-                
-                # Additional smoothing for large dilation
-                if self.mask_dilation >= 8:
-                    dilated_mask = cv2.GaussianBlur(dilated_mask, (5, 5), 0)
-                
-                # Save back
-                cv2.imwrite(str(mask_file), dilated_mask)
-                
-            except Exception as e:
-                logger.warning(f"Failed to process mask {mask_file}: {e}")
-        
-        logger.info(f"Dilation and morphological closing applied to {len(mask_files)} masks")
-    
-    def _preprocess_for_ocr(self, image: np.ndarray) -> np.ndarray:
-        """
-        Preprocess image for better OCR detection of colored/fading text.
-        
-        Args:
-            image: Input BGR image
-            
-        Returns:
-            Preprocessed BGR image with enhanced contrast
-        """
-        # Use the enhanced contrast function from detectors
-        return enhance_contrast_for_detection(image)
-    
-    def _generate_hybrid_mask(self, image: np.ndarray, ocr_mask: np.ndarray, roi_str: str = None) -> np.ndarray:
-        """
-        Generate hybrid mask using OCR-Anchored Masking with ROI constraint.
-        MSER/Gradient detectors only operate within OCR-defined regions.
-        
-        Args:
-            image: Input BGR image
-            ocr_mask: Mask from PaddleOCR
-            roi_str: ROI string (preset or coordinates). If provided, final mask is constrained to ROI.
-            
-        Returns:
-            Combined binary mask
-        """
-        # Step 1: Create "Allowed Zone" from OCR mask (dilated)
-        # Dilate OCR mask to create search area (account for jumping text/OCR inaccuracies)
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (30, 30))
-        allowed_zone = cv2.dilate(ocr_mask, kernel, iterations=1)
-        
-        # Step 2: Apply MSER detection (structure layer)
-        mser_mask = get_mser_mask(image)
-        
-        # Step 3: Apply Gradient detection (edge layer)
-        gradient_mask = get_gradient_mask(image)
-        
-        # Step 4: Clean MSER and Gradient masks
-        mser_cleaned = filter_mask_by_geometry(mser_mask)
-        gradient_cleaned = filter_mask_by_geometry(gradient_mask)
-        
-        # Step 5: STRICT INTERSECTION - Only keep details inside Allowed Zone
-        # MSER and Gradient can only operate where OCR detected something
-        mser_constrained = cv2.bitwise_and(mser_cleaned, allowed_zone)
-        gradient_constrained = cv2.bitwise_and(gradient_cleaned, allowed_zone)
-        
-        # Step 6: Combine masks (OCR is the anchor)
-        combined = cv2.bitwise_or(ocr_mask, mser_constrained)
-        combined = cv2.bitwise_or(combined, gradient_constrained)
-        
-        # Step 7: Apply safety clamp to prevent "global hallucination"
-        from src.infrastructure.image_processing.mask_cleaning import apply_safety_clamp
-        safe_mask = apply_safety_clamp(combined, ocr_mask, safety_threshold=0.20)
-        
-        # Step 8: Apply ROI constraint if provided (HARD CONSTRAINT - "Mask Guillotine")
-        if roi_str:
-            from src.infrastructure.image_processing.geometry import resolve_roi
-            
-            h, w = image.shape[:2]
-            x, y, roi_w, roi_h = resolve_roi(roi_str, w, h)
-            
-            # Create ROI mask (black canvas with white ROI rectangle)
-            roi_mask = np.zeros_like(safe_mask)
-            cv2.rectangle(roi_mask, (x, y), (x + roi_w, y + roi_h), 255, -1)
-            
-            # Apply hard constraint: mask ONLY inside ROI
-            safe_mask = cv2.bitwise_and(safe_mask, roi_mask)
-            
-            # Log ROI constraint
-            total_pixels = h * w
-            roi_pixels = np.sum(roi_mask > 0)
-            safe_pixels = np.sum(safe_mask > 0)
-            
-            logger.info(
-                f"ROI Constraint ({roi_str}): ROI covers {roi_pixels/total_pixels*100:.1f}% of screen, "
-                f"final mask covers {safe_pixels/total_pixels*100:.1f}%"
-            )
-        
-        # Log statistics for debugging
-        h, w = image.shape[:2]
-        total_pixels = h * w
-        ocr_coverage = np.sum(ocr_mask > 0) / total_pixels
-        mser_coverage = np.sum(mser_constrained > 0) / total_pixels
-        gradient_coverage = np.sum(gradient_constrained > 0) / total_pixels
-        final_coverage = np.sum(safe_mask > 0) / total_pixels
-        
-        logger.debug(
-            f"OCR-Anchored Masking: OCR={ocr_coverage*100:.1f}%, "
-            f"MSER={mser_coverage*100:.1f}%, "
-            f"Gradient={gradient_coverage*100:.1f}%, "
-            f"Final={final_coverage*100:.1f}%"
-        )
-        
-        return safe_mask
-    
-    def _process_batch_with_hybrid_detection(self, images: list[np.ndarray], roi_str: str = None) -> list[np.ndarray]:
-        """
-        Process batch of images with hybrid detection.
-        
-        Args:
-            images: List of BGR images
-            roi_str: Optional ROI string (preset or coordinates). If provided, masks are constrained to ROI.
-            
-        Returns:
-            List of binary masks
-        """
-        # Preprocess images for OCR
-        preprocessed_images = [self._preprocess_for_ocr(img) for img in images]
-        
-        # Get OCR masks
-        ocr_masks = self.ocr_wrapper.process_batch(preprocessed_images, self.confidence_threshold)
-        
-        # Apply hybrid detection to each image
-        hybrid_masks = []
-        for img, ocr_mask in zip(images, ocr_masks):
-            hybrid_mask = self._generate_hybrid_mask(img, ocr_mask, roi_str)
-            hybrid_masks.append(hybrid_mask)
-        
-        return hybrid_masks
-    
-    def generate_masks_for_frames(self, frame_paths: list[Path], output_dir: Path) -> list[Path]:
-        """
-        Generate masks for specific frame paths.
-        
-        Args:
-            frame_paths: List of frame paths
-            output_dir: Directory to save masks
-            
-        Returns:
-            List of mask paths (same order as input)
-            
-        Raises:
-            ProcessingError: If mask generation fails
-        """
+        # AGGRESSIVE PADDLE CONFIGURATION
         try:
-            output_dir.mkdir(parents=True, exist_ok=True)
-            
-            # Load images
-            images = []
-            valid_paths = []
-            
-            for frame_path in frame_paths:
-                img = cv2.imread(str(frame_path))
-                if img is not None:
-                    images.append(img)
-                    valid_paths.append(frame_path)
-            
-            if not images:
-                raise ProcessingError("No valid images found")
-            
-            # Generate masks with hybrid detection
-            masks = self._process_batch_with_hybrid_detection(images)
-            
-            # Apply temporal smearing (rolling window of ±2 frames)
-            window_size = 2  # Look 2 frames back and 2 frames forward
-            smeared_masks = []
-            
-            for i in range(len(masks)):
-                # Get indices for the window
-                start_idx = max(0, i - window_size)
-                end_idx = min(len(masks), i + window_size + 1)
+            self.ocr = PaddleOCR(
+                use_angle_cls=True,
+                lang=self.lang,
+                use_gpu=self.use_gpu,
+                show_log=False,
                 
-                # Combine masks in the window using logical OR (max)
-                window_masks = masks[start_idx:end_idx]
-                if window_masks:
-                    # Use logical OR to combine masks (equivalent to max for binary masks)
-                    combined_mask = window_masks[0].copy()
-                    for mask in window_masks[1:]:
-                        combined_mask = cv2.bitwise_or(combined_mask, mask)
-                    smeared_masks.append(combined_mask)
-                else:
-                    smeared_masks.append(masks[i])
-            
-            # Apply dilation and morphological closing
-            mask_paths = []
-            if self.mask_dilation > 0:
-                kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (self.mask_dilation, self.mask_dilation))
-                closing_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
-            else:
-                kernel = None
-                closing_kernel = None
-            
-            for frame_path, mask in zip(valid_paths, smeared_masks):
-                # Apply morphological closing to merge individual letters
-                if closing_kernel is not None:
-                    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, closing_kernel)
-                # Apply dilation if needed
-                if kernel is not None:
-                    mask = cv2.dilate(mask, kernel, iterations=1)
-                    mask = cv2.dilate(mask, kernel, iterations=2)  # Additional dilation for coverage
-                    if self.mask_dilation >= 8:
-                        mask = cv2.GaussianBlur(mask, (5, 5), 0)
+                # --- DETECTION TUNING (The "Berserk" Mode) ---
+                det_db_thresh=0.1,      # Detect faint text (Standard is 0.3)
+                det_db_box_thresh=0.1,  # Keep low-confidence boxes (Standard is 0.6)
+                det_db_unclip_ratio=2.5,# Expand boxes significantly to cover edges
+                det_db_score_mode="slow", # More accurate, slightly slower
                 
-                # Save mask
-                mask_path = output_dir / frame_path.name
-                cv2.imwrite(str(mask_path), mask)
-                mask_paths.append(mask_path)
-            
-            logger.info(f"Generated {len(mask_paths)} masks with temporal smearing (window_size={window_size})")
-            return mask_paths
-            
+                # --- RECOGNITION TUNING ---
+                rec_thresh=0.01,        # Don't drop text if you can't read it perfectly
+                
+                # --- MEMORY/CPU TUNING ---
+                enable_mkldnn=True      # Optimization for CPU
+            )
         except Exception as e:
-            raise ProcessingError(f"Failed to generate masks for frames: {e}")
-    
-    def cleanup_temp_dir(self, temp_dir: Path) -> None:
-        """Clean up temporary directory."""
-        if temp_dir.exists():
+            logger.error(f"Failed to initialize PaddleOCR: {e}")
+            self.ocr = None
+
+    def _enhance_image_for_ocr(self, image: np.ndarray) -> np.ndarray:
+        """
+        Applies 'Contrast Shower' to make text pop out.
+        Grayscale -> CLAHE -> BGR
+        """
+        if image is None:
+            return image
+            
+        # 1. Convert to Grayscale
+        if len(image.shape) == 3:
+            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        else:
+            gray = image
+            
+        # 2. Apply CLAHE (Contrast Limited Adaptive Histogram Equalization)
+        # clipLimit=4.0 makes it very aggressive (high contrast)
+        clahe = cv2.createCLAHE(clipLimit=4.0, tileGridSize=(8,8))
+        enhanced = clahe.apply(gray)
+        
+        # 3. Convert back to BGR (Paddle expects 3 channels)
+        return cv2.cvtColor(enhanced, cv2.COLOR_GRAY2BGR)
+
+    def generate_masks(self, input_dir: Path, output_dir: Path) -> Path:
+        """
+        Process a directory of images and generate masks.
+        """
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        images = sorted(list(input_dir.glob("*.png")) + list(input_dir.glob("*.jpg")))
+        logger.info(f"Generating masks for {len(images)} frames in {input_dir}")
+
+        for img_path in images:
+            # 1. Load
+            frame = cv2.imread(str(img_path))
+            if frame is None:
+                continue
+
+            # 2. Generate Mask (Using Hybrid Detection)
+            masks = self._process_batch_with_hybrid_detection([frame])
+            
+            # 3. Save
+            mask_name = img_path.name
+            # Ensure png extension for mask (lossless)
+            if mask_name.endswith('.jpg'):
+                mask_name = mask_name[:-4] + '.png'
+            
+            if masks:
+                cv2.imwrite(str(output_dir / mask_name), masks[0])
+            else:
+                # Fallback: empty black mask
+                h, w = frame.shape[:2]
+                empty = np.zeros((h, w), dtype=np.uint8)
+                cv2.imwrite(str(output_dir / mask_name), empty)
+
+        return output_dir
+
+    def cleanup_temp_dir(self, dir_path: Path):
+        if dir_path.exists():
+            shutil.rmtree(dir_path)
+
+    def _process_batch_with_hybrid_detection(self, frames: List[np.ndarray]) -> List[np.ndarray]:
+        """
+        Process a batch of frames to generate text masks using OCR.
+        Includes Pre-processing (Enhancement).
+        """
+        if self.ocr is None:
+            return [np.zeros((f.shape[0], f.shape[1]), dtype=np.uint8) for f in frames]
+
+        masks = []
+        for frame in frames:
+            h, w = frame.shape[:2]
+            mask = np.zeros((h, w), dtype=np.uint8)
+            
+            # --- STEP 1: ENHANCE IMAGE (The Fix) ---
+            # Explicitly enhance the image before giving it to OCR
+            ocr_input = self._enhance_image_for_ocr(frame)
+            
             try:
-                shutil.rmtree(temp_dir)
-                logger.debug(f"Cleaned up temp directory: {temp_dir}")
+                # --- STEP 2: DETECT ---
+                # ocr_input is now high-contrast
+                result = self.ocr.ocr(ocr_input, cls=True, rec=True)
+                
+                # --- STEP 3: DRAW MASK ---
+                if result and result[0]:
+                    for line in result[0]:
+                        # Paddle format: [[ [x1,y1],[x2,y2],[x3,y3],[x4,y4] ], (text, confidence)]
+                        coords = line[0]
+                        points = np.array(coords, dtype=np.int32)
+                        
+                        # Fill the detected text area with white
+                        cv2.fillPoly(mask, [points], 255)
+                
+                # --- STEP 4: DILATE (Expand mask to cover artifacts) ---
+                if self.mask_dilation > 0:
+                    kernel = np.ones((self.mask_dilation, self.mask_dilation), np.uint8)
+                    mask = cv2.dilate(mask, kernel, iterations=1)
+                    
             except Exception as e:
-                logger.warning(f"Failed to clean up temp directory {temp_dir}: {e}")
+                logger.error(f"OCR failed on frame: {e}")
+                
+            masks.append(mask)
+            
+        return masks
