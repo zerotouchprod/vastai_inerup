@@ -507,6 +507,52 @@ class StreamingSubtitleRemoverService:
                     mask = cv2.imread(str(mask_paths[i]), cv2.IMREAD_GRAYSCALE)
                     if frame is None or mask is None:
                         raise ProcessingError(f"Failed to load frame or mask: {frame_paths[i]}, {mask_paths[i]}")
+                    
+                    # --- DIAGNOSTIC INJECTION START ---
+                    # Hardcoded check: Only run for the very first frame processed to avoid disk spam
+                    if not hasattr(self, '_diag_done'):
+                        import cv2
+                        import os
+                        
+                        print("!!! DIAGNOSTIC MODE TRIGGERED !!!")
+                        
+                        # 1. Save Original
+                        diag_debug_dir = request.output_dir.parent / "diagnostic_output"
+                        os.makedirs(diag_debug_dir, exist_ok=True)
+                        cv2.imwrite(str(diag_debug_dir / "01_original.jpg"), frame)
+                        
+                        # 2. Visualize ROI
+                        if self.roi_model:
+                            h, w = frame.shape[:2]
+                            x = int(self.roi_model.x * w)
+                            y = int(self.roi_model.y * h)
+                            rw = int(self.roi_model.width * w)
+                            rh = int(self.roi_model.height * h)
+                            
+                            print(f"!!! ROI CALC: Image {w}x{h} | ROI: x={x}, y={y}, w={rw}, h={rh}")
+                            
+                            # Save Crop (What OCR sees)
+                            crop = frame[y:y+rh, x:x+rw]
+                            cv2.imwrite(str(diag_debug_dir / "02_roi_crop.jpg"), crop)
+                            
+                            # Save Box on Original
+                            boxed = frame.copy()
+                            cv2.rectangle(boxed, (x, y), (x+rw, y+rh), (0, 0, 255), 5)
+                            cv2.imwrite(str(diag_debug_dir / "03_roi_placement.jpg"), boxed)
+                            
+                            # 3. Generate and Save Mask for this Crop (Test OCR)
+                            # We manually call mask service here to verify it works
+                            try:
+                                test_mask = self.mask_service.generate_mask_from_image(crop)
+                                cv2.imwrite(str(diag_debug_dir / "04_generated_mask.jpg"), test_mask)
+                                non_zero = cv2.countNonZero(test_mask)
+                                print(f"!!! MASK CHECK: Found {non_zero} white pixels. (If 0, OCR failed)")
+                            except Exception as e:
+                                print(f"!!! MASK CHECK FAILED: {e}")
+                                
+                        self._diag_done = True
+                    # --- DIAGNOSTIC INJECTION END ---
+                    
                     frames.append(frame)
                     masks.append(mask)
 
