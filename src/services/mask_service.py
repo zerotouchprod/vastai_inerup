@@ -43,8 +43,11 @@ class MaskGeneratorService:
         # AGGRESSIVE PADDLE CONFIGURATION (using parameter names from paddle_wrapper)
         try:
             self.ocr = PaddleOCR(
-                use_angle_cls=True,
                 lang=self.lang,
+                use_textline_orientation=True,
+                det_model_dir=None,   # Use default mobile model (deprecated but still works)
+                rec_model_dir=None,   # Use default mobile model (deprecated)
+                cls_model_dir=None,   # No classification model (deprecated)
                 
                 # --- DETECTION TUNING (The "Berserk" Mode) ---
                 text_det_thresh=0.1,          # Lower binarization threshold (default 0.3)
@@ -55,9 +58,6 @@ class MaskGeneratorService:
                 
                 # --- RECOGNITION TUNING ---
                 text_rec_score_thresh=0.01,   # Keep recognition result even if confidence low (default 0.5)
-                
-                # --- MEMORY/CPU TUNING ---
-                enable_mkldnn=True            # Optimization for CPU
             )
         except Exception as e:
             logger.error(f"Failed to initialize PaddleOCR: {e}")
