@@ -165,15 +165,11 @@ class MaskService:
                     inverted = cv2.bitwise_not(gray)
                     inverted_bgr = cv2.cvtColor(inverted, cv2.COLOR_GRAY2BGR)
 
-                    # det=True, rec=False, cls=False
-                    result = self.ocr.ocr(inverted_bgr, det=True, rec=False, cls=False)
-                    boxes = result[0] if (isinstance(result, list) and len(result) > 0) else []
-
+                    boxes = self._run_ocr_detection(inverted_bgr)
                     if boxes:
                         ocr_hits = len(boxes)
                         for box in boxes:
-                            points = np.array(box, dtype=np.int32)
-                            cv2.fillPoly(mask_ocr, [points], 255)
+                            cv2.fillPoly(mask_ocr, [box], 255)
 
                         # Dilate OCR result
                         k = cv2.getStructuringElement(cv2.MORPH_RECT, (self.mask_dilation, self.mask_dilation))
@@ -202,6 +198,39 @@ class MaskService:
             logger.error(f"Masking failed: {e}", exc_info=True)
             return image_input if isinstance(image_input, np.ndarray) else cv2.imread(image_input), []
 
+    def _run_ocr_detection(self, image: np.ndarray) -> List[np.ndarray]:
+        """
+        Run OCR detection on image and return list of polygon points.
+        Handles different PaddleOCR result structures.
+        """
+        if self.ocr is None:
+            return []
+        
+        try:
+            # Call OCR without extra parameters (default detection + recognition)
+            result = self.ocr.ocr(image)
+            # result can be list or dict depending on version
+            boxes = []
+            if isinstance(result, dict):
+                # New structure: dict with 'rec_polys' etc.
+                if 'rec_polys' in result:
+                    polygons = result['rec_polys']
+                    for poly in polygons:
+                        boxes.append(poly.astype(np.int32))
+            elif isinstance(result, list) and len(result) > 0:
+                # Old structure: list of [[coordinates], (text, confidence)]
+                ocr_result = result[0]  # first element for the image
+                if ocr_result is None:
+                    return []
+                for line in ocr_result:
+                    if len(line) > 0:
+                        coords = line[0]  # polygon coordinates
+                        boxes.append(np.array(coords, dtype=np.int32))
+            return boxes
+        except Exception as e:
+            logger.warning(f"OCR detection failed: {e}")
+            return []
+
     def _process_batch_with_hybrid_detection(self, frames: List[np.ndarray]) -> List[np.ndarray]:
         """
         Process a batch of frames using the same hybrid detection logic.
@@ -218,13 +247,11 @@ class MaskService:
                     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
                     inverted = cv2.bitwise_not(gray)
                     inverted_bgr = cv2.cvtColor(inverted, cv2.COLOR_GRAY2BGR)
-                    result = self.ocr.ocr(inverted_bgr, det=True, rec=False, cls=False)
-                    boxes = result[0] if (isinstance(result, list) and len(result) > 0) else []
+                    boxes = self._run_ocr_detection(inverted_bgr)
                     if boxes:
                         ocr_hits = len(boxes)
                         for box in boxes:
-                            points = np.array(box, dtype=np.int32)
-                            cv2.fillPoly(mask_ocr, [points], 255)
+                            cv2.fillPoly(mask_ocr, [box], 255)
                         k = cv2.getStructuringElement(cv2.MORPH_RECT, (self.mask_dilation, self.mask_dilation))
                         mask_ocr = cv2.dilate(mask_ocr, k, iterations=1)
                 except Exception as e:
