@@ -19,7 +19,7 @@ class AppConfig(BaseSettings):
     MASK_DILATION: int = 30  # Increased to cover text shadows/artifacts (sledgehammer approach)
     USE_GPU: bool = True  # Disable GPU completely to save memory
     USE_GPU_FOR_OCR: bool = True
-    CONFIDENCE_THRESHOLD: float = 0.3
+    CONFIDENCE_THRESHOLD: float = 0.1  # Lowered for aggressive detection
     
     # Dynamic cropping settings
     PADDING_PX: int = 64  # Padding around subtitle bounding box for context
