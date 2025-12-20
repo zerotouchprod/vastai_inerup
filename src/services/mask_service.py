@@ -233,14 +233,15 @@ class MaskGeneratorService:
         # Use the enhanced contrast function from detectors
         return enhance_contrast_for_detection(image)
     
-    def _generate_hybrid_mask(self, image: np.ndarray, ocr_mask: np.ndarray) -> np.ndarray:
+    def _generate_hybrid_mask(self, image: np.ndarray, ocr_mask: np.ndarray, roi_mask: np.ndarray = None) -> np.ndarray:
         """
-        Generate hybrid mask using OCR-Anchored Masking.
+        Generate hybrid mask using OCR-Anchored Masking with optional ROI constraint.
         MSER/Gradient detectors only operate within OCR-defined regions.
         
         Args:
             image: Input BGR image
             ocr_mask: Mask from PaddleOCR
+            roi_mask: Optional ROI mask (binary, 0 or 255). If provided, final mask is constrained to ROI.
             
         Returns:
             Combined binary mask
@@ -273,6 +274,26 @@ class MaskGeneratorService:
         from src.infrastructure.image_processing.mask_cleaning import apply_safety_clamp
         safe_mask = apply_safety_clamp(combined, ocr_mask, safety_threshold=0.20)
         
+        # Step 8: Apply ROI constraint if provided (HARD CONSTRAINT)
+        if roi_mask is not None:
+            # Ensure roi_mask is same size as safe_mask
+            if roi_mask.shape != safe_mask.shape:
+                roi_mask = cv2.resize(roi_mask, (safe_mask.shape[1], safe_mask.shape[0]))
+            
+            # Apply hard constraint: mask ONLY inside ROI
+            safe_mask = cv2.bitwise_and(safe_mask, roi_mask)
+            
+            # Log ROI constraint
+            h, w = safe_mask.shape
+            total_pixels = h * w
+            roi_pixels = np.sum(roi_mask > 0)
+            safe_pixels = np.sum(safe_mask > 0)
+            
+            logger.info(
+                f"ROI Constraint: ROI covers {roi_pixels/total_pixels*100:.1f}% of screen, "
+                f"final mask covers {safe_pixels/total_pixels*100:.1f}%"
+            )
+        
         # Log statistics for debugging
         h, w = image.shape[:2]
         total_pixels = h * w
@@ -290,12 +311,13 @@ class MaskGeneratorService:
         
         return safe_mask
     
-    def _process_batch_with_hybrid_detection(self, images: list[np.ndarray]) -> list[np.ndarray]:
+    def _process_batch_with_hybrid_detection(self, images: list[np.ndarray], roi_masks: list[np.ndarray] = None) -> list[np.ndarray]:
         """
         Process batch of images with hybrid detection.
         
         Args:
             images: List of BGR images
+            roi_masks: Optional list of ROI masks (binary, 0 or 255). If provided, each mask is constrained to its ROI.
             
         Returns:
             List of binary masks
@@ -308,8 +330,9 @@ class MaskGeneratorService:
         
         # Apply hybrid detection to each image
         hybrid_masks = []
-        for img, ocr_mask in zip(images, ocr_masks):
-            hybrid_mask = self._generate_hybrid_mask(img, ocr_mask)
+        for i, (img, ocr_mask) in enumerate(zip(images, ocr_masks)):
+            roi_mask = roi_masks[i] if roi_masks and i < len(roi_masks) else None
+            hybrid_mask = self._generate_hybrid_mask(img, ocr_mask, roi_mask)
             hybrid_masks.append(hybrid_mask)
         
         return hybrid_masks

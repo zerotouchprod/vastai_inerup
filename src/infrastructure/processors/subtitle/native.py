@@ -131,14 +131,15 @@ class SubtitleRemoverNative:
         
         return bgr_thresh
     
-    def _generate_hybrid_mask(self, image: np.ndarray, ocr_mask: np.ndarray) -> np.ndarray:
+    def _generate_hybrid_mask(self, image: np.ndarray, ocr_mask: np.ndarray, roi_mask: np.ndarray = None) -> np.ndarray:
         """
-        Generate hybrid mask using OCR-Anchored Masking.
+        Generate hybrid mask using OCR-Anchored Masking with optional ROI constraint.
         MSER/Gradient detectors only operate within OCR-defined regions.
         
         Args:
             image: Input BGR image
             ocr_mask: Mask from PaddleOCR
+            roi_mask: Optional ROI mask (binary, 0 or 255). If provided, final mask is constrained to ROI.
             
         Returns:
             Combined binary mask
@@ -175,6 +176,26 @@ class SubtitleRemoverNative:
         
         # Step 7: Apply safety clamp to prevent "global hallucination"
         safe_mask = apply_safety_clamp(combined, ocr_mask, safety_threshold=0.20)
+        
+        # Step 8: Apply ROI constraint if provided (HARD CONSTRAINT)
+        if roi_mask is not None:
+            # Ensure roi_mask is same size as safe_mask
+            if roi_mask.shape != safe_mask.shape:
+                roi_mask = cv2.resize(roi_mask, (safe_mask.shape[1], safe_mask.shape[0]))
+            
+            # Apply hard constraint: mask ONLY inside ROI
+            safe_mask = cv2.bitwise_and(safe_mask, roi_mask)
+            
+            # Log ROI constraint
+            h, w = safe_mask.shape
+            total_pixels = h * w
+            roi_pixels = np.sum(roi_mask > 0)
+            safe_pixels = np.sum(safe_mask > 0)
+            
+            logger.info(
+                f"ROI Constraint: ROI covers {roi_pixels/total_pixels*100:.1f}% of screen, "
+                f"final mask covers {safe_pixels/total_pixels*100:.1f}%"
+            )
         
         # Log statistics for debugging
         h, w = image.shape[:2]

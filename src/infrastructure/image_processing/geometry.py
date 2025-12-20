@@ -150,6 +150,92 @@ def get_roi_candidates(height: int, roi_height: int) -> list[tuple[str, int, int
     return candidates
 
 
+def parse_roi_string(roi_str: str, width: int, height: int) -> tuple[int, int, int, int]:
+    """
+    Parse ROI string into pixel coordinates.
+    
+    Supported formats:
+    - 'bottom': bottom 20% of screen (y=0.8, h=0.2)
+    - 'top': top 20% of screen (y=0.0, h=0.2)
+    - 'global': entire screen (x=0.0, y=0.0, w=1.0, h=1.0)
+    - 'x,y,w,h': comma-separated floats (0.0-1.0), e.g., '0,0.8,1.0,0.2'
+    
+    Args:
+        roi_str: ROI string
+        width: Frame width
+        height: Frame height
+        
+    Returns:
+        Tuple of (x, y, w, h) in pixels
+    """
+    roi_str = roi_str.strip().lower()
+    
+    # Handle preset values
+    if roi_str == 'bottom':
+        # Bottom 20% of screen
+        x = 0
+        y = int(height * 0.8)
+        w = width
+        h = int(height * 0.2)
+    elif roi_str == 'top':
+        # Top 20% of screen
+        x = 0
+        y = 0
+        w = width
+        h = int(height * 0.2)
+    elif roi_str == 'global':
+        # Entire screen
+        x = 0
+        y = 0
+        w = width
+        h = height
+    else:
+        # Parse as x,y,w,h coordinates
+        try:
+            parts = roi_str.split(',')
+            if len(parts) != 4:
+                raise ValueError(f"Invalid ROI format: {roi_str}. Expected 'x,y,w,h'")
+            
+            x_ratio = float(parts[0])
+            y_ratio = float(parts[1])
+            w_ratio = float(parts[2])
+            h_ratio = float(parts[3])
+            
+            # Validate ratios
+            if not (0.0 <= x_ratio <= 1.0 and 0.0 <= y_ratio <= 1.0 and 
+                    0.0 <= w_ratio <= 1.0 and 0.0 <= h_ratio <= 1.0):
+                raise ValueError(f"ROI ratios must be between 0.0 and 1.0: {roi_str}")
+            
+            # Convert to pixels
+            x = int(x_ratio * width)
+            y = int(y_ratio * height)
+            w = int(w_ratio * width)
+            h = int(h_ratio * height)
+            
+        except ValueError as e:
+            logger.warning(f"Failed to parse ROI string '{roi_str}': {e}. Using default 'bottom'.")
+            # Fallback to bottom 20%
+            x = 0
+            y = int(height * 0.8)
+            w = width
+            h = int(height * 0.2)
+    
+    # Ensure ROI is within bounds
+    x = max(0, min(x, width - 1))
+    y = max(0, min(y, height - 1))
+    w = max(1, min(w, width - x))
+    h = max(1, min(h, height - y))
+    
+    # Align to 8 for compatibility with ProPainter
+    x = align_to_grid(x, 8)
+    y = align_to_grid(y, 8)
+    w = align_to_grid(w, 8)
+    h = align_to_grid(h, 8)
+    
+    logger.info(f"ROI parsed: {roi_str} -> ({x},{y},{w},{h}) pixels")
+    return x, y, w, h
+
+
 def select_best_roi_zone(masks: torch.Tensor, roi_height: int, border_check_rows: int = 4) -> tuple[str, int, int]:
     """
     Select the best ROI zone based on mask distribution.

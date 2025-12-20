@@ -180,6 +180,7 @@ def main():
     parser.add_argument('--audio-mode', choices=['remove_reverb', 'enhance', 'normalize'], help='Audio processing mode (default: remove_reverb)')
     parser.add_argument('--subs-lang', type=str, default='en', help='Language code for subtitle OCR when using remove-subtitles mode (default: en)')
     parser.add_argument('--roi-coverage', type=float, default=0.55, help='Fraction of screen height from bottom to process (0.0-1.0, default: 0.55)')
+    parser.add_argument('--roi', type=str, default='bottom', help='Region of Interest: bottom (bottom 20%%), top (top 20%%), x,y,w,h (0.0-1.0 coordinates), or global (search everywhere) (default: bottom)')
     parser.add_argument('--strict', action='store_true', help='Strict mode')
     parser.add_argument('--allow-fallback', action='store_true', help='Allow ffmpeg fallback when RIFE is not available (default: disabled)')
     parser.add_argument('--verbose', '-v', action='store_true', help='Verbose')
