@@ -9,71 +9,74 @@ logger = logging.getLogger(__name__)
 
 class CVEngine(TextDetector):
     """
-    UNIVERSAL TEXTURE DETECTOR.
-    Does not rely on specific colors. Relies on contrast and geometry.
-    Pipeline:
-    1. LAB Color Space (L-channel) -> CLAHE (Boost local contrast).
-    2. Canny Edge Detection (Find all high-contrast edges).
-    3. Morphological Closing (Connect edges horizontally into "blobs").
-    4. Geometric Filtering (Keep only blobs shaped like subtitles).
+    FULL SPECTRUM DETECTOR.
+    Combines 3 layers of detection to catch ANY type of subtitle:
+    1. Saturation Mask (Colors on B&W background).
+    2. Value Mask (Bright white/yellow text).
+    3. Sobel Mask (Vertical edges/outlines).
     """
 
     def __init__(self, mask_dilation: int = 15):
         self.mask_dilation = mask_dilation
-        # Минимальная ширина и высота для фильтрации шума
-        self.min_text_w = 20
-        self.min_text_h = 8
-        # Минимальное соотношение сторон (ширина/высота), чтобы считать это строкой
-        self.min_aspect_ratio = 1.5
-        logger.info(f"CV Engine initialized (Universal Texture Mode, dilation={mask_dilation})")
+        logger.info(f"CV Engine initialized (Full Spectrum Mode, dilation={mask_dilation})")
 
     def detect(self, image: np.ndarray) -> np.ndarray:
         try:
-            h, w = image.shape[:2]
-            mask = np.zeros((h, w), dtype=np.uint8)
+            # 1. Конвертация в HSV для анализа цвета и света
+            hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+            s_channel = hsv[:, :, 1]
+            v_channel = hsv[:, :, 2]
 
-            # 1. Улучшение контраста (LAB -> L-channel -> CLAHE)
-            # Это позволяет находить текст и в темных, и в ярких зонах одновременно.
-            lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
-            l_channel, _, _ = cv2.split(lab)
-            clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
-            enhanced = clahe.apply(l_channel)
+            # --- СЛОЙ 1: Насыщенность (Для манги/эдитов) ---
+            # Ищем всё, что хоть немного цветное (S > 30)
+            _, mask_sat = cv2.threshold(s_channel, 30, 255, cv2.THRESH_BINARY)
 
-            # 2. Canny Edge Detection (Поиск границ)
-            # Пороги 30/90 позволяют ловить даже слабые границы текста.
-            edges = cv2.Canny(enhanced, 30, 90)
+            # --- СЛОЙ 2: Яркость (Для обычных сабов) ---
+            # Ищем всё очень яркое (V > 210)
+            _, mask_val = cv2.threshold(v_channel, 210, 255, cv2.THRESH_BINARY)
 
-            # 3. Морфологическое Закрытие (Склеивание)
-            # Ядро широкое (25) и низкое (3).
-            # Цель: объединить буквы в слова, но не объединять разные строки между собой.
-            kernel_connect = cv2.getStructuringElement(cv2.MORPH_RECT, (25, 3))
-            closed = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel_connect)
+            # --- СЛОЙ 3: Края (Для текста с обводкой) ---
+            if len(image.shape) == 3:
+                gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+            else:
+                gray = image
 
-            # 4. Геометрическая Фильтрация
-            contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            # Ищем вертикальные линии (бока букв)
+            sobel_x = cv2.Sobel(gray, cv2.CV_16S, 1, 0, ksize=3)
+            abs_sobel = cv2.convertScaleAbs(sobel_x)
+            # Низкий порог, чтобы поймать даже тусклые границы
+            _, mask_edges = cv2.threshold(abs_sobel, 30, 255, cv2.THRESH_BINARY)
+
+            # --- ОБЪЕДИНЕНИЕ ---
+            # Собираем всё вместе: Цвет ИЛИ Яркость ИЛИ Края
+            combined = cv2.bitwise_or(mask_sat, mask_val)
+            combined = cv2.bitwise_or(combined, mask_edges)
+
+            # --- МОРФОЛОГИЯ (Склеивание) ---
+            # Ядро (30, 5) - достаточно широкое для слов, достаточно высокое для жирного шрифта
+            kernel_connect = cv2.getStructuringElement(cv2.MORPH_RECT, (30, 5))
+            connected = cv2.morphologyEx(combined, cv2.MORPH_CLOSE, kernel_connect)
+
+            # --- ФИЛЬТРАЦИЯ ---
+            # Убираем только откровенный мусор (точки)
+            contours, _ = cv2.findContours(connected, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            mask = np.zeros_like(gray)
 
             for cnt in contours:
-                x, y, cw, ch = cv2.boundingRect(cnt)
-                aspect_ratio = cw / float(ch) if ch > 0 else 0
+                x, y, w, h = cv2.boundingRect(cnt)
 
-                # Критерии субтитра:
-                # - Достаточно широкий (AR > 1.5)
-                # - Не шум (cw > 20, ch > 8)
-                # - Не слишком высокий (не стена, не столб) - меньше 40% высоты экрана
-                if (aspect_ratio > self.min_aspect_ratio and
-                        cw > self.min_text_w and
-                        ch > self.min_text_h and
-                        ch < (h * 0.4)):
-                    # Рисуем белый прямоугольник на маске
-                    cv2.rectangle(mask, (x, y), (x + cw, y + ch), 255, -1)
+                # МИНИМАЛЬНЫЙ ФИЛЬТР:
+                # Просто не точка (w>10, h>5).
+                # Убрали проверку Aspect Ratio, чтобы не терять короткие слова.
+                # Убрали верхний лимит, чтобы не терять огромный текст.
+                if w > 10 and h > 5:
+                    cv2.rectangle(mask, (x, y), (x + w, y + h), 255, -1)
 
-            # 5. Финальная дилатация (Safety Buffer)
-            # Немного расширяем маску, чтобы гарантированно закрыть края букв.
+            # --- ДИЛАТАЦИЯ ---
             if self.mask_dilation > 0:
-                # Используем половину от заданной дилатации, чтобы не быть слишком агрессивными
-                d_val = max(3, self.mask_dilation // 2)
-                kernel_dilate = cv2.getStructuringElement(cv2.MORPH_RECT, (d_val, d_val))
-                final_mask = cv2.dilate(mask, kernel_dilate, iterations=1)
+                d_val = self.mask_dilation // 2
+                k = cv2.getStructuringElement(cv2.MORPH_RECT, (d_val, d_val))
+                final_mask = cv2.dilate(mask, k, iterations=1)
             else:
                 final_mask = mask
 
@@ -81,7 +84,6 @@ class CVEngine(TextDetector):
 
         except Exception as e:
             logger.error(f"CV detection failed: {e}", exc_info=True)
-            # В случае ошибки возвращаем пустую маску, а не весь экран
             return np.zeros(image.shape[:2], dtype=np.uint8)
 
     def is_available(self) -> bool:
