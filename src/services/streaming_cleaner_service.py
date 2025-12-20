@@ -542,10 +542,15 @@ class StreamingSubtitleRemoverService:
                             # 3. Generate and Save Mask for this Crop (Test OCR)
                             # We manually call mask service here to verify it works
                             try:
-                                test_mask = self.mask_service.generate_mask_from_image(crop)
-                                cv2.imwrite(str(diag_debug_dir / "04_generated_mask.jpg"), test_mask)
-                                non_zero = cv2.countNonZero(test_mask)
-                                print(f"!!! MASK CHECK: Found {non_zero} white pixels. (If 0, OCR failed)")
+                                # Use the batch processing method with a single image
+                                test_masks = self.mask_service._process_batch_with_hybrid_detection([crop])
+                                if test_masks and len(test_masks) > 0:
+                                    test_mask = test_masks[0]
+                                    cv2.imwrite(str(diag_debug_dir / "04_generated_mask.jpg"), test_mask)
+                                    non_zero = cv2.countNonZero(test_mask)
+                                    print(f"!!! MASK CHECK: Found {non_zero} white pixels. (If 0, OCR failed)")
+                                else:
+                                    print(f"!!! MASK CHECK FAILED: No mask generated")
                             except Exception as e:
                                 print(f"!!! MASK CHECK FAILED: {e}")
                                 
