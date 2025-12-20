@@ -43,7 +43,8 @@ class StreamingSubtitleRemoverService:
                  use_gpu: Optional[bool] = None,
                  use_gpu_for_ocr: Optional[bool] = None,
                  confidence_threshold: Optional[float] = None,
-                 debug_masks: bool = False):
+                 debug_masks: bool = False,
+                 roi_str: Optional[str] = None):
         """
         Initialize streaming subtitle remover service.
         
@@ -54,6 +55,7 @@ class StreamingSubtitleRemoverService:
             use_gpu_for_ocr: Use GPU for OCR (default from config)
             confidence_threshold: Confidence threshold for text detection (default from config)
             debug_masks: Enable debug mask saving (default False)
+            roi_str: Region of Interest string (default from config). Overrides config.ROI if provided.
         """
         config = get_config()
         
@@ -63,6 +65,10 @@ class StreamingSubtitleRemoverService:
         self.use_gpu_for_ocr = use_gpu_for_ocr if use_gpu_for_ocr is not None else config.USE_GPU_FOR_OCR
         self.confidence_threshold = confidence_threshold or config.CONFIDENCE_THRESHOLD
         self.debug_masks = debug_masks
+        
+        # ROI parameter - use provided roi_str or fall back to config
+        self.roi_str = roi_str or config.ROI
+        logger.info(f"Service initialized with ROI: '{self.roi_str}' (provided: {roi_str is not None}, from config: {roi_str is None})")
         
         # Initialize device manager
         force_cpu = not self.use_gpu
@@ -93,7 +99,7 @@ class StreamingSubtitleRemoverService:
         
         # ROI state - enable ROI optimization based on config
         self.use_roi_optimization = config.USE_ROI_OPTIMIZATION
-        self.roi_str = config.ROI  # ROI string parameter
+        # Note: self.roi_str is already set above from parameter or config
         self.roi_zone_height_ratio = config.ROI_ZONE_HEIGHT_RATIO
         
         # Parse ROI if enabled

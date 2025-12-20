@@ -44,12 +44,17 @@ class SubtitleRemoverProPainterWrapper:
     def _get_service(self) -> StreamingSubtitleRemoverService:
         """Get or create the underlying service."""
         if self._service is None:
+            # Get the current config (which may have been updated by CLI)
+            current_config = get_config()
+            print(f"DEBUG: Factory passing ROI to Service: {current_config.ROI}")
+            
             self._service = StreamingSubtitleRemoverService(
                 lang=self._lang,
                 mask_dilation=self._mask_dilation,
                 use_gpu=self._config.USE_GPU,
                 use_gpu_for_ocr=self._config.USE_GPU_FOR_OCR,
-                confidence_threshold=self._config.CONFIDENCE_THRESHOLD
+                confidence_threshold=self._config.CONFIDENCE_THRESHOLD,
+                roi_str=current_config.ROI  # Explicitly pass ROI from current config
             )
         return self._service
     
