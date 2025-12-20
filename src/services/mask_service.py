@@ -244,8 +244,6 @@ class MaskService:
         Generate masks for all frames in input_dir using hybrid detection.
         Saves masks to output_dir and returns output_dir Path.
         """
-        from pathlib import Path
-        
         input_path = Path(input_dir)
         output_path = Path(output_dir)
         
