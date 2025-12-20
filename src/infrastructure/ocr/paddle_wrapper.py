@@ -68,13 +68,16 @@ class ThreadSafeOCR:
                     'det_model_dir': None,   # Use default mobile model
                     'rec_model_dir': None,   # Use default mobile model
                     'cls_model_dir': None,   # No classification model
-                    # AGGRESSIVE DETECTION PARAMETERS
-                    'det_db_thresh': 0.1,          # Lower threshold for detection (default 0.3)
-                    'det_db_box_thresh': 0.3,      # Lower box threshold (default 0.5)
-                    'det_db_unclip_ratio': 1.8,    # Expand detection boxes (default 1.6)
+                    # AGGRESSIVE DETECTION TUNING
+                    'det_db_thresh': 0.1,          # Lower binarization threshold (default 0.3)
+                    'det_db_box_thresh': 0.2,      # Lower box threshold (default 0.6)
+                    'det_db_score_mode': 'slow',   # Use slow mode for better accuracy
+                    'det_db_unclip_ratio': 2.0,    # Expand detection boxes (default 1.5)
                     'use_dilation': True,          # Use dilation for better detection
                     'det_limit_side_len': 960,     # Increase side length limit
                     'det_limit_type': 'max',       # Limit by max side
+                    'rec_thresh': 0.1,             # Keep recognition result even if confidence low (default 0.5)
+                    'show_log': False,             # Suppress logs
                 }
                 
                 # Do NOT add 'use_gpu' or 'gpu' parameters as they cause errors
