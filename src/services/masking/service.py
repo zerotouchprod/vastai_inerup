@@ -51,16 +51,21 @@ class HybridMaskService:
                    f"GPU={use_gpu_for_ocr}, confidence={confidence_threshold})")
         
         # Initialize detectors
-        self.ocr_engine = OCREngine(
-            lang=lang,
-            use_gpu=use_gpu_for_ocr,
-            confidence_threshold=confidence_threshold
-        )
+        
+        # --- DEBUG MODE: OCR DISABLED ---
+        # self.ocr_engine = OCREngine(
+        #     lang=lang,
+        #     use_gpu=use_gpu_for_ocr,
+        #     confidence_threshold=confidence_threshold
+        # )
+        self.ocr_engine = None
+        logger.warning("!!! OCR Engine manually DISABLED for Sobel testing !!!")
+        # -------------------------------
         
         self.cv_engine = CVEngine(mask_dilation=mask_dilation)
         
         # Log detector status
-        if self.ocr_engine.is_available():
+        if self.ocr_engine is not None:
             logger.info("OCR Engine ready")
         else:
             logger.warning("OCR Engine not available - will rely on CV Engine only")
@@ -70,14 +75,6 @@ class HybridMaskService:
     def process_image(self, image_input: Union[str, np.ndarray]) -> Tuple[np.ndarray, List[str]]:
         """
         Process a single image and return masked image with detected text.
-        
-        Args:
-            image_input: Either a file path (str) or numpy array (BGR image).
-            
-        Returns:
-            Tuple of (masked_image, detected_text_list).
-            The masked image has detected text regions blacked out.
-            The text list is a placeholder for backward compatibility.
         """
         try:
             # Load image
@@ -94,14 +91,17 @@ class HybridMaskService:
             h, w = img.shape[:2]
             
             # Get masks from both detectors
-            mask_ocr = self.ocr_engine.detect(img)
+            mask_ocr = np.zeros((h, w), dtype=np.uint8)
+            if self.ocr_engine:
+                mask_ocr = self.ocr_engine.detect(img)
+                
             mask_cv = self.cv_engine.detect(img)
             
             # Combine masks
             final_mask = cv2.bitwise_or(mask_ocr, mask_cv)
             
             # Count detected regions for logging
-            ocr_regions = np.count_nonzero(mask_ocr) // 255  # approximate
+            ocr_regions = np.count_nonzero(mask_ocr) // 255 if self.ocr_engine else 0
             cv_regions = np.count_nonzero(mask_cv) // 255
             
             # Apply mask to image (black out detected regions)
@@ -129,14 +129,6 @@ class HybridMaskService:
                        batch_size: Optional[int] = None) -> Path:
         """
         Generate masks for all frames in input directory.
-        
-        Args:
-            input_dir: Directory containing input frames (PNG/JPG).
-            output_dir: Directory where masks will be saved.
-            batch_size: Optional batch size for processing (not used in current implementation).
-            
-        Returns:
-            Path to the output directory with masks.
         """
         input_path = Path(input_dir)
         output_path = Path(output_dir)
@@ -163,7 +155,10 @@ class HybridMaskService:
                     continue
                 
                 # Get masks from both detectors
-                mask_ocr = self.ocr_engine.detect(frame)
+                mask_ocr = np.zeros(frame.shape[:2], dtype=np.uint8)
+                if self.ocr_engine:
+                    mask_ocr = self.ocr_engine.detect(frame)
+                    
                 mask_cv = self.cv_engine.detect(frame)
                 
                 # Combine masks
@@ -188,9 +183,6 @@ class HybridMaskService:
     def cleanup_temp_dir(self, dir_path: Union[str, Path]):
         """
         Remove temporary directory created during mask generation.
-        
-        Args:
-            dir_path: Path to directory to remove.
         """
         import shutil
         dir_path = Path(dir_path)
@@ -203,8 +195,6 @@ class HybridMaskService:
     def is_available(self) -> bool:
         """
         Check if the service is available (at least one detector works).
-        
-        Returns:
-            True if at least one detector is available.
         """
-        return self.ocr_engine.is_available() or self.cv_engine.is_available()
+        ocr_avail = self.ocr_engine.is_available() if self.ocr_engine else False
+        return ocr_avail or self.cv_engine.is_available()
