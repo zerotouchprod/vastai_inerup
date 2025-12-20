@@ -3,7 +3,7 @@ import time
 import shutil
 import sys
 from pathlib import Path
-from typing import Optional, List, Generator
+from typing import Optional, List, Generator, Tuple
 import gc
 
 import cv2
@@ -27,6 +27,8 @@ from src.infrastructure.utils.video_utils import read_video, save_frames
 from src.infrastructure.image_processing import tensor_ops
 from src.infrastructure.debugging.visualizer import MaskVisualizer
 from src.services.strategies.dynamic_tiling import DynamicTilingStrategy
+from src.schemas.roi import RegionOfInterest
+from src.services.image_processor import ImageService
 from .mask_service import MaskGeneratorService
 
 logger = logging.getLogger(__name__)
@@ -89,10 +91,30 @@ class StreamingSubtitleRemoverService:
         self.scale_factor = 1.0
         self.auto_downscale = config.AUTO_DOWNSCALE
         
-        # ROI state (deprecated - kept for compatibility but not used)
-        self.use_roi_optimization = False  # Always disabled for strict dynamic tiling
-        self.roi_str = config.ROI  # New ROI string parameter
+        # ROI state - enable ROI optimization based on config
+        self.use_roi_optimization = config.USE_ROI_OPTIMIZATION
+        self.roi_str = config.ROI  # ROI string parameter
         self.roi_zone_height_ratio = config.ROI_ZONE_HEIGHT_RATIO
+        
+        # Parse ROI if enabled
+        self.roi_model = None
+        if self.use_roi_optimization and self.roi_str:
+            try:
+                if self.roi_str.lower() == "bottom":
+                    # Default bottom region for subtitles: bottom 30% of screen
+                    self.roi_model = RegionOfInterest(x=0.0, y=0.7, width=1.0, height=0.3)
+                elif self.roi_str.lower() == "top":
+                    self.roi_model = RegionOfInterest(x=0.0, y=0.0, width=1.0, height=0.3)
+                elif self.roi_str.lower() == "full":
+                    self.roi_model = RegionOfInterest(x=0.0, y=0.0, width=1.0, height=1.0)
+                else:
+                    # Try to parse as "x,y,width,height"
+                    self.roi_model = RegionOfInterest.from_string(self.roi_str)
+                logger.info(f"ROI optimization enabled: {self.roi_model}")
+            except Exception as e:
+                logger.warning(f"Failed to parse ROI string '{self.roi_str}': {e}. ROI optimization disabled.")
+                self.use_roi_optimization = False
+                self.roi_model = None
         
         # Dynamic cropping settings
         self.padding_px = config.PADDING_PX
@@ -104,7 +126,8 @@ class StreamingSubtitleRemoverService:
         # Initialize debug visualizer
         self.visualizer = MaskVisualizer(Path("."), enabled=self.debug_masks)
         logger.info(f"StreamingSubtitleRemoverService initialized (lang={self.lang}, "
-                   f"dilation={self.mask_dilation}, device={self.device})")
+                   f"dilation={self.mask_dilation}, device={self.device}, "
+                   f"roi_optimization={self.use_roi_optimization})")
     def load_model(self) -> None:
         """Load ProPainter model if not already loaded."""
         if self.model_loaded and self.model_adapter is not None:
@@ -163,6 +186,96 @@ class StreamingSubtitleRemoverService:
             Tuple of (downscaled_frames, downscaled_masks, scale_factor)
         """
         return tensor_ops.downscale_batch(frames, masks, target_height)
+    
+    def _get_roi_coordinates(self, frame_height: int, frame_width: int) -> Tuple[int, int, int, int]:
+        """
+        Get ROI coordinates in pixels for current frame dimensions.
+        
+        Args:
+            frame_height: Frame height in pixels
+            frame_width: Frame width in pixels
+            
+        Returns:
+            Tuple of (x1, y1, x2, y2) pixel coordinates
+        """
+        if not self.use_roi_optimization or self.roi_model is None:
+            return 0, 0, frame_width, frame_height
+        
+        left, top, right, bottom = self.roi_model.to_pixel_coordinates(frame_width, frame_height)
+        return left, top, right, bottom
+    
+    def _crop_to_roi(self, frames: List[np.ndarray], masks: List[np.ndarray]) -> Tuple[List[np.ndarray], List[np.ndarray], Tuple[int, int, int, int]]:
+        """
+        Crop frames and masks to ROI region.
+        
+        Args:
+            frames: List of BGR frames
+            masks: List of grayscale masks
+            
+        Returns:
+            Tuple of (cropped_frames, cropped_masks, roi_coords)
+        """
+        if not self.use_roi_optimization or self.roi_model is None or len(frames) == 0:
+            return frames, masks, (0, 0, frames[0].shape[1], frames[0].shape[0]) if frames else (0, 0, 0, 0)
+        
+        # Get ROI coordinates from first frame (assumes all frames same size)
+        h, w = frames[0].shape[:2]
+        x1, y1, x2, y2 = self._get_roi_coordinates(h, w)
+        
+        # Ensure coordinates are valid
+        x1 = max(0, x1)
+        y1 = max(0, y1)
+        x2 = min(w, x2)
+        y2 = min(h, y2)
+        
+        # Ensure at least some area
+        if x2 <= x1 or y2 <= y1:
+            logger.warning(f"Invalid ROI coordinates: ({x1}, {y1}, {x2}, {y2}). Using full frame.")
+            return frames, masks, (0, 0, w, h)
+        
+        # Crop all frames and masks
+        cropped_frames = [frame[y1:y2, x1:x2] for frame in frames]
+        cropped_masks = [mask[y1:y2, x1:x2] for mask in masks]
+        
+        logger.debug(f"Cropped to ROI: {x1}, {y1}, {x2}, {y2} (size: {x2-x1}x{y2-y1})")
+        return cropped_frames, cropped_masks, (x1, y1, x2, y2)
+    
+    def _paste_back_to_full_frame(self, full_frames: List[np.ndarray], 
+                                 processed_crops: List[np.ndarray],
+                                 roi_coords: Tuple[int, int, int, int]) -> List[np.ndarray]:
+        """
+        Paste processed ROI crops back into full frames.
+        
+        Args:
+            full_frames: Original full frames
+            processed_crops: Processed ROI crops
+            roi_coords: ROI coordinates (x1, y1, x2, y2)
+            
+        Returns:
+            List of full frames with processed ROI pasted back
+        """
+        if not self.use_roi_optimization or self.roi_model is None:
+            return processed_crops
+        
+        x1, y1, x2, y2 = roi_coords
+        result_frames = []
+        
+        for full_frame, processed_crop in zip(full_frames, processed_crops):
+            # Ensure crop matches ROI dimensions
+            crop_h, crop_w = processed_crop.shape[:2]
+            expected_h = y2 - y1
+            expected_w = x2 - x1
+            
+            if crop_h != expected_h or crop_w != expected_w:
+                logger.warning(f"Crop size mismatch: {crop_w}x{crop_h} vs {expected_w}x{expected_h}. Resizing.")
+                processed_crop = cv2.resize(processed_crop, (expected_w, expected_h))
+            
+            # Create copy and paste processed crop
+            result_frame = full_frame.copy()
+            result_frame[y1:y2, x1:x2] = processed_crop
+            result_frames.append(result_frame)
+        
+        return result_frames
     def _stream_frames_and_masks(self, frame_dir: Path, mask_dir: Path) -> Generator:
         """Stream frames and masks one by one."""
         frame_paths = sorted(list(frame_dir.glob("*.png")) + 
@@ -245,6 +358,7 @@ class StreamingSubtitleRemoverService:
     def process(self, request: InpaintingRequest) -> ProcessingResult:
         """
         Main pipeline orchestrator: loads model, generates masks, processes frames in chunks.
+        Implements ROI optimization: Crop -> Inpaint -> Paste Back.
         """
         start_time = time.time()
         errors = []
@@ -264,7 +378,7 @@ class StreamingSubtitleRemoverService:
             # Ensure output directory exists
             request.output_dir.mkdir(parents=True, exist_ok=True)
 
-            # 4. Streaming Loop
+            # 4. Streaming Loop with ROI optimization
             batch_size = 5  # Start optimistic
             chunk_start = 0
             total_frames = len(frame_paths)
@@ -284,13 +398,25 @@ class StreamingSubtitleRemoverService:
                     frames.append(frame)
                     masks.append(mask)
 
+                # ROI Optimization: Crop frames and masks to ROI region
+                original_frames = frames  # Keep original for paste back
+                original_masks = masks
+                
+                if self.use_roi_optimization and self.roi_model is not None:
+                    # Crop to ROI
+                    frames, masks, roi_coords = self._crop_to_roi(frames, masks)
+                    logger.info(f"ROI cropping applied: {roi_coords[2]-roi_coords[0]}x{roi_coords[3]-roi_coords[1]} "
+                              f"(from {original_frames[0].shape[1]}x{original_frames[0].shape[0]})")
+                else:
+                    roi_coords = (0, 0, original_frames[0].shape[1], original_frames[0].shape[0])
+
                 # Convert to tensors
                 frames_t = torch.stack([torch.from_numpy(f).permute(2, 0, 1).float() / 255.0 for f in frames])
                 masks_t = torch.stack([torch.from_numpy(m).unsqueeze(0).float() / 255.0 for m in masks])
                 frames_t = frames_t.to(self.device)
                 masks_t = masks_t.to(self.device)
 
-                # DELEGATION TO STRATEGY with OOM recovery
+                # Process with OOM recovery
                 try:
                     processed_t = self._process_chunk_with_oom_recovery(frames_t, masks_t, batch_size)
                 except Exception as e:
@@ -300,15 +426,29 @@ class StreamingSubtitleRemoverService:
                     chunk_start = chunk_end
                     continue
 
-                # Save processed frames
-                for i, pred_t in enumerate(processed_t):
+                # Convert processed tensors back to numpy
+                processed_frames = []
+                for pred_t in processed_t:
                     pred = pred_t.permute(1, 2, 0).cpu().numpy() * 255.0
                     pred = pred.astype(np.uint8)
+                    processed_frames.append(pred)
+
+                # ROI Optimization: Paste processed crops back to full frames
+                if self.use_roi_optimization and self.roi_model is not None:
+                    final_frames = self._paste_back_to_full_frame(original_frames, processed_frames, roi_coords)
+                    logger.debug(f"ROI paste back completed")
+                else:
+                    final_frames = processed_frames
+
+                # Save processed frames
+                for i, final_frame in enumerate(final_frames):
                     output_path = request.output_dir / frame_paths[chunk_start + i].name
-                    cv2.imwrite(str(output_path), pred)
+                    cv2.imwrite(str(output_path), final_frame)
 
                 # Cleanup
-                del frames, masks, frames_t, masks_t, processed_t
+                del frames, masks, frames_t, masks_t, processed_t, processed_frames, final_frames
+                if self.use_roi_optimization:
+                    del original_frames, original_masks
                 self.device_manager.empty_cache()
                 gc.collect()
 
