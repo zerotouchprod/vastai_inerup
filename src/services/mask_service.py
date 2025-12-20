@@ -16,7 +16,6 @@ class MaskService:
     2. Morphological Text Hunter (CV2) - for multicolored/outlined/weird text.
        Detects 'texture clusters' organized in horizontal lines.
     """
-
     def __init__(self,
                  use_gpu: bool = False,
                  lang: str = 'ru',
@@ -240,3 +239,7 @@ class MaskService:
             mask_paths.append(mask_path)
 
         return mask_paths
+
+
+# Alias for backward compatibility
+MaskGeneratorService = MaskService
