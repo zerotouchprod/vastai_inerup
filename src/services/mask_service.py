@@ -59,46 +59,58 @@ class MaskGeneratorService:
 
     def _init_ocr_robust(self, params: Dict[str, Any]):
         """
-        Attempts to initialize PaddleOCR. If an 'unexpected keyword argument'
-        error occurs, it strips the offending argument and retries recursively.
+        Attempts to initialize PaddleOCR. Catches both standard TypeErrors and 
+        library-specific Exceptions regarding unknown arguments, strips them, 
+        and retries.
         """
         attempts = 0
         max_attempts = len(params) + 2
 
         current_params = params.copy()
 
+        # Regex patterns to catch various "unknown argument" error formats
+        error_patterns = [
+            r"unexpected keyword argument ['\"]([^'\"]+)['\"]",  # Python standard
+            r"Unknown argument:?\s+([A-Za-z0-9_]+)",            # Paddle specific (Your Error)
+            r"got an unexpected keyword argument ['\"]([^'\"]+)['\"]"
+        ]
+
         while attempts < max_attempts:
             try:
-                logger.debug(f"Attempting PaddleOCR init with: {list(current_params.keys())}")
+                logger.debug(f"Attempting PaddleOCR init with keys: {list(current_params.keys())}")
+                # Try to initialize
                 ocr_instance = PaddleOCR(**current_params)
+                
                 logger.info(f"PaddleOCR initialized successfully. Active config: {current_params}")
                 return ocr_instance
 
-            except TypeError as e:
+            except Exception as e:
                 error_msg = str(e)
-                # Regex to find the unknown argument in standard Python TypeError messages
-                # Matches: "got an unexpected keyword argument 'xyz'"
-                match = re.search(r"unexpected keyword argument ['\"]([^'\"]+)['\"]", error_msg)
-
-                if match:
-                    bad_arg = match.group(1)
+                logger.warning(f"PaddleOCR init failed with error: {error_msg}. Analyzing for bad params...")
+                
+                bad_arg = None
+                
+                # Check all regex patterns
+                for pattern in error_patterns:
+                    match = re.search(pattern, error_msg)
+                    if match:
+                        bad_arg = match.group(1)
+                        break
+                
+                if bad_arg:
                     logger.warning(f"PaddleOCR rejected parameter '{bad_arg}'. Removing and retrying...")
                     if bad_arg in current_params:
                         del current_params[bad_arg]
                     else:
-                        # Should not happen, but prevents infinite loop
-                        logger.critical(f"Detected bad arg '{bad_arg}' but it's not in params. Aborting.")
+                        logger.critical(f"Detected bad arg '{bad_arg}' but it's not in params. Aborting loop.")
                         raise e
                 else:
-                    # Not a param error (maybe missing positional arg?), re-raise
-                    logger.error(f"PaddleOCR init failed with non-param TypeError: {e}")
+                    # If we can't identify the bad argument, we must fail to avoid infinite loops
+                    logger.critical(f"Could not identify the problematic argument in error: '{error_msg}'. Aborting.")
                     raise e
-            except Exception as e:
-                logger.critical(f"Critical failure initializing PaddleOCR: {e}")
-                raise e
-
+            
             attempts += 1
-
+        
         raise RuntimeError("PaddleOCR failed to initialize after exhausting parameter stripping attempts.")
 
     def _enhance_variants(self, image: np.ndarray) -> List[np.ndarray]:
