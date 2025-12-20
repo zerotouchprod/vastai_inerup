@@ -143,7 +143,7 @@ class MaskGeneratorService:
             try:
                 # --- STEP 2: DETECT ---
                 # ocr_input is now high-contrast
-                result = self.ocr.ocr(ocr_input, cls=True, rec=True)
+                result = self.ocr.ocr(ocr_input)
                 
                 # --- STEP 3: DRAW MASK ---
                 if result and result[0]:
