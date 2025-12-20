@@ -1,28 +1,21 @@
 import logging
-import shutil
+import os
+import re
 import cv2
 import numpy as np
-import re
-import os
-from pathlib import Path
-from typing import List, Optional, Union, Dict, Any, Tuple
-
-# Try importing PaddleOCR
-try:
-    from paddleocr import PaddleOCR
-    PADDLE_AVAILABLE = True
-except ImportError:
-    PADDLE_AVAILABLE = False
+from paddleocr import PaddleOCR
+from typing import List, Tuple, Union, Optional, Dict, Any
 
 logger = logging.getLogger(__name__)
 
 
 class MaskGeneratorService:
     """
-    Generates text masks using Triple-Pass OCR (Normal, Inverted, Binary) + Upscaling.
-    Optimized for CPU usage and hard-to-read subtitles.
+    Ultimate Hybrid MaskService:
+    1. PaddleOCR (AI) - for standard text.
+    2. Morphological Text Hunter (CV2) - for multicolored/outlined/weird text.
+       Detects 'texture clusters' organized in horizontal lines.
     """
-
     def __init__(self,
                  lang: str = 'ru',
                  mask_dilation: int = 15,
@@ -34,297 +27,245 @@ class MaskGeneratorService:
         self.use_gpu = use_gpu_for_ocr  # Use GPU if requested
         self.confidence_threshold = confidence_threshold
 
-        if not PADDLE_AVAILABLE:
-            logger.warning("PaddleOCR not installed. Text detection will be disabled.")
-            self.ocr = None
-            return
+        logger.info(f"Initializing Hybrid MaskService (AI + CV2). GPU={self.use_gpu}")
 
-        logger.info(f"Initializing PaddleOCR with auto-healing configuration... Lang={self.lang}")
-
-        # Ideal configuration (wishlist) - Detection-only with extreme sensitivity
-        ideal_config = {
-            "use_angle_cls": False,      # Disabled for stability
+        # Config for PaddleOCR (Low threshold to catch anything resembling text)
+        self.config = {
+            "use_angle_cls": False,
             "lang": self.lang,
             "use_gpu": self.use_gpu,
             "show_log": False,
             "enable_mkldnn": True,
-            "det_db_thresh": 0.05,       # 5% confidence needed (Hallucinate text if needed)
-            "det_db_box_thresh": 0.2,    # Keep very weak boxes
-            "det_db_unclip_ratio": 2.5,  # Expand boxes significantly (2.5x)
+            "det_db_thresh": 0.1,
+            "det_db_box_thresh": 0.2,
+            "det_db_unclip_ratio": 2.0,
         }
 
-        # Robust initialization
-        self.ocr = self._init_ocr_robust(ideal_config)
+        # Auto-Healing Init
+        self.ocr = self._init_ocr_robust(self.config)
         
-        # FORCE attributes (Hack for PaddleOCR versions that ignore kwargs in init)
-        try:
-            self.ocr.det_db_thresh = 0.05
-            self.ocr.det_db_box_thresh = 0.2
-            self.ocr.det_db_unclip_ratio = 2.5
-            logger.info("Forced OCR attributes: det_db_thresh=0.05")
-        except Exception:
-            pass  # Attribute might not exist in some versions, ignore
+        # Force attributes just in case
+        if self.ocr is not None:
+            try:
+                self.ocr.det_db_thresh = 0.1
+                self.ocr.det_db_box_thresh = 0.2
+            except:
+                pass
 
-    def _init_ocr_robust(self, params: Dict[str, Any]):
-        """
-        Attempts to initialize PaddleOCR. Catches both standard TypeErrors and 
-        library-specific Exceptions regarding unknown arguments, strips them, 
-        and retries.
-        """
+    def _init_ocr_robust(self, params: Dict[str, Any]) -> Optional[PaddleOCR]:
         attempts = 0
-        max_attempts = len(params) + 2
-
+        max_attempts = len(params) + 2 
         current_params = params.copy()
-
-        # Regex patterns to catch various "unknown argument" error formats
         error_patterns = [
-            r"unexpected keyword argument ['\"]([^'\"]+)['\"]",  # Python standard
-            r"Unknown argument:?\s+([A-Za-z0-9_]+)",            # Paddle specific (Your Error)
+            r"unexpected keyword argument ['\"]([^'\"]+)['\"]",
+            r"Unknown argument:?\s+([A-Za-z0-9_]+)",
             r"got an unexpected keyword argument ['\"]([^'\"]+)['\"]"
         ]
-
         while attempts < max_attempts:
             try:
-                logger.debug(f"Attempting PaddleOCR init with keys: {list(current_params.keys())}")
-                # Try to initialize
-                ocr_instance = PaddleOCR(**current_params)
-                
-                logger.info(f"PaddleOCR initialized successfully. Active config: {current_params}")
-                return ocr_instance
-
+                return PaddleOCR(**current_params)
             except Exception as e:
                 error_msg = str(e)
-                logger.warning(f"PaddleOCR init failed with error: {error_msg}. Analyzing for bad params...")
-                
                 bad_arg = None
-                
-                # Check all regex patterns
                 for pattern in error_patterns:
                     match = re.search(pattern, error_msg)
                     if match:
                         bad_arg = match.group(1)
                         break
-                
-                if bad_arg:
-                    logger.warning(f"PaddleOCR rejected parameter '{bad_arg}'. Removing and retrying...")
-                    if bad_arg in current_params:
-                        del current_params[bad_arg]
-                    else:
-                        logger.critical(f"Detected bad arg '{bad_arg}' but it's not in params. Aborting loop.")
-                        raise e
+                if bad_arg and bad_arg in current_params:
+                    logger.warning(f"PaddleOCR removing bad arg: {bad_arg}")
+                    del current_params[bad_arg]
                 else:
-                    # If we can't identify the bad argument, we must fail to avoid infinite loops
-                    logger.critical(f"Could not identify the problematic argument in error: '{error_msg}'. Aborting.")
-                    raise e
-            
+                    # If we can't init, we will just use CV2 fallback silently
+                    logger.error(f"PaddleOCR died: {e}. Switching to pure CV2 mode.")
+                    return None 
             attempts += 1
-        
-        raise RuntimeError("PaddleOCR failed to initialize after exhausting parameter stripping attempts.")
+        return None
 
-    def _enhance_variants(self, image: np.ndarray) -> List[np.ndarray]:
+    def _morphological_text_hunter(self, image: np.ndarray) -> np.ndarray:
         """
-        Returns list of image variants for Triple-Pass OCR.
-        ALL variants are upscaled 2x for better small text detection.
+        Pure Computer Vision approach to find text regions based on texture and shape.
+        Works for multicolored text where OCR fails.
         """
-        if image is None:
-            return []
+        # 1. Convert to Gray
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
-        # 1. Upscale
-        h, w = image.shape[:2]
-        upscaled = cv2.resize(image, (w * 2, h * 2), interpolation=cv2.INTER_CUBIC)
-        
-        if len(upscaled.shape) == 3:
-            gray = cv2.cvtColor(upscaled, cv2.COLOR_BGR2GRAY)
-        else:
-            gray = upscaled
+        # 2. Compute Morphological Gradient (Edginess)
+        # This highlights boundaries of letters regardless of color
+        kernel_grad = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        grad = cv2.morphologyEx(gray, cv2.MORPH_GRADIENT, kernel_grad)
 
-        variants = []
-        
-        # Variant 1: Standard Grayscale (Converted back to BGR for Paddle)
-        variants.append(cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR))
+        # 3. Binarize (Keep strong edges)
+        _, binary = cv2.threshold(grad, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
 
-        # Variant 2: Inverted (Negative)
-        inverted = cv2.bitwise_not(gray)
-        variants.append(cv2.cvtColor(inverted, cv2.COLOR_GRAY2BGR))
+        # 4. Connect Horizontally (Smear)
+        # Text is letters close to each other horizontally. We bridge the gaps.
+        # Kernel is Wide (25) and Short (1)
+        kernel_connect = cv2.getStructuringElement(cv2.MORPH_RECT, (25, 1))
+        connected = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel_connect)
 
-        # Variant 3: CLAHE (High Contrast)
-        clahe = cv2.createCLAHE(clipLimit=4.0, tileGridSize=(8, 8))
-        enhanced = clahe.apply(gray)
-        variants.append(cv2.cvtColor(enhanced, cv2.COLOR_GRAY2BGR))
-
-        return variants
-
-    def _fallback_simple_masking(self, image: np.ndarray) -> Tuple[np.ndarray, List[str]]:
-        """
-        FALLBACK: If OCR fails, assume subtitles are bright white/yellow pixels.
-        """
-        logger.warning("Engaging CV2 Fallback Masking (Bright Pixel Detection)...")
+        # 5. Filter by shape (Keep only bar-like shapes)
+        contours, _ = cv2.findContours(connected, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
-        h, w = image.shape[:2]
+        mask = np.zeros_like(gray)
         
-        # Convert to HSV to find bright colors (White/Yellow)
-        hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+        for cnt in contours:
+            x, y, w, h = cv2.boundingRect(cnt)
+            aspect_ratio = w / float(h)
+            
+            # Subtitles are usually wide (AR > 2) and not tiny
+            if aspect_ratio > 1.5 and w > 20 and h > 8:
+                cv2.rectangle(mask, (x, y), (x + w, y + h), 255, -1)
         
-        # Mask 1: High brightness (White text)
-        lower_white = np.array([0, 0, 200])
-        upper_white = np.array([180, 50, 255])
-        mask_white = cv2.inRange(hsv, lower_white, upper_white)
+        # 6. Dilate final mask slightly to ensure coverage
+        dilate_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (10, 5))
+        mask = cv2.dilate(mask, dilate_kernel, iterations=1)
         
-        # Mask 2: Yellowish text (often used in subs)
-        lower_yellow = np.array([20, 100, 100])
-        upper_yellow = np.array([40, 255, 255])
-        mask_yellow = cv2.inRange(hsv, lower_yellow, upper_yellow)
-        
-        # Combine
-        combined_mask = cv2.bitwise_or(mask_white, mask_yellow)
-        
-        # Noise removal
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-        combined_mask = cv2.morphologyEx(combined_mask, cv2.MORPH_OPEN, kernel)
-        
-        # Dilate to cover edges
-        dilate_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (15, 5))  # Wide dilation for text lines
-        final_mask = cv2.dilate(combined_mask, dilate_kernel, iterations=2)
-        
-        # Apply to image
-        masked_img = image.copy()
-        masked_img[final_mask > 0] = (0, 0, 0)
-        
-        return masked_img, ["<fallback_blob>"]
+        return mask
 
     def process_image(self, image_input: Union[str, np.ndarray]) -> Tuple[np.ndarray, List[str]]:
-        """
-        Process a single image: run triple-pass OCR detection-only, generate mask, black out text.
-        Returns masked image and dummy text list (since recognition is disabled).
-        """
         try:
-            # 1. Load Image
+            # Load Image
             if isinstance(image_input, str):
                 if not os.path.exists(image_input):
-                    raise FileNotFoundError(f"Image not found at {image_input}")
+                    raise FileNotFoundError(f"Image {image_input}")
                 img = cv2.imread(image_input)
-                if img is None:
-                    raise ValueError("Failed to read image via cv2.")
             else:
                 img = image_input
 
-            # 2. Prepare Accumulator for Masks (2x size)
-            h_orig, w_orig = img.shape[:2]
-            mask_accum = np.zeros((h_orig * 2, w_orig * 2), dtype=np.uint8)
+            if img is None: return img, []
+
+            h, w = img.shape[:2]
             
-            # Since recognition is disabled, we return dummy text
-            detected_texts = ["<hidden_text>"]
-            variants = self._enhance_variants(img)
-
-            # 3. Run OCR on all variants (detection-only)
-            found_any = False
-            for i, variant in enumerate(variants):
-                # CRITICAL: rec=False, cls=False, det=True
-                result = self.ocr.ocr(variant, det=True, rec=False, cls=False)
-                
-                if not result:
-                    continue
-
-                # PaddleOCR result structure varies with version/batch
-                # Safe normalization:
-                boxes = result[0] if (isinstance(result, list) and len(result) > 0) else []
-                
-                if boxes:
-                    found_any = True
-                    for box in boxes:
-                        # Box is [[x,y], [x,y], [x,y], [x,y]]
-                        points = np.array(box, dtype=np.int32)
-                        cv2.fillPoly(mask_accum, [points], 255)
-
-            if not found_any:
-                logger.warning("PaddleOCR found 0 regions. Trying Fallback.")
-                return self._fallback_simple_masking(img)
-
-            # 4. Downscale Mask to original size
-            mask_final_bin = cv2.resize(mask_accum, (w_orig, h_orig), interpolation=cv2.INTER_NEAREST)
-
-            # 5. Dilate Mask (Make it thicker to cover glow/shadows)
-            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (self.mask_dilation, self.mask_dilation))
-            mask_dilated = cv2.dilate(mask_final_bin, kernel, iterations=1)
-
-            # 6. Apply Black Mask to Original Image
-            # Where mask is white (255), set image pixels to black (0)
-            masked_img = img.copy()
-            masked_img[mask_dilated > 0] = (0, 0, 0) # Black out text
-
-            return masked_img, detected_texts
-
-        except Exception as e:
-            logger.error(f"Error during masking process: {e}", exc_info=True)
-            raise
-
-    def generate_masks(self, input_dir: Path, output_dir: Path) -> Path:
-        output_dir.mkdir(parents=True, exist_ok=True)
-        images = sorted(list(input_dir.glob("*.png")) + list(input_dir.glob("*.jpg")))
-        logger.info(f"Generating masks for {len(images)} frames")
-
-        for img_path in images:
-            frame = cv2.imread(str(img_path))
-            if frame is None:
-                continue
-
-            masks = self._process_batch_with_hybrid_detection([frame])
-
-            mask_name = img_path.name
-            if mask_name.endswith('.jpg'):
-                mask_name = mask_name[:-4] + '.png'
-
-            if masks:
-                cv2.imwrite(str(output_dir / mask_name), masks[0])
-            else:
-                h, w = frame.shape[:2]
-                empty = np.zeros((h, w), dtype=np.uint8)
-                cv2.imwrite(str(output_dir / mask_name), empty)
-
-        return output_dir
-
-    def cleanup_temp_dir(self, dir_path: Path):
-        if dir_path.exists():
-            shutil.rmtree(dir_path)
-
-    def _process_batch_with_hybrid_detection(self, frames: List[np.ndarray]) -> List[np.ndarray]:
-        if self.ocr is None:
-            return [np.zeros((f.shape[0], f.shape[1]), dtype=np.uint8) for f in frames]
-
-        masks = []
-        for frame in frames:
-            h_orig, w_orig = frame.shape[:2]
-            mask_accum = np.zeros((h_orig * 2, w_orig * 2), dtype=np.uint8)  # Working in 2x scale
-
-            # Generate 3 variants (Normal, Inverted, Binary) - all upscaled 2x
-            variants = self._enhance_variants(frame)
-
-            found_something = False
-
-            for i, img_variant in enumerate(variants):
+            # --- LAYER 1: PaddleOCR (The Brain) ---
+            mask_ocr = np.zeros((h, w), dtype=np.uint8)
+            ocr_hits = 0
+            
+            if self.ocr:
                 try:
-                    # Detection-only: rec=False, cls=False, det=True
-                    result = self.ocr.ocr(img_variant, det=True, rec=False, cls=False)
-                    if not result:
-                        continue
+                    # Detection only, no text recognition needed
+                    # We invert image for better detection of bright text
+                    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+                    inverted = cv2.bitwise_not(gray)
+                    inverted_bgr = cv2.cvtColor(inverted, cv2.COLOR_GRAY2BGR)
+                    
+                    result = self.ocr.ocr(inverted_bgr, det=True, rec=False, cls=False)
                     boxes = result[0] if (isinstance(result, list) and len(result) > 0) else []
+                    
                     if boxes:
-                        found_something = True
+                        ocr_hits = len(boxes)
                         for box in boxes:
                             points = np.array(box, dtype=np.int32)
-                            cv2.fillPoly(mask_accum, [points], 255)
-                except Exception:
-                    continue
+                            cv2.fillPoly(mask_ocr, [points], 255)
+                            
+                        # Dilate OCR result using mask_dilation
+                        k = cv2.getStructuringElement(cv2.MORPH_RECT, (self.mask_dilation, self.mask_dilation))
+                        mask_ocr = cv2.dilate(mask_ocr, k, iterations=1)
+                except Exception as e:
+                    logger.warning(f"OCR step failed: {e}")
 
-            # Downscale mask back to original size
-            mask_final = cv2.resize(mask_accum, (w_orig, h_orig), interpolation=cv2.INTER_NEAREST)
+            # --- LAYER 2: Morphological Hunter (The Brawn) ---
+            # Finds structure even if OCR fails
+            mask_cv = self._morphological_text_hunter(img)
+            
+            # --- COMBINE ---
+            # If OCR found nothing, we rely 100% on CV. 
+            # If OCR found something, we combine them (union).
+            final_mask = cv2.bitwise_or(mask_ocr, mask_cv)
 
-            # Dilation
-            if self.mask_dilation > 0 and found_something:
-                kernel = cv2.getStructuringElement(cv2.MORPH_RECT,
-                                                   (self.mask_dilation, self.mask_dilation))
-                mask_final = cv2.dilate(mask_final, kernel, iterations=1)
+            # Apply to Image
+            masked_img = img.copy()
+            masked_img[final_mask > 0] = (0, 0, 0)
+            
+            log_msg = f"Mask generation: OCR found {ocr_hits} regions."
+            if ocr_hits == 0:
+                log_msg += " Using purely Morphological/CV detection."
+            logger.info(log_msg)
 
-            masks.append(mask_final)
+            return masked_img, ["<masked_regions>"]
 
+        except Exception as e:
+            logger.error(f"Masking failed: {e}", exc_info=True)
+            # Return original if everything explodes
+            return image_input if isinstance(image_input, np.ndarray) else cv2.imread(image_input), []
+
+    def _process_batch_with_hybrid_detection(self, frames: List[np.ndarray]) -> List[np.ndarray]:
+        """
+        Process a batch of frames using the same hybrid detection logic.
+        Returns list of masks (binary uint8).
+        """
+        masks = []
+        for frame in frames:
+            h, w = frame.shape[:2]
+            mask_ocr = np.zeros((h, w), dtype=np.uint8)
+            ocr_hits = 0
+            
+            if self.ocr:
+                try:
+                    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                    inverted = cv2.bitwise_not(gray)
+                    inverted_bgr = cv2.cvtColor(inverted, cv2.COLOR_GRAY2BGR)
+                    result = self.ocr.ocr(inverted_bgr, det=True, rec=False, cls=False)
+                    boxes = result[0] if (isinstance(result, list) and len(result) > 0) else []
+                    if boxes:
+                        ocr_hits = len(boxes)
+                        for box in boxes:
+                            points = np.array(box, dtype=np.int32)
+                            cv2.fillPoly(mask_ocr, [points], 255)
+                        k = cv2.getStructuringElement(cv2.MORPH_RECT, (self.mask_dilation, self.mask_dilation))
+                        mask_ocr = cv2.dilate(mask_ocr, k, iterations=1)
+                except Exception as e:
+                    logger.warning(f"OCR step failed in batch: {e}")
+            
+            mask_cv = self._morphological_text_hunter(frame)
+            final_mask = cv2.bitwise_or(mask_ocr, mask_cv)
+            masks.append(final_mask)
+        
         return masks
+
+    def generate_masks(self, video_path: str, roi: Optional[Tuple[int, int, int, int]] = None,
+                       start_frame: int = 0, end_frame: Optional[int] = None,
+                       frame_skip: int = 1, output_dir: Optional[str] = None) -> List[str]:
+        """
+        Generate masks for a video using hybrid detection.
+        """
+        import tempfile
+        from src.infrastructure.video_reader import VideoReader
+        
+        if output_dir is None:
+            output_dir = tempfile.mkdtemp(prefix='mask_')
+        
+        reader = VideoReader(video_path, roi=roi)
+        frames = []
+        frame_indices = []
+        
+        for idx, frame in enumerate(reader):
+            if idx < start_frame:
+                continue
+            if end_frame is not None and idx >= end_frame:
+                break
+            if (idx - start_frame) % frame_skip != 0:
+                continue
+            frames.append(frame)
+            frame_indices.append(idx)
+        
+        masks = self._process_batch_with_hybrid_detection(frames)
+        
+        mask_paths = []
+        for idx, mask in zip(frame_indices, masks):
+            mask_path = os.path.join(output_dir, f"mask_{idx:06d}.png")
+            cv2.imwrite(mask_path, mask)
+            mask_paths.append(mask_path)
+        
+        return mask_paths
+
+    def cleanup_temp_dir(self, dir_path: str):
+        """
+        Remove temporary directory created during mask generation.
+        """
+        import shutil
+        if os.path.exists(dir_path):
+            shutil.rmtree(dir_path)
+            logger.info(f"Cleaned up temporary directory: {dir_path}")
+        else:
+            logger.warning(f"Directory does not exist: {dir_path}")
