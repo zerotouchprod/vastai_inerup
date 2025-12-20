@@ -85,6 +85,52 @@ class MaskGeneratorService:
         # 3. Convert back to BGR (Paddle expects 3 channels)
         return cv2.cvtColor(enhanced, cv2.COLOR_GRAY2BGR)
 
+    def _process_ocr_result(self, ocr_result, mask: np.ndarray, confidence_threshold: float) -> None:
+        """Process OCR result and fill mask."""
+        # Handle new PaddleOCR result structure (dictionary)
+        if isinstance(ocr_result, dict):
+            if 'rec_polys' in ocr_result and 'rec_scores' in ocr_result:
+                polygons = ocr_result['rec_polys']
+                scores = ocr_result['rec_scores']
+                
+                for poly, score in zip(polygons, scores):
+                    try:
+                        conf = float(score)
+                        if conf > confidence_threshold:
+                            pts = poly.astype(np.int32).reshape((-1, 1, 2))
+                            cv2.fillPoly(mask, [pts], 255)
+                    except (ValueError, TypeError) as e:
+                        logger.debug(f"Failed to parse polygon or score: {e}")
+                        continue
+            else:
+                logger.warning(f"Unexpected OCR result structure: {list(ocr_result.keys())}")
+        
+        # Handle old structure (list of [[coordinates], (text, confidence)])
+        else:
+            for line in ocr_result:
+                try:
+                    coords = line[0]
+                    
+                    # Extract confidence
+                    conf = 0.0
+                    if len(line) > 1:
+                        second_item = line[1]
+                        if isinstance(second_item, (list, tuple)) and len(second_item) > 1:
+                            conf = float(second_item[1])
+                        elif hasattr(second_item, '__getitem__'):
+                            try:
+                                conf = float(second_item[1])
+                            except (IndexError, TypeError, ValueError):
+                                pass
+                    
+                    if conf > confidence_threshold:
+                        pts = np.array(coords, dtype=np.int32).reshape((-1, 1, 2))
+                        cv2.fillPoly(mask, [pts], 255)
+                        
+                except (IndexError, TypeError, ValueError) as e:
+                    logger.debug(f"Failed to parse OCR result line: {e}")
+                    continue
+
     def generate_masks(self, input_dir: Path, output_dir: Path) -> Path:
         """
         Process a directory of images and generate masks.
@@ -146,14 +192,9 @@ class MaskGeneratorService:
                 result = self.ocr.ocr(ocr_input)
                 
                 # --- STEP 3: DRAW MASK ---
-                if result and result[0]:
-                    for line in result[0]:
-                        # Paddle format: [[ [x1,y1],[x2,y2],[x3,y3],[x4,y4] ], (text, confidence)]
-                        coords = line[0]
-                        points = np.array(coords, dtype=np.int32)
-                        
-                        # Fill the detected text area with white
-                        cv2.fillPoly(mask, [points], 255)
+                if result and result[0] is not None:
+                    ocr_result = result[0]
+                    self._process_ocr_result(ocr_result, mask, self.confidence_threshold)
                 
                 # --- STEP 4: DILATE (Expand mask to cover artifacts) ---
                 if self.mask_dilation > 0:
