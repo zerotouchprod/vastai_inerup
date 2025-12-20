@@ -88,7 +88,7 @@ class ProcessorFactory:
         else:
             raise ProcessorNotAvailableError(f"Unknown prefer: {prefer}")
 
-    def create_subtitle_remover(self, prefer: str = 'auto', lang: str = 'en', backend: str = 'auto') -> Optional[IProcessor]:
+    def create_subtitle_remover(self, prefer: str = 'auto', lang: str = 'en', backend: str = 'auto', roi: Optional[str] = None) -> Optional[IProcessor]:
         """
         Create subtitle removal processor.
 
@@ -96,6 +96,7 @@ class ProcessorFactory:
             prefer: Backend preference ('auto', 'native', 'propainter') - deprecated, use backend parameter
             lang: Language code for OCR ('en', 'ru', etc.)
             backend: Backend preference ('auto', 'native', 'propainter')
+            roi: Region of Interest string (optional). If None, uses config default.
 
         Returns:
             Subtitle remover processor instance
@@ -109,7 +110,7 @@ class ProcessorFactory:
         if backend in ('auto', 'propainter', 'native'):  # native тоже перенаправляем на ProPainter
             if SubtitleRemoverWrapper.is_available():
                 self._logger.info(f"Using subtitle remover backend (lang={lang})")
-                return SubtitleRemoverWrapper(lang=lang)
+                return SubtitleRemoverWrapper(lang=lang, roi=roi)
             else:
                 raise ProcessorNotAvailableError("Subtitle remover not available (requires ProPainter installation in /opt/ProPainter)")
         

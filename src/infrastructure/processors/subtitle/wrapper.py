@@ -2,7 +2,7 @@
 
 import logging
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 from src.domain.protocols import IProcessor
 from src.domain.models import ProcessingResult
@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 class SubtitleRemoverWrapper(IProcessor):
     """Wrapper for subtitle removal processor using new refactored architecture."""
 
-    def __init__(self, lang: str = 'en', mask_dilation: int = 12, confidence_threshold: float = 0.3):
+    def __init__(self, lang: str = 'en', mask_dilation: int = 12, confidence_threshold: float = 0.3, roi: Optional[str] = None):
         """
         Initialize subtitle remover.
 
@@ -22,10 +22,12 @@ class SubtitleRemoverWrapper(IProcessor):
             lang: Language for OCR ('en', 'ru', etc.)
             mask_dilation: Mask dilation radius in pixels
             confidence_threshold: Confidence threshold for text detection (0.0-1.0)
+            roi: Region of Interest string (optional). If None, uses config default.
         """
         self._lang = lang
         self._mask_dilation = mask_dilation
         self._confidence_threshold = confidence_threshold
+        self._roi = roi
         self._processor = None
         self._logger = logging.getLogger(__name__)
 
@@ -49,10 +51,11 @@ class SubtitleRemoverWrapper(IProcessor):
             
             # Create processor if not exists
             if self._processor is None:
-                self._logger.info(f"Creating SubtitleRemoverProPainterWrapper (lang={self._lang}, dilation={self._mask_dilation})")
+                self._logger.info(f"Creating SubtitleRemoverProPainterWrapper (lang={self._lang}, dilation={self._mask_dilation}, roi={self._roi})")
                 self._processor = SubtitleRemoverProPainterWrapper(
                     lang=self._lang,
-                    mask_dilation=self._mask_dilation
+                    mask_dilation=self._mask_dilation,
+                    roi=self._roi
                 )
                 self._logger.info("SubtitleRemoverProPainterWrapper created successfully")
 

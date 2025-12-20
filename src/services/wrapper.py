@@ -23,30 +23,32 @@ class SubtitleRemoverProPainterWrapper:
     Provides backward compatibility with the old API.
     """
     
-    def __init__(self, lang: str = 'en', mask_dilation: int = 12):
+    def __init__(self, lang: str = 'en', mask_dilation: int = 12, roi: Optional[str] = None):
         """
         Initialize ProPainter subtitle remover wrapper.
         
         Args:
             lang: Language for OCR ('en', 'ru', etc.)
             mask_dilation: Mask dilation radius in pixels
+            roi: Region of Interest string (optional). If None, uses config default.
         """
         self._lang = lang
         self._mask_dilation = mask_dilation
+        self._roi = roi
         self._service: Optional[StreamingSubtitleRemoverService] = None
         self._logger = logging.getLogger(__name__)
         
         # Get configuration
         self._config = get_config()
         
-        self._logger.info(f"SubtitleRemoverProPainterWrapper initialized (lang={lang}, dilation={mask_dilation})")
+        self._logger.info(f"SubtitleRemoverProPainterWrapper initialized (lang={lang}, dilation={mask_dilation}, roi={roi})")
     
     def _get_service(self) -> StreamingSubtitleRemoverService:
         """Get or create the underlying service."""
         if self._service is None:
-            # Get the current config (which may have been updated by CLI)
-            current_config = get_config()
-            print(f"DEBUG: Factory passing ROI to Service: {current_config.ROI}")
+            # Determine ROI: use instance-provided ROI if given, otherwise config
+            roi_to_use = self._roi if self._roi is not None else get_config().ROI
+            print(f"DEBUG: Factory passing ROI to Service: {roi_to_use}")
             
             self._service = StreamingSubtitleRemoverService(
                 lang=self._lang,
@@ -54,7 +56,7 @@ class SubtitleRemoverProPainterWrapper:
                 use_gpu=self._config.USE_GPU,
                 use_gpu_for_ocr=self._config.USE_GPU_FOR_OCR,
                 confidence_threshold=self._config.CONFIDENCE_THRESHOLD,
-                roi_str=current_config.ROI  # Explicitly pass ROI from current config
+                roi_str=roi_to_use  # Explicitly pass ROI from instance or config
             )
         return self._service
     

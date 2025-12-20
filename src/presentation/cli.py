@@ -62,7 +62,8 @@ def create_orchestrator_from_config(config, allow_fallback: bool = False):
         try:
             subtitle_remover = factory.create_subtitle_remover(
                 prefer=config.prefer,
-                lang=config.subtitle_language
+                lang=config.subtitle_language,
+                roi=getattr(config, 'ROI', 'bottom')
             )
             get_logger(__name__).info(f"Subtitle remover created (language: {config.subtitle_language})")
         except Exception as e:
@@ -80,7 +81,8 @@ def create_orchestrator_from_config(config, allow_fallback: bool = False):
             if not subtitle_remover:
                 subtitle_remover = factory.create_subtitle_remover(
                     prefer=config.prefer,
-                    lang=config.subtitle_language
+                    lang=config.subtitle_language,
+                    roi=getattr(config, 'ROI', 'bottom')
                 )
     except Exception as e:
         if config.strict:
@@ -255,9 +257,14 @@ def main():
             config.subtitle_language = args.subs_lang
         
         # ROI configuration (Region of Interest)
-        if args.roi:
-            config.ROI = args.roi
-            print(f"!!! FORCE OVERRIDE ROI CONFIG: {args.roi}")
+        # Always set ROI from CLI argument (default is "bottom")
+        config.ROI = args.roi
+        print(f"!!! FORCE OVERRIDE ROI CONFIG: {args.roi}")
+        # Also update the singleton AppConfig used by subtitle removal service
+        from src.core.config import get_config as get_app_config
+        app_config = get_app_config()
+        app_config.ROI = args.roi
+        logger.info(f"Updated AppConfig ROI to: {args.roi}")
 
         # Get git commit info
         git_commit_hash = "unknown"
