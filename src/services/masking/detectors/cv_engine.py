@@ -1,10 +1,6 @@
-"""
-Computer Vision based text detector using morphological operations.
-"""
-
 import logging
-import numpy as np
 import cv2
+import numpy as np
 
 from src.services.masking.interfaces import TextDetector
 
@@ -13,41 +9,29 @@ logger = logging.getLogger(__name__)
 
 class CVEngine(TextDetector):
     """
-    Text detector that uses pure Computer Vision (morphological operations)
-    to find text-like regions based on texture and shape.
-    
-    Features:
-    - CLAHE contrast enhancement for dark/colored text.
-    - Morphological gradient to detect edges.
-    - Adaptive thresholding for binarization.
-    - Horizontal smearing to connect letters into lines.
-    - Aspect ratio filtering to keep only subtitle-like regions.
+    VSR-Inspired CV Engine (Sobel/Raster).
+    Uses Sobel Operators to find high-frequency text edges.
+    This works regardless of text color (white, yellow, gradient) or borders.
     """
     
     def __init__(self, mask_dilation: int = 15):
         """
         Initialize CV engine.
-        
         Args:
             mask_dilation: Dilation radius for final mask (default: 15)
         """
         self.mask_dilation = mask_dilation
-        logger.info(f"CV Engine initialized (dilation={mask_dilation})")
+        logger.info(f"CV Engine initialized (VSR-Sobel Mode, dilation={mask_dilation})")
     
     def detect(self, image: np.ndarray) -> np.ndarray:
         """
-        Detect text regions using morphological operations.
-        
-        Args:
-            image: Input image in BGR format.
-            
-        Returns:
-            Binary mask where detected text regions are white (255).
+        Detect text using Sobel Edge Detection and Aggressive Morphology.
         """
         try:
-            mask = self._morphological_text_hunter(image)
+            # 1. Run VSR-style detection
+            mask = self._run_sobel_detection(image)
             
-            # Apply dilation if configured
+            # 2. Apply final user-configured dilation (Safety Buffer)
             if self.mask_dilation > 0:
                 kernel = cv2.getStructuringElement(
                     cv2.MORPH_RECT, 
@@ -59,13 +43,12 @@ class CVEngine(TextDetector):
             
         except Exception as e:
             logger.error(f"CV detection failed: {e}", exc_info=True)
-            # Return empty mask on error
             return np.zeros(image.shape[:2], dtype=np.uint8)
-    
-    def _morphological_text_hunter(self, image: np.ndarray) -> np.ndarray:
+
+    def _run_sobel_detection(self, image: np.ndarray) -> np.ndarray:
         """
-        Pure Computer Vision approach using CLAHE + Adaptive Thresholding + Morphology.
-        Finds text regions based on texture density and horizontal alignment.
+        Core logic adapted from Video-Subtitle-Remover (Raster Detection).
+        Finds regions with high density of vertical/horizontal edges.
         """
         # 1. Convert to Gray
         if len(image.shape) == 3:
@@ -73,54 +56,61 @@ class CVEngine(TextDetector):
         else:
             gray = image
 
-        # 2. CLAHE (Contrast Limited Adaptive Histogram Equalization)
-        # CRITICAL: This pulls details out of dark/colored regions
-        clahe = cv2.createCLAHE(clipLimit=4.0, tileGridSize=(8, 8))
-        enhanced = clahe.apply(gray)
+        h, w = gray.shape
 
-        # 3. Compute Morphological Gradient (Edginess)
-        kernel_grad = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-        grad = cv2.morphologyEx(enhanced, cv2.MORPH_GRADIENT, kernel_grad)
+        # 2. SOBEL DETECTION
+        # Find vertical edges (sides of letters) and horizontal edges
+        scale = 1
+        delta = 0
+        ddepth = cv2.CV_16S
 
-        # 4. Binarize using Adaptive Threshold (Better for gradients than Otsu)
-        binary = cv2.adaptiveThreshold(
-            grad, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-            cv2.THRESH_BINARY, 11, 2
-        )
+        grad_x = cv2.Sobel(gray, ddepth, 1, 0, ksize=3, scale=scale, delta=delta, borderType=cv2.BORDER_DEFAULT)
+        abs_grad_x = cv2.convertScaleAbs(grad_x)
 
-        # 5. Connect Horizontally (Smear)
-        # Text is horizontal. We bridge gaps between letters.
-        # Kernel: (30, 1) -> Connect things up to 30px apart horizontally
-        kernel_connect = cv2.getStructuringElement(cv2.MORPH_RECT, (30, 1))
-        connected = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel_connect)
+        grad_y = cv2.Sobel(gray, ddepth, 0, 1, ksize=3, scale=scale, delta=delta, borderType=cv2.BORDER_DEFAULT)
+        abs_grad_y = cv2.convertScaleAbs(grad_y)
 
-        # 6. Filter by shape (Keep only bar-like shapes)
-        contours, _ = cv2.findContours(connected, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        # Combine gradients (Text has strong edges in all directions)
+        grad = cv2.addWeighted(abs_grad_x, 0.5, abs_grad_y, 0.5, 0)
 
+        # 3. Aggressive Thresholding
+        # We want only the sharpest edges. 
+        # VSR uses a fixed threshold because edges of text are always high contrast relative to themselves.
+        _, binary = cv2.threshold(grad, 50, 255, cv2.THRESH_BINARY)
+
+        # 4. EXTREME Morphology (The VSR Secret)
+        # Calculate dynamic kernel width based on image size.
+        # ~3% of screen width is a good approximation for "sentence gap".
+        # For 1920px width -> ~57px kernel.
+        kernel_width = int(w * 0.03) 
+        if kernel_width < 20: kernel_width = 20
+        
+        # Wide kernel to connect words, short kernel to keep lines separate
+        morph_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (kernel_width, 6))
+        
+        # Morph Close: Fill gaps inside letters and between words
+        closed = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, morph_kernel)
+        
+        # 5. Filtering Contours
+        contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         mask = np.zeros_like(gray)
-
+        
         for cnt in contours:
-            x, y, w, h = cv2.boundingRect(cnt)
-            aspect_ratio = w / float(h)
-
-            # Subtitle Logic:
-            # - Must be somewhat wide (AR > 1.5)
-            # - Must not be too small (w > 15, h > 8)
-            # - Must not be the whole screen (h < image_h / 3)
-            if aspect_ratio > 1.5 and w > 15 and h > 8 and h < (image.shape[0] / 3):
-                cv2.rectangle(mask, (x, y), (x + w, y + h), 255, -1)
-
-        # 7. Dilate final mask slightly to ensure full coverage
-        dilate_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (10, 5))
-        mask = cv2.dilate(mask, dilate_kernel, iterations=1)
+            x, y, cw, ch = cv2.boundingRect(cnt)
+            aspect_ratio = cw / float(ch)
+            
+            # VSR-Lite Logic:
+            # 1. Aspect Ratio > 2.0 (Text is long)
+            # 2. Not too small (cw > 25, ch > 8)
+            # 3. Not the whole screen (cw < 95%, ch < 50%)
+            if (aspect_ratio > 2.0 and 
+                cw > 25 and ch > 8 and 
+                cw < w * 0.95 and ch < h * 0.5):
+                
+                # Draw the detected block
+                cv2.rectangle(mask, (x, y), (x + cw, y + ch), 255, -1)
 
         return mask
     
     def is_available(self) -> bool:
-        """
-        Check if CV engine is available (always True as it only depends on OpenCV).
-        
-        Returns:
-            True (CV engine is always available if OpenCV is installed).
-        """
         return True
