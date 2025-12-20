@@ -216,7 +216,16 @@ class MaskService:
                 if 'rec_polys' in result:
                     polygons = result['rec_polys']
                     for poly in polygons:
-                        boxes.append(poly.astype(np.int32))
+                        try:
+                            # Ensure polygon is numeric
+                            if poly.dtype.kind in 'iuf':  # integer, unsigned, float
+                                boxes.append(poly.astype(np.int32))
+                            else:
+                                # try to convert
+                                boxes.append(poly.astype(float).astype(np.int32))
+                        except Exception as e:
+                            logger.debug(f"Failed to convert polygon {poly}: {e}")
+                            continue
             elif isinstance(result, list) and len(result) > 0:
                 # Old structure: list of [[coordinates], (text, confidence)]
                 ocr_result = result[0]  # first element for the image
@@ -225,7 +234,23 @@ class MaskService:
                 for line in ocr_result:
                     if len(line) > 0:
                         coords = line[0]  # polygon coordinates
-                        boxes.append(np.array(coords, dtype=np.int32))
+                        # Ensure coords is a list of numeric pairs
+                        try:
+                            # Convert each coordinate to float then int
+                            numeric_coords = []
+                            for point in coords:
+                                if isinstance(point, (list, tuple)) and len(point) >= 2:
+                                    x = float(point[0])
+                                    y = float(point[1])
+                                    numeric_coords.append([int(x), int(y)])
+                                else:
+                                    # skip malformed point
+                                    continue
+                            if len(numeric_coords) >= 3:  # need at least triangle
+                                boxes.append(np.array(numeric_coords, dtype=np.int32))
+                        except (ValueError, TypeError, IndexError) as e:
+                            logger.debug(f"Failed to parse coordinates {coords}: {e}")
+                            continue
             return boxes
         except Exception as e:
             logger.warning(f"OCR detection failed: {e}")
