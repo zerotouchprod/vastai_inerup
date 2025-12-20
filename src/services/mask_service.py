@@ -235,7 +235,8 @@ class MaskGeneratorService:
     
     def _generate_hybrid_mask(self, image: np.ndarray, ocr_mask: np.ndarray) -> np.ndarray:
         """
-        Generate hybrid mask combining OCR, MSER, and Gradient detection.
+        Generate hybrid mask using OCR-Anchored Masking.
+        MSER/Gradient detectors only operate within OCR-defined regions.
         
         Args:
             image: Input BGR image
@@ -244,23 +245,48 @@ class MaskGeneratorService:
         Returns:
             Combined binary mask
         """
-        # Apply MSER detection (structure layer)
+        # Step 1: Create "Allowed Zone" from OCR mask (dilated)
+        # Dilate OCR mask to create search area (account for jumping text/OCR inaccuracies)
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (30, 30))
+        allowed_zone = cv2.dilate(ocr_mask, kernel, iterations=1)
+        
+        # Step 2: Apply MSER detection (structure layer)
         mser_mask = get_mser_mask(image)
         
-        # Apply Gradient detection (edge layer)
+        # Step 3: Apply Gradient detection (edge layer)
         gradient_mask = get_gradient_mask(image)
         
-        # Clean MSER and Gradient masks before combining
+        # Step 4: Clean MSER and Gradient masks
         mser_cleaned = filter_mask_by_geometry(mser_mask)
         gradient_cleaned = filter_mask_by_geometry(gradient_mask)
         
-        # Combine all masks: OCR is the anchor, MSER fills the body, Gradient fixes edges
-        combined = cv2.bitwise_or(ocr_mask, mser_cleaned)
-        combined = cv2.bitwise_or(combined, gradient_cleaned)
+        # Step 5: STRICT INTERSECTION - Only keep details inside Allowed Zone
+        # MSER and Gradient can only operate where OCR detected something
+        mser_constrained = cv2.bitwise_and(mser_cleaned, allowed_zone)
+        gradient_constrained = cv2.bitwise_and(gradient_cleaned, allowed_zone)
         
-        # Apply safety clamp to prevent "global hallucination"
+        # Step 6: Combine masks (OCR is the anchor)
+        combined = cv2.bitwise_or(ocr_mask, mser_constrained)
+        combined = cv2.bitwise_or(combined, gradient_constrained)
+        
+        # Step 7: Apply safety clamp to prevent "global hallucination"
         from src.infrastructure.image_processing.mask_cleaning import apply_safety_clamp
         safe_mask = apply_safety_clamp(combined, ocr_mask, safety_threshold=0.20)
+        
+        # Log statistics for debugging
+        h, w = image.shape[:2]
+        total_pixels = h * w
+        ocr_coverage = np.sum(ocr_mask > 0) / total_pixels
+        mser_coverage = np.sum(mser_constrained > 0) / total_pixels
+        gradient_coverage = np.sum(gradient_constrained > 0) / total_pixels
+        final_coverage = np.sum(safe_mask > 0) / total_pixels
+        
+        logger.debug(
+            f"OCR-Anchored Masking: OCR={ocr_coverage*100:.1f}%, "
+            f"MSER={mser_coverage*100:.1f}%, "
+            f"Gradient={gradient_coverage*100:.1f}%, "
+            f"Final={final_coverage*100:.1f}%"
+        )
         
         return safe_mask
     
