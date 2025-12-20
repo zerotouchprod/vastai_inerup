@@ -511,7 +511,6 @@ class StreamingSubtitleRemoverService:
                     # --- DIAGNOSTIC INJECTION START ---
                     # Hardcoded check: Only run for the very first frame processed to avoid disk spam
                     if not hasattr(self, '_diag_done'):
-                        import cv2
                         import os
                         
                         print("!!! DIAGNOSTIC MODE TRIGGERED !!!")
