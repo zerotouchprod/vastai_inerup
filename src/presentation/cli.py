@@ -253,6 +253,11 @@ def main():
         # Subtitle language (used when mode is remove-subtitles)
         if args.subs_lang:
             config.subtitle_language = args.subs_lang
+        
+        # ROI configuration (Region of Interest)
+        if args.roi:
+            config.ROI = args.roi
+            print(f"!!! FORCE OVERRIDE ROI CONFIG: {args.roi}")
 
         # Get git commit info
         git_commit_hash = "unknown"

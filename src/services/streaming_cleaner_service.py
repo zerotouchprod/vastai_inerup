@@ -100,16 +100,24 @@ class StreamingSubtitleRemoverService:
         self.roi_model = None
         if self.use_roi_optimization and self.roi_str:
             try:
+                # Log the ROI string received
+                logger.info(f"ROI string received: '{self.roi_str}'")
+                
                 if self.roi_str.lower() == "bottom":
                     # Default bottom region for subtitles: bottom 30% of screen
                     self.roi_model = RegionOfInterest(x=0.0, y=0.7, width=1.0, height=0.3)
+                    logger.info(f"Using preset ROI: bottom (y=0.7, height=0.3)")
                 elif self.roi_str.lower() == "top":
                     self.roi_model = RegionOfInterest(x=0.0, y=0.0, width=1.0, height=0.3)
+                    logger.info(f"Using preset ROI: top (y=0.0, height=0.3)")
                 elif self.roi_str.lower() == "full":
                     self.roi_model = RegionOfInterest(x=0.0, y=0.0, width=1.0, height=1.0)
+                    logger.info(f"Using preset ROI: full (entire screen)")
                 else:
                     # Try to parse as "x,y,width,height"
                     self.roi_model = RegionOfInterest.from_string(self.roi_str)
+                    logger.info(f"Parsed custom ROI: {self.roi_model}")
+                
                 logger.info(f"ROI optimization enabled: {self.roi_model}")
             except Exception as e:
                 logger.warning(f"Failed to parse ROI string '{self.roi_str}': {e}. ROI optimization disabled.")
