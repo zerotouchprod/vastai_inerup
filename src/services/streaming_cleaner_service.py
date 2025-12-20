@@ -276,6 +276,111 @@ class StreamingSubtitleRemoverService:
             result_frames.append(result_frame)
         
         return result_frames
+    
+    def _save_debug_images(self, frame: np.ndarray, mask: np.ndarray, 
+                          debug_output_dir: Path, roi_model: Optional[RegionOfInterest] = None):
+        """
+        Save debug images showing input frame, mask, and ROI placement.
+        
+        Args:
+            frame: Input BGR frame
+            mask: Input grayscale mask
+            debug_output_dir: Directory to save debug images
+            roi_model: ROI model if ROI optimization is enabled
+        """
+        if frame is None or mask is None:
+            logger.warning("[DEBUG] Cannot save debug images: frame or mask is None")
+            return
+        
+        try:
+            # Log input resolution
+            h, w = frame.shape[:2]
+            logger.info(f"[DEBUG] Input Resolution: {w}x{h}")
+            
+            if roi_model:
+                # Log ROI configuration
+                logger.info(f"[DEBUG] ROI Config: x={roi_model.x:.3f}, y={roi_model.y:.3f}, "
+                          f"width={roi_model.width:.3f}, height={roi_model.height:.3f}")
+                
+                # Calculate pixel coordinates
+                left, top, right, bottom = roi_model.to_pixel_coordinates(w, h)
+                logger.info(f"[DEBUG] Calculated Pixels: x={left}, y={top}, "
+                          f"w={right-left}, h={bottom-top}")
+            
+            # Save original frame
+            frame_path = debug_output_dir / "DEBUG_original_frame.jpg"
+            cv2.imwrite(str(frame_path), frame)
+            logger.info(f"[DEBUG] Saved original frame: {frame_path}")
+            
+            # Save mask
+            mask_path = debug_output_dir / "DEBUG_original_mask.jpg"
+            cv2.imwrite(str(mask_path), mask)
+            logger.info(f"[DEBUG] Saved original mask: {mask_path}")
+            
+            # Save mask overlay on frame
+            mask_overlay = frame.copy()
+            mask_resized = cv2.resize(mask, (w, h))
+            mask_overlay[mask_resized > 127] = [0, 0, 255]  # Red overlay
+            overlay_path = debug_output_dir / "DEBUG_mask_overlay.jpg"
+            cv2.imwrite(str(overlay_path), mask_overlay)
+            logger.info(f"[DEBUG] Saved mask overlay: {overlay_path}")
+            
+        except Exception as e:
+            logger.error(f"[DEBUG] Failed to save debug images: {e}")
+    
+    def _save_roi_debug_images(self, original_frame: np.ndarray, cropped_frame: np.ndarray,
+                              cropped_mask: np.ndarray, roi_coords: Tuple[int, int, int, int],
+                              debug_output_dir: Path):
+        """
+        Save ROI-specific debug images.
+        
+        Args:
+            original_frame: Original full frame
+            cropped_frame: Cropped ROI frame
+            cropped_mask: Cropped ROI mask
+            roi_coords: ROI coordinates (x1, y1, x2, y2)
+            debug_output_dir: Directory to save debug images
+        """
+        if original_frame is None or cropped_frame is None or cropped_mask is None:
+            logger.warning("[DEBUG] Cannot save ROI debug images: input is None")
+            return
+        
+        try:
+            x1, y1, x2, y2 = roi_coords
+            
+            # Save ROI placement visualization
+            roi_placement = original_frame.copy()
+            # Draw bright red rectangle around ROI
+            cv2.rectangle(roi_placement, (x1, y1), (x2, y2), (0, 0, 255), 3)
+            # Add text label
+            cv2.putText(roi_placement, f"ROI: {x2-x1}x{y2-y1}", (x1, y1-10),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+            
+            roi_placement_path = debug_output_dir / "DEBUG_roi_placement.jpg"
+            cv2.imwrite(str(roi_placement_path), roi_placement)
+            logger.info(f"[DEBUG] Saved ROI placement: {roi_placement_path}")
+            
+            # Save cropped frame (model input)
+            crop_path = debug_output_dir / "DEBUG_model_input_crop.jpg"
+            cv2.imwrite(str(crop_path), cropped_frame)
+            logger.info(f"[DEBUG] Saved model input crop: {crop_path}")
+            
+            # Save cropped mask
+            mask_path = debug_output_dir / "DEBUG_mask_generated.jpg"
+            cv2.imwrite(str(mask_path), cropped_mask)
+            logger.info(f"[DEBUG] Saved generated mask: {mask_path}")
+            
+            # Save mask overlay on cropped frame
+            crop_overlay = cropped_frame.copy()
+            crop_h, crop_w = cropped_frame.shape[:2]
+            mask_resized = cv2.resize(cropped_mask, (crop_w, crop_h))
+            crop_overlay[mask_resized > 127] = [0, 0, 255]  # Red overlay
+            overlay_path = debug_output_dir / "DEBUG_crop_mask_overlay.jpg"
+            cv2.imwrite(str(overlay_path), crop_overlay)
+            logger.info(f"[DEBUG] Saved crop mask overlay: {overlay_path}")
+            
+        except Exception as e:
+            logger.error(f"[DEBUG] Failed to save ROI debug images: {e}")
     def _stream_frames_and_masks(self, frame_dir: Path, mask_dir: Path) -> Generator:
         """Stream frames and masks one by one."""
         frame_paths = sorted(list(frame_dir.glob("*.png")) + 
@@ -378,10 +483,17 @@ class StreamingSubtitleRemoverService:
             # Ensure output directory exists
             request.output_dir.mkdir(parents=True, exist_ok=True)
 
+            # Create debug output directory if debug mode is enabled
+            debug_output_dir = request.output_dir.parent / "debug_output"
+            if self.debug_masks:
+                debug_output_dir.mkdir(parents=True, exist_ok=True)
+                logger.info(f"[DEBUG] Debug mode enabled. Output will be saved to: {debug_output_dir}")
+
             # 4. Streaming Loop with ROI optimization
             batch_size = 5  # Start optimistic
             chunk_start = 0
             total_frames = len(frame_paths)
+            first_batch_processed = False
 
             while chunk_start < total_frames:
                 chunk_end = min(chunk_start + batch_size, total_frames)
@@ -398,6 +510,16 @@ class StreamingSubtitleRemoverService:
                     frames.append(frame)
                     masks.append(mask)
 
+                # VISUAL DEBUGGING: Save debug images for first batch only
+                if self.debug_masks and not first_batch_processed:
+                    first_batch_processed = True
+                    self._save_debug_images(
+                        frames[0] if frames else None,
+                        masks[0] if masks else None,
+                        debug_output_dir,
+                        self.roi_model if self.use_roi_optimization else None
+                    )
+
                 # ROI Optimization: Crop frames and masks to ROI region
                 original_frames = frames  # Keep original for paste back
                 original_masks = masks
@@ -407,6 +529,16 @@ class StreamingSubtitleRemoverService:
                     frames, masks, roi_coords = self._crop_to_roi(frames, masks)
                     logger.info(f"ROI cropping applied: {roi_coords[2]-roi_coords[0]}x{roi_coords[3]-roi_coords[1]} "
                               f"(from {original_frames[0].shape[1]}x{original_frames[0].shape[0]})")
+                    
+                    # VISUAL DEBUGGING: Save ROI debug images
+                    if self.debug_masks:
+                        self._save_roi_debug_images(
+                            original_frames[0] if original_frames else None,
+                            frames[0] if frames else None,
+                            masks[0] if masks else None,
+                            roi_coords,
+                            debug_output_dir
+                        )
                 else:
                     roi_coords = (0, 0, original_frames[0].shape[1], original_frames[0].shape[0])
 
