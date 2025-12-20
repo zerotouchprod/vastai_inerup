@@ -64,20 +64,17 @@ class ThreadSafeOCR:
                 # Based on error, we should not include it at all
                 ocr_params = {
                     'lang': self.lang,
-                    'use_angle_cls': self.use_angle_cls,
-                    'det_model_dir': None,   # Use default mobile model
-                    'rec_model_dir': None,   # Use default mobile model
-                    'cls_model_dir': None,   # No classification model
-                    # AGGRESSIVE DETECTION TUNING
-                    'det_db_thresh': 0.1,          # Lower binarization threshold (default 0.3)
-                    'det_db_box_thresh': 0.2,      # Lower box threshold (default 0.6)
-                    'det_db_score_mode': 'slow',   # Use slow mode for better accuracy
-                    'det_db_unclip_ratio': 2.0,    # Expand detection boxes (default 1.5)
-                    'use_dilation': True,          # Use dilation for better detection
-                    'det_limit_side_len': 960,     # Increase side length limit
-                    'det_limit_type': 'max',       # Limit by max side
-                    'rec_thresh': 0.1,             # Keep recognition result even if confidence low (default 0.5)
-                    'show_log': False,             # Suppress logs
+                    'use_textline_orientation': self.use_angle_cls,
+                    'det_model_dir': None,   # Use default mobile model (deprecated but still works)
+                    'rec_model_dir': None,   # Use default mobile model (deprecated)
+                    'cls_model_dir': None,   # No classification model (deprecated)
+                    # AGGRESSIVE DETECTION TUNING (using new parameter names)
+                    'text_det_thresh': 0.1,          # Lower binarization threshold (default 0.3)
+                    'text_det_box_thresh': 0.2,      # Lower box threshold (default 0.6)
+                    'text_det_unclip_ratio': 2.0,    # Expand detection boxes (default 1.5)
+                    'text_det_limit_side_len': 960,  # Increase side length limit
+                    'text_det_limit_type': 'max',    # Limit by max side
+                    'text_rec_score_thresh': 0.1,    # Keep recognition result even if confidence low (default 0.5)
                 }
                 
                 # Do NOT add 'use_gpu' or 'gpu' parameters as they cause errors
