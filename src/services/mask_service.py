@@ -41,17 +41,16 @@ class MaskGeneratorService:
 
         logger.info(f"Initializing PaddleOCR with auto-healing configuration... Lang={self.lang}")
 
-        # Ideal configuration (wishlist) - Ultra sensitive detection
+        # Ideal configuration (wishlist) - Detection-only with extreme sensitivity
         ideal_config = {
-            "use_angle_cls": True,
+            "use_angle_cls": False,      # Disabled for stability
             "lang": self.lang,
             "use_gpu": self.use_gpu,
             "show_log": False,
             "enable_mkldnn": True,
-            "det_db_thresh": 0.1,        # Ultra sensitive detection
-            "det_db_box_thresh": 0.3,    # Keep low confidence boxes
-            "det_db_unclip_ratio": 2.0,  # Expand boxes significantly
-            "rec_thresh": 0.5,
+            "det_db_thresh": 0.05,       # 5% confidence needed (Hallucinate text if needed)
+            "det_db_box_thresh": 0.2,    # Keep very weak boxes
+            "det_db_unclip_ratio": 2.5,  # Expand boxes significantly (2.5x)
         }
 
         # Robust initialization
@@ -148,8 +147,8 @@ class MaskGeneratorService:
 
     def process_image(self, image_input: Union[str, np.ndarray]) -> Tuple[np.ndarray, List[str]]:
         """
-        Process a single image: run triple-pass OCR, generate mask, black out text.
-        Returns masked image and list of detected texts.
+        Process a single image: run triple-pass OCR detection-only, generate mask, black out text.
+        Returns masked image and dummy text list (since recognition is disabled).
         """
         try:
             # 1. Load Image
@@ -166,32 +165,32 @@ class MaskGeneratorService:
             h_orig, w_orig = img.shape[:2]
             mask_accum = np.zeros((h_orig * 2, w_orig * 2), dtype=np.uint8)
             
-            detected_texts = []
+            # Since recognition is disabled, we return dummy text
+            detected_texts = ["<hidden_text>"]
             variants = self._enhance_variants(img)
 
-            # 3. Run OCR on all variants
+            # 3. Run OCR on all variants (detection-only)
             found_any = False
             for i, variant in enumerate(variants):
-                result = self.ocr.ocr(variant, cls=True)
+                # CRITICAL: rec=False, cls=False, det=True
+                result = self.ocr.ocr(variant, det=True, rec=False, cls=False)
                 
-                # Handle Paddle result structure
-                scan_result = result[0] if (isinstance(result, list) and len(result) > 0) else result
+                if not result:
+                    continue
 
-                if scan_result:
+                # PaddleOCR result structure varies with version/batch
+                # Safe normalization:
+                boxes = result[0] if (isinstance(result, list) and len(result) > 0) else []
+                
+                if boxes:
                     found_any = True
-                    for line in scan_result:
-                        if not line: continue
-                        coords = line[0]     # [[x1,y1], ...]
-                        text = line[1][0]    # "detected text"
-                        detected_texts.append(text)
-                        
-                        # Draw filled polygon on accumulator
-                        points = np.array(coords, dtype=np.int32)
+                    for box in boxes:
+                        # Box is [[x,y], [x,y], [x,y], [x,y]]
+                        points = np.array(box, dtype=np.int32)
                         cv2.fillPoly(mask_accum, [points], 255)
 
             if not found_any:
-                logger.info("PaddleOCR found 0 text regions in all passes.")
-                # Return original image and empty list (No masking)
+                logger.info("PaddleOCR (Detection Only) found 0 regions.")
                 return img, []
 
             # 4. Downscale Mask to original size
@@ -206,7 +205,7 @@ class MaskGeneratorService:
             masked_img = img.copy()
             masked_img[mask_dilated > 0] = (0, 0, 0) # Black out text
 
-            return masked_img, list(set(detected_texts))
+            return masked_img, detected_texts
 
         except Exception as e:
             logger.error(f"Error during masking process: {e}", exc_info=True)
@@ -257,13 +256,15 @@ class MaskGeneratorService:
 
             for i, img_variant in enumerate(variants):
                 try:
-                    result = self.ocr.ocr(img_variant, cls=True, rec=True)
-                    if result and result[0]:
+                    # Detection-only: rec=False, cls=False, det=True
+                    result = self.ocr.ocr(img_variant, det=True, rec=False, cls=False)
+                    if not result:
+                        continue
+                    boxes = result[0] if (isinstance(result, list) and len(result) > 0) else []
+                    if boxes:
                         found_something = True
-                        # logger.debug(f"OCR Pass {i+1} found text!")
-                        for line in result[0]:
-                            coords = line[0]
-                            points = np.array(coords, dtype=np.int32)
+                        for box in boxes:
+                            points = np.array(box, dtype=np.int32)
                             cv2.fillPoly(mask_accum, [points], 255)
                 except Exception:
                     continue
