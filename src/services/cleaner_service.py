@@ -1,4 +1,7 @@
 import tempfile
+import shutil
+import cv2
+import numpy as np
 from pathlib import Path
 from src.shared.logging import get_logger
 
@@ -9,6 +12,7 @@ class SubtitleRemoverService:
         self.mask_service = mask_service
         self.inpainter = inpainter
         self.roi = roi
+        logger.warning(f"ROI parameter '{roi}' is deprecated. Using full-frame processing instead.")
 
     def process(self, input_path, output_path: Path, **kwargs):
         """
@@ -20,39 +24,53 @@ class SubtitleRemoverService:
             with tempfile.TemporaryDirectory() as temp_dir:
                 temp_path = Path(temp_dir)
                 mask_dir = temp_path / "masks"
+                mask_dir.mkdir()
                 
                 # Handle list of frame paths
                 if isinstance(input_path, list):
-                    # Convert list of frames to video file for mask service
-                    # For now, create a temporary directory with frames
+                    # Convert list of frames to directory
                     frames_dir = temp_path / "input_frames"
                     frames_dir.mkdir()
-                    import shutil
                     for i, frame_path in enumerate(input_path):
                         if isinstance(frame_path, Path):
                             shutil.copy(frame_path, frames_dir / f"frame_{i:06d}{frame_path.suffix}")
                         else:
                             shutil.copy(Path(frame_path), frames_dir / f"frame_{i:06d}{Path(frame_path).suffix}")
                     
-                    # Use MaskGeneratorService for frames (OCR-only, no SAM2)
-                    # This is better for frame-based processing
-                    from src.services.mask_service import MaskGeneratorService
-                    mask_service = MaskGeneratorService(lang='en', use_gpu=True)
-                    mask_service.generate_masks(frames_dir, mask_dir)
+                    # Generate binary masks for frames
+                    self._generate_binary_masks(frames_dir, mask_dir)
                     
                     # Pass frames directory to inpainter
                     result_path = self.inpainter.process(frames_dir, mask_dir, output_path)
                 else:
-                    # Original video file path
-                    # 1. Генерация масок (OCR + SAM2) - use the provided mask service
-                    self.mask_service.create_video_masks(input_path, mask_dir, roi=self.roi)
+                    # Original video file or frames directory
+                    input_path = Path(input_path)
                     
-                    # 2. Inpainting (ProPainter)
-                    # ProPainter сам сохранит видео. Нужно проконтролировать путь.
-                    result_path = self.inpainter.process(input_path, mask_dir, output_path)
+                    if input_path.is_dir():
+                        # Frames directory
+                        frames_dir = input_path
+                        # Generate binary masks for frames
+                        self._generate_binary_masks(frames_dir, mask_dir)
+                        
+                        # Pass frames directory to inpainter
+                        result_path = self.inpainter.process(frames_dir, mask_dir, output_path)
+                    else:
+                        # Video file - extract frames first
+                        from src.infrastructure.media.ffmpeg import FFmpegExtractor
+                        extractor = FFmpegExtractor()
+                        frames_dir = temp_path / "extracted_frames"
+                        frames_dir.mkdir()
+                        
+                        logger.info(f"Extracting frames from video: {input_path}")
+                        extractor.extract_frames(input_path, frames_dir)
+                        
+                        # Generate binary masks for frames
+                        self._generate_binary_masks(frames_dir, mask_dir)
+                        
+                        # Pass frames directory to inpainter
+                        result_path = self.inpainter.process(frames_dir, mask_dir, output_path)
                 
             # Return a result object that the orchestrator expects
-            # Create a simple object with success attribute
             class SimpleResult:
                 def __init__(self, success=True, output_path=None):
                     self.success = success
@@ -70,6 +88,52 @@ class SubtitleRemoverService:
                     self.errors = [str(e)] if errors is None else errors
             
             return SimpleResult(success=False, output_path=None, errors=[str(e)])
+
+    def _generate_binary_masks(self, frames_dir: Path, mask_dir: Path):
+        """
+        Generate binary masks (black background with white filled polygons) for all frames.
+        This replaces the old mask service that created green overlays and applied ROI cropping.
+        """
+        logger.info(f"Generating binary masks for frames in {frames_dir}")
+        
+        # Get OCR service
+        from src.infrastructure.ocr.paddle_wrapper import PaddleWrapper
+        ocr = PaddleWrapper(lang='en', use_gpu=True)
+        
+        frames = sorted(list(frames_dir.glob("*.jpg")) + list(frames_dir.glob("*.png")))
+        if not frames:
+            raise ValueError(f"No frames found in {frames_dir}")
+        
+        for frame_path in frames:
+            img = cv2.imread(str(frame_path))
+            if img is None:
+                logger.warning(f"Failed to read frame: {frame_path}")
+                continue
+            
+            # Get image dimensions
+            h, w = img.shape[:2]
+            
+            # OCR detection with confidence threshold
+            bboxes = ocr.detect(img, confidence_threshold=0.2)
+            
+            # Create black background (1 channel)
+            mask = np.zeros((h, w), dtype=np.uint8)
+            
+            for bbox in bboxes:
+                points = np.array(bbox['points'], dtype=np.int32)
+                # Draw white polygon on mask
+                cv2.fillPoly(mask, [points], 255)
+            
+            # Apply dilation to ensure text is fully covered
+            if len(bboxes) > 0:
+                kernel = np.ones((10, 10), np.uint8)
+                mask = cv2.dilate(mask, kernel, iterations=2)
+            
+            # Save mask with same name as frame (but .png extension)
+            mask_name = f"{frame_path.stem}.png"
+            cv2.imwrite(str(mask_dir / mask_name), mask)
+        
+        logger.info(f"Generated {len(frames)} binary masks in {mask_dir}")
 
 # Keep old SubtitleRemoverService for backward compatibility
 class LegacySubtitleRemoverService:
