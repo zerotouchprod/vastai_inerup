@@ -153,6 +153,14 @@ RUN echo "Downloading ProPainter weights..." && \
     wget -q --show-progress https://github.com/sczhou/ProPainter/releases/download/v0.1.0/recurrent_flow_completion.pth && \
     echo "✓ ProPainter weights downloaded"
 
+Добавить перед блоком COPY entrypoint.sh
+# SAM 2 Installation
+RUN pip install --no-cache-dir git+https://github.com/facebookresearch/segment-anything-2.git
+
+# Download SAM 2 Checkpoint (Tiny or Small is enough for text)
+RUN mkdir -p /opt/sam2_checkpoints && \
+    wget -q https://dl.fbaipublicfiles.com/segment_anything_2/072824/sam2_hiera_small.pt -O /opt/sam2_checkpoints/sam2_hiera_small.pt
+
 # Возвращаем рабочую директорию
 WORKDIR /workspace/project
 ENV PROPAINTER_ROOT="/opt/ProPainter"
@@ -160,7 +168,6 @@ ENV PYTHONPATH="${PYTHONPATH}:/opt/ProPainter"
 ENV CUDA_VISIBLE_DEVICES="0"
 ENV NVIDIA_VISIBLE_DEVICES="all"
 ENV NVIDIA_DRIVER_CAPABILITIES="compute,utility"
-
 
 # Pre-download PaddleOCR models for faster startup (using improved script)
 COPY docker/preload_paddleocr_fixed.py /tmp/preload_paddleocr.py

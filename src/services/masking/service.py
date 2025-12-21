@@ -9,6 +9,9 @@ from typing import List, Tuple, Union, Optional
 import numpy as np
 import cv2
 
+# !!! ВАЖНО: Блокируем GPU, чтобы PaddleOCR/Torch не падали с ошибкой Error 500
+os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+
 from src.services.masking.interfaces import TextDetector
 from src.services.masking.detectors.ocr_engine import OCREngine
 from src.services.masking.detectors.cv_engine import CVEngine
@@ -53,22 +56,26 @@ class HybridMaskService:
         # Initialize detectors
         
         # --- DEBUG MODE: OCR DISABLED ---
-        # self.ocr_engine = OCREngine(
-        #     lang=lang,
-        #     use_gpu=use_gpu_for_ocr,
-        #     confidence_threshold=confidence_threshold
-        # )
-        self.ocr_engine = None
-        logger.warning("!!! OCR Engine manually DISABLED for Sobel testing !!!")
+        try:
+            self.ocr_engine = OCREngine(
+                lang=lang,
+                use_gpu=False,  # Строго CPU
+                confidence_threshold=confidence_threshold
+            )
+            logger.info("OCR Engine initialized successfully on CPU.")
+        except Exception as e:
+            logger.error(f"OCR init failed: {e}")
+            self.ocr_engine = None
+       # logger.warning("!!! OCR Engine manually DISABLED for Sobel testing !!!")
         # -------------------------------
         
         self.cv_engine = CVEngine(mask_dilation=mask_dilation)
         
         # Log detector status
-        if self.ocr_engine is not None:
-            logger.info("OCR Engine ready")
-        else:
-            logger.warning("OCR Engine not available - will rely on CV Engine only")
+        # if self.ocr_engine is not None:
+        #     logger.info("OCR Engine ready")
+        # else:
+        #     logger.warning("OCR Engine not available - will rely on CV Engine only")
         
         logger.info("CV Engine ready")
     
