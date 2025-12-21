@@ -341,11 +341,18 @@ class ProPainterAdapter:
             # We need to extract frames from the video
             if len(videos) > 0 and len(images) == 0:
                 logger.info(f"ProPainter created video file(s) instead of images. Need to extract frames.")
-                # For now, just use the first video
-                video_file = videos[0]
-                logger.info(f"Video file: {video_file}")
-                # We should extract frames, but for now just return the output path
-                # The caller will need to handle video files
+                # Prefer inpaint_out.mp4 over masked_in.mp4 (inpaint_out is the actual result)
+                video_file = None
+                for v in videos:
+                    if "inpaint_out" in v.name.lower():
+                        video_file = v
+                        break
+                if video_file is None:
+                    video_file = videos[0]  # Fallback to first video
+                logger.info(f"Selected video file for extraction: {video_file}")
+                # Extract frames from the video
+                extracted_frames = self._extract_frames_from_video(video_file, output_path)
+                logger.info(f"Extracted {len(extracted_frames)} frames from {video_file.name}")
                 return output_path
             
             for img in images:
