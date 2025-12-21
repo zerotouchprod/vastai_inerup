@@ -22,7 +22,7 @@ class ProPainterAdapter:
         self.weights_path = weights_path or f"{PROPAINTER_ROOT}/weights/ProPainter.pth"
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    def process(self, input_path: Path, mask_dir: Path, output_path: Path) -> Path:
+    def process(self, input_path, mask_dir: Path, output_path: Path) -> Path:
         """
         Process input with ProPainter.
         
@@ -30,6 +30,7 @@ class ProPainterAdapter:
             input_path: Can be either:
                 - Path to video file (.mp4, .avi, etc.)
                 - Path to directory containing frames (jpg/png)
+                - List of Path objects (frame paths)
             mask_dir: Directory containing mask frames (jpg/png)
             output_path: Output path (file if input is video, directory if input is frames)
             
@@ -37,6 +38,26 @@ class ProPainterAdapter:
             Path to output (file or directory)
         """
         logger.info("Starting ProPainter Inpainting...")
+        
+        # Handle list of frame paths
+        if isinstance(input_path, list):
+            # Create temporary directory for frames
+            import tempfile
+            import shutil
+            with tempfile.TemporaryDirectory(prefix="propainter_frames_") as tmp_dir:
+                tmp_path = Path(tmp_dir)
+                # Copy frames to temporary directory
+                for i, frame_path in enumerate(input_path):
+                    if isinstance(frame_path, Path):
+                        shutil.copy(frame_path, tmp_path / f"frame_{i:06d}{frame_path.suffix}")
+                    else:
+                        shutil.copy(Path(frame_path), tmp_path / f"frame_{i:06d}{Path(frame_path).suffix}")
+                # Process as frames directory
+                return self._process_frames_dir(tmp_path, mask_dir, output_path)
+        
+        # Convert to Path if it's a string
+        if not isinstance(input_path, Path):
+            input_path = Path(input_path)
         
         # Check if input_path is a directory (frames) or file (video)
         if input_path.is_dir():

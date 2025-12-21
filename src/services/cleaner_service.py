@@ -10,7 +10,7 @@ class SubtitleRemoverService:
         self.inpainter = inpainter
         self.roi = roi
 
-    def process(self, input_path: Path, output_path: Path, **kwargs):
+    def process(self, input_path, output_path: Path, **kwargs):
         """
         Метод, который вызывает Orchestrator.
         """
@@ -20,12 +20,33 @@ class SubtitleRemoverService:
             temp_path = Path(temp_dir)
             mask_dir = temp_path / "masks"
             
-            # 1. Генерация масок (OCR + SAM2)
-            self.mask_service.create_video_masks(input_path, mask_dir, roi=self.roi)
-            
-            # 2. Inpainting (ProPainter)
-            # ProPainter сам сохранит видео. Нужно проконтролировать путь.
-            self.inpainter.process(input_path, mask_dir, output_path)
+            # Handle list of frame paths
+            if isinstance(input_path, list):
+                # Convert list of frames to video file for mask service
+                # For now, create a temporary directory with frames
+                frames_dir = temp_path / "input_frames"
+                frames_dir.mkdir()
+                import shutil
+                for i, frame_path in enumerate(input_path):
+                    if isinstance(frame_path, Path):
+                        shutil.copy(frame_path, frames_dir / f"frame_{i:06d}{frame_path.suffix}")
+                    else:
+                        shutil.copy(Path(frame_path), frames_dir / f"frame_{i:06d}{Path(frame_path).suffix}")
+                
+                # Use frames directory for mask generation if service supports it
+                # For now, pass the first frame as representative (hack)
+                self.mask_service.create_video_masks(frames_dir, mask_dir, roi=self.roi)
+                
+                # Pass frames directory to inpainter
+                self.inpainter.process(frames_dir, mask_dir, output_path)
+            else:
+                # Original video file path
+                # 1. Генерация масок (OCR + SAM2)
+                self.mask_service.create_video_masks(input_path, mask_dir, roi=self.roi)
+                
+                # 2. Inpainting (ProPainter)
+                # ProPainter сам сохранит видео. Нужно проконтролировать путь.
+                self.inpainter.process(input_path, mask_dir, output_path)
             
         return output_path
 
