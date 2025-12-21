@@ -201,41 +201,48 @@ class ProPainterAdapter:
             # Sort results to ensure consistent ordering
             results = sorted(results)
             
-            # Map ProPainter output files back to original frame names
-            # ProPainter outputs files as 0000.png, 0001.png, etc.
-            # We need to map these back to the original frame names in this chunk
-            for idx, res_file in enumerate(results):
-                # If it's a video file, we need to extract frames
-                if res_file.suffix.lower() in ['.mp4', '.avi']:
-                    logger.info(f"   -> Video file detected: {res_file}. Need to extract frames.")
-                    # Extract frames from video
-                    try:
-                        extracted_frames = self._extract_frames_from_video(res_file, c_output)
-                        # Map each extracted frame to its corresponding original frame
-                        for frame_idx, frame_file in enumerate(extracted_frames):
-                            if frame_idx < len(chunk_frames):
-                                original_frame = chunk_frames[frame_idx]
-                                original_name = original_frame.stem  # e.g., frame_000015
-                                processed_frames_map[original_name] = frame_file
-                                logger.debug(f"Mapped extracted frame {frame_idx} to {original_name}")
-                        logger.info(f"   -> Extracted {len(extracted_frames)} frames from video")
-                    except Exception as e:
-                        logger.error(f"Failed to extract frames from video {res_file}: {e}")
+            # Process image files first
+            image_files = [r for r in results if r.suffix.lower() in ['.png', '.jpg', '.jpeg']]
+            video_files = [r for r in results if r.suffix.lower() in ['.mp4', '.avi']]
+            
+            # Process image files
+            for idx, res_file in enumerate(image_files):
+                # It's an image file
+                # ProPainter outputs files as 0000.png, 0001.png, etc.
+                # Map these to the original frame names in this chunk
+                if idx < len(chunk_frames):
+                    original_frame = chunk_frames[idx]
+                    original_name = original_frame.stem  # e.g., frame_000015
+                    # Важно: сохраняем по оригинальному имени (frame_00001.png)
+                    processed_frames_map[original_name] = res_file
+                    logger.debug(f"Mapped ProPainter output {res_file.name} to original frame {original_name}")
                 else:
-                    # It's an image file
-                    # ProPainter outputs files as 0000.png, 0001.png, etc.
-                    # Map these to the original frame names in this chunk
-                    if idx < len(chunk_frames):
-                        original_frame = chunk_frames[idx]
-                        original_name = original_frame.stem  # e.g., frame_000015
-                        # Важно: сохраняем по оригинальному имени (frame_00001.png)
-                        processed_frames_map[original_name] = res_file
-                        logger.debug(f"Mapped ProPainter output {res_file.name} to original frame {original_name}")
-                    else:
-                        # If we have more results than expected, use the stem as-is
-                        frame_name = res_file.stem
-                        processed_frames_map[frame_name] = res_file
-                        logger.warning(f"Could not map ProPainter output {res_file.name} to original frame (idx={idx}, chunk_size={len(chunk_frames)})")
+                    # If we have more results than expected, use the stem as-is
+                    frame_name = res_file.stem
+                    processed_frames_map[frame_name] = res_file
+                    logger.warning(f"Could not map ProPainter output {res_file.name} to original frame (idx={idx}, chunk_size={len(chunk_frames)})")
+            
+            # Process video files - ONLY process inpaint_out.mp4 (actual result), ignore masked_in.mp4 (visualization)
+            for video_file in video_files:
+                # Only process inpaint_out.mp4 files (actual inpainted output)
+                # Skip masked_in.mp4 files (input with masks visualized)
+                if "masked_in" in video_file.name.lower():
+                    logger.info(f"   -> Skipping visualization video: {video_file.name}")
+                    continue
+                    
+                logger.info(f"   -> Processing result video: {video_file.name}")
+                try:
+                    extracted_frames = self._extract_frames_from_video(video_file, c_output)
+                    # Map each extracted frame to its corresponding original frame
+                    for frame_idx, frame_file in enumerate(extracted_frames):
+                        if frame_idx < len(chunk_frames):
+                            original_frame = chunk_frames[frame_idx]
+                            original_name = original_frame.stem  # e.g., frame_000015
+                            processed_frames_map[original_name] = frame_file
+                            logger.debug(f"Mapped extracted frame {frame_idx} from {video_file.name} to {original_name}")
+                    logger.info(f"   -> Extracted {len(extracted_frames)} frames from {video_file.name}")
+                except Exception as e:
+                    logger.error(f"Failed to extract frames from video {video_file}: {e}")
 
             # Clear CUDA cache between chunks to prevent OOM
             if torch.cuda.is_available():
