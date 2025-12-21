@@ -158,37 +158,23 @@ RUN pip install --no-cache-dir git+https://github.com/facebookresearch/segment-a
 # Download SAM 2 Checkpoint (Tiny or Small is enough for text)
 RUN mkdir -p /opt/sam2_checkpoints && \
     wget -q https://dl.fbaipublicfiles.com/segment_anything_2/072824/sam2_hiera_small.pt -O /opt/sam2_checkpoints/sam2_hiera_small.pt
-
-# 1. Сносим глючную GPU версию (именно она вызывает Segfault)
-RUN pip uninstall -y paddlepaddle-gpu paddleocr
-
-# 2. Ставим чистую CPU версию (версии 2.6.2, так как 2.6.1 не нашлась)
-# Она не умеет работать с видеокартой, поэтому Segfault невозможен физически.
-#pip install paddlepaddle==2.6.2
-
-# 3. Возвращаем сам OCR
-#pip install "paddleocr>=2.7.0"
-
-
-# Install OCR dependencies (moved to end for better caching)
+# Install OCR dependencies + EasyOCR
+# EasyOCR работает поверх PyTorch, версия 1.7.1+ стабильна
 RUN pip install --no-cache-dir \
     dataclasses-json>=0.6.0 \
-    paddlepaddle==2.6.2 \
-    paddleocr==2.8.1 \
     pydantic_settings==2.12.0 \
-    pytesseract && \
+    pytesseract \
+    easyocr>=1.7.1 && \
     rm -rf /root/.cache/pip /tmp/*
 
-# Pre-download PaddleOCR models for faster startup (using improved script)
-COPY docker/preload_paddleocr_fixed.py /tmp/preload_paddleocr.py
-RUN mkdir -p /root/.paddlex/official_models && \
+# Pre-download EasyOCR models (English + Cyrillic) during build
+# Это создаст папку /root/.EasyOCR/model и скачает туда веса,
+# чтобы не делать это в runtime.
+RUN echo "==========================================" && \
+    echo "Pre-downloading EasyOCR models (en, ru)..." && \
     echo "==========================================" && \
-    echo "Pre-downloading PaddleOCR models..." && \
-    echo "==========================================" && \
-    (DISABLE_MODEL_SOURCE_CHECK=True python3 /tmp/preload_paddleocr.py || echo "Preload step failed (non-fatal). Models will be downloaded at runtime.") && \
-    echo "==========================================" && \
-    echo "PaddleOCR models pre-download completed" && \
-    echo "=========================================="
+    python3 -c "import easyocr; easyocr.Reader(['en', 'ru'], gpu=False, verbose=True)" && \
+    echo "EasyOCR models downloaded successfully."
 
 RUN chmod +x /entrypoint.sh
 
