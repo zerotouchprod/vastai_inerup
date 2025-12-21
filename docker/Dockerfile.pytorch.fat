@@ -173,8 +173,7 @@ RUN pip install --no-cache-dir \
 RUN echo "==========================================" && \
     echo "Pre-downloading EasyOCR models (en, ru)..." && \
     echo "==========================================" && \
-    python3 -c "import easyocr; easyocr.Reader(['en', 'ru'], gpu=False, verbose=True)" && \
-    echo "EasyOCR models downloaded successfully."
+    python3 -c "import easyocr; easyocr.Reader(['en', 'ru'], gpu=False, verbose=True)"
 
 RUN chmod +x /entrypoint.sh
 
