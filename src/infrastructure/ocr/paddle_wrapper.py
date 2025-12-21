@@ -20,16 +20,63 @@ class PaddleWrapper:
         logger.info(f"Initializing PaddleOCR (lang={lang}, gpu={self.use_gpu}) [FORCED CPU MODE]")
 
         # PARANOID MODE: Low thresholds to detect faint/blurry text
-        self.ocr = PaddleOCR(
+        # Use robust initialization with auto-healing for unknown parameters
+        self.ocr = self._init_paddleocr_robust(
             use_angle_cls=True,
             lang=lang,
             use_gpu=self.use_gpu,  # forcing False here
-            show_log=False,  # Reduce internal spam
+            show_log=False,  # Reduce internal spam (may be removed if not supported)
             det_db_thresh=0.05,  # Very sensitive pixel detection
             det_db_box_thresh=0.1,  # Keep even low-conf boxes
             det_db_unclip_ratio=1.6,  # Expand boxes slightly
             rec_batch_num=6  # Batch size for recognition
         )
+
+    def _init_paddleocr_robust(self, **kwargs):
+        """
+        Initialize PaddleOCR with automatic removal of unsupported parameters.
+        
+        Args:
+            **kwargs: Parameters to pass to PaddleOCR constructor.
+            
+        Returns:
+            PaddleOCR instance.
+        """
+        import re
+        
+        attempts = 0
+        max_attempts = len(kwargs) + 2
+        current_params = kwargs.copy()
+        
+        # Regex patterns to detect unsupported argument errors
+        error_patterns = [
+            r"unexpected keyword argument ['\"]([^'\"]+)['\"]",
+            r"Unknown argument:?\s+([A-Za-z0-9_]+)",
+            r"got an unexpected keyword argument ['\"]([^'\"]+)['\"]"
+        ]
+        
+        while attempts < max_attempts:
+            try:
+                return PaddleOCR(**current_params)
+            except Exception as e:
+                error_msg = str(e)
+                bad_arg = None
+                for pattern in error_patterns:
+                    match = re.search(pattern, error_msg)
+                    if match:
+                        bad_arg = match.group(1)
+                        break
+                
+                if bad_arg and bad_arg in current_params:
+                    logger.warning(f"PaddleOCR removing unsupported argument: {bad_arg}")
+                    del current_params[bad_arg]
+                else:
+                    logger.error(f"PaddleOCR initialization failed: {e}")
+                    raise
+            attempts += 1
+        
+        # If we get here, all attempts failed
+        raise RuntimeError(f"Failed to initialize PaddleOCR after {max_attempts} attempts")
 
     def detect(self, image: Union[str, np.ndarray], confidence_threshold: float = 0.0) -> List[Dict[str, Any]]:
         """
