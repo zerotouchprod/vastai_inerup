@@ -2,13 +2,13 @@
 Masking package - provides the ultimate hybrid text detection service.
 """
 
-from .service import HybridMaskService
+from ..mask_service import MaskGeneratorService
 
 # Primary export: MaskService (the main class)
-MaskService = HybridMaskService
+MaskService = MaskGeneratorService
 
 # Alias for backward compatibility with existing imports
-MaskGeneratorService = HybridMaskService
+HybridMaskService = MaskGeneratorService
 
 __all__ = [
     'MaskService',

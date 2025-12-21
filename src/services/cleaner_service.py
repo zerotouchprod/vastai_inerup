@@ -46,8 +46,6 @@ class LegacySubtitleRemoverService:
         from src.core.config import get_config
         from src.core.device import get_device_manager
         from src.services.mask_service import MaskGeneratorService
-        from src.infrastructure.inpainting.propainter_loader import ProPainterLoader
-        from src.infrastructure.inpainting.propainter_adapter import ProPainterModelAdapter
         
         config = get_config()
         
@@ -70,12 +68,13 @@ class LegacySubtitleRemoverService:
             confidence_threshold=self.confidence_threshold
         )
         
-        # Initialize ProPainter components
-        self.propainter_loader = ProPainterLoader()
+        # Initialize ProPainter components (deprecated - will fail if used)
+        self.propainter_loader = None
         self.model_adapter = None
         self.model_loaded = False
         
         logger.info(f"LegacySubtitleRemoverService initialized (lang={self.lang}, dilation={self.mask_dilation})")
+        logger.warning("ProPainterLoader is deprecated. This service may not work properly.")
     
     def process(self, request):
         """Deprecated process method."""
