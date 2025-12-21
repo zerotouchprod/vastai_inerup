@@ -198,27 +198,44 @@ class ProPainterAdapter:
             
             logger.info(f"   -> Chunk {i+1} returned {len(results)} files (images + videos)")
 
-            for res_file in results:
+            # Sort results to ensure consistent ordering
+            results = sorted(results)
+            
+            # Map ProPainter output files back to original frame names
+            # ProPainter outputs files as 0000.png, 0001.png, etc.
+            # We need to map these back to the original frame names in this chunk
+            for idx, res_file in enumerate(results):
                 # If it's a video file, we need to extract frames
                 if res_file.suffix.lower() in ['.mp4', '.avi']:
                     logger.info(f"   -> Video file detected: {res_file}. Need to extract frames.")
                     # Extract frames from video
                     try:
                         extracted_frames = self._extract_frames_from_video(res_file, c_output)
-                        for frame_file in extracted_frames:
-                            frame_name = frame_file.stem
-                            processed_frames_map[frame_name] = frame_file
+                        # Map each extracted frame to its corresponding original frame
+                        for frame_idx, frame_file in enumerate(extracted_frames):
+                            if frame_idx < len(chunk_frames):
+                                original_frame = chunk_frames[frame_idx]
+                                original_name = original_frame.stem  # e.g., frame_000015
+                                processed_frames_map[original_name] = frame_file
+                                logger.debug(f"Mapped extracted frame {frame_idx} to {original_name}")
                         logger.info(f"   -> Extracted {len(extracted_frames)} frames from video")
                     except Exception as e:
                         logger.error(f"Failed to extract frames from video {res_file}: {e}")
                 else:
                     # It's an image file
-                    # Важно: сохраняем по оригинальному имени (frame_00001.png)
-                    # ProPainter обычно сохраняет имя файла, но может менять расширение
-                    frame_name = res_file.stem
-                    # Простая логика: перезаписываем.
-                    # Т.к. мы идем слева направо, последние чанки перекроют перекрытия (overlap) предыдущих.
-                    processed_frames_map[frame_name] = res_file
+                    # ProPainter outputs files as 0000.png, 0001.png, etc.
+                    # Map these to the original frame names in this chunk
+                    if idx < len(chunk_frames):
+                        original_frame = chunk_frames[idx]
+                        original_name = original_frame.stem  # e.g., frame_000015
+                        # Важно: сохраняем по оригинальному имени (frame_00001.png)
+                        processed_frames_map[original_name] = res_file
+                        logger.debug(f"Mapped ProPainter output {res_file.name} to original frame {original_name}")
+                    else:
+                        # If we have more results than expected, use the stem as-is
+                        frame_name = res_file.stem
+                        processed_frames_map[frame_name] = res_file
+                        logger.warning(f"Could not map ProPainter output {res_file.name} to original frame (idx={idx}, chunk_size={len(chunk_frames)})")
 
             # Clear CUDA cache between chunks to prevent OOM
             if torch.cuda.is_available():
