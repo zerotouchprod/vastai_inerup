@@ -79,15 +79,6 @@ RUN pip install --no-cache-dir \
     gdown && \
     rm -rf /root/.cache/pip /tmp/*
 
-# --- NEW: OCR/Inpainting support (PaddleOCR/Tesseract + scikit-image) ---
-# Install PaddleOCR with GPU support, pytesseract and scikit-image for subtitle detection and mask processing.
-# Используем версию PaddlePaddle совместимую с CUDA 12.1 (используем CUDA 12.0 версию, которая совместима)
-RUN pip install --no-cache-dir \
-    scikit-image tqdm && \
-    echo "Installing PaddlePaddle with GPU support for CUDA 12.1 (using CUDA 12.0 version)..." && \
-    pip install --no-cache-dir paddlepaddle-gpu==2.6.1.post120 -f https://www.paddlepaddle.org.cn/whl/linux/mkl/avx/stable.html && \
-    pip install --no-cache-dir paddleocr pytesseract && \
-    rm -rf /root/.cache/pip /tmp/*
 
 # Install Real-ESRGAN and RIFE as Python packages to avoid missing modules at runtime
 RUN set -eux; \
@@ -161,13 +152,21 @@ ENV CUDA_VISIBLE_DEVICES="0"
 ENV NVIDIA_VISIBLE_DEVICES="all"
 ENV NVIDIA_DRIVER_CAPABILITIES="compute,utility"
 
+# Install OCR dependencies (moved to end for better caching)
+RUN pip install --no-cache-dir \
+    dataclasses-json>=0.6.0 \
+    paddlepaddle-gpu==2.6.1.post120 -f https://www.paddlepaddle.org.cn/whl/linux/mkl/avx/stable.html \
+    paddleocr==2.8.1 \
+    pytesseract && \
+    rm -rf /root/.cache/pip /tmp/*
+
 # Pre-download PaddleOCR models for faster startup (using improved script)
 COPY docker/preload_paddleocr_fixed.py /tmp/preload_paddleocr.py
 RUN mkdir -p /root/.paddlex/official_models && \
     echo "==========================================" && \
     echo "Pre-downloading PaddleOCR models..." && \
     echo "==========================================" && \
-    DISABLE_MODEL_SOURCE_CHECK=True python3 /tmp/preload_paddleocr.py && \
+    (DISABLE_MODEL_SOURCE_CHECK=True python3 /tmp/preload_paddleocr.py || echo "Preload step failed (non-fatal). Models will be downloaded at runtime.") && \
     echo "==========================================" && \
     echo "PaddleOCR models pre-download completed" && \
     echo "=========================================="
