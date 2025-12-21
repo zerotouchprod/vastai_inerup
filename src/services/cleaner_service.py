@@ -9,10 +9,10 @@ logger = get_logger(__name__)
 
 class SubtitleRemoverService:
     def __init__(self, mask_service, inpainter, roi="bottom"):
-        self.mask_service = mask_service
+        # ROI parameter is ignored - always use full-frame processing
+        # mask_service parameter is also ignored - we generate our own binary masks
         self.inpainter = inpainter
-        self.roi = roi
-        logger.warning(f"ROI parameter '{roi}' is deprecated. Using full-frame processing instead.")
+        logger.info(f"SubtitleRemoverService initialized (ignoring ROI parameter, using full-frame processing)")
 
     def process(self, input_path, output_path: Path, **kwargs):
         """
