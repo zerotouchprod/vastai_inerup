@@ -1,150 +1,110 @@
 import cv2
 import numpy as np
+import logging
 from pathlib import Path
 from typing import List, Dict, Any, Union
-from paddleocr import PaddleOCR
-from src.shared.logging import get_logger
 
-logger = get_logger(__name__)
+# Попытка импорта EasyOCR. Если не установлен, будет ошибка при инициализации,
+# но не при загрузке модуля (чтобы не ломать тесты/CI).
+try:
+    import easyocr
+except ImportError:
+    easyocr = None
 
+logger = logging.getLogger(__name__)
 
 class PaddleWrapper:
+    """
+    Wrapper that mimics PaddleOCR interface but uses EasyOCR under the hood.
+    This solves the Segmentation Fault issues caused by PaddlePaddle C++ conflicts.
+    """
     def __init__(self, lang='en', use_gpu=True):
-        # --- FORCE CPU FIX ---
-        # We forcibly set use_gpu=False to prevent Segmentation Faults caused by
-        # conflicts between PaddlePaddle-GPU and the PyTorch Docker CUDA environment.
-        # OCR on CPU is fast enough (~0.1s/frame) and stable.
-        self.use_gpu = False
+        if easyocr is None:
+            raise ImportError("EasyOCR not installed. Please run: pip install easyocr")
+
+        # EasyOCR использует PyTorch и CUDA, конфликтов не будет.
+        # Если use_gpu=True, он будет использовать ту же GPU, что и остальной проект.
+        self.use_gpu = use_gpu
         self.lang = lang
-
-        logger.info(f"Initializing PaddleOCR (lang={lang}, gpu={self.use_gpu}) [FORCED CPU MODE]")
-
-        # PARANOID MODE: Low thresholds to detect faint/blurry text
-        # Use robust initialization with auto-healing for unknown parameters
-        self.ocr = self._init_paddleocr_robust(
-            use_angle_cls=True,
-            lang=lang,
-            use_gpu=self.use_gpu,  # forcing False here
-            show_log=False,  # Reduce internal spam (may be removed if not supported)
-            det_db_thresh=0.05,  # Very sensitive pixel detection
-            det_db_box_thresh=0.1,  # Keep even low-conf boxes
-            det_db_unclip_ratio=1.6,  # Expand boxes slightly
-            rec_batch_num=6  # Batch size for recognition
-        )
-
-    def _init_paddleocr_robust(self, **kwargs):
-        """
-        Initialize PaddleOCR with automatic removal of unsupported parameters.
         
-        Args:
-            **kwargs: Parameters to pass to PaddleOCR constructor.
+        # Маппинг языков (Paddle -> EasyOCR)
+        # EasyOCR поддерживает списки языков ['ru', 'en']
+        langs_list = [lang] if lang != 'en' else ['en']
+        if 'en' not in langs_list:
+            langs_list.append('en') # Всегда добавляем английский для лучшей работы модели
             
-        Returns:
-            PaddleOCR instance.
-        """
-        import re
+        logger.info(f"Initializing EasyOCR (langs={langs_list}, gpu={use_gpu})...")
         
-        attempts = 0
-        max_attempts = len(kwargs) + 2
-        current_params = kwargs.copy()
-        
-        # Regex patterns to detect unsupported argument errors
-        error_patterns = [
-            r"unexpected keyword argument ['\"]([^'\"]+)['\"]",
-            r"Unknown argument:?\s+([A-Za-z0-9_]+)",
-            r"got an unexpected keyword argument ['\"]([^'\"]+)['\"]"
-        ]
-        
-        while attempts < max_attempts:
-            try:
-                return PaddleOCR(**current_params)
-            except Exception as e:
-                error_msg = str(e)
-                bad_arg = None
-                for pattern in error_patterns:
-                    match = re.search(pattern, error_msg)
-                    if match:
-                        bad_arg = match.group(1)
-                        break
-                
-                if bad_arg and bad_arg in current_params:
-                    logger.warning(f"PaddleOCR removing unsupported argument: {bad_arg}")
-                    del current_params[bad_arg]
-                else:
-                    logger.error(f"PaddleOCR initialization failed: {e}")
-                    raise
-            attempts += 1
-        
-        # If we get here, all attempts failed
-        raise RuntimeError(f"Failed to initialize PaddleOCR after {max_attempts} attempts")
+        # Инициализация Reader. 
+        # При первом запуске он скачает модели в ~/.EasyOCR/model, если их там нет.
+        self.reader = easyocr.Reader(
+            langs_list, 
+            gpu=use_gpu,
+            verbose=False,
+            quantize=False # Отключаем квантование для максимальной точности
+        )
 
     def detect(self, image: Union[str, np.ndarray], confidence_threshold: float = 0.0) -> List[Dict[str, Any]]:
         """
-        Detect text in image and return list of text bounding boxes.
-        Default confidence set to 0.0 to allow external filtering.
+        Detect text using EasyOCR and adapt output to match Paddle format.
+        
+        Args:
+            image: Path to image or numpy array (BGR).
+            confidence_threshold: Min confidence to return box.
+            
+        Returns:
+            List of dicts: {'points': [[x,y]...], 'text': str, 'confidence': float}
         """
-        # 1. Read image
+        # 1. Загрузка изображения
         if isinstance(image, str):
             img = cv2.imread(image)
             if img is None:
                 logger.error(f"[ERROR] Could not read image: {image}")
                 return []
+            # EasyOCR ожидает RGB, OpenCV грузит BGR
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        elif isinstance(image, np.ndarray):
+            # Предполагаем, что вход уже BGR (как принято в OpenCV)
+            img = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         else:
-            img = image
-
-        if img is None:
             return []
 
-        # 2. Run OCR
+        # 2. Инференс
+        # EasyOCR returns list of tuples: (bbox, text, prob)
+        # bbox = [[x1, y1], [x2, y2], [x3, y3], [x4, y4]]
         try:
-            # cls=True needed for rotated text
-            result = self.ocr.ocr(img, cls=True)
+            results = self.reader.readtext(img)
         except Exception as e:
-            logger.error(f"PaddleOCR internal error: {e}")
+            logger.error(f"EasyOCR inference failed: {e}")
             return []
 
-        if not result:
-            return []
-
-        # 3. Normalize structure (Paddle returns [Page1, Page2...])
-        if result[0] is None:
-            return []
-
-        ocr_data = result[0]
         bboxes = []
-
-        for line in ocr_data:
-            # line structure: [[[x1, y1], [x2, y2], ...], ("text", confidence)]
-            try:
-                coords = line[0]
-                text_info = line[1]
-
-                text_content = text_info[0]
-                conf = text_info[1]
-
-                # Filter by confidence
-                if conf < confidence_threshold:
-                    continue
-
-                # Convert float coordinates to int
-                points = [[int(p[0]), int(p[1])] for p in coords]
-
-                bboxes.append({
-                    "points": points,
-                    "text": text_content,
-                    "confidence": conf
-                })
-            except Exception as e:
-                logger.warning(f"Error parsing OCR line: {line}. Error: {e}")
+        
+        # 3. Адаптация формата под PaddleOCR (чтобы не ломать mask_service)
+        for (bbox, text, prob) in results:
+            if prob < confidence_threshold:
                 continue
+                
+            # EasyOCR возвращает int coordinates, но в формате list of lists
+            # Нам нужно [[x,y], [x,y]...]
+            # Иногда bbox это numpy array, иногда list
+            points = [[int(pt[0]), int(pt[1])] for pt in bbox]
+            
+            bboxes.append({
+                "points": points,
+                "text": text,
+                "confidence": float(prob)
+            })
 
-        logger.info(f"PaddleWrapper found {len(bboxes)} text blocks (thresh={confidence_threshold})")
+        logger.info(f"EasyOCR found {len(bboxes)} text blocks (thresh={confidence_threshold})")
         return bboxes
 
+    # --- Backward compatibility methods (Legacy) ---
+    
     def detect_text(self, frame: np.ndarray, confidence_threshold=0.0) -> list:
         """
         Returns list of BBox [x1, y1, x2, y2] for found text.
-        (Backward compatibility method)
+        Compatible with old cleaners.
         """
         detections = self.detect(frame, confidence_threshold)
         bboxes = []
@@ -158,18 +118,18 @@ class PaddleWrapper:
         return bboxes
 
 
-# Keep ThreadSafeOCR for backward compatibility with existing tests
+# Keep ThreadSafeOCR for backward compatibility with existing tests/factories
 class ThreadSafeOCR(PaddleWrapper):
-    """Backward compatibility wrapper for ThreadSafeOCR."""
-
+    """
+    Backward compatibility wrapper. 
+    Previously used for threading, now just inherits EasyOCR logic.
+    """
     def __init__(self, lang: str = 'en', use_gpu_for_ocr: bool = False, use_angle_cls: bool = False):
         use_gpu = use_gpu_for_ocr
         super().__init__(lang=lang, use_gpu=use_gpu)
 
     def process_batch(self, images: List[np.ndarray], confidence_threshold: float = 0.3) -> List[np.ndarray]:
-        import warnings
-        warnings.warn("ThreadSafeOCR.process_batch is deprecated.", DeprecationWarning)
-
+        # Legacy method support
         masks = []
         for img in images:
             bboxes = self.detect_text(img, confidence_threshold)
@@ -180,26 +140,26 @@ class ThreadSafeOCR(PaddleWrapper):
                 cv2.rectangle(mask, (x1, y1), (x2, y2), 255, -1)
             masks.append(mask)
         return masks
-
-    def create_masks_for_directory(self, input_dir: Path, output_dir: Path,
+    
+    def create_masks_for_directory(self, input_dir: Path, output_dir: Path, 
                                    batch_size: int = 8, confidence_threshold: float = 0.3) -> Path:
         output_dir.mkdir(parents=True, exist_ok=True)
         frames = sorted(list(input_dir.glob("*.png")) + list(input_dir.glob("*.jpg")))
-
-        logger.info(f"Generating masks for {len(frames)} frames...")
-
+        
+        logger.info(f"Generating masks for {len(frames)} frames using EasyOCR...")
+        
         for frame_path in frames:
             img = cv2.imread(str(frame_path))
             if img is None: continue
-
+                
             bboxes = self.detect_text(img, confidence_threshold)
             h, w = img.shape[:2]
             mask = np.zeros((h, w), dtype=np.uint8)
             for bbox in bboxes:
                 x1, y1, x2, y2 = map(int, bbox)
                 cv2.rectangle(mask, (x1, y1), (x2, y2), 255, -1)
-
+            
             mask_path = output_dir / frame_path.name
             cv2.imwrite(str(mask_path), mask)
-
+        
         return output_dir
