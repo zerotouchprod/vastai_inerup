@@ -19,7 +19,8 @@ services:
     volumes:
       - .:/workspace/project
     working_dir: /workspace/project
-    command: -c "python docker/check_gpu.py && echo 'GPU check completed. Ready for processing.' && tail -f /dev/null"
+    #command: -c "python docker/check_gpu.py && echo 'GPU check completed. Ready for processing.' && bash"
+    command: -c "tail -f /dev/null"
     deploy:
       resources:
         reservations:

@@ -9,7 +9,7 @@ logger = get_logger(__name__)
 
 class PaddleWrapper:
     def __init__(self, lang='en', use_gpu=True):
-        self.ocr = PaddleOCR(use_angle_cls=True, lang=lang, use_gpu=use_gpu, show_log=False)
+        self.ocr = PaddleOCR(use_angle_cls=True, lang=lang)
 
     def detect_text(self, frame: np.ndarray, confidence_threshold=0.6) -> list:
         """

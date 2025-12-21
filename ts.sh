@@ -1,0 +1,1 @@
+python3 scripts/process_image.py --image test_img/frame_000001.png --output testsubs --roi 0.2,0.4,0.6,0.3 --subs-lang ru --debug 1 --confidence 0.6

@@ -221,7 +221,7 @@ Examples:
     parser.add_argument(
         "--subs-lang",
         type=str,
-        default='en',
+        default='ru',
         help='Language code for PaddleOCR (examples: en, ru, ch). Affects accuracy.'
     )
     

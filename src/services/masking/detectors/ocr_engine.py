@@ -44,8 +44,6 @@ class OCREngine(TextDetector):
         self.config = {
             "use_angle_cls": False,
             "lang": self.lang,
-            "use_gpu": self.use_gpu,
-            "show_log": False,
             "enable_mkldnn": True,
             "det_db_thresh": 0.1,
             "det_db_box_thresh": 0.2,

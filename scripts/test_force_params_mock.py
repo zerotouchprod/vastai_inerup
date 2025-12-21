@@ -38,7 +38,6 @@ class TestMaskServiceForcedParams(unittest.TestCase):
             "use_angle_cls": True,
             "lang": "en",
             "use_gpu": False,
-            "show_log": False,
             "enable_mkldnn": True,
             "det_db_thresh": 0.3,
             "det_db_box_thresh": 0.6,

@@ -63,8 +63,6 @@ def main():
         ocr = PaddleOCR(
             lang='en',
             use_angle_cls=False,
-            show_log=False,
-            use_gpu=False,  # CPU only for model downloading
             enable_mkldnn=True  # Use MKL-DNN for better CPU performance
         )
         
@@ -75,8 +73,6 @@ def main():
         ocr_ru = PaddleOCR(
             lang='ru',
             use_angle_cls=False,
-            show_log=False,
-            use_gpu=False,
             enable_mkldnn=True
         )
         logger.info("✓ PaddleOCR Russian model initialized")

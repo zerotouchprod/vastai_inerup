@@ -8,7 +8,7 @@ print('Importing PaddleOCR...')
 from paddleocr import PaddleOCR
 
 print('Creating OCR instance...')
-ocr = PaddleOCR(lang='ru', show_log=False, text_det_thresh=0.1, text_det_box_thresh=0.1, text_rec_score_thresh=0.01)
+ocr = PaddleOCR(lang='ru', text_det_thresh=0.1, text_det_box_thresh=0.1, text_rec_score_thresh=0.01)
 
 print('OCR created successfully')
 print('Testing on sample image...')

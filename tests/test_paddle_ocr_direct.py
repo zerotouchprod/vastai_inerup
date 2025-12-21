@@ -13,8 +13,6 @@ def test_ocr_direct():
     ocr = PaddleOCR(
         use_angle_cls=True,
         lang='ru',
-        use_gpu=False,
-        show_log=False,
         det_db_thresh=0.1,
         det_db_box_thresh=0.1,
         det_db_unclip_ratio=2.5,
