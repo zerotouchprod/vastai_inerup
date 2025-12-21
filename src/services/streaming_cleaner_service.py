@@ -83,3 +83,21 @@ class StreamingSubtitleRemoverService:
             # Cleanup
             if work_dir.exists():
                 shutil.rmtree(work_dir)
+    
+    def is_available(self) -> bool:
+        """Check if subtitle remover is available (ProPainter + OCR)."""
+        try:
+            # Check OCR
+            import paddleocr  # noqa: F401
+            
+            # Check ProPainter - try to create adapter
+            # This is a simple check; actual availability would be determined
+            # when process_frames_direct is called
+            from src.infrastructure.inpainting.propainter_adapter import ProPainterAdapter
+            adapter = ProPainterAdapter()
+            # If we can create the adapter without errors, assume it's available
+            # (actual ProPainter availability would be checked when process is called)
+            return True
+            
+        except ImportError:
+            return False

@@ -34,3 +34,4 @@ paddleocr==2.8.1
 # Если на Vast.ai CUDA 12, pip сам подберет совместимый wheel,
 # либо укажем ссылку при установке.
 paddlepaddle-gpu==2.6.1
+pydantic_settings==2.12.0

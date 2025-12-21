@@ -1,0 +1,1 @@
+python3 pipeline_v2.py --input https://pub-773b6a974685445c8e187ddaab3f1135.r2.dev/test/mahoragatestcapsLOW3s.mp4 --mode remove-subtitles --subs-lang ru --type video --roi 0.05,0.6,0.9,0.1 --job=testjobssubs22346
