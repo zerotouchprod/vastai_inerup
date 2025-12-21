@@ -29,9 +29,17 @@ class PaddleWrapper:
         
         # Маппинг языков (Paddle -> EasyOCR)
         # EasyOCR поддерживает списки языков ['ru', 'en']
-        langs_list = [lang] if lang != 'en' else ['en']
+        # Handle case where lang might be a list or other iterable
+        if isinstance(lang, (list, tuple)):
+            # If lang is already a list/tuple, use it directly
+            langs_list = list(lang)
+        else:
+            # If lang is a string, create a list
+            langs_list = [lang] if lang != 'en' else ['en']
+        
+        # Ensure 'en' is in the list for better model performance
         if 'en' not in langs_list:
-            langs_list.append('en') # Всегда добавляем английский для лучшей работы модели
+            langs_list.append('en')
             
         logger.info(f"Initializing EasyOCR (langs={langs_list}, gpu={use_gpu})...")
         
