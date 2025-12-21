@@ -60,10 +60,11 @@ def main():
         logger.info("Initializing PaddleOCR English model...")
         
         # Initialize with minimal settings
+        # Disable MKL-DNN to avoid illegal instruction errors on some CPUs
         ocr = PaddleOCR(
             lang='en',
             use_angle_cls=False,
-            enable_mkldnn=True  # Use MKL-DNN for better CPU performance
+            enable_mkldnn=False  # Disable MKL-DNN to avoid CPU compatibility issues
         )
         
         logger.info("✓ PaddleOCR English model initialized")
@@ -73,7 +74,7 @@ def main():
         ocr_ru = PaddleOCR(
             lang='ru',
             use_angle_cls=False,
-            enable_mkldnn=True
+            enable_mkldnn=False  # Disable MKL-DNN
         )
         logger.info("✓ PaddleOCR Russian model initialized")
         

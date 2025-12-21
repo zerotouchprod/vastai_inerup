@@ -76,17 +76,17 @@ RUN pip install --no-cache-dir \
     opencv-python-headless pillow tqdm pyyaml boto3 botocore \
     ffmpeg-python scikit-video scipy \
     imageio imageio-ffmpeg decorator moviepy \
-    gdown && \
+    gdown dataclasses-json>=0.6.0 && \
     rm -rf /root/.cache/pip /tmp/*
 
 # --- NEW: OCR/Inpainting support (PaddleOCR/Tesseract + scikit-image) ---
 # Install PaddleOCR with GPU support, pytesseract and scikit-image for subtitle detection and mask processing.
-# Используем версию PaddlePaddle совместимую с CUDA 12.1 (используем CUDA 12.0 версию, которая совместима)
+# Используем версию PaddlePaddle совместимую с CUDA 12.1 (используем CUDA 12.1 версию для лучшей совместимости)
 RUN pip install --no-cache-dir \
     scikit-image tqdm && \
-    echo "Installing PaddlePaddle with GPU support for CUDA 12.1 (using CUDA 12.0 version)..." && \
-    pip install --no-cache-dir paddlepaddle-gpu==2.6.1.post120 -f https://www.paddlepaddle.org.cn/whl/linux/mkl/avx/stable.html && \
-    pip install --no-cache-dir paddleocr pytesseract && \
+    echo "Installing PaddlePaddle with GPU support for CUDA 12.1 (using CUDA 12.1 version)..." && \
+    pip install --no-cache-dir paddlepaddle-gpu==2.6.1.post121 -f https://www.paddlepaddle.org.cn/whl/linux/mkl/avx/stable.html && \
+    pip install --no-cache-dir paddleocr==2.8.1 pytesseract && \
     rm -rf /root/.cache/pip /tmp/*
 
 # Install Real-ESRGAN and RIFE as Python packages to avoid missing modules at runtime
@@ -167,7 +167,7 @@ RUN mkdir -p /root/.paddlex/official_models && \
     echo "==========================================" && \
     echo "Pre-downloading PaddleOCR models..." && \
     echo "==========================================" && \
-    DISABLE_MODEL_SOURCE_CHECK=True python3 /tmp/preload_paddleocr.py && \
+    (DISABLE_MODEL_SOURCE_CHECK=True python3 /tmp/preload_paddleocr.py || echo "Preload step failed (non-fatal). Models will be downloaded at runtime.") && \
     echo "==========================================" && \
     echo "PaddleOCR models pre-download completed" && \
     echo "=========================================="
