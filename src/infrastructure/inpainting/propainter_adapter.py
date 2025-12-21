@@ -78,13 +78,46 @@ class ProPainterAdapter:
         if not mask_dir.exists():
             raise FileNotFoundError(f"Masks dir not found: {mask_dir}")
 
+        # Get video dimensions to preserve aspect ratio
+        import cv2
+        cap = cv2.VideoCapture(str(video_path))
+        original_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        original_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        cap.release()
+        
+        original_aspect_ratio = original_width / original_height
+        
+        logger.info(f"Original video dimensions: {original_width}x{original_height} (aspect ratio: {original_aspect_ratio:.2f})")
+        
+        # Calculate target dimensions while preserving aspect ratio
+        # ProPainter works best with dimensions divisible by 32
+        # We'll scale the longer side to 960 while preserving aspect ratio
+        if original_width >= original_height:
+            # Landscape or square: width is longer side
+            target_width = 960
+            target_height = int(target_width / original_aspect_ratio)
+        else:
+            # Portrait: height is longer side
+            target_height = 960
+            target_width = int(target_height * original_aspect_ratio)
+        
+        # Ensure dimensions are divisible by 32 for ProPainter compatibility
+        target_width = (target_width // 32) * 32
+        target_height = (target_height // 32) * 32
+        
+        # Ensure minimum dimensions
+        target_width = max(target_width, 32)
+        target_height = max(target_height, 32)
+        
+        logger.info(f"ProPainter target dimensions: {target_width}x{target_height} (preserving aspect ratio)")
+
         cmd = [
             "python3", str(self.inference_script),
             "--video", str(video_path),
             "--mask", str(mask_dir),
             "--output", str(output_path.parent),
             "--save_format", "mp4",
-            "--width", "960", "--height", "540"  # Resize for stability/VRAM
+            "--width", str(target_width), "--height", str(target_height)  # Preserve aspect ratio
         ]
         
         logger.info(f"⚡ Executing ProPainter: {' '.join(cmd)}")
@@ -276,13 +309,54 @@ class ProPainterAdapter:
 
     def _run_inference_subprocess(self, video_path: Path, mask_path: Path, output_path: Path) -> Path:
         """Helper to run the actual CLI command"""
+        # Get original frame dimensions to preserve aspect ratio
+        import cv2
+        import numpy as np
+        
+        # Find first frame to get dimensions
+        frames = sorted(list(video_path.glob("*.jpg")) + list(video_path.glob("*.png")))
+        if not frames:
+            raise ValueError(f"No frames found in {video_path}")
+        
+        first_frame = frames[0]
+        img = cv2.imread(str(first_frame))
+        if img is None:
+            raise ValueError(f"Failed to read first frame: {first_frame}")
+        
+        original_height, original_width = img.shape[:2]
+        original_aspect_ratio = original_width / original_height
+        
+        logger.info(f"Original frame dimensions: {original_width}x{original_height} (aspect ratio: {original_aspect_ratio:.2f})")
+        
+        # Calculate target dimensions while preserving aspect ratio
+        # ProPainter works best with dimensions divisible by 32
+        # We'll scale the longer side to 960 while preserving aspect ratio
+        if original_width >= original_height:
+            # Landscape or square: width is longer side
+            target_width = 960
+            target_height = int(target_width / original_aspect_ratio)
+        else:
+            # Portrait: height is longer side
+            target_height = 960
+            target_width = int(target_height * original_aspect_ratio)
+        
+        # Ensure dimensions are divisible by 32 for ProPainter compatibility
+        target_width = (target_width // 32) * 32
+        target_height = (target_height // 32) * 32
+        
+        # Ensure minimum dimensions
+        target_width = max(target_width, 32)
+        target_height = max(target_height, 32)
+        
+        logger.info(f"ProPainter target dimensions: {target_width}x{target_height} (preserving aspect ratio)")
+        
         # Try with --save_frames to get individual frames instead of video
         cmd = [
             "python3", str(self.inference_script),
             "--video", str(video_path),
             "--mask", str(mask_path),
             "--output", str(output_path),
-            "--width", "960", "--height", "540",
+            "--width", str(target_width), "--height", str(target_height),
             "--save_frames"  # Try to get individual frames instead of video
         ]
         
