@@ -93,6 +93,11 @@ class SubtitleRemoverService:
         """
         Generate binary masks (black background with white filled polygons) for all frames.
         This replaces the old mask service that created green overlays and applied ROI cropping.
+        
+        Updated parameters:
+        - confidence_threshold: 0.2 -> 0.35 (reduce false positives - don't detect eyes/hair as text)
+        - kernel: (10, 10) -> (15, 15) (more aggressive dilation to cover text shadows/outlines)
+        - iterations: 2 (maintained) for thorough dilation
         """
         logger.info(f"Generating binary masks for frames in {frames_dir}")
         
@@ -113,8 +118,9 @@ class SubtitleRemoverService:
             # Get image dimensions
             h, w = img.shape[:2]
             
-            # OCR detection with confidence threshold
-            bboxes = ocr.detect(img, confidence_threshold=0.2)
+            # OCR detection with higher confidence threshold to reduce false positives
+            # 0.35 instead of 0.2 to avoid detecting eyes/hair as text
+            bboxes = ocr.detect(img, confidence_threshold=0.35)
             
             # Create black background (1 channel)
             mask = np.zeros((h, w), dtype=np.uint8)
@@ -124,10 +130,11 @@ class SubtitleRemoverService:
                 # Draw white polygon on mask
                 cv2.fillPoly(mask, [points], 255)
             
-            # Apply dilation to ensure text is fully covered
+            # Apply more aggressive dilation to ensure text shadows/outlines are fully covered
+            # Prevents "purple soap" effect where leftover pixels get smeared
             if len(bboxes) > 0:
-                kernel = np.ones((10, 10), np.uint8)
-                mask = cv2.dilate(mask, kernel, iterations=2)
+                kernel = np.ones((15, 15), np.uint8)  # Larger kernel for more dilation
+                mask = cv2.dilate(mask, kernel, iterations=2)  # Two iterations for thorough coverage
             
             # Save mask with same name as frame (but .png extension)
             mask_name = f"{frame_path.stem}.png"
