@@ -14,39 +14,39 @@ logger = get_logger(__name__)
 
 class SubtitleRemoverService:
     """
-    Hybrid Cleaner Service (Final).
-    Features:
-    1. Dynamic Language Support (passed from CLI).
-    2. Hybrid Search: Standard + CLAHE (for low contrast text).
-    3. Mega Dilation: Prevents "purple soap" artifacts.
+    Final Balanced Service.
+    1. PROTECTS EYES: Uses high confidence (0.35) for standard detection.
+    2. CATCHES 'НА': Uses CLAHE enhancement specifically to find faint/short text.
+    3. REMOVES FOG: Uses MASSIVE dilation (30px kernel) to delete glow/shadows completely.
     """
 
     def __init__(self, mask_service, inpainter, lang='ru'):
         self.inpainter = inpainter
 
-        # --- ФИКС ЯЗЫКА ---
-        # 1. Превращаем строку 'ru' в список ['ru']
-        # 2. Всегда добавляем 'en', так как EasyOCR лучше работает в связке ['ru', 'en']
+        # Динамическая обработка языков из конфига
         if isinstance(lang, str):
             langs = [l.strip() for l in lang.split(',')]
         else:
             langs = lang if isinstance(lang, list) else ['en']
 
+        # Всегда добавляем английский, это улучшает работу модели
         if 'en' not in langs:
             langs.append('en')
 
         self.ocr_langs = langs
-
-        # Инициализируем OCR с правильными языками
         self.ocr = PaddleWrapper(lang=self.ocr_langs, use_gpu=True)
-        logger.info(f"SubtitleRemoverService initialized (Mode: HYBRID, Langs: {self.ocr_langs})")
+        logger.info(f"SubtitleRemoverService initialized. Langs: {self.ocr_langs}")
 
     def _enhance_image_for_ocr(self, img: np.ndarray) -> np.ndarray:
-        """CLAHE: Вытягивает скрытый/мелкий текст (для 'НА')."""
+        """
+        CLAHE (Contrast Limited Adaptive Histogram Equalization).
+        Делает "НА" видимым для нейросети.
+        """
         try:
             lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
             l, a, b = cv2.split(lab)
-            clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+            # ClipLimit 4.0 - агрессивный контраст
+            clahe = cv2.createCLAHE(clipLimit=4.0, tileGridSize=(8, 8))
             cl = clahe.apply(l)
             limg = cv2.merge((cl, a, b))
             final = cv2.cvtColor(limg, cv2.COLOR_LAB2BGR)
@@ -121,37 +121,14 @@ class SubtitleRemoverService:
             h, w = img.shape[:2]
             mask = np.zeros((h, w), dtype=np.uint8)
 
-            # --- Стратегия 1: Стандартный поиск ---
-            bboxes_standard = self.ocr.detect(img, confidence_threshold=0.3)
+            # --- ПРОХОД 1: Безопасный (Оригинал) ---
+            # Порог 0.35: Хорошо видит "РОДИЛСЯ", игнорирует глаза.
+            bboxes_standard = self.ocr.detect(img, confidence_threshold=0.35)
 
-            # --- Стратегия 2: Поиск скрытого текста (CLAHE + низкий порог) ---
+            # --- ПРОХОД 2: Снайперский (Улучшенный контраст) ---
+            # Только здесь мы можем увидеть "НА".
+            # Порог 0.25: Достаточно низкий для текста, но на контрастном фото глаза выглядят иначе.
             enhanced_img = self._enhance_image_for_ocr(img)
-            bboxes_aggressive = self.ocr.detect(enhanced_img, confidence_threshold=0.15)
+            bboxes_enhanced = self.ocr.detect(enhanced_img, confidence_threshold=0.25)
 
-            # Объединяем
-            all_bboxes = bboxes_standard + bboxes_aggressive
-
-            if not all_bboxes:
-                cv2.imwrite(str(mask_dir / f"{frame_path.stem}.png"), mask)
-                continue
-
-            for bbox in all_bboxes:
-                points = np.array(bbox['points'], dtype=np.int32)
-                cv2.fillPoly(mask, [points], 255)
-
-            # --- Mega Dilation ---
-            kernel = np.ones((20, 20), np.uint8)
-            mask = cv2.dilate(mask, kernel, iterations=3)
-
-            cv2.imwrite(str(mask_dir / f"{frame_path.stem}.png"), mask)
-
-        logger.info(f"Generated {len(frames)} masks")
-
-
-# Заглушка
-class LegacySubtitleRemoverService:
-    def __init__(self, *args, **kwargs):
-        pass
-
-    def process(self, request):
-        raise NotImplementedError("Legacy Service Removed")
+            # Объ
