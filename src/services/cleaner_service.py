@@ -8,11 +8,11 @@ from src.shared.logging import get_logger
 logger = get_logger(__name__)
 
 class SubtitleRemoverService:
-    def __init__(self, mask_service, inpainter, roi="bottom"):
-        # ROI parameter is ignored - always use full-frame processing
-        # mask_service parameter is also ignored - we generate our own binary masks
+    def __init__(self, mask_service, inpainter):
+        # Both mask_service and roi parameters are removed - we generate our own binary masks
+        # Always use full-frame processing, no ROI cropping
         self.inpainter = inpainter
-        logger.info(f"SubtitleRemoverService initialized (ignoring ROI parameter, using full-frame processing)")
+        logger.info(f"SubtitleRemoverService initialized (full-frame processing, no ROI cropping)")
 
     def process(self, input_path, output_path: Path, **kwargs):
         """

@@ -57,13 +57,12 @@ def create_orchestrator_from_config(config, allow_fallback: bool = False):
     subtitle_remover = None
 
     # Create subtitle remover only for remove-subtitles mode
-    subtitle_remover = None
     if config.mode == 'remove-subtitles':
         try:
             subtitle_remover = factory.create_subtitle_remover(
                 prefer=config.prefer,
                 lang=config.subtitle_language,
-                roi=getattr(config, 'ROI', 'bottom')
+                roi='full'  # Always use full-frame processing, ignore config.ROI
             )
             get_logger(__name__).info(f"Subtitle remover created (language: {config.subtitle_language})")
         except Exception as e:
@@ -82,7 +81,7 @@ def create_orchestrator_from_config(config, allow_fallback: bool = False):
                 subtitle_remover = factory.create_subtitle_remover(
                     prefer=config.prefer,
                     lang=config.subtitle_language,
-                    roi=getattr(config, 'ROI', 'bottom')
+                    roi='full'  # Always use full-frame processing
                 )
     except Exception as e:
         if config.strict:
