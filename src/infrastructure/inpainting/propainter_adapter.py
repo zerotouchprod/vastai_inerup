@@ -119,41 +119,38 @@ class ProPainterAdapter:
         if not mask_dir.exists():
             raise FileNotFoundError(f"Masks dir not found: {mask_dir}")
 
-        # Create output directory
-        output_dir.mkdir(parents=True, exist_ok=True)
-        
         # 1. Get list of all frames
+        # Ищем и png и jpg
         all_frames = sorted(list(frames_dir.glob("*.jpg")) + list(frames_dir.glob("*.png")))
         total_frames = len(all_frames)
         
+        if total_frames == 0:
+            raise ValueError(f"No frames found in {frames_dir}")
+
         logger.info(f"Preparing ProPainter for {total_frames} frames...")
         
-        # If frames are few, run directly (Fast Path)
+        # --- FAST PATH (Мало кадров) ---
         if total_frames <= self.CHUNK_SIZE:
             return self._run_inference_subprocess(frames_dir, mask_dir, output_dir)
             
-        # 2. Sliding Window Logic (Slow Path but Safe)
+        # --- SLOW PATH (Sliding Window) ---
         logger.info(f"Video too long ({total_frames} > {self.CHUNK_SIZE}). Using Sliding Window processing.")
         
-        # Create temporary directory for chunks
         import math
         chunk_base_dir = output_dir.parent / "propainter_chunks"
         if chunk_base_dir.exists(): 
             shutil.rmtree(chunk_base_dir)
         chunk_base_dir.mkdir()
         
-        # Calculate number of chunks
-        # Step = Size - Overlap
         step = self.CHUNK_SIZE - self.OVERLAP
         num_chunks = math.ceil((total_frames - self.OVERLAP) / step)
         
-        processed_frames_map = {}  # frame_name -> path_to_processed_chunk_file
+        processed_frames_map = {} 
 
         for i in range(num_chunks):
             start_idx = i * step
             end_idx = min(start_idx + self.CHUNK_SIZE, total_frames)
             
-            # Adjust last chunk to be full (if possible)
             if end_idx == total_frames:
                 start_idx = max(0, total_frames - self.CHUNK_SIZE)
                 
@@ -162,58 +159,72 @@ class ProPainterAdapter:
             
             logger.info(f"Processing Chunk {i+1}/{num_chunks}: Frames {start_idx}-{end_idx} ({len(chunk_frames)})")
             
-            # Prepare chunk directories
             c_input = chunk_base_dir / chunk_id / "frames"
             c_mask = chunk_base_dir / chunk_id / "masks"
             c_output = chunk_base_dir / chunk_id / "output"
             c_input.mkdir(parents=True)
             c_mask.mkdir(parents=True)
+            c_output.mkdir(parents=True)
             
-            # Copy files
+            # Копирование файлов
             for f in chunk_frames:
                 shutil.copy(f, c_input / f.name)
-                # Mask should have the same name
-                mask_src = mask_dir / f.name
-                if mask_src.exists():
-                    shutil.copy(mask_src, c_mask / f.name)
+                # Ищем маску (она может быть .png даже если кадр .jpg)
+                mask_src_png = mask_dir / f"{f.stem}.png"
+                mask_src_jpg = mask_dir / f"{f.stem}.jpg"
+                
+                if mask_src_png.exists():
+                    shutil.copy(mask_src_png, c_mask / mask_src_png.name)
+                elif mask_src_jpg.exists():
+                    shutil.copy(mask_src_jpg, c_mask / mask_src_jpg.name)
+                else:
+                    logger.warning(f"Mask not found for {f.name}")
             
-            # RUN INFERENCE ON CHUNK
+            # ЗАПУСК ИНФЕРЕНСА
             self._run_inference_subprocess(c_input, c_mask, c_output)
             
+            # СБОР РЕЗУЛЬТАТОВ
+            # ProPainter может создать подпапки. Ищем везде.
+            results = list(c_output.rglob("*.png")) + list(c_output.rglob("*.jpg"))
+            
+            logger.info(f"   -> Chunk {i+1} returned {len(results)} frames")
+
+            for res_file in results:
+                # Важно: сохраняем по оригинальному имени (frame_00001.png)
+                # ProPainter обычно сохраняет имя файла, но может менять расширение
+                frame_name = res_file.stem
+                # Простая логика: перезаписываем.
+                # Т.к. мы идем слева направо, последние чанки перекроют перекрытия (overlap) предыдущих.
+                processed_frames_map[frame_name] = res_file
+
             # Clear CUDA cache between chunks to prevent OOM
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
                 import gc
                 gc.collect()
-            
-            # Collect results (Merging Logic)
-            # ProPainter usually puts results in c_output/inpaint_out or just c_output
-            # Find where the result is
-            results = list(c_output.glob("**/*.png")) + list(c_output.glob("**/*.jpg"))
-            
-            for res_file in results:
-                frame_name = res_file.name
-                # Merging logic:
-                # If this frame was already processed (in previous chunk), we overwrite it,
-                # ONLY if we are in the "middle" of current chunk (where quality is higher),
-                # not on the edge. But for MVP just overwrite with new data.
-                processed_frames_map[frame_name] = res_file
 
-        # 3. Final assembly
-        logger.info("Merging chunks...")
+        # 3. Финальная сборка
+        logger.info(f"Merging chunks (Found {len(processed_frames_map)} unique frames)...")
         output_dir.mkdir(parents=True, exist_ok=True)
         
         final_count = 0
-        for fname in sorted(processed_frames_map.keys()):
-            src = processed_frames_map[fname]
-            shutil.copy(src, output_dir / fname)
+        # Сортируем по имени файла (frame_00001, frame_00002...)
+        for stem in sorted(processed_frames_map.keys()):
+            src = processed_frames_map[stem]
+            # Определяем расширение целевое (как у источника результата)
+            dst_name = f"{stem}{src.suffix}"
+            shutil.copy(src, output_dir / dst_name)
             final_count += 1
             
         # Cleanup
         if chunk_base_dir.exists(): 
             shutil.rmtree(chunk_base_dir)
         
-        logger.info(f"✅ Merged {final_count} frames successfully.")
+        if final_count == 0:
+             logger.error("CRITICAL: No frames were merged! ProPainter failed to produce output files.")
+        else:
+             logger.info(f"✅ Merged {final_count} frames successfully.")
+             
         return output_dir
 
     def _run_inference_subprocess(self, video_path: Path, mask_path: Path, output_path: Path) -> Path:
@@ -235,13 +246,18 @@ class ProPainterAdapter:
                 check=True
             )
             
-            # Проверка, что файлы создались (ProPainter иногда создает подпапку inpaint_out)
-            # Если создалась подпапка, перемещаем файлы на уровень выше
-            subfolder = output_path / "inpaint_out"
-            if subfolder.exists():
-                for f in subfolder.iterdir():
-                    shutil.move(str(f), str(output_path / f.name))
-                subfolder.rmdir()
+            # --- FLATTENING LOGIC ---
+            # Вытаскиваем все файлы из подпапок в корень output_path
+            # Это решает проблему, когда ProPainter создает output/input_folder_name/result.png
+            all_files = list(output_path.rglob("*"))
+            images = [f for f in all_files if f.is_file() and f.suffix.lower() in ['.png', '.jpg', '.jpeg']]
+            
+            for img in images:
+                # Если файл уже в корне - пропускаем
+                if img.parent == output_path:
+                    continue
+                # Перемещаем в корень
+                shutil.move(str(img), str(output_path / img.name))
                 
             return output_path
 
