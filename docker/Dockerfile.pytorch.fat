@@ -170,10 +170,10 @@ RUN pip install --no-cache-dir \
 # Pre-download EasyOCR models (English + Cyrillic) during build
 # Это создаст папку /root/.EasyOCR/model и скачает туда веса,
 # чтобы не делать это в runtime.
-RUN echo "==========================================" && \
-    echo "Pre-downloading EasyOCR models (en, ru)..." && \
-    echo "==========================================" && \
-    python3 -c "import easyocr; easyocr.Reader(['en', 'ru'], gpu=False, verbose=True)"
+#RUN echo "==========================================" && \
+#    echo "Pre-downloading EasyOCR models (en, ru)..." && \
+#    echo "==========================================" && \
+#    python3 -c "import easyocr; easyocr.Reader(['en', 'ru'], gpu=False, verbose=True)"
 
 RUN chmod +x /entrypoint.sh
 
