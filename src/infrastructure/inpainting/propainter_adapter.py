@@ -1,25 +1,17 @@
 import os
+import shutil
+import subprocess
 import sys
 import torch
 from pathlib import Path
 from src.shared.logging import get_logger
 
-# Добавляем путь к ProPainter в sys.path, чтобы импорты работали
-PROPAINTER_ROOT = os.getenv("PROPAINTER_ROOT", "/opt/ProPainter")
-if PROPAINTER_ROOT not in sys.path:
-    sys.path.append(PROPAINTER_ROOT)
-
-try:
-    from model.propainter import InpaintGenerator
-    # Предполагаем наличие функции инференса или пишем свою обертку, загружающую веса
-except ImportError:
-    pass # Обработаем в runtime
-
 logger = get_logger(__name__)
 
 class ProPainterAdapter:
-    def __init__(self, weights_path: str = None):
-        self.weights_path = weights_path or f"{PROPAINTER_ROOT}/weights/ProPainter.pth"
+    def __init__(self, propainter_root: str = None):
+        self.root = Path(propainter_root or os.getenv("PROPAINTER_ROOT", "/opt/ProPainter"))
+        self.inference_script = self.root / "inference_propainter.py"
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
 
     def process(self, input_path, mask_dir: Path, output_path: Path) -> Path:
@@ -43,7 +35,6 @@ class ProPainterAdapter:
         if isinstance(input_path, list):
             # Create temporary directory for frames
             import tempfile
-            import shutil
             with tempfile.TemporaryDirectory(prefix="propainter_frames_") as tmp_dir:
                 tmp_path = Path(tmp_dir)
                 # Copy frames to temporary directory
@@ -71,50 +62,102 @@ class ProPainterAdapter:
         """Process video file with ProPainter."""
         logger.info(f"Processing video file: {video_path}")
         
-        # Original implementation for video files
-        import subprocess
-        
+        if not video_path.exists():
+            raise FileNotFoundError(f"Video file not found: {video_path}")
+        if not mask_dir.exists():
+            raise FileNotFoundError(f"Masks dir not found: {mask_dir}")
+
         cmd = [
-            "python", f"{PROPAINTER_ROOT}/inference_propainter.py",
+            "python3", str(self.inference_script),
             "--video", str(video_path),
             "--mask", str(mask_dir),
             "--output", str(output_path.parent),
-            "--save_format", "mp4"
+            "--save_format", "mp4",
+            "--width", "960", "--height", "540"  # Resize for stability/VRAM
         ]
         
-        logger.debug(f"Executing: {' '.join(cmd)}")
-        process = subprocess.run(cmd, capture_output=True, text=True)
+        logger.info(f"⚡ Executing ProPainter: {' '.join(cmd)}")
         
-        if process.returncode != 0:
-            logger.error(f"ProPainter failed: {process.stderr}")
-            raise RuntimeError("ProPainter execution failed")
+        try:
+            if not self.inference_script.exists():
+                raise FileNotFoundError(f"ProPainter script not found at {self.inference_script}")
+
+            result = subprocess.run(
+                cmd, 
+                capture_output=True, 
+                text=True, 
+                cwd=str(self.root),
+                check=True
+            )
             
-        logger.info("ProPainter finished successfully.")
-        return output_path
+            # Verify results exist
+            results = list(output_path.parent.glob("**/*.mp4")) + list(output_path.parent.glob("**/*.avi"))
+            if not results:
+                logger.error(f"ProPainter finished but no output files found in {output_path.parent}")
+                logger.error(f"STDERR: {result.stderr}")
+                raise RuntimeError("ProPainter produced no output")
+                
+            logger.info(f"✅ ProPainter completed. Generated output video.")
+            return output_path
+
+        except subprocess.CalledProcessError as e:
+            logger.error(f"❌ ProPainter Crashed!")
+            logger.error(f"STDERR: {e.stderr}")
+            raise RuntimeError(f"ProPainter execution failed with code {e.returncode}")
     
     def _process_frames_dir(self, frames_dir: Path, mask_dir: Path, output_dir: Path) -> Path:
         """Process frames directory with ProPainter."""
         logger.info(f"Processing frames directory: {frames_dir}")
         
+        if not frames_dir.exists():
+            raise FileNotFoundError(f"Frames dir not found: {frames_dir}")
+        if not mask_dir.exists():
+            raise FileNotFoundError(f"Masks dir not found: {mask_dir}")
+
         # Create output directory
         output_dir.mkdir(parents=True, exist_ok=True)
         
-        # Check if frames_dir contains images
-        frame_files = sorted(list(frames_dir.glob("*.jpg")) + list(frames_dir.glob("*.png")))
-        if not frame_files:
-            raise ValueError(f"No frames found in {frames_dir}")
+        cmd = [
+            "python3", str(self.inference_script),
+            "--video", str(frames_dir),
+            "--mask", str(mask_dir),
+            "--output", str(output_dir),
+            "--width", "960", "--height", "540"  # Resize for stability/VRAM
+        ]
         
-        # For now, we'll create a simple implementation that copies frames
-        # (This is a placeholder - actual ProPainter integration would go here)
-        logger.warning("ProPainterAdapter._process_frames_dir() is a placeholder. Actual ProPainter integration needed.")
+        logger.info(f"⚡ Executing ProPainter: {' '.join(cmd)}")
         
-        # Placeholder: just copy frames as if they were processed
-        import shutil
-        for frame_path in frame_files:
-            shutil.copy(frame_path, output_dir / frame_path.name)
-        
-        logger.info(f"ProPainter processing complete. Results in {output_dir}")
-        return output_dir
+        try:
+            if not self.inference_script.exists():
+                raise FileNotFoundError(f"ProPainter script not found at {self.inference_script}")
+
+            result = subprocess.run(
+                cmd, 
+                capture_output=True, 
+                text=True, 
+                cwd=str(self.root),
+                check=True
+            )
+            
+            # ProPainter typically outputs to {output_dir}/inpaint_out or similar. 
+            # We need to find where it actually put the images.
+            # Usually it mirrors the input folder name or creates 'results'.
+            # For now, we assume it dumps into output_dir directly or a subfolder.
+            
+            # Verify results exist
+            results = list(output_dir.glob("**/*.jpg")) + list(output_dir.glob("**/*.png"))
+            if not results:
+                logger.error(f"ProPainter finished but no output files found in {output_dir}")
+                logger.error(f"STDERR: {result.stderr}")
+                raise RuntimeError("ProPainter produced no output")
+                
+            logger.info(f"✅ ProPainter completed. Generated {len(results)} frames.")
+            return output_dir
+
+        except subprocess.CalledProcessError as e:
+            logger.error(f"❌ ProPainter Crashed!")
+            logger.error(f"STDERR: {e.stderr}")
+            raise RuntimeError(f"ProPainter execution failed with code {e.returncode}")
 
 # Keep old ProPainterModelAdapter for backward compatibility
 class ProPainterModelAdapter:

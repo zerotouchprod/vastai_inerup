@@ -34,15 +34,17 @@ class SubtitleRemoverService:
                         else:
                             shutil.copy(Path(frame_path), frames_dir / f"frame_{i:06d}{Path(frame_path).suffix}")
                     
-                    # Use frames directory for mask generation if service supports it
-                    # For now, pass the first frame as representative (hack)
-                    self.mask_service.create_video_masks(frames_dir, mask_dir, roi=self.roi)
+                    # Use MaskGeneratorService for frames (OCR-only, no SAM2)
+                    # This is better for frame-based processing
+                    from src.services.mask_service import MaskGeneratorService
+                    mask_service = MaskGeneratorService(lang='en', use_gpu=True)
+                    mask_service.generate_masks(frames_dir, mask_dir)
                     
                     # Pass frames directory to inpainter
                     result_path = self.inpainter.process(frames_dir, mask_dir, output_path)
                 else:
                     # Original video file path
-                    # 1. Генерация масок (OCR + SAM2)
+                    # 1. Генерация масок (OCR + SAM2) - use the provided mask service
                     self.mask_service.create_video_masks(input_path, mask_dir, roi=self.roi)
                     
                     # 2. Inpainting (ProPainter)
