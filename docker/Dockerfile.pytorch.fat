@@ -155,7 +155,7 @@ ENV NVIDIA_DRIVER_CAPABILITIES="compute,utility"
 # Install OCR dependencies (moved to end for better caching)
 RUN pip install --no-cache-dir \
     dataclasses-json>=0.6.0 \
-    paddlepaddle==2.6.1 \
+    paddlepaddle==2.6.2 \
     paddleocr==2.8.1 \
     pytesseract && \
     rm -rf /root/.cache/pip /tmp/*
