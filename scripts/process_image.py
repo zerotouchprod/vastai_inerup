@@ -20,7 +20,68 @@ from src.shared.logging import get_logger
 
 logger = get_logger(__name__)
 
-def process_image(image_path: str, output_dir: str = None, debug: bool = False) -> str:
+def apply_roi(image: np.ndarray, roi_str: str):
+    """
+    Apply ROI to image for OCR detection.
+    
+    Args:
+        image: Input image
+        roi_str: ROI string (full, bottom, top, or x,y,w,h)
+        
+    Returns:
+        Tuple of (cropped_image, offset_x, offset_y)
+    """
+    h, w = image.shape[:2]
+    
+    if roi_str == 'full':
+        return image, 0, 0
+        
+    elif roi_str == 'bottom':
+        # Take bottom 30%
+        y_start = int(h * 0.7)
+        cropped = image[y_start:h, 0:w]
+        return cropped, 0, y_start
+        
+    elif roi_str == 'top':
+        # Take top 30%
+        y_end = int(h * 0.3)
+        cropped = image[0:y_end, 0:w]
+        return cropped, 0, 0
+        
+    else:
+        # Parse custom coordinates "x,y,w,h" (0.0-1.0)
+        try:
+            parts = roi_str.split(',')
+            if len(parts) != 4:
+                raise ValueError(f"Invalid ROI format: {roi_str}. Expected 'x,y,w,h'")
+            
+            x = float(parts[0])
+            y = float(parts[1])
+            width = float(parts[2])
+            height = float(parts[3])
+            
+            # Convert to pixel coordinates
+            x_px = int(x * w)
+            y_px = int(y * h)
+            w_px = int(width * w)
+            h_px = int(height * h)
+            
+            # Ensure coordinates are within bounds
+            x_px = max(0, min(x_px, w - 1))
+            y_px = max(0, min(y_px, h - 1))
+            w_px = max(1, min(w_px, w - x_px))
+            h_px = max(1, min(h_px, h - y_px))
+            
+            cropped = image[y_px:y_px+h_px, x_px:x_px+w_px]
+            return cropped, x_px, y_px
+            
+        except Exception as e:
+            logger.warning(f"Failed to parse ROI '{roi_str}': {e}. Using full image.")
+            return image, 0, 0
+
+
+def process_image(image_path: str, output_dir: str = None, debug: bool = False, 
+                  subs_lang: str = 'en', roi: str = 'full', confidence: float = 0.6) -> str:
     """
     Process single image to remove text.
     
@@ -28,6 +89,9 @@ def process_image(image_path: str, output_dir: str = None, debug: bool = False) 
         image_path: Path to input image
         output_dir: Output directory (default: same as input)
         debug: Save debug mask if True
+        subs_lang: Language code for OCR (en, ru, ch, etc.)
+        roi: Region of interest for text detection
+        confidence: Confidence threshold for text detection (0.0-1.0)
         
     Returns:
         Path to processed image
@@ -55,11 +119,32 @@ def process_image(image_path: str, output_dir: str = None, debug: bool = False) 
     
     h, w = image.shape[:2]
     logger.info(f"Image size: {w}x{h}")
+    logger.info(f"OCR language: {subs_lang}")
+    logger.info(f"ROI: {roi}")
     
-    # Step 1: Detect text with PaddleOCR
+    # Step 1: Detect text with PaddleOCR (with ROI)
     logger.info("Step 1/3: Detecting text with PaddleOCR...")
-    ocr = PaddleWrapper(lang='en', use_gpu=True)
-    bboxes = ocr.detect_text(image, confidence_threshold=0.6)
+    
+    # Apply ROI for OCR detection
+    ocr_image, offset_x, offset_y = apply_roi(image, roi)
+    logger.info(f"ROI applied: offset_x={offset_x}, offset_y={offset_y}, size={ocr_image.shape[1]}x{ocr_image.shape[0]}")
+    
+    # Initialize OCR with specified language
+    ocr = PaddleWrapper(lang=subs_lang, use_gpu=True)
+    bboxes = ocr.detect_text(ocr_image, confidence_threshold=confidence)
+    
+    # Adjust bbox coordinates back to original image
+    adjusted_bboxes = []
+    for bbox in bboxes:
+        x1, y1, x2, y2 = bbox
+        adjusted_bboxes.append([
+            x1 + offset_x,
+            y1 + offset_y,
+            x2 + offset_x,
+            y2 + offset_y
+        ])
+    
+    bboxes = adjusted_bboxes
     
     if not bboxes:
         logger.info("No text detected in image. Copying original image.")
@@ -134,9 +219,19 @@ Examples:
     )
     
     parser.add_argument(
-        "--lang",
-        default="en",
-        help="Language for OCR (default: en)"
+        "--subs-lang",
+        type=str,
+        default='en',
+        help='Language code for PaddleOCR (examples: en, ru, ch). Affects accuracy.'
+    )
+    
+    parser.add_argument(
+        "--roi",
+        type=str,
+        default='full',
+        help='Region of interest for text detection. '
+             'Presets: "bottom" (bottom 30%%), "top" (top 30%%), "full" (entire frame). '
+             'Or coordinates "x,y,w,h" (0.0-1.0), e.g. "0,0.8,1,0.2" for bottom.'
     )
     
     parser.add_argument(
@@ -153,7 +248,10 @@ Examples:
         output_path = process_image(
             image_path=args.image,
             output_dir=args.output,
-            debug=args.debug
+            debug=args.debug,
+            subs_lang=args.subs_lang,
+            roi=args.roi,
+            confidence=args.confidence
         )
         
         print(f"\n✅ Success! Processed image saved to: {output_path}")
