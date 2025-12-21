@@ -1,49 +1,54 @@
-"""
-Main orchestration service for subtitle removal with ProPainter.
-"""
-
-import logging
-import time
-import shutil
-import gc
+import tempfile
 from pathlib import Path
-from typing import Optional
+from src.shared.logging import get_logger
 
-import cv2
-import numpy as np
-import torch
-
-from src.core.config import get_config
-from src.core.device import get_device_manager
-from src.core.exceptions import ProcessingError, ModelLoadingError
-from src.domain.models import InpaintingRequest, ProcessingResult, ProcessingStats
-from src.infrastructure.inpainting.propainter_loader import ProPainterLoader
-from src.infrastructure.inpainting.propainter_adapter import ProPainterModelAdapter
-from src.infrastructure.utils.video_utils import read_video, save_frames
-from .mask_service import MaskGeneratorService
-
-logger = logging.getLogger(__name__)
-
+logger = get_logger(__name__)
 
 class SubtitleRemoverService:
-    """Main service for subtitle removal orchestration."""
+    def __init__(self, mask_service, inpainter, roi="bottom"):
+        self.mask_service = mask_service
+        self.inpainter = inpainter
+        self.roi = roi
+
+    def process(self, input_path: Path, output_path: Path, **kwargs):
+        """
+        Метод, который вызывает Orchestrator.
+        """
+        logger.info(f"Removing subtitles from {input_path}")
+        
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            mask_dir = temp_path / "masks"
+            
+            # 1. Генерация масок (OCR + SAM2)
+            self.mask_service.create_video_masks(input_path, mask_dir, roi=self.roi)
+            
+            # 2. Inpainting (ProPainter)
+            # ProPainter сам сохранит видео. Нужно проконтролировать путь.
+            self.inpainter.process(input_path, mask_dir, output_path)
+            
+        return output_path
+
+# Keep old SubtitleRemoverService for backward compatibility
+class LegacySubtitleRemoverService:
+    """Backward compatibility wrapper for old SubtitleRemoverService."""
     
     def __init__(self,
-                 lang: Optional[str] = None,
-                 mask_dilation: Optional[int] = None,
-                 use_gpu: Optional[bool] = None,
-                 use_gpu_for_ocr: Optional[bool] = None,
-                 confidence_threshold: Optional[float] = None):
-        """
-        Initialize subtitle remover service.
+                 lang: str = 'en',
+                 mask_dilation: int = 15,
+                 use_gpu: bool = True,
+                 use_gpu_for_ocr: bool = False,
+                 confidence_threshold: float = 0.1):
+        import warnings
+        warnings.warn("LegacySubtitleRemoverService is deprecated. Use SubtitleRemoverService with SAM2 pipeline instead.", DeprecationWarning)
         
-        Args:
-            lang: Language for OCR (default from config)
-            mask_dilation: Mask dilation radius (default from config)
-            use_gpu: Use GPU for inpainting (default from config)
-            use_gpu_for_ocr: Use GPU for OCR (default from config)
-            confidence_threshold: Confidence threshold for text detection (default from config)
-        """
+        # Keep old initialization for backward compatibility
+        from src.core.config import get_config
+        from src.core.device import get_device_manager
+        from src.services.mask_service import MaskGeneratorService
+        from src.infrastructure.inpainting.propainter_loader import ProPainterLoader
+        from src.infrastructure.inpainting.propainter_adapter import ProPainterModelAdapter
+        
         config = get_config()
         
         self.lang = lang or config.OCR_LANG
@@ -70,357 +75,8 @@ class SubtitleRemoverService:
         self.model_adapter = None
         self.model_loaded = False
         
-        # CPU fallback state
-        self.cpu_fallback_active = False
-        
-        logger.info(f"SubtitleRemoverService initialized (lang={self.lang}, "
-                   f"dilation={self.mask_dilation}, device={self.device})")
+        logger.info(f"LegacySubtitleRemoverService initialized (lang={self.lang}, dilation={self.mask_dilation})")
     
-    def load_model(self) -> None:
-        """Load ProPainter model if not already loaded."""
-        if self.model_loaded and self.model_adapter is not None:
-            return
-        
-        try:
-            # Check if ProPainter is available
-            if not self.propainter_loader.is_available():
-                raise ModelLoadingError("ProPainter is not available (modules or weights missing)")
-            
-            # Load model
-            model = self.propainter_loader.load_model(self.device)
-            
-            # Create adapter
-            self.model_adapter = ProPainterModelAdapter(model, self.device)
-            self.model_loaded = True
-            
-            logger.info("ProPainter model loaded successfully")
-            
-        except Exception as e:
-            raise ModelLoadingError(f"Failed to load ProPainter model: {e}")
-    
-    def _enable_cpu_fallback(self) -> None:
-        """
-        Enable CPU fallback mode by moving model to CPU and updating device.
-        """
-        if self.cpu_fallback_active:
-            return
-        
-        logger.warning("GPU failed even at batch_size=1. Switching to CPU Fallback Mode.")
-        
-        # Move model to CPU
-        cpu_device = torch.device("cpu")
-        self.model_adapter.to_device(cpu_device)
-        
-        # Update service device
-        self.device = cpu_device
-        self.cpu_fallback_active = True
-        
-        # Clear GPU cache
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        
-        logger.info("CPU fallback activated. Processing will continue on CPU.")
-    
-    def process(self, request: InpaintingRequest) -> ProcessingResult:
-        """
-        Process subtitle removal request.
-        
-        Args:
-            request: Inpainting request with input and output directories
-            
-        Returns:
-            Processing result with success status and statistics
-        """
-        start_time = time.time()
-        errors = []
-        
-        try:
-            logger.info(f"Starting subtitle removal: {request.input_dir} -> {request.output_dir}")
-            
-            # Load model
-            self.load_model()
-            
-            # Step 1: Generate masks
-            logger.info("Step 1/3: Generating masks...")
-            temp_mask_dir = request.output_dir.parent / "tmp_masks_propainter"
-            if temp_mask_dir.exists():
-                shutil.rmtree(temp_mask_dir)
-            
-            mask_dir = self.mask_service.generate_masks(
-                input_dir=request.input_dir,
-                output_dir=temp_mask_dir,
-                batch_size=get_config().BATCH_SIZE
-            )
-            
-            # Step 2: Read video and masks
-            logger.info("Step 2/3: Reading frames and masks...")
-            video_frames, fps = read_video(str(request.input_dir))
-            video_masks, _ = read_video(str(mask_dir), gray=True)
-            
-            # Prepare tensors
-            video_frames_t = torch.from_numpy(video_frames).permute(0, 3, 1, 2).float() / 255.0
-            video_masks_t = torch.from_numpy(video_masks).permute(0, 3, 1, 2).float() / 255.0
-            
-            # Step 3: Process frames in chunks
-            logger.info("Step 3/3: Running AI inpainting (ProPainter)...")
-            pred_frames = self._process_in_chunks(video_frames_t, video_masks_t)
-            
-            # Convert back to numpy and save
-            pred_frames = pred_frames.permute(0, 2, 3, 1).cpu().numpy() * 255.0
-            pred_frames = pred_frames.astype(np.uint8)
-            
-            # Save frames
-            request.output_dir.mkdir(parents=True, exist_ok=True)
-            save_frames(pred_frames, str(request.output_dir))
-            
-            # Cleanup
-            self.mask_service.cleanup_temp_dir(temp_mask_dir)
-            
-            # Calculate statistics
-            duration = time.time() - start_time
-            stats = ProcessingStats(
-                frames_total=len(pred_frames),
-                duration_seconds=duration,
-                device_used=str(self.device)
-            )
-            
-            logger.info(f"Processing complete. Total time: {duration:.1f}s, "
-                       f"Average speed: {len(pred_frames)/duration:.1f} FPS")
-            
-            return ProcessingResult(
-                success=True,
-                output_path=request.output_dir,
-                frames_processed=len(pred_frames),
-                errors=errors,
-                stats=stats
-            )
-            
-        except Exception as e:
-            duration = time.time() - start_time
-            error_msg = f"Subtitle removal failed: {e}"
-            logger.error(error_msg, exc_info=True)
-            errors.append(error_msg)
-            
-            # Cleanup on error
-            temp_mask_dir = request.output_dir.parent / "tmp_masks_propainter"
-            self.mask_service.cleanup_temp_dir(temp_mask_dir)
-            
-            return ProcessingResult(
-                success=False,
-                output_path=None,
-                frames_processed=0,
-                errors=errors,
-                stats=ProcessingStats(
-                    frames_total=0,
-                    duration_seconds=duration,
-                    device_used=str(self.device)
-                )
-            )
-    
-    def _process_in_chunks(self, frames: torch.Tensor, masks: torch.Tensor) -> torch.Tensor:
-        """
-        Process frames in chunks for memory efficiency.
-        
-        Args:
-            frames: Frames tensor of shape (T, C, H, W)
-            masks: Masks tensor of shape (T, 1, H, W)
-            
-        Returns:
-            Processed frames tensor of shape (T, C, H, W)
-        """
-        total_frames = frames.shape[0]
-        
-        # Estimate max batch size
-        max_frames_per_chunk = self.device_manager.estimate_max_batch_size(
-            frame_height=frames.shape[2],
-            frame_width=frames.shape[3],
-            model_memory_gb=2.0  # Estimated ProPainter memory usage
-        )
-        
-        if total_frames <= max_frames_per_chunk:
-            # Process all frames at once with OOM recovery
-            return self._process_chunk_with_oom_recovery(frames, masks, max_frames_per_chunk)
-        
-        # Process in chunks
-        logger.info(f"Processing {total_frames} frames in chunks of {max_frames_per_chunk}")
-        
-        pred_chunks = []
-        for chunk_start in range(0, total_frames, max_frames_per_chunk):
-            chunk_end = min(chunk_start + max_frames_per_chunk, total_frames)
-            logger.info(f"Processing chunk {chunk_start}-{chunk_end} of {total_frames}")
-            
-            # Extract chunk
-            frames_chunk = frames[chunk_start:chunk_end]
-            masks_chunk = masks[chunk_start:chunk_end]
-            
-            # Process chunk with OOM recovery
-            pred_chunk = self._process_chunk_with_oom_recovery(frames_chunk, masks_chunk, max_frames_per_chunk)
-            pred_chunks.append(pred_chunk.cpu())
-            
-            # Clear memory between chunks
-            self.device_manager.empty_cache()
-            
-            # Force garbage collection
-            gc.collect()
-            
-            # Small delay to allow memory cleanup
-            time.sleep(0.1)
-        
-        # Combine chunks
-        return torch.cat(pred_chunks, dim=0)
-    
-    def _process_chunk_with_oom_recovery(self, frames: torch.Tensor, masks: torch.Tensor, initial_batch_size: int) -> torch.Tensor:
-        """
-        Process a chunk of frames with OOM recovery.
-        
-        Args:
-            frames: Frames tensor of shape (T, C, H, W)
-            masks: Masks tensor of shape (T, 1, H, W)
-            initial_batch_size: Initial batch size to try
-            
-        Returns:
-            Processed frames tensor of shape (T, C, H, W)
-        """
-        current_batch_size = initial_batch_size
-        original_frames = frames
-        original_masks = masks
-        
-        while current_batch_size >= 1:
-            try:
-                # If we've reduced batch size, we need to split the chunk further
-                if current_batch_size < original_frames.shape[0]:
-                    # Process in sub-chunks of current_batch_size
-                    sub_preds = []
-                    for sub_start in range(0, original_frames.shape[0], current_batch_size):
-                        sub_end = min(sub_start + current_batch_size, original_frames.shape[0])
-                        sub_frames = original_frames[sub_start:sub_end]
-                        sub_masks = original_masks[sub_start:sub_end]
-                        
-                        # Process sub-chunk
-                        sub_pred = self.model_adapter.process_chunk(sub_frames, sub_masks)
-                        sub_preds.append(sub_pred)
-                        
-                        # Clear cache after each sub-chunk
-                        self.device_manager.empty_cache()
-                        gc.collect()
-                    
-                    # Combine sub-chunks
-                    return torch.cat(sub_preds, dim=0)
-                else:
-                    # Process whole chunk
-                    return self.model_adapter.process_chunk(original_frames, original_masks)
-                    
-            except torch.OutOfMemoryError:
-                # Clear cache and reduce batch size
-                torch.cuda.empty_cache()
-                gc.collect()
-                
-                new_batch_size = max(1, current_batch_size // 2)
-                logger.warning(
-                    f"OOM detected while processing chunk of size {current_batch_size}. "
-                    f"Retrying with batch size {new_batch_size}"
-                )
-                
-                if new_batch_size == current_batch_size:
-                    # Can't reduce further - activate CPU fallback
-                    if not self.cpu_fallback_active:
-                        self._enable_cpu_fallback()
-                        # After moving to CPU, retry the same chunk
-                        # Reset batch size to initial and continue loop
-                        current_batch_size = initial_batch_size
-                        continue
-                    else:
-                        # Already on CPU but still OOM? Should not happen, but raise
-                        raise ProcessingError(
-                            "CPU fallback active but still out of memory. "
-                            "This may indicate insufficient system RAM."
-                        )
-                
-                current_batch_size = new_batch_size
-                continue
-        
-        # If we exit loop, batch size < 1 (should not happen)
-        raise ProcessingError(
-            "Failed to process chunk even with batch size 1. "
-            "GPU VRAM insufficient for this resolution."
-        )
-    
-    def process_frames_direct(self, frame_paths: list[Path], output_dir: Path) -> ProcessingResult:
-        """
-        Process specific frame paths directly.
-        
-        Args:
-            frame_paths: List of frame paths to process
-            output_dir: Output directory for processed frames
-            
-        Returns:
-            Processing result
-        """
-        start_time = time.time()
-        errors = []
-        
-        try:
-            logger.info(f"Processing {len(frame_paths)} frames directly")
-            
-            # Load model
-            self.load_model()
-            
-            # Create temporary directories
-            temp_input_dir = output_dir.parent / "tmp_input_frames"
-            temp_mask_dir = output_dir.parent / "tmp_masks_direct"
-            
-            if temp_input_dir.exists():
-                shutil.rmtree(temp_input_dir)
-            if temp_mask_dir.exists():
-                shutil.rmtree(temp_mask_dir)
-            
-            temp_input_dir.mkdir(parents=True, exist_ok=True)
-            
-            # Copy frames to temporary directory
-            for frame_path in frame_paths:
-                shutil.copy2(frame_path, temp_input_dir / frame_path.name)
-            
-            # Create request
-            request = InpaintingRequest(
-                input_dir=temp_input_dir,
-                output_dir=output_dir
-            )
-            
-            # Process
-            result = self.process(request)
-            
-            # Cleanup
-            self.mask_service.cleanup_temp_dir(temp_input_dir)
-            self.mask_service.cleanup_temp_dir(temp_mask_dir)
-            
-            return result
-            
-        except Exception as e:
-            duration = time.time() - start_time
-            error_msg = f"Direct frame processing failed: {e}"
-            logger.error(error_msg, exc_info=True)
-            errors.append(error_msg)
-            
-            return ProcessingResult(
-                success=False,
-                output_path=None,
-                frames_processed=0,
-                errors=errors,
-                stats=ProcessingStats(
-                    frames_total=0,
-                    duration_seconds=duration,
-                    device_used=str(self.device)
-                )
-            )
-    
-    def is_available(self) -> bool:
-        """Check if subtitle remover is available (ProPainter + OCR)."""
-        try:
-            # Check OCR
-            import paddleocr  # noqa: F401
-            
-            # Check ProPainter
-            return self.propainter_loader.is_available()
-            
-        except ImportError:
-            return False
+    def process(self, request):
+        """Deprecated process method."""
+        raise NotImplementedError("LegacySubtitleRemoverService is deprecated. Use SubtitleRemoverService with SAM2 pipeline instead.")

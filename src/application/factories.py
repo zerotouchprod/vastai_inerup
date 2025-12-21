@@ -8,6 +8,13 @@ from src.infrastructure.processors import RifePytorchWrapper, RealESRGANPytorchW
 from src.infrastructure.processors.subtitle import SubtitleRemoverWrapper
 from src.shared.logging import get_logger
 
+# New imports for SAM2 + OCR pipeline
+from src.infrastructure.ocr.paddle_wrapper import PaddleWrapper
+from src.infrastructure.segmentation.sam2_adapter import Sam2Adapter
+from src.infrastructure.inpainting.propainter_adapter import ProPainterAdapter
+from src.services.masking.service import TextMaskService
+from src.services.cleaner_service import SubtitleRemoverService
+
 logger = get_logger(__name__)
 
 
@@ -95,7 +102,7 @@ class ProcessorFactory:
         Args:
             prefer: Backend preference ('auto', 'native', 'propainter') - deprecated, use backend parameter
             lang: Language code for OCR ('en', 'ru', etc.)
-            backend: Backend preference ('auto', 'native', 'propainter')
+            backend: Backend preference ('auto', 'native', 'propainter', 'sam2')
             roi: Region of Interest string (optional). If None, uses config default.
 
         Returns:
@@ -106,10 +113,35 @@ class ProcessorFactory:
             # If prefer is specified and backend is auto, use prefer
             backend = prefer
         
-        # Check for subtitle remover backend
+        # New SAM2 + OCR pipeline
+        if backend in ('sam2', 'auto'):
+            try:
+                # 1. OCR
+                ocr = PaddleWrapper(lang=lang, use_gpu=True)
+                
+                # 2. SAM 2
+                # Путь к чекпоинту должен быть в конфиге или ENV
+                sam2_ckpt = "/opt/sam2_checkpoints/sam2_hiera_small.pt"
+                sam2 = Sam2Adapter(checkpoint_path=sam2_ckpt)
+                
+                # 3. Mask Service
+                mask_service = TextMaskService(ocr=ocr, sam2=sam2)
+                
+                # 4. Inpainter
+                inpainter = ProPainterAdapter()
+                
+                # 5. Главный сервис
+                return SubtitleRemoverService(mask_service, inpainter, roi=roi)
+            except Exception as e:
+                self._logger.warning(f"SAM2 pipeline failed to initialize: {e}")
+                if backend == 'sam2':
+                    raise ProcessorNotAvailableError(f"SAM2 pipeline not available: {e}")
+                # Fall through to old backend if auto
+        
+        # Check for old subtitle remover backend (for backward compatibility)
         if backend in ('auto', 'propainter', 'native'):  # native тоже перенаправляем на ProPainter
             if SubtitleRemoverWrapper.is_available():
-                self._logger.info(f"Using subtitle remover backend (lang={lang})")
+                self._logger.info(f"Using legacy subtitle remover backend (lang={lang})")
                 return SubtitleRemoverWrapper(lang=lang, roi=roi)
             else:
                 raise ProcessorNotAvailableError("Subtitle remover not available (requires ProPainter installation in /opt/ProPainter)")

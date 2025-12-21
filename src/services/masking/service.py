@@ -1,225 +1,73 @@
-"""
-Main hybrid mask service that combines OCR and CV detectors.
-"""
-
-import logging
-import os
-from pathlib import Path
-from typing import List, Tuple, Union, Optional
-import numpy as np
 import cv2
+import shutil
+from pathlib import Path
+from typing import Dict, List
+from src.infrastructure.ocr.paddle_wrapper import PaddleWrapper
+from src.infrastructure.segmentation.sam2_adapter import Sam2Adapter
+from src.shared.logging import get_logger
+from tqdm import tqdm
 
-# !!! ВАЖНО: Блокируем GPU, чтобы PaddleOCR/Torch не падали с ошибкой Error 500
-os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+logger = get_logger(__name__)
 
-from src.services.masking.interfaces import TextDetector
-from src.services.masking.detectors.ocr_engine import OCREngine
-from src.services.masking.detectors.cv_engine import CVEngine
+class TextMaskService:
+    def __init__(self, ocr: PaddleWrapper, sam2: Sam2Adapter):
+        self.ocr = ocr
+        self.sam2 = sam2
 
-logger = logging.getLogger(__name__)
-
-
-class HybridMaskService:
-    """
-    Ultimate Hybrid MaskService that combines AI (PaddleOCR) and
-    Computer Vision (morphological operations) for robust text detection.
-    
-    Features:
-    - Version-agnostic OCR with auto-healing initialization.
-    - Morphological text hunter for colored/outlined text.
-    - Graceful degradation: works even if OCR fails.
-    - Batch processing support for video frames.
-    """
-    
-    def __init__(self,
-                 lang: str = 'en',
-                 mask_dilation: int = 15,
-                 use_gpu_for_ocr: bool = False,
-                 confidence_threshold: float = 0.1):
+    def create_video_masks(self, video_path: Path, output_dir: Path, roi: str = "bottom") -> Path:
         """
-        Initialize hybrid mask service.
-        
-        Args:
-            lang: Language for OCR (default: 'en')
-            mask_dilation: Dilation radius for masks (default: 15)
-            use_gpu_for_ocr: Use GPU for OCR if available (default: False)
-            confidence_threshold: Minimum confidence for text detection (default: 0.1)
+        Генерирует последовательность масок для видео.
+        1. Проходит по видео, запуская OCR каждые N кадров (key frames).
+        2. Передает найденные боксы в SAM 2 для точной сегментации всех кадров.
         """
-        self.lang = lang
-        self.mask_dilation = mask_dilation
-        self.use_gpu_for_ocr = use_gpu_for_ocr
-        self.confidence_threshold = confidence_threshold
+        cap = cv2.VideoCapture(str(video_path))
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         
-        logger.info(f"Initializing HybridMaskService (lang={lang}, dilation={mask_dilation}, "
-                   f"GPU={use_gpu_for_ocr}, confidence={confidence_threshold})")
+        # Стратегия: OCR запускаем каждые 1 секунду (или каждые 0.5 сек для динамики)
+        # Для TikTok лучше чаще, например каждые 10-15 кадров.
+        ocr_interval = int(fps / 2) if fps > 0 else 15
         
-        # Initialize detectors
+        bboxes_by_frame: Dict[int, List[List[float]]] = {}
         
-        # --- DEBUG MODE: OCR DISABLED ---
-        try:
-            self.ocr_engine = OCREngine(
-                lang=lang,
-                use_gpu=False,  # Строго CPU
-                confidence_threshold=confidence_threshold
-            )
-            logger.info("OCR Engine initialized successfully on CPU.")
-        except Exception as e:
-            logger.error(f"OCR init failed: {e}")
-            self.ocr_engine = None
-       # logger.warning("!!! OCR Engine manually DISABLED for Sobel testing !!!")
-        # -------------------------------
+        logger.info(f"Starting OCR detection (Interval: every {ocr_interval} frames)...")
         
-        self.cv_engine = CVEngine(mask_dilation=mask_dilation)
-        
-        # Log detector status
-        # if self.ocr_engine is not None:
-        #     logger.info("OCR Engine ready")
-        # else:
-        #     logger.warning("OCR Engine not available - will rely on CV Engine only")
-        
-        logger.info("CV Engine ready")
-    
-    def process_image(self, image_input: Union[str, np.ndarray]) -> Tuple[np.ndarray, List[str]]:
-        """
-        Process a single image and return masked image with detected text.
-        """
-        try:
-            # Load image
-            if isinstance(image_input, str):
-                if not os.path.exists(image_input):
-                    raise FileNotFoundError(f"Image not found: {image_input}")
-                img = cv2.imread(image_input)
-            else:
-                img = image_input
-            
-            if img is None:
-                return image_input if isinstance(image_input, np.ndarray) else cv2.imread(image_input), []
-            
-            h, w = img.shape[:2]
-            
-            # Get masks from both detectors
-            mask_ocr = np.zeros((h, w), dtype=np.uint8)
-            if self.ocr_engine:
-                mask_ocr = self.ocr_engine.detect(img)
+        current_frame = 0
+        with tqdm(total=total_frames, desc="OCR Scanning") as pbar:
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    break
                 
-            mask_cv = self.cv_engine.detect(img)
-            
-            # Combine masks
-            final_mask = cv2.bitwise_or(mask_ocr, mask_cv)
-            
-            # Count detected regions for logging
-            ocr_regions = np.count_nonzero(mask_ocr) // 255 if self.ocr_engine else 0
-            cv_regions = np.count_nonzero(mask_cv) // 255
-            
-            # Apply mask to image (black out detected regions)
-            masked_img = img.copy()
-            masked_img[final_mask > 0] = (0, 0, 0)
-            
-            logger.info(f"Mask generation: OCR found {ocr_regions} regions, "
-                       f"CV found {cv_regions} regions. Combined.")
-            
-            # Return placeholder text list for backward compatibility
-            return masked_img, ["<hybrid_masked>"]
-            
-        except Exception as e:
-            logger.error(f"Image processing failed: {e}", exc_info=True)
-            # Return original image on error
-            if isinstance(image_input, np.ndarray):
-                return image_input, []
-            else:
-                img = cv2.imread(image_input)
-                return img if img is not None else np.zeros((100, 100, 3), dtype=np.uint8), []
-    
-    def generate_masks(self,
-                       input_dir: Union[str, Path],
-                       output_dir: Union[str, Path],
-                       batch_size: Optional[int] = None) -> Path:
-        """
-        Generate masks for all frames in input directory.
-        """
-        input_path = Path(input_dir)
-        output_path = Path(output_dir)
-        
-        if not input_path.exists():
-            raise FileNotFoundError(f"Input directory not found: {input_path}")
-        
-        output_path.mkdir(parents=True, exist_ok=True)
-        
-        # Collect frame paths
-        frame_paths = sorted(list(input_path.glob("*.png")) + list(input_path.glob("*.jpg")))
-        if not frame_paths:
-            logger.warning(f"No frames found in {input_path}")
-            return output_path
-        
-        logger.info(f"Generating masks for {len(frame_paths)} frames from {input_path}")
-        
-        # Process frames
-        for idx, frame_path in enumerate(frame_paths):
-            try:
-                frame = cv2.imread(str(frame_path))
-                if frame is None:
-                    logger.warning(f"Failed to load frame: {frame_path}")
-                    continue
+                # Запускаем OCR только на ключевых кадрах
+                if current_frame % ocr_interval == 0:
+                    # TODO: Применить ROI (обрезать frame) перед OCR для ускорения
+                    # Здесь упрощенно - весь кадр
+                    detected_boxes = self.ocr.detect_text(frame)
+                    if detected_boxes:
+                        bboxes_by_frame[current_frame] = detected_boxes
                 
-                # Get masks from both detectors
-                mask_ocr = np.zeros(frame.shape[:2], dtype=np.uint8)
-                if self.ocr_engine:
-                    mask_ocr = self.ocr_engine.detect(frame)
-                    
-                mask_cv = self.cv_engine.detect(frame)
-                
-                # Combine masks
-                final_mask = cv2.bitwise_or(mask_ocr, mask_cv)
-                
-                # Save mask
-                mask_filename = f"mask_{idx:05d}.png"
-                mask_path = output_path / mask_filename
-                cv2.imwrite(str(mask_path), final_mask)
-                
-                # Log progress every 10 frames
-                if (idx + 1) % 10 == 0 or (idx + 1) == len(frame_paths):
-                    logger.info(f"Processed {idx + 1}/{len(frame_paths)} frames")
-                    
-            except Exception as e:
-                logger.error(f"Failed to process frame {frame_path}: {e}")
-                continue
+                current_frame += 1
+                pbar.update(1)
         
-        logger.info(f"Saved {len(frame_paths)} masks to {output_path}")
-        return output_path
-    
-    def cleanup_temp_dir(self, dir_path: Union[str, Path]):
-        """
-        Remove temporary directory created during mask generation.
-        """
-        import shutil
-        dir_path = Path(dir_path)
-        if dir_path.exists():
-            shutil.rmtree(dir_path)
-            logger.info(f"Cleaned up temporary directory: {dir_path}")
-        else:
-            logger.warning(f"Directory does not exist: {dir_path}")
-    
-    def _process_batch_with_hybrid_detection(self, frames: List[np.ndarray]) -> List[np.ndarray]:
-        """
-        Process a batch of frames using hybrid detection.
-        Returns list of masks (binary uint8).
+        cap.release()
         
-        This method is kept for backward compatibility with diagnostic code.
-        """
-        masks = []
-        for frame in frames:
-            h, w = frame.shape[:2]
-            mask_ocr = np.zeros((h, w), dtype=np.uint8)
-            if self.ocr_engine:
-                mask_ocr = self.ocr_engine.detect(frame)
-            mask_cv = self.cv_engine.detect(frame)
-            final_mask = cv2.bitwise_or(mask_ocr, mask_cv)
-            masks.append(final_mask)
-        return masks
+        if not bboxes_by_frame:
+            logger.warning("No text detected in video!")
+            # Создаем пустые маски, чтобы пайплайн не упал
+            return self._create_empty_masks(total_frames, output_dir, int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)))
 
-    def is_available(self) -> bool:
-        """
-        Check if the service is available (at least one detector works).
-        """
-        ocr_avail = self.ocr_engine.is_available() if self.ocr_engine else False
-        return ocr_avail or self.cv_engine.is_available()
+        # Запускаем SAM 2
+        logger.info(f"Detected text on {len(bboxes_by_frame)} keyframes. Starting SAM 2...")
+        return self.sam2.generate_masks(str(video_path), bboxes_by_frame, output_dir)
+
+    def _create_empty_masks(self, count, out_dir, w, h):
+        out_dir.mkdir(parents=True, exist_ok=True)
+        # Просто черные картинки
+        import numpy as np
+        from PIL import Image
+        black = np.zeros((h, w), dtype=np.uint8)
+        img = Image.fromarray(black)
+        for i in range(count):
+            img.save(out_dir / f"{i:05d}.png")
+        return out_dir
