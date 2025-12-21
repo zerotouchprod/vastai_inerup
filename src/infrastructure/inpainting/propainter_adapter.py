@@ -12,6 +12,14 @@ class ProPainterAdapter:
     def __init__(self, propainter_root: str = None):
         self.root = Path(propainter_root or os.getenv("PROPAINTER_ROOT", "/opt/ProPainter"))
         self.inference_script = self.root / "inference_propainter.py"
+        
+        # Check if ProPainter is installed
+        if not self.inference_script.exists():
+            logger.warning(f"ProPainter inference script not found at {self.inference_script}")
+            logger.warning("ProPainter may not be installed or path is incorrect")
+        else:
+            logger.info(f"ProPainter inference script found at {self.inference_script}")
+        
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         # Sliding Window settings for OOM protection (Exit code -9)
         self.CHUNK_SIZE = 20    # Process 20 frames at a time (reduced from 40 due to OOM)
@@ -237,8 +245,23 @@ class ProPainterAdapter:
             "--width", "960", "--height", "540" 
         ]
         
+        logger.info(f"Running ProPainter command: {' '.join(cmd)}")
+        logger.info(f"Working directory: {self.root}")
+        logger.info(f"Input frames dir: {video_path} (exists: {video_path.exists()})")
+        logger.info(f"Mask dir: {mask_path} (exists: {mask_path.exists()})")
+        logger.info(f"Output dir: {output_path} (exists: {output_path.exists()})")
+        
+        # List files in input and mask directories for debugging
+        if video_path.exists():
+            input_files = list(video_path.glob("*"))
+            logger.info(f"Input directory contains {len(input_files)} files: {[f.name for f in input_files[:5]]}{'...' if len(input_files) > 5 else ''}")
+        
+        if mask_path.exists():
+            mask_files = list(mask_path.glob("*"))
+            logger.info(f"Mask directory contains {len(mask_files)} files: {[f.name for f in mask_files[:5]]}{'...' if len(mask_files) > 5 else ''}")
+        
         try:
-            subprocess.run(
+            result = subprocess.run(
                 cmd, 
                 capture_output=True, 
                 text=True, 
@@ -246,11 +269,25 @@ class ProPainterAdapter:
                 check=True
             )
             
+            # Log ProPainter output for debugging - use INFO level to ensure we see it
+            if result.stdout:
+                logger.info(f"ProPainter stdout (first 1000 chars): {result.stdout[:1000]}")
+            if result.stderr:
+                logger.info(f"ProPainter stderr (first 1000 chars): {result.stderr[:1000]}")
+            
             # --- FLATTENING LOGIC ---
             # Вытаскиваем все файлы из подпапок в корень output_path
             # Это решает проблему, когда ProPainter создает output/input_folder_name/result.png
             all_files = list(output_path.rglob("*"))
             images = [f for f in all_files if f.is_file() and f.suffix.lower() in ['.png', '.jpg', '.jpeg']]
+            
+            logger.info(f"Found {len(images)} images in output directory (after flattening)")
+            
+            # Also check parent directory and sibling directories
+            parent_dir = output_path.parent
+            sibling_files = list(parent_dir.rglob("*"))
+            sibling_images = [f for f in sibling_files if f.is_file() and f.suffix.lower() in ['.png', '.jpg', '.jpeg']]
+            logger.info(f"Found {len(sibling_images)} images in parent directory {parent_dir}")
             
             for img in images:
                 # Если файл уже в корне - пропускаем
@@ -258,12 +295,15 @@ class ProPainterAdapter:
                     continue
                 # Перемещаем в корень
                 shutil.move(str(img), str(output_path / img.name))
+                logger.info(f"Moved {img} to {output_path / img.name}")
                 
             return output_path
 
         except subprocess.CalledProcessError as e:
             logger.error(f"❌ ProPainter Subprocess Crashed!")
-            logger.error(f"STDERR: {e.stderr}")
+            logger.error(f"Exit code: {e.returncode}")
+            logger.error(f"STDOUT: {e.stdout[:1000] if e.stdout else 'None'}")
+            logger.error(f"STDERR: {e.stderr[:1000] if e.stderr else 'None'}")
             # Пытаемся освободить память перед падением
             raise RuntimeError(f"ProPainter execution failed with code {e.returncode}")
 
