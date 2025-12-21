@@ -14,8 +14,8 @@ class ProPainterAdapter:
         self.inference_script = self.root / "inference_propainter.py"
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         # Sliding Window settings for OOM protection (Exit code -9)
-        self.CHUNK_SIZE = 40    # Process 40 frames at a time
-        self.OVERLAP = 10       # Overlap for seamless stitching
+        self.CHUNK_SIZE = 20    # Process 20 frames at a time (reduced from 40 due to OOM)
+        self.OVERLAP = 5        # Reduced overlap proportionally
 
     def process(self, input_path, mask_dir: Path, output_path: Path) -> Path:
         """
@@ -179,6 +179,12 @@ class ProPainterAdapter:
             
             # RUN INFERENCE ON CHUNK
             self._run_inference_subprocess(c_input, c_mask, c_output)
+            
+            # Clear CUDA cache between chunks to prevent OOM
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                import gc
+                gc.collect()
             
             # Collect results (Merging Logic)
             # ProPainter usually puts results in c_output/inpaint_out or just c_output
