@@ -96,8 +96,8 @@ class SubtitleRemoverProPainterWrapper:
                 # Process frames using service
                 result = service.process_frames_direct(input_frames, output_dir)
                 
-                # Convert Pydantic result to legacy format
-                legacy_result = self._convert_to_legacy_result(result, start_time, len(input_frames))
+                # Convert result to legacy format
+                legacy_result = self._convert_to_legacy_result(result, start_time, len(input_frames), output_dir)
                 
                 self._logger.info(f"Subtitle removal completed successfully")
                 return legacy_result
@@ -115,32 +115,69 @@ class SubtitleRemoverProPainterWrapper:
             )
     
     def _convert_to_legacy_result(self, 
-                                  pydantic_result: PydanticProcessingResult, 
+                                  result: any, 
                                   start_time: float,
-                                  input_frame_count: int) -> LegacyProcessingResult:
-        """Convert Pydantic ProcessingResult to LegacyProcessingResult."""
+                                  input_frame_count: int,
+                                  output_dir: Path) -> LegacyProcessingResult:
+        """
+        Convert result to LegacyProcessingResult.
+        
+        Handles both:
+        1. PydanticProcessingResult objects (with .success attribute)
+        2. Boolean values (True/False) from StreamingSubtitleRemoverService
+        """
         duration = time.time() - start_time if 'time' in locals() else 0
         
-        legacy_result = LegacyProcessingResult(
-            success=pydantic_result.success,
-            output_path=pydantic_result.output_path,
-            frames_processed=pydantic_result.frames_processed,
-            duration_seconds=duration,
-            errors=pydantic_result.errors
-        )
+        # Handle boolean result from StreamingSubtitleRemoverService
+        if isinstance(result, bool):
+            legacy_result = LegacyProcessingResult(
+                success=result,
+                output_path=output_dir if result else None,  # Use output_dir when successful
+                frames_processed=input_frame_count if result else 0,
+                duration_seconds=duration,
+                errors=[] if result else ["Unknown error from StreamingSubtitleRemoverService"]
+            )
+            
+            legacy_result.add_metric('frames_processed', input_frame_count if result else 0)
+            legacy_result.add_metric('duration_per_frame', 
+                                    duration / input_frame_count if input_frame_count > 0 else 0)
+            legacy_result.add_metric('processor', 'subtitle_remover_propainter')
+            
+            return legacy_result
         
-        # Add metrics
-        if pydantic_result.stats:
-            legacy_result.add_metric('frames_total', pydantic_result.stats.frames_total)
-            legacy_result.add_metric('duration_seconds', pydantic_result.stats.duration_seconds)
-            legacy_result.add_metric('device_used', pydantic_result.stats.device_used)
+        # Handle PydanticProcessingResult object
+        elif hasattr(result, 'success'):
+            legacy_result = LegacyProcessingResult(
+                success=result.success,
+                output_path=result.output_path,
+                frames_processed=result.frames_processed,
+                duration_seconds=duration,
+                errors=result.errors
+            )
+            
+            # Add metrics
+            if hasattr(result, 'stats') and result.stats:
+                legacy_result.add_metric('frames_total', result.stats.frames_total)
+                legacy_result.add_metric('duration_seconds', result.stats.duration_seconds)
+                legacy_result.add_metric('device_used', result.stats.device_used)
+            
+            legacy_result.add_metric('frames_processed', result.frames_processed)
+            legacy_result.add_metric('duration_per_frame', 
+                                    duration / input_frame_count if input_frame_count > 0 else 0)
+            legacy_result.add_metric('processor', 'subtitle_remover_propainter')
+            
+            return legacy_result
         
-        legacy_result.add_metric('frames_processed', pydantic_result.frames_processed)
-        legacy_result.add_metric('duration_per_frame', 
-                                duration / input_frame_count if input_frame_count > 0 else 0)
-        legacy_result.add_metric('processor', 'subtitle_remover_propainter')
-        
-        return legacy_result
+        # Unknown result type
+        else:
+            self._logger.error(f"Unknown result type: {type(result)}")
+            return LegacyProcessingResult(
+                success=False,
+                output_path=None,
+                frames_processed=0,
+                duration_seconds=duration,
+                errors=[f"Unknown result type: {type(result)}"]
+            )
     
     @classmethod
     def is_available(cls) -> bool:
