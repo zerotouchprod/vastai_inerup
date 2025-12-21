@@ -13,21 +13,39 @@ logger = get_logger(__name__)
 
 
 class SubtitleRemoverService:
-    def __init__(self, mask_service, inpainter):
-        # inpainter передается из фабрики, но OCR инициализируем тут для контроля настроек
+    """
+    Hybrid Cleaner Service (Final).
+    Features:
+    1. Dynamic Language Support (passed from CLI).
+    2. Hybrid Search: Standard + CLAHE (for low contrast text).
+    3. Mega Dilation: Prevents "purple soap" artifacts.
+    """
+
+    def __init__(self, mask_service, inpainter, lang='ru'):
         self.inpainter = inpainter
-        # Используем GPU для OCR, так как EasyOCR это умеет безопасно
-        self.ocr = PaddleWrapper(lang='ru', use_gpu=True)
-        logger.info(f"SubtitleRemoverService initialized (AGGRESSIVE Mode: CLAHE + Mega Dilation)")
+
+        # --- ФИКС ЯЗЫКА ---
+        # 1. Превращаем строку 'ru' в список ['ru']
+        # 2. Всегда добавляем 'en', так как EasyOCR лучше работает в связке ['ru', 'en']
+        if isinstance(lang, str):
+            langs = [l.strip() for l in lang.split(',')]
+        else:
+            langs = lang if isinstance(lang, list) else ['en']
+
+        if 'en' not in langs:
+            langs.append('en')
+
+        self.ocr_langs = langs
+
+        # Инициализируем OCR с правильными языками
+        self.ocr = PaddleWrapper(lang=self.ocr_langs, use_gpu=True)
+        logger.info(f"SubtitleRemoverService initialized (Mode: HYBRID, Langs: {self.ocr_langs})")
 
     def _enhance_image_for_ocr(self, img: np.ndarray) -> np.ndarray:
-        """
-        Улучшает контраст (CLAHE), чтобы OCR видел светящийся или темный текст.
-        """
+        """CLAHE: Вытягивает скрытый/мелкий текст (для 'НА')."""
         try:
             lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
             l, a, b = cv2.split(lab)
-            # ClipLimit=3.0 делает картинку очень контрастной
             clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
             cl = clahe.apply(l)
             limg = cv2.merge((cl, a, b))
@@ -37,9 +55,6 @@ class SubtitleRemoverService:
             return img
 
     def process(self, input_path, output_path: Path, **kwargs):
-        """
-        Метод, который вызывает Orchestrator.
-        """
         logger.info(f"Removing subtitles from {input_path}")
 
         try:
@@ -48,38 +63,32 @@ class SubtitleRemoverService:
                 mask_dir = temp_path / "masks"
                 mask_dir.mkdir()
 
-                # --- 1. Подготовка кадров ---
                 frames_dir = None
 
-                # Если вход - список путей
+                # --- 1. Подготовка кадров ---
                 if isinstance(input_path, list):
                     frames_dir = temp_path / "input_frames"
                     frames_dir.mkdir()
                     for i, frame_path in enumerate(input_path):
                         p = Path(frame_path)
                         shutil.copy(p, frames_dir / f"frame_{i:06d}{p.suffix}")
-
-                # Если вход - путь (папка или видео)
                 else:
                     input_path = Path(input_path)
                     if input_path.is_dir():
                         frames_dir = input_path
                     else:
-                        # Видео файл -> извлекаем кадры
                         from src.infrastructure.media.ffmpeg import FFmpegExtractor
                         extractor = FFmpegExtractor()
                         frames_dir = temp_path / "extracted_frames"
                         frames_dir.mkdir()
-                        logger.info(f"Extracting frames from video: {input_path}")
                         extractor.extract_frames(input_path, frames_dir)
 
-                # --- 2. Генерация Агрессивных Масок ---
+                # --- 2. Генерация Масок ---
                 self._generate_binary_masks(frames_dir, mask_dir)
 
                 # --- 3. Inpainting ---
                 result_path = self.inpainter.process(frames_dir, mask_dir, output_path)
 
-            # Возвращаем результат в формате, который ждет Orchestrator
             class SimpleResult:
                 def __init__(self, success=True, output_path=None):
                     self.success = success
@@ -88,7 +97,7 @@ class SubtitleRemoverService:
             return SimpleResult(success=True, output_path=result_path)
 
         except Exception as e:
-            logger.error(f"Subtitle removal failed: {e}")
+            logger.error(f"Subtitle removal failed: {e}", exc_info=True)
 
             class SimpleResult:
                 def __init__(self, success=False, output_path=None, errors=None):
@@ -99,13 +108,7 @@ class SubtitleRemoverService:
             return SimpleResult(success=False, output_path=None, errors=[str(e)])
 
     def _generate_binary_masks(self, frames_dir: Path, mask_dir: Path):
-        """
-        Создает бинарные маски с использованием агрессивных настроек:
-        1. CLAHE (для подсветки текста)
-        2. Низкий порог (0.15)
-        3. Огромное расширение (20x20, 3 итерации)
-        """
-        logger.info(f"Generating AGGRESSIVE binary masks for frames in {frames_dir}")
+        logger.info(f"Generating binary masks...")
 
         frames = sorted(list(frames_dir.glob("*.jpg")) + list(frames_dir.glob("*.png")))
         if not frames:
@@ -118,39 +121,37 @@ class SubtitleRemoverService:
             h, w = img.shape[:2]
             mask = np.zeros((h, w), dtype=np.uint8)
 
-            # А. Улучшаем картинку (чтобы увидеть "РОДИЛСЯ")
+            # --- Стратегия 1: Стандартный поиск ---
+            bboxes_standard = self.ocr.detect(img, confidence_threshold=0.3)
+
+            # --- Стратегия 2: Поиск скрытого текста (CLAHE + низкий порог) ---
             enhanced_img = self._enhance_image_for_ocr(img)
+            bboxes_aggressive = self.ocr.detect(enhanced_img, confidence_threshold=0.15)
 
-            # Б. Детекция (сначала на улучшенной, порог 0.15)
-            bboxes = self.ocr.detect(enhanced_img, confidence_threshold=0.15)
+            # Объединяем
+            all_bboxes = bboxes_standard + bboxes_aggressive
 
-            # Фолбэк: если на улучшенной пусто, пробуем оригинал
-            if not bboxes:
-                bboxes = self.ocr.detect(img, confidence_threshold=0.15)
-
-            if not bboxes:
+            if not all_bboxes:
                 cv2.imwrite(str(mask_dir / f"{frame_path.stem}.png"), mask)
                 continue
 
-            for bbox in bboxes:
+            for bbox in all_bboxes:
                 points = np.array(bbox['points'], dtype=np.int32)
                 cv2.fillPoly(mask, [points], 255)
 
-            # В. MEGA DILATION
-            # Kernel 20x20 и 3 итерации перекроют любое свечение
+            # --- Mega Dilation ---
             kernel = np.ones((20, 20), np.uint8)
             mask = cv2.dilate(mask, kernel, iterations=3)
 
             cv2.imwrite(str(mask_dir / f"{frame_path.stem}.png"), mask)
 
-        logger.info(f"Generated {len(frames)} masks in {mask_dir}")
+        logger.info(f"Generated {len(frames)} masks")
 
 
-# Keep old SubtitleRemoverService for backward compatibility (Stub)
+# Заглушка
 class LegacySubtitleRemoverService:
     def __init__(self, *args, **kwargs):
-        import warnings
-        warnings.warn("LegacySubtitleRemoverService is deprecated.", DeprecationWarning)
+        pass
 
     def process(self, request):
-        raise NotImplementedError("LegacySubtitleRemoverService is deprecated.")
+        raise NotImplementedError("Legacy Service Removed")
