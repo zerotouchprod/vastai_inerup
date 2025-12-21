@@ -1,7 +1,7 @@
 import cv2
 import numpy as np
 from pathlib import Path
-from typing import List
+from typing import List, Dict, Any, Union
 from paddleocr import PaddleOCR
 from src.shared.logging import get_logger
 
@@ -11,28 +11,79 @@ class PaddleWrapper:
     def __init__(self, lang='en', use_gpu=True):
         self.ocr = PaddleOCR(use_angle_cls=True, lang=lang)
 
+    def detect(self, image: Union[str, np.ndarray], confidence_threshold: float = 0.6) -> List[Dict[str, Any]]:
+        """
+        Detect text in image and return list of text bounding boxes with details.
+        
+        Args:
+            image: Either path to image file or numpy array (BGR).
+            confidence_threshold: Minimum confidence score.
+            
+        Returns:
+            List of dictionaries with keys: 'points', 'text', 'confidence'.
+        """
+        # 1. Read image
+        if isinstance(image, str):
+            img = cv2.imread(image)
+        else:
+            img = image
+
+        if img is None:
+            print(f"[ERROR] Could not read image: {image}")
+            return []
+
+        # 2. Run OCR with cls=True for rotated text detection
+        result = self.ocr.ocr(img, cls=True)
+
+        print(f"\n[DEBUG] RAW PADDLE OUTPUT: {result}\n")  # Debug output
+
+        if not result or result[0] is None:
+            return []
+
+        # 3. Normalize structure (Paddle returns [Page1, Page2...])
+        # Usually result is in result[0]
+        ocr_data = result[0] if isinstance(result, list) and len(result) > 0 else []
+
+        bboxes = []
+        for line in ocr_data:
+            # line structure: [[[x1, y1], [x2, y2], ...], ("text", confidence)]
+            if not line or len(line) != 2:
+                continue
+                
+            coords, (text, conf) = line
+            
+            # Filter by confidence
+            if conf < confidence_threshold:
+                continue
+            
+            # Convert float coordinates to int
+            points = [[int(p[0]), int(p[1])] for p in coords]
+            
+            print(f"[DEBUG] Found: '{text}' with conf {conf}")
+            
+            bboxes.append({
+                "points": points,
+                "text": text,
+                "confidence": conf
+            })
+
+        return bboxes
+
     def detect_text(self, frame: np.ndarray, confidence_threshold=0.6) -> list:
         """
         Возвращает список BBox [x1, y1, x2, y2] для найденного текста.
+        (Backward compatibility method)
         """
-        result = self.ocr.ocr(frame, cls=True)
+        detections = self.detect(frame, confidence_threshold)
         bboxes = []
-        if result and result[0]:
-            for line in result[0]:
-                # line format: [[[x1,y1],[x2,y2],[x3,y3],[x4,y4]], (text, conf)]
-                points = line[0]
-                conf = line[1][1]
-                
-                if conf < confidence_threshold:
-                    continue
-                
-                # Convert polygon to bounding box for SAM 2
-                xs = [p[0] for p in points]
-                ys = [p[1] for p in points]
-                x1, y1 = min(xs), min(ys)
-                x2, y2 = max(xs), max(ys)
-                
-                bboxes.append([x1, y1, x2, y2])
+        for det in detections:
+            points = det["points"]
+            # Convert polygon to bounding box for SAM 2
+            xs = [p[0] for p in points]
+            ys = [p[1] for p in points]
+            x1, y1 = min(xs), min(ys)
+            x2, y2 = max(xs), max(ys)
+            bboxes.append([x1, y1, x2, y2])
         return bboxes
 
 # Keep ThreadSafeOCR for backward compatibility with existing tests

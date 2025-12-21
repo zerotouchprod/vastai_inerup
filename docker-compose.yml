@@ -16,6 +16,7 @@ services:
       - PYTHONPATH=/workspace/project/src:/opt/ProPainter
       - LOG_LEVEL=INFO
       - TQDM_DISABLE=False
+      - LD_LIBRARY_PATH=/opt/venv/lib/python3.10/site-packages/nvidia/cudnn/lib:/opt/venv/lib/python3.10/site-packages/nvidia/cublas/lib:$LD_LIBRARY_PATH
     volumes:
       - .:/workspace/project
     working_dir: /workspace/project

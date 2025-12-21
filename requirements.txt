@@ -8,10 +8,6 @@ PyYAML>=6.0
 pydantic>=2.0.0
 pydantic-settings>=2.0.0
 
-# Optional: PyTorch for GPU acceleration (uncomment if using)
-# torch==2.0.1+cu117
-# torchvision
-
 # Testing
 pytest>=7.4.0
 pytest-cov>=4.1.0
@@ -23,17 +19,18 @@ pylint>=2.17.0
 mypy>=1.5.0
 flake8>=6.1.0
 
-numpy<=1.26.4
-
 # Utilities
-dataclasses-json>=0.6.0  # For easier JSON serialization
+dataclasses-json>=0.6.0
+numpy<2.0.0
 
-# Subtitle removal
+# Subtitle removal (STABLE STACK)
 opencv-python-headless>=4.8.0
-paddleocr>=2.7.0
 
-paddleocr==3.3.2
-paddlepaddle==3.2.2
-paddlepaddle>=1.2.2
+# ВАЖНО: Удаляем paddlex и paddleocr 3.x.
+# Ставим золотой стандарт стабильности.
+paddleocr==2.8.1
 
-paddlex==3.3.12
+# Paddle GPU для CUDA 11/12 (версия 2.6.1 - самая надежная)
+# Если на Vast.ai CUDA 12, pip сам подберет совместимый wheel,
+# либо укажем ссылку при установке.
+paddlepaddle-gpu==2.6.1
