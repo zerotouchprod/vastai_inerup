@@ -13,12 +13,15 @@ logger = get_logger(__name__)
 
 class SubtitleRemoverService:
     """
-    Final Calibrated Service (Stabilized v2).
+    STABILIZED CLEANER SERVICE.
+    Fixes "Blinking" and "Incomplete Removal" by using Temporal Smoothing.
 
-    Adjustments based on feedback:
-    1. Threshold -> 0.25: Stops detecting mouths/chins as text.
-    2. Window Radius -> 1: Reduces "smearing" of false positives over time.
-    3. Dilation -> (20,20)x3: Still removes glow, but slightly more precise boundaries.
+    Logic:
+    1. Detect text on ALL frames (Low threshold + CLAHE).
+    2. Apply "Sliding Window Union":
+       The mask for Frame N is combined with detections from Frames [N-2, N-1, N, N+1, N+2].
+       This fills any gaps where OCR missed the text, stopping the "blinking".
+    3. Apply Mega Dilation to the final stabilized mask to cover glow/shadows.
     """
 
     def __init__(self, mask_service, inpainter, lang='ru'):
@@ -31,16 +34,14 @@ class SubtitleRemoverService:
         if 'en' not in langs: langs.append('en')
 
         self.ocr_langs = langs
-        # Используем GPU
         self.ocr = PaddleWrapper(lang=self.ocr_langs, use_gpu=True)
-        logger.info(f"SubtitleRemoverService initialized (Mode: STABILIZED v2)")
+        logger.info(f"SubtitleRemoverService initialized (Mode: TEMPORAL SMOOTHING)")
 
     def _enhance_image_for_ocr(self, img: np.ndarray) -> np.ndarray:
-        """CLAHE: Делает текст контрастным."""
+        """CLAHE: Вытягивает скрытый текст."""
         try:
             lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
             l, a, b = cv2.split(lab)
-            # ClipLimit 4.0 - агрессивный контраст для "НА"
             clahe = cv2.createCLAHE(clipLimit=4.0, tileGridSize=(8, 8))
             cl = clahe.apply(l)
             limg = cv2.merge((cl, a, b))
@@ -103,6 +104,9 @@ class SubtitleRemoverService:
             return SimpleResult(success=False, output_path=None, errors=[str(e)])
 
     def _generate_stabilized_masks(self, frames_dir: Path, mask_dir: Path):
+        """
+        Генерирует маски, используя данные с соседних кадров для заполнения пропусков.
+        """
         frames = sorted(list(frames_dir.glob("*.jpg")) + list(frames_dir.glob("*.png")))
         num_frames = len(frames)
         if num_frames == 0:
@@ -110,36 +114,37 @@ class SubtitleRemoverService:
 
         logger.info(f"Step 1: Detecting text on all {num_frames} frames...")
 
+        # Хранилище всех найденных боксов: [ [boxes_frame_0], [boxes_frame_1], ... ]
         all_detections = []
 
-        # Проход 1: Сбор данных
+        # Проход 1: Сбор сырых данных
         for frame_path in frames:
             img = cv2.imread(str(frame_path))
             if img is None:
                 all_detections.append([])
                 continue
 
-            # CLAHE
+            # CLAHE + Низкий порог (0.15) для максимального охвата
             enhanced_img = self._enhance_image_for_ocr(img)
+            bboxes = self.ocr.detect(enhanced_img, confidence_threshold=0.15)
 
-            # CORRECTION 1: Threshold 0.25
-            # Достаточно низко для "НА" (с CLAHE), но достаточно высоко, чтобы игнорировать рот.
-            bboxes = self.ocr.detect(enhanced_img, confidence_threshold=0.25)
-
+            # Сохраняем только координаты
             frame_boxes = [b['points'] for b in bboxes]
             all_detections.append(frame_boxes)
 
-        logger.info(f"Step 2: Rendering stabilized masks...")
+        logger.info(f"Step 2: Rendering stabilized masks (Sliding Window Union)...")
 
-        # CORRECTION 2: Window Radius 1 (Prev, Curr, Next)
-        # Меньше "размазывания" ошибок во времени
-        window_radius = 1
+        # Проход 2: Рендеринг масок с учетом соседей
+        # Window Radius 2: смотрим [i-2, i-1, i, i+1, i+2]
+        window_radius = 2
 
         for i, frame_path in enumerate(frames):
+            # Читаем размеры
             img = cv2.imread(str(frame_path))
             h, w = img.shape[:2]
             mask = np.zeros((h, w), dtype=np.uint8)
 
+            # Определяем окно
             start_idx = max(0, i - window_radius)
             end_idx = min(num_frames, i + window_radius + 1)
 
@@ -151,14 +156,15 @@ class SubtitleRemoverService:
                 cv2.imwrite(str(mask_dir / f"{frame_path.stem}.png"), mask)
                 continue
 
-            # Рисуем накопленные боксы
+            # Рисуем ВСЕ боксы из окна на текущую маску
+            # Это "замазывает" пропуски: если текст был на кадре i-1, он будет и на i
             for box in boxes_in_window:
                 points = np.array(box, dtype=np.int32)
                 cv2.fillPoly(mask, [points], 255)
 
-            # CORRECTION 3: Dilation (20,20) x 3
-            # Чуть аккуратнее чем (25,25), но все еще очень мощно против свечения
-            kernel = np.ones((20, 20), np.uint8)
+            # Mega Dilation (Жирная маска)
+            # Убирает фиолетовое свечение и объединяет мелкие куски в одно пятно
+            kernel = np.ones((25, 25), np.uint8)
             mask = cv2.dilate(mask, kernel, iterations=3)
 
             cv2.imwrite(str(mask_dir / f"{frame_path.stem}.png"), mask)
