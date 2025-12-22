@@ -28,12 +28,12 @@ opencv-python-headless>=4.8.0
 
 # ВАЖНО: Удаляем paddlex и paddleocr 3.x.
 # Ставим золотой стандарт стабильности.
-paddleocr==2.8.1
+#paddleocr==2.8.1
 
 # Paddle GPU для CUDA 11/12 (версия 2.6.1 - самая надежная)
 # Если на Vast.ai CUDA 12, pip сам подберет совместимый wheel,
 # либо укажем ссылку при установке.
-paddlepaddle-gpu==2.6.1
-pydantic_settings==2.12.0
+##paddlepaddle-gpu==2.6.1
+#pydantic_settings==2.12.0
 
 easyocr>=1.7.1
