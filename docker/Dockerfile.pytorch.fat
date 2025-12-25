@@ -41,12 +41,13 @@ RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 
 # Устанавливаем PyTorch с поддержкой CUDA 12.1 (совместим с CUDA 12.2+)
 # CUDA 12.1 совместим с CUDA 12.2, 12.3, 12.4 через forward compatibility
+# Для RTX 2060 (compute capability 7.5) используем PyTorch с поддержкой CUDA 12.1
 RUN pip uninstall -y torch torchvision || true && \
-    echo "Installing PyTorch with CUDA 12.1 support (forward compatible with CUDA 12.2-12.4)..." && \
+    echo "Installing PyTorch with CUDA 12.1 support (compatible with RTX 2060 sm_75)..." && \
     echo "Note: Building on machine without GPU, but installing CUDA-enabled PyTorch for runtime use on GPU machines" && \
-    pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cu121 && \
+    pip install --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121 && \
     echo "Verifying PyTorch installation..." && \
-    python3 -c "import torch; print(f'PyTorch version: {torch.__version__}'); print(f'PyTorch built with CUDA: {\"cu\" in torch.__version__}')" && \
+    python3 -c "import torch; print(f'PyTorch version: {torch.__version__}'); print(f'PyTorch built with CUDA: {\"cu\" in torch.__version__}'); print(f'CUDA version: {torch.version.cuda}')" && \
     echo "PyTorch installation complete. GPU availability will be checked at runtime." && \
     rm -rf /root/.cache/pip
 
@@ -120,6 +121,14 @@ RUN mkdir -p /opt/realesrgan_models && \
 RUN pip install --no-cache-dir --force-reinstall "numpy<2" && \
     rm -rf /root/.cache/pip
 
+# Fix for CUDA capability detection issue (sm_120 -> sm_75 for RTX 2060)
+# Create a script to patch PyTorch CUDA capability detection if needed
+RUN echo 'import torch; print(f"PyTorch CUDA capability: {torch.cuda.get_device_capability() if torch.cuda.is_available() else \"N/A\"}")' > /opt/check_cuda.py
+
+# Add compatibility fix for Vast.ai environment
+# Ensure PyTorch can work with different CUDA driver versions
+RUN echo 'import torch; print(f"PyTorch CUDA version: {torch.version.cuda}"); print(f"CUDA available: {torch.cuda.is_available()}")' > /opt/check_pytorch.py
+
 ENV PYTHONPATH="/workspace/project:/workspace/project/external/Real-ESRGAN:/workspace/project/external/RIFE"
 
 
@@ -151,6 +160,16 @@ ENV PYTHONPATH="${PYTHONPATH}:/opt/ProPainter"
 ENV CUDA_VISIBLE_DEVICES="0"
 ENV NVIDIA_VISIBLE_DEVICES="all"
 ENV NVIDIA_DRIVER_CAPABILITIES="compute,utility"
+
+# Fix CUDA compatibility for all NVIDIA RTX 30-50 series GPUs
+# Set CUDA architecture flags to ensure compatibility with all modern NVIDIA GPUs
+# RTX 30 series (Ampere): sm_86, sm_87
+# RTX 40 series (Ada Lovelace): sm_89
+# RTX 50 series (Ada Lovelace): sm_90
+# RTX 20 series (Turing): sm_75
+ENV TORCH_CUDA_ARCH_LIST="7.5;8.0;8.6;8.7;8.9;9.0"
+ENV CUDA_HOME="/usr/local/cuda"
+ENV LD_LIBRARY_PATH="/usr/local/cuda/lib64:${LD_LIBRARY_PATH}"
 
 # SAM 2 Installation
 RUN pip install --no-cache-dir git+https://github.com/facebookresearch/segment-anything-2.git

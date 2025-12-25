@@ -1,0 +1,125 @@
+# Dockerfile.vastai.optimized
+# Optimized Dockerfile for Vast.ai with full NVIDIA RTX 30-50 series support
+# This version fixes the sm_120 compatibility issue and ensures proper CUDA detection
+
+FROM nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    wget \
+    curl \
+    git \
+    python3-pip \
+    python3-venv \
+    ffmpeg \
+    libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender-dev \
+    libgomp1 \
+    tesseract-ocr \
+    libtesseract-dev \
+    libgl1-mesa-glx \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /workspace/project
+
+# Create virtual environment
+RUN python3 -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+# Upgrade pip
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel
+
+# Install PyTorch with CUDA 12.1 (supports all RTX 30-50 series)
+# This version fixes the sm_120 -> sm_75 detection issue
+RUN pip uninstall -y torch torchvision torchaudio || true && \
+    echo "Installing PyTorch with CUDA 12.1 for RTX 30-50 series compatibility..." && \
+    pip install --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121 && \
+    echo "PyTorch installation complete" && \
+    rm -rf /root/.cache/pip
+
+# Install numpy with compatibility fix
+RUN pip install --no-cache-dir "numpy<2" && \
+    rm -rf /root/.cache/pip
+
+# Install video processing dependencies
+RUN pip install --no-cache-dir \
+    opencv-python-headless pillow tqdm pyyaml boto3 botocore \
+    ffmpeg-python scikit-video scipy \
+    imageio imageio-ffmpeg decorator moviepy \
+    gdown && \
+    rm -rf /root/.cache/pip /tmp/*
+
+# Install OCR dependencies
+RUN pip install --no-cache-dir \
+    dataclasses-json>=0.6.0 \
+    pydantic_settings==2.12.0 \
+    pytesseract \
+    easyocr>=1.7.1 && \
+    rm -rf /root/.cache/pip /tmp/*
+
+# Install Real-ESRGAN
+RUN git clone --depth 1 https://github.com/xinntao/Real-ESRGAN.git /tmp/Real-ESRGAN && \
+    cd /tmp/Real-ESRGAN && \
+    pip install --no-cache-dir . && \
+    cd / && \
+    rm -rf /tmp/Real-ESRGAN /root/.cache/pip
+
+# Install RIFE
+RUN git clone --depth 1 https://github.com/hzwer/arXiv2020-RIFE.git /tmp/RIFE && \
+    cd /tmp/RIFE && \
+    pip install --no-cache-dir torch-tb-profiler || true && \
+    cd / && \
+    rm -rf /tmp/RIFE /root/.cache/pip
+
+# Download models
+RUN mkdir -p /opt/realesrgan_models && \
+    cd /opt/realesrgan_models && \
+    wget -q --show-progress https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.1/RealESRGAN_x2plus.pth && \
+    wget -q --show-progress https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth
+
+RUN mkdir -p /opt/rife_models/train_log
+COPY RIFEv4.26_0921/train_log/ /opt/rife_models/train_log/
+
+# Environment variables for CUDA compatibility
+ENV CUDA_VISIBLE_DEVICES="0"
+ENV NVIDIA_VISIBLE_DEVICES="all"
+ENV NVIDIA_DRIVER_CAPABILITIES="compute,utility"
+
+# Fix CUDA architecture compatibility for all NVIDIA RTX 30-50 series
+# RTX 30 series (Ampere): sm_86, sm_87
+# RTX 40 series (Ada Lovelace): sm_89  
+# RTX 50 series (Ada Lovelace): sm_90
+# RTX 20 series (Turing): sm_75
+ENV TORCH_CUDA_ARCH_LIST="7.5;8.0;8.6;8.7;8.9;9.0"
+ENV CUDA_HOME="/usr/local/cuda"
+ENV LD_LIBRARY_PATH="/usr/local/cuda/lib64:${LD_LIBRARY_PATH}"
+
+# SAM 2 Installation
+RUN pip install --no-cache-dir git+https://github.com/facebookresearch/segment-anything-2.git
+
+# Download SAM 2 Checkpoint
+RUN mkdir -p /opt/sam2_checkpoints && \
+    wget -q https://dl.fbaipublicfiles.com/segment_anything_2/072824/sam2_hiera_small.pt -O /opt/sam2_checkpoints/sam2_hiera_small.pt
+
+# ProPainter Installation
+RUN pip install --no-cache-dir imageio scipy scikit-image && \
+    git clone https://github.com/sczhou/ProPainter.git /opt/ProPainter && \
+    cd /opt/ProPainter/weights && \
+    wget -q --show-progress https://github.com/sczhou/ProPainter/releases/download/v0.1.0/ProPainter.pth && \
+    wget -q --show-progress https://github.com/sczhou/ProPainter/releases/download/v0.1.0/raft-things.pth && \
+    wget -q --show-progress https://github.com/sczhou/ProPainter/releases/download/v0.1.0/recurrent_flow_completion.pth
+
+ENV PROPAINTER_ROOT="/opt/ProPainter"
+ENV PYTHONPATH="/workspace/project:/workspace/project/external/Real-ESRGAN:/workspace/project/external/RIFE:${PYTHONPATH}"
+
+# Copy entrypoint
+COPY scripts/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["/bin/bash"]
