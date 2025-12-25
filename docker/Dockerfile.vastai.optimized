@@ -83,7 +83,7 @@ RUN mkdir -p /opt/realesrgan_models && \
     wget -q --show-progress https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth
 
 RUN mkdir -p /opt/rife_models/train_log
-COPY RIFEv4.26_0921/train_log/ /opt/rife_models/train_log/
+COPY ../RIFEv4.26_0921/train_log/ /opt/rife_models/train_log/
 
 # Environment variables for CUDA compatibility
 ENV CUDA_VISIBLE_DEVICES="0"
@@ -118,7 +118,7 @@ ENV PROPAINTER_ROOT="/opt/ProPainter"
 ENV PYTHONPATH="/workspace/project:/workspace/project/external/Real-ESRGAN:/workspace/project/external/RIFE:${PYTHONPATH}"
 
 # Copy entrypoint
-COPY scripts/entrypoint.sh /entrypoint.sh
+COPY ../scripts/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
 ENTRYPOINT ["/entrypoint.sh"]
