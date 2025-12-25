@@ -103,15 +103,11 @@ class ProcessorFactory:
             prefer: Backend preference ('auto', 'native', 'propainter') - deprecated, use backend parameter
             lang: Language code for OCR ('en', 'ru', etc.)
             backend: Backend preference ('auto', 'native', 'propainter', 'sam2')
-            roi: Region of Interest string (deprecated - always uses full-frame processing)
+            roi: Region of Interest string (e.g., "bottom", "full", "0.35", or "x,y,w,h")
 
         Returns:
             Subtitle remover processor instance
         """
-        # ROI parameter is deprecated - always use full-frame processing
-        if roi is not None and roi != 'full':
-            self._logger.warning(f"ROI parameter '{roi}' is deprecated. Using full-frame processing instead.")
-        
         # Determine backend (prefer parameter for backward compatibility)
         if backend == 'auto' and prefer != 'auto':
             # If prefer is specified and backend is auto, use prefer
@@ -135,7 +131,7 @@ class ProcessorFactory:
                 inpainter = ProPainterAdapter()
                 
                 # 5. Главный сервис
-                return SubtitleRemoverService(mask_service, inpainter)
+                return SubtitleRemoverService(mask_service, inpainter, lang=lang, roi_factor=roi)
             except Exception as e:
                 self._logger.warning(f"SAM2 pipeline failed to initialize: {e}")
                 if backend == 'sam2':
@@ -145,9 +141,9 @@ class ProcessorFactory:
         # Check for old subtitle remover backend (for backward compatibility)
         if backend in ('auto', 'propainter', 'native'):  # native тоже перенаправляем на ProPainter
             if SubtitleRemoverWrapper.is_available():
-                self._logger.info(f"Using legacy subtitle remover backend (lang={lang})")
-                # Always pass 'full' to legacy wrapper to disable ROI cropping
-                return SubtitleRemoverWrapper(lang=lang, roi='full')
+                self._logger.info(f"Using legacy subtitle remover backend (lang={lang}, roi={roi})")
+                # Pass roi parameter to wrapper
+                return SubtitleRemoverWrapper(lang=lang, roi=roi)
             else:
                 raise ProcessorNotAvailableError("Subtitle remover not available (requires ProPainter installation in /opt/ProPainter)")
         

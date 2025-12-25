@@ -62,9 +62,9 @@ def create_orchestrator_from_config(config, allow_fallback: bool = False):
             subtitle_remover = factory.create_subtitle_remover(
                 prefer=config.prefer,
                 lang=config.subtitle_language,
-                roi='full'  # Always use full-frame processing, ignore config.ROI
+                roi=config.ROI  # Use ROI from config
             )
-            get_logger(__name__).info(f"Subtitle remover created (language: {config.subtitle_language})")
+            get_logger(__name__).info(f"Subtitle remover created (language: {config.subtitle_language}, ROI: {config.ROI})")
         except Exception as e:
             if config.strict:
                 raise
@@ -81,7 +81,7 @@ def create_orchestrator_from_config(config, allow_fallback: bool = False):
                 subtitle_remover = factory.create_subtitle_remover(
                     prefer=config.prefer,
                     lang=config.subtitle_language,
-                    roi='full'  # Always use full-frame processing
+                    roi=config.ROI  # Use ROI from config
                 )
     except Exception as e:
         if config.strict:
