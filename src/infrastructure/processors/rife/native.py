@@ -157,7 +157,7 @@ class RIFENative:
     def _check_cuda_compatibility(self) -> str:
         """
         Check if CUDA device is compatible with current PyTorch.
-        Returns: torch.device('cuda') or torch.device('cpu')
+        Returns: torch.device('cuda:0') or torch.device('cpu')
         """
         if not torch.cuda.is_available():
             self.logger.warning("CUDA not available, using CPU")
@@ -169,11 +169,11 @@ class RIFENative:
             compute_capability = f"sm_{device_props.major}{device_props.minor}"
 
             # Try a simple CUDA operation to test compatibility
-            test_tensor = torch.randn(10, 10).to('cuda')
+            test_tensor = torch.randn(10, 10).to('cuda:0')
             _ = test_tensor * 2
 
             self.logger.info(f"CUDA is available and compatible: {device_props.name} ({compute_capability})")
-            return torch.device('cuda')
+            return torch.device('cuda:0')
 
         except RuntimeError as e:
             if "no kernel image is available" in str(e) or "not compatible" in str(e):
