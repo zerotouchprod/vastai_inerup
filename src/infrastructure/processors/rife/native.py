@@ -182,6 +182,98 @@ class RIFENative:
                 return torch.device('cpu')
             raise
 
+    def _move_model_to_device(self, model, target_device) -> None:
+        """
+        Robustly move model parameters and buffers to target device.
+        
+        Handles nested modules and custom model structures that might not
+        have standard .to() method or .parameters()/.buffers() attributes.
+        
+        Args:
+            model: The model to move
+            target_device: Target device (torch.device or convertible to str)
+        """
+        # Convert to torch.device if torch is available
+        if TORCH_AVAILABLE and torch is not None:
+            if not isinstance(target_device, torch.device):
+                try:
+                    target_device = torch.device(str(target_device))
+                except Exception:
+                    target_device = torch.device('cpu')
+        
+        self.logger.info(f"Moving model to device: {target_device}")
+        
+        # Try standard .to() method first
+        if hasattr(model, 'to') and callable(getattr(model, 'to')):
+            try:
+                model.to(target_device)
+                self.logger.debug(f"Successfully used model.to({target_device})")
+                return
+            except Exception as e:
+                self.logger.debug(f"model.to() failed: {e}, falling back to manual movement")
+        
+        # Manual recursive movement for parameters and buffers
+        moved_params = 0
+        moved_buffers = 0
+        
+        # Recursively move all parameters
+        def move_parameters(module):
+            nonlocal moved_params
+            for name, param in module.named_parameters(recurse=False):
+                if param is not None:
+                    try:
+                        param.data = param.data.to(target_device)
+                        moved_params += 1
+                    except Exception as e:
+                        self.logger.warning(f"Failed to move parameter {name}: {e}")
+        
+        # Recursively move all buffers
+        def move_buffers(module):
+            nonlocal moved_buffers
+            for name, buf in module.named_buffers(recurse=False):
+                if buf is not None:
+                    try:
+                        buf.data = buf.data.to(target_device)
+                        moved_buffers += 1
+                    except Exception as e:
+                        self.logger.warning(f"Failed to move buffer {name}: {e}")
+        
+        # Apply recursively to all submodules
+        for module_name, module in model.named_modules():
+            move_parameters(module)
+            move_buffers(module)
+        
+        self.logger.info(f"Moved {moved_params} parameters and {moved_buffers} buffers to {target_device}")
+    
+    def _verify_model_device(self, model, expected_device) -> bool:
+        """
+        Verify that all model parameters are on the expected device.
+        
+        Returns:
+            True if all parameters are on expected device, False otherwise
+        """
+        # Convert to torch.device if needed
+        if TORCH_AVAILABLE and torch is not None:
+            if not isinstance(expected_device, torch.device):
+                try:
+                    expected_device = torch.device(str(expected_device))
+                except Exception:
+                    expected_device = torch.device('cpu')
+        
+        mismatched = []
+        for name, param in model.named_parameters():
+            if param.device != expected_device:
+                mismatched.append((name, param.device))
+        
+        if mismatched:
+            self.logger.error(f"Model device mismatch: {len(mismatched)} parameters on wrong device")
+            for name, dev in mismatched[:5]:  # Show first 5 mismatches
+                self.logger.error(f"  {name}: expected {expected_device}, got {dev}")
+            return False
+        
+        self.logger.debug(f"All model parameters verified on device: {expected_device}")
+        return True
+
     def _load_model(self):
         """Load RIFE model (lazy loading)."""
         if self._model is not None:
@@ -308,52 +400,40 @@ class RIFENative:
             try:
                 target_dev = getattr(self, 'model_device', None) or self.device
                 target_dev = torch.device(str(target_dev)) if torch and not isinstance(target_dev, torch.device) else target_dev
-                # If the model has a .to() method, use it
-                if hasattr(self._model, 'to'):
-                    try:
-                        self._model = self._model.to(target_dev)
-                        self.logger.info(f"Moved model to device: {target_dev}")
-                    except Exception as e:
-                        # Some RIFE model wrappers provide custom device movers; fall back to manual param move
-                        self.logger.debug(f"model.to() failed: {e}; falling back to manual parameter/buffer move")
-                        for p in getattr(self._model, 'parameters', lambda: [])():
-                            try:
-                                p.data = p.data.to(target_dev)
-                            except Exception:
-                                pass
-                        for b in getattr(self._model, 'buffers', lambda: [])():
-                            try:
-                                b.data = b.data.to(target_dev)
-                            except Exception:
-                                pass
-                else:
-                    # Manual parameter/buffer move
-                    for p in getattr(self._model, 'parameters', lambda: [])():
-                        try:
-                            p.data = p.data.to(target_dev)
-                        except Exception:
-                            pass
-                    for b in getattr(self._model, 'buffers', lambda: [])():
-                        try:
-                            b.data = b.data.to(target_dev)
-                        except Exception:
-                            pass
-
-                # Normalize model_device to torch.device
+                
+                # Use robust model movement
+                self._move_model_to_device(self._model, target_dev)
+                
+                # Verify all parameters are on the correct device
+                if not self._verify_model_device(self._model, target_dev):
+                    self.logger.warning("Some model parameters may not be on the target device")
+                
+                # Set model_device based on actual parameter device
                 try:
+                    # Get device from first parameter
                     for p in self._model.parameters():
                         model_dev = p.device
                         break
                     else:
                         model_dev = target_dev
                     self.model_device = torch.device(str(model_dev))
-                    self.logger.info(f"Model parameters are on device: {self.model_device}")
-                except Exception:
-                    # keep previous model_device
+                    self.logger.info(f"Model parameters confirmed on device: {self.model_device}")
+                    
+                    # Log detailed device info for debugging (especially for RTX 5070)
+                    if torch.cuda.is_available():
+                        device_props = torch.cuda.get_device_properties(0)
+                        compute_capability = f"sm_{device_props.major}{device_props.minor}"
+                        self.logger.info(f"GPU: {device_props.name} (Compute: {compute_capability}, VRAM: {device_props.total_memory / 1e9:.1f} GB)")
+                        
+                except Exception as e:
+                    self.logger.warning(f"Could not determine model device: {e}")
                     self.model_device = target_dev
 
             except Exception as e:
-                self.logger.warning(f"Failed to explicitly move model to device: {e}")
+                self.logger.warning(f"Failed to move model to device: {e}")
+                # Re-raise if it's a critical error
+                if "CUDA" in str(e) or "device" in str(e):
+                    raise
 
             self.logger.info("\u2713 RIFE model loaded successfully")
 
@@ -367,7 +447,7 @@ class RIFENative:
         # factor 2 -> 1 mid, factor 4 -> 3 mids, etc.
         return max(1, int(self.factor) - 1)
 
-    def _pad_to_multiple(self, tensor: torch.Tensor, multiple: int = 64) -> tuple:
+    def _pad_to_multiple(self, tensor: 'torch.Tensor', multiple: int = 64) -> tuple:
         """
         Pad tensor to multiple of given size.
 
@@ -393,10 +473,10 @@ class RIFENative:
 
     def _interpolate_pair(
         self,
-        frame1: torch.Tensor,
-        frame2: torch.Tensor,
+        frame1: 'torch.Tensor',
+        frame2: 'torch.Tensor',
         mids_count: int
-    ) -> List[torch.Tensor]:
+    ) -> List['torch.Tensor']:
         """
         Interpolate between two frames.
 
@@ -419,29 +499,48 @@ class RIFENative:
             model_dev = torch.device('cpu')
 
         # --- FIX: ensure inputs are on the same device as the model parameters ---
+        # Log device info for debugging (especially for RTX 5070)
+        self.logger.debug(f"Input tensor devices - frame1: {frame1.device}, frame2: {frame2.device}")
+        self.logger.debug(f"Target model device: {model_dev}")
+        
         # Move input tensors to model device before any ops (use non_blocking when possible)
         try:
             if frame1.device != model_dev:
+                self.logger.debug(f"Moving frame1 from {frame1.device} to {model_dev}")
                 try:
                     frame1 = frame1.to(model_dev, non_blocking=True)
                 except Exception:
                     frame1 = frame1.to(model_dev)
             if frame2.device != model_dev:
+                self.logger.debug(f"Moving frame2 from {frame2.device} to {model_dev}")
                 try:
                     frame2 = frame2.to(model_dev, non_blocking=True)
                 except Exception:
                     frame2 = frame2.to(model_dev)
+                    
+            # Verify movement succeeded
+            if frame1.device != model_dev or frame2.device != model_dev:
+                self.logger.warning(f"Tensor device mismatch after movement: frame1={frame1.device}, frame2={frame2.device}, expected={model_dev}")
+                
         except Exception as e:
             # If moving tensors fails, log devices and re-raise with context
             self.logger.error(f"Failed to move input tensors to device {model_dev}: {e}")
             self.logger.error(f"frame1.device={getattr(frame1, 'device', 'unknown')}, frame2.device={getattr(frame2, 'device', 'unknown')}")
+            
+            # Log model parameter devices for additional context
+            try:
+                param_devices = set(str(p.device) for p in self._model.parameters())
+                self.logger.error(f"Model parameter devices: {param_devices}")
+            except Exception:
+                pass
+                
             raise
 
         # Pad to multiples of 64 (RIFE model requirement)
         frame1_padded, _, _ = self._pad_to_multiple(frame1, 64)
         frame2_padded, _, _ = self._pad_to_multiple(frame2, 64)
 
-        mids: List[torch.Tensor] = []
+        mids: List['torch.Tensor'] = []
 
         with torch.no_grad():
             for i in range(mids_count):
@@ -487,7 +586,7 @@ class RIFENative:
 
         return mids
 
-    def _load_frame_as_tensor(self, frame_path: Path) -> torch.Tensor:
+    def _load_frame_as_tensor(self, frame_path: Path) -> 'torch.Tensor':
         """Load image file as torch tensor."""
         try:
             import cv2
@@ -515,7 +614,7 @@ class RIFENative:
 
         return img
 
-    def _save_tensor_as_frame(self, tensor: torch.Tensor, output_path: Path):
+    def _save_tensor_as_frame(self, tensor: 'torch.Tensor', output_path: Path):
         """Save torch tensor as image file."""
         try:
             import cv2
