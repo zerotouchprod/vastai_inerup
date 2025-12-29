@@ -1,10 +1,10 @@
 # Dockerfile.vastai.optimized
 # Optimized Dockerfile for Vast.ai with full NVIDIA RTX 30-50 series support
-# This version fixes the sm_120 compatibility issue and ensures proper CUDA detection
+# This version fixes the sm_120 compatibility issue with CUDA 13.0 and PyTorch nightly
 # Supports RTX 30 series (Ampere), 40 series (Ada Lovelace), 50 series (Blackwell)
 # Also maintains backward compatibility with RTX 20 series (Turing)
 
-FROM nvidia/cuda:12.6.0-cudnn-runtime-ubuntu22.04
+FROM nvidia/cuda:13.0.2-cudnn-runtime-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -36,16 +36,17 @@ ENV PATH="/opt/venv/bin:$PATH"
 # Upgrade pip
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 
-# Install PyTorch with CUDA 12.6 (supports all RTX 30-50 series including Blackwell sm_120)
-# PyTorch 2.9.1+ with CUDA 12.6 provides native support for RTX 5080 and newer GPUs
+# Install PyTorch Nightly with CUDA 13.0 for Blackwell (sm_120) support
+# PyTorch nightly for cu130 includes native support for RTX 50 series (Blackwell) architecture
 RUN pip uninstall -y torch torchvision torchaudio || true && \
-    echo "Installing PyTorch 2.9.1 with CUDA 12.6 for RTX 30-50 series compatibility..." && \
-    pip install --no-cache-dir \
-        torch==2.9.1 \
+    echo "Installing PyTorch Nightly with CUDA 13.0 for RTX 30-50 series compatibility (including Blackwell sm_120)..." && \
+    pip install --no-cache-dir --pre \
+        torch \
         torchvision \
         torchaudio \
-        --index-url https://download.pytorch.org/whl/cu126 && \
+        --index-url https://download.pytorch.org/whl/nightly/cu130 && \
     echo "PyTorch installation complete" && \
+    python3 -c "import torch; print(f'PyTorch version: {torch.__version__}'); print(f'CUDA available: {torch.cuda.is_available()}'); print(f'CUDA capability: {torch.cuda.get_device_capability() if torch.cuda.is_available() else \"N/A\"}'); print(f'CUDA version: {torch.version.cuda}')" && \
     rm -rf /root/.cache/pip
 
 # Install numpy with compatibility fix
@@ -68,13 +69,30 @@ RUN pip install --no-cache-dir \
     easyocr>=1.7.1 && \
     rm -rf /root/.cache/pip /tmp/*
 
-# Install Real-ESRGAN with proper dependencies
+# Install Real-ESRGAN with proper dependencies and debug imports
 RUN git clone --depth 1 https://github.com/xinntao/Real-ESRGAN.git /tmp/Real-ESRGAN && \
     cd /tmp/Real-ESRGAN && \
     pip install --no-cache-dir basicsr && \
     pip install --no-cache-dir . && \
     cd / && \
-    rm -rf /tmp/Real-ESRGAN /root/.cache/pip
+    rm -rf /tmp/Real-ESRGAN /root/.cache/pip && \
+    echo "Checking Real-ESRGAN imports..." && \
+    python3 -c "
+import sys
+try:
+    from basicsr.archs.rrdbnet_arch import RRDBNet
+    print('✓ basicsr import OK')
+except Exception as e:
+    print(f'✗ basicsr import failed: {e}')
+    sys.exit(1)
+try:
+    from realesrgan import RealESRGANer
+    print('✓ realesrgan import OK')
+except Exception as e:
+    print(f'✗ realesrgan import failed: {e}')
+    sys.exit(1)
+print('Real-ESRGAN dependencies verified')
+"
 
 # Install RIFE
 RUN git clone --depth 1 https://github.com/hzwer/arXiv2020-RIFE.git /tmp/RIFE && \
