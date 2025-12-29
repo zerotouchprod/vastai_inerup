@@ -1,6 +1,6 @@
 # Dockerfile.vastai.optimized
 # Optimized Dockerfile for Vast.ai with full NVIDIA RTX 30-50 series support
-# This version fixes the sm_120 compatibility issue and ensures proper CUDA detection
+# This version uses CUDA 12.9.0 with PyTorch nightly for CUDA 12.6 compatibility
 # Supports RTX 30 series (Ampere), 40 series (Ada Lovelace), 50 series (Blackwell)
 # Also maintains backward compatibility with RTX 20 series (Turing)
 
@@ -36,16 +36,17 @@ ENV PATH="/opt/venv/bin:$PATH"
 # Upgrade pip
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 
-# Install PyTorch with CUDA 12.6 (supports all RTX 30-50 series including Blackwell sm_120)
-# PyTorch 2.9.1+ with CUDA 12.6 provides native support for RTX 5080 and newer GPUs
+# Install PyTorch Nightly with CUDA 12.6 (compatible with CUDA 12.9.0 runtime)
+# PyTorch nightly includes support for Blackwell sm_120 architecture (RTX 50 series)
 RUN pip uninstall -y torch torchvision torchaudio || true && \
-    echo "Installing PyTorch 2.9.1 with CUDA 12.6 for RTX 30-50 series compatibility..." && \
-    pip install --no-cache-dir \
-        torch==2.9.1 \
+    echo "Installing PyTorch Nightly with CUDA 12.6 (compatible with CUDA 12.9.0) for RTX 30-50 series compatibility..." && \
+    pip install --no-cache-dir --pre \
+        torch \
         torchvision \
         torchaudio \
-        --index-url https://download.pytorch.org/whl/cu126 && \
+        --index-url https://download.pytorch.org/whl/nightly/cu126 && \
     echo "PyTorch installation complete" && \
+    python3 -c "import torch; print(f'PyTorch version: {torch.__version__}'); print(f'CUDA available: {torch.cuda.is_available()}'); print(f'CUDA capability: {torch.cuda.get_device_capability() if torch.cuda.is_available() else \"N/A\"}'); print(f'CUDA version: {torch.version.cuda}')" && \
     rm -rf /root/.cache/pip
 
 # Install numpy with compatibility fix
