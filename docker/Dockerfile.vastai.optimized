@@ -8,7 +8,7 @@ FROM nvidia/cuda:12.9.0-cudnn-runtime-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install system dependencies
+# Install system dependencies and clean up to save space
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     wget \
@@ -25,7 +25,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     tesseract-ocr \
     libtesseract-dev \
     libgl1-mesa-glx \
-    && apt-get clean && rm -rf /var/lib/apt/lists/*
+    && apt-get purge -y --auto-remove manpages manpages-dev \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* /usr/share/doc/* /usr/share/man/*
 
 WORKDIR /workspace/project
 
@@ -38,7 +40,11 @@ RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 
 # Install PyTorch Nightly with CUDA 12.6 (compatible with CUDA 12.9.0 runtime)
 # PyTorch nightly includes support for Blackwell sm_120 architecture (RTX 50 series)
-RUN pip uninstall -y torch torchvision torchaudio || true && \
+# Clean up space before installation to avoid "No space left on device"
+RUN echo "Checking disk space before PyTorch installation..." && \
+    df -h && \
+    rm -rf /root/.cache/pip && \
+    pip uninstall -y torch torchvision torchaudio || true && \
     echo "Installing PyTorch Nightly with CUDA 12.6 (compatible with CUDA 12.9.0) for RTX 30-50 series compatibility..." && \
     pip install --no-cache-dir --pre \
         torch \
@@ -47,7 +53,9 @@ RUN pip uninstall -y torch torchvision torchaudio || true && \
         --index-url https://download.pytorch.org/whl/nightly/cu126 && \
     echo "PyTorch installation complete" && \
     python3 -c "import torch; print(f'PyTorch version: {torch.__version__}'); print(f'CUDA available: {torch.cuda.is_available()}'); print(f'CUDA capability: {torch.cuda.get_device_capability() if torch.cuda.is_available() else \"N/A\"}'); print(f'CUDA version: {torch.version.cuda}')" && \
-    rm -rf /root/.cache/pip
+    rm -rf /root/.cache/pip && \
+    echo "Disk space after installation:" && \
+    df -h
 
 # Install numpy with compatibility fix
 RUN pip install --no-cache-dir "numpy<2" && \
