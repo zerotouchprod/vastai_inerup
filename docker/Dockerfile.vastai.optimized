@@ -68,9 +68,10 @@ RUN pip install --no-cache-dir \
     easyocr>=1.7.1 && \
     rm -rf /root/.cache/pip /tmp/*
 
-# Install Real-ESRGAN
+# Install Real-ESRGAN with proper dependencies
 RUN git clone --depth 1 https://github.com/xinntao/Real-ESRGAN.git /tmp/Real-ESRGAN && \
     cd /tmp/Real-ESRGAN && \
+    pip install --no-cache-dir basicsr && \
     pip install --no-cache-dir . && \
     cd / && \
     rm -rf /tmp/Real-ESRGAN /root/.cache/pip
@@ -106,8 +107,10 @@ ENV TORCH_CUDA_ARCH_LIST="7.5;8.0;8.6;8.7;8.9;9.0;12.0"
 ENV CUDA_HOME="/usr/local/cuda"
 ENV LD_LIBRARY_PATH="/usr/local/cuda/lib64:${LD_LIBRARY_PATH}"
 
-# SAM 2 Installation
-RUN pip install --no-cache-dir git+https://github.com/facebookresearch/segment-anything-2.git
+# SAM 2 Installation with explicit CUDA architecture support for RTX 20-50 series
+ENV FORCE_CUDA="1"
+ENV MAX_JOBS="4"
+RUN pip install --no-cache-dir --no-build-isolation git+https://github.com/facebookresearch/segment-anything-2.git
 
 # Download SAM 2 Checkpoint
 RUN mkdir -p /opt/sam2_checkpoints && \
