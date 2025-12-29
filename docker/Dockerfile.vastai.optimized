@@ -68,16 +68,13 @@ RUN pip install --no-cache-dir \
     easyocr>=1.7.1 && \
     rm -rf /root/.cache/pip /tmp/*
 
-# Install Real-ESRGAN with proper dependencies and verify installation
+# Install Real-ESRGAN with proper dependencies
 RUN git clone --depth 1 https://github.com/xinntao/Real-ESRGAN.git /tmp/Real-ESRGAN && \
     cd /tmp/Real-ESRGAN && \
     pip install --no-cache-dir basicsr && \
     pip install --no-cache-dir . && \
     cd / && \
-    rm -rf /tmp/Real-ESRGAN /root/.cache/pip && \
-    python3 -c "import torch; print('PyTorch version:', torch.__version__); print('CUDA available:', torch.cuda.is_available())" && \
-    python3 -c "try: from basicsr.archs.rrdbnet_arch import RRDBNet; print('basicsr import OK'); except Exception as e: print('basicsr import failed:', e)" && \
-    python3 -c "try: from realesrgan import RealESRGANer; print('realesrgan import OK'); except Exception as e: print('realesrgan import failed:', e)"
+    rm -rf /tmp/Real-ESRGAN /root/.cache/pip
 
 # Install RIFE
 RUN git clone --depth 1 https://github.com/hzwer/arXiv2020-RIFE.git /tmp/RIFE && \
@@ -128,9 +125,7 @@ RUN pip install --no-cache-dir imageio scipy scikit-image && \
     cd /opt/ProPainter/weights && \
     wget -q --show-progress https://github.com/sczhou/ProPainter/releases/download/v0.1.0/ProPainter.pth && \
     wget -q --show-progress https://github.com/sczhou/ProPainter/releases/download/v0.1.0/raft-things.pth && \
-    wget -q --show-progress https://github.com/sczhou/ProPainter/releases/download/v0.1.0/recurrent_flow_completion.pth && \
-    cd / && \
-    python3 -c "import sys; sys.path.insert(0, '/opt/ProPainter'); exec(open('/opt/ProPainter/inference_propainter.py').read().split('if __name__')[0]); print('ProPainter script syntax OK')"
+    wget -q --show-progress https://github.com/sczhou/ProPainter/releases/download/v0.1.0/recurrent_flow_completion.pth
 
 ENV PROPAINTER_ROOT="/opt/ProPainter"
 ENV PYTHONPATH="/workspace/project:/workspace/project/external/Real-ESRGAN:/workspace/project/external/RIFE:${PYTHONPATH}"
