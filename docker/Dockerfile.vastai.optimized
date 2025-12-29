@@ -4,7 +4,7 @@
 # Supports RTX 30 series (Ampere), 40 series (Ada Lovelace), 50 series (Blackwell)
 # Also maintains backward compatibility with RTX 20 series (Turing)
 
-FROM nvidia/cuda:12.6.0-cudnn-runtime-ubuntu22.04
+FROM nvidia/cuda:12.9.0-cudnn-runtime-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
