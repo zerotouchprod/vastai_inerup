@@ -212,36 +212,61 @@ class RIFENative:
             except Exception as e:
                 self.logger.debug(f"model.to() failed: {e}, falling back to manual movement")
         
-        # Manual recursive movement for parameters and buffers
+        # Manual movement for parameters and buffers
         moved_params = 0
         moved_buffers = 0
         
-        # Recursively move all parameters
-        def move_parameters(module):
-            nonlocal moved_params
-            for name, param in module.named_parameters(recurse=False):
-                if param is not None:
-                    try:
-                        param.data = param.data.to(target_device)
-                        moved_params += 1
-                    except Exception as e:
-                        self.logger.warning(f"Failed to move parameter {name}: {e}")
-        
-        # Recursively move all buffers
-        def move_buffers(module):
-            nonlocal moved_buffers
-            for name, buf in module.named_buffers(recurse=False):
-                if buf is not None:
-                    try:
-                        buf.data = buf.data.to(target_device)
-                        moved_buffers += 1
-                    except Exception as e:
-                        self.logger.warning(f"Failed to move buffer {name}: {e}")
-        
-        # Apply recursively to all submodules
-        for module_name, module in model.named_modules():
-            move_parameters(module)
-            move_buffers(module)
+        # Check if model has named_modules (standard torch.nn.Module)
+        if hasattr(model, 'named_modules'):
+            # Recursively move all parameters
+            def move_parameters(module):
+                nonlocal moved_params
+                for name, param in module.named_parameters(recurse=False):
+                    if param is not None:
+                        try:
+                            param.data = param.data.to(target_device)
+                            moved_params += 1
+                        except Exception as e:
+                            self.logger.warning(f"Failed to move parameter {name}: {e}")
+            
+            # Recursively move all buffers
+            def move_buffers(module):
+                nonlocal moved_buffers
+                for name, buf in module.named_buffers(recurse=False):
+                    if buf is not None:
+                        try:
+                            buf.data = buf.data.to(target_device)
+                            moved_buffers += 1
+                        except Exception as e:
+                            self.logger.warning(f"Failed to move buffer {name}: {e}")
+            
+            # Apply recursively to all submodules
+            for module_name, module in model.named_modules():
+                move_parameters(module)
+                move_buffers(module)
+        else:
+            # Model doesn't have named_modules - try to move parameters and buffers directly
+            self.logger.debug("Model doesn't have named_modules, trying direct parameter/buffer access")
+            
+            # Try to move parameters if model has parameters() method
+            if hasattr(model, 'parameters') and callable(getattr(model, 'parameters')):
+                try:
+                    for param in model.parameters():
+                        if param is not None:
+                            param.data = param.data.to(target_device)
+                            moved_params += 1
+                except Exception as e:
+                    self.logger.warning(f"Failed to move parameters: {e}")
+            
+            # Try to move buffers if model has buffers() method
+            if hasattr(model, 'buffers') and callable(getattr(model, 'buffers')):
+                try:
+                    for buf in model.buffers():
+                        if buf is not None:
+                            buf.data = buf.data.to(target_device)
+                            moved_buffers += 1
+                except Exception as e:
+                    self.logger.warning(f"Failed to move buffers: {e}")
         
         self.logger.info(f"Moved {moved_params} parameters and {moved_buffers} buffers to {target_device}")
     
@@ -261,9 +286,21 @@ class RIFENative:
                     expected_device = torch.device('cpu')
         
         mismatched = []
-        for name, param in model.named_parameters():
-            if param.device != expected_device:
-                mismatched.append((name, param.device))
+        
+        # Check if model has named_parameters (standard torch.nn.Module)
+        if hasattr(model, 'named_parameters'):
+            for name, param in model.named_parameters():
+                if param.device != expected_device:
+                    mismatched.append((name, param.device))
+        elif hasattr(model, 'parameters') and callable(getattr(model, 'parameters')):
+            # Model doesn't have named_parameters, but has parameters()
+            for i, param in enumerate(model.parameters()):
+                if param.device != expected_device:
+                    mismatched.append((f"param_{i}", param.device))
+        else:
+            # Cannot verify parameters
+            self.logger.warning("Cannot verify model device: model has no named_parameters or parameters method")
+            return True  # Assume OK
         
         if mismatched:
             self.logger.error(f"Model device mismatch: {len(mismatched)} parameters on wrong device")
