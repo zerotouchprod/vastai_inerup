@@ -1,10 +1,4 @@
-# Dockerfile.vastai.optimized
-# Optimized Dockerfile for Vast.ai with full NVIDIA RTX 30-50 series support
-# This version fixes the sm_120 compatibility issue with CUDA 13.0 and PyTorch nightly
-# Supports RTX 30 series (Ampere), 40 series (Ada Lovelace), 50 series (Blackwell)
-# Also maintains backward compatibility with RTX 20 series (Turing)
-
-FROM nvidia/cuda:13.0.2-cudnn-runtime-ubuntu22.04
+FROM nvidia/cuda:13.0.1-cudnn-runtime-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
