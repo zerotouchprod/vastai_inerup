@@ -46,13 +46,13 @@ RUN echo "Checking disk space before PyTorch installation..." && \
     rm -rf /root/.cache/pip && \
     pip uninstall -y torch torchvision torchaudio || true && \
     echo "Installing PyTorch Nightly with CUDA 12.6 (compatible with CUDA 12.9.0) for RTX 30-50 series compatibility..." && \
-    pip install --no-cache-dir --pre \
+    pip install --no-cache-dir --pre -q \
         torch \
         torchvision \
         torchaudio \
         --index-url https://download.pytorch.org/whl/nightly/cu126 && \
     echo "PyTorch installation complete" && \
-    python3 -c "import torch; print(f'PyTorch version: {torch.__version__}'); print(f'CUDA available: {torch.cuda.is_available()}'); print(f'CUDA capability: {torch.cuda.get_device_capability() if torch.cuda.is_available() else \"N/A\"}'); print(f'CUDA version: {torch.version.cuda}')" && \
+    python3 -c "import torch; print(f'PyTorch version: {torch.__version__}'); print(f'CUDA built: {torch.cuda.is_built()}'); print(f'CUDA version: {torch.version.cuda}')" && \
     rm -rf /root/.cache/pip && \
     echo "Disk space after installation:" && \
     df -h
