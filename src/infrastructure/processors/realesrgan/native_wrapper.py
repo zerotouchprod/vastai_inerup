@@ -35,19 +35,31 @@ class RealESRGANNativeWrapper(BaseProcessor):
         """Check if Real-ESRGAN dependencies are available."""
         try:
             import torch
+            logger.info(f"[DEBUG] PyTorch version: {torch.__version__}")
+            logger.info(f"[DEBUG] CUDA available: {torch.cuda.is_available()}")
+            if torch.cuda.is_available():
+                logger.info(f"[DEBUG] CUDA device: {torch.cuda.get_device_name(0)}")
+                logger.info(f"[DEBUG] CUDA capability: {torch.cuda.get_device_capability(0)}")
             # Note: CUDA is preferred but not required for testing
             # The actual device selection happens during model loading
 
             from basicsr.archs.rrdbnet_arch import RRDBNet
+            logger.info("[DEBUG] basicsr.archs.rrdbnet_arch import OK")
+            
             from realesrgan import RealESRGANer
+            logger.info("[DEBUG] realesrgan import OK")
 
-            logger.debug("Real-ESRGAN native is available (all dependencies found)")
+            logger.info("Real-ESRGAN native is available (all dependencies found)")
             return True
         except ImportError as e:
-            logger.debug(f"Real-ESRGAN native not available: {e}")
+            logger.warning(f"Real-ESRGAN native not available - ImportError: {e}")
+            import traceback
+            logger.warning(f"Import traceback: {traceback.format_exc()}")
             return False
         except Exception as e:
-            logger.debug(f"Real-ESRGAN native availability check failed: {e}")
+            logger.warning(f"Real-ESRGAN native availability check failed: {e}")
+            import traceback
+            logger.warning(f"Exception traceback: {traceback.format_exc()}")
             return False
 
     def supports_gpu(self) -> bool:
@@ -115,4 +127,3 @@ class RealESRGANNativeWrapper(BaseProcessor):
             error_msg = f"Native Real-ESRGAN processing failed: {e}"
             self._logger.error(error_msg)
             raise VideoProcessingError(error_msg) from e
-
