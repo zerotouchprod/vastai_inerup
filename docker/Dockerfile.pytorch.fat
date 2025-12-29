@@ -5,9 +5,9 @@
 # Build locally:
 #   docker build -f Dockerfile.pytorch.fat -t vastai-interup:pytorch-fat .
 
-# Используем базовый образ с CUDA 12.1 для лучшей совместимости с PyTorch
-# CUDA 12.1 имеет forward compatibility с CUDA 12.2-12.4
-FROM nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04 AS base
+# Используем базовый образ с CUDA 12.6 для поддержки всех современных GPU включая Blackwell
+# CUDA 12.6 имеет нативную поддержку архитектуры sm_120 (RTX 50 series)
+FROM nvidia/cuda:12.6.0-cudnn-runtime-ubuntu22.04 AS base
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -39,13 +39,17 @@ ENV PATH="/opt/venv/bin:$PATH"
 # Upgrade pip and install minimal Python packages
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 
-# Устанавливаем PyTorch с поддержкой CUDA 12.1 (совместим с CUDA 12.2+)
-# CUDA 12.1 совместим с CUDA 12.2, 12.3, 12.4 через forward compatibility
-# Для RTX 2060 (compute capability 7.5) используем PyTorch с поддержкой CUDA 12.1
-RUN pip uninstall -y torch torchvision || true && \
-    echo "Installing PyTorch with CUDA 12.1 support (compatible with RTX 2060 sm_75)..." && \
+# Устанавливаем PyTorch 2.5.0 с поддержкой CUDA 12.6 (совместим со всеми современными GPU)
+# CUDA 12.6 имеет нативную поддержку архитектуры Blackwell (sm_120)
+# Сохраняем совместимость с более старыми картами через TORCH_CUDA_ARCH_LIST
+RUN pip uninstall -y torch torchvision torchaudio || true && \
+    echo "Installing PyTorch 2.5.0 with CUDA 12.6 support (compatible with RTX 20-50 series)..." && \
     echo "Note: Building on machine without GPU, but installing CUDA-enabled PyTorch for runtime use on GPU machines" && \
-    pip install --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121 && \
+    pip install --no-cache-dir \
+        torch==2.5.0 \
+        torchvision==0.20.0 \
+        torchaudio==2.5.0 \
+        --index-url https://download.pytorch.org/whl/cu126 && \
     echo "Verifying PyTorch installation..." && \
     python3 -c "import torch; print(f'PyTorch version: {torch.__version__}'); print(f'PyTorch built with CUDA: {\"cu\" in torch.__version__}'); print(f'CUDA version: {torch.version.cuda}')" && \
     echo "PyTorch installation complete. GPU availability will be checked at runtime." && \
@@ -161,13 +165,14 @@ ENV CUDA_VISIBLE_DEVICES="0"
 ENV NVIDIA_VISIBLE_DEVICES="all"
 ENV NVIDIA_DRIVER_CAPABILITIES="compute,utility"
 
-# Fix CUDA compatibility for all NVIDIA RTX 30-50 series GPUs
+# Fix CUDA compatibility for all NVIDIA RTX 20-50 series GPUs
 # Set CUDA architecture flags to ensure compatibility with all modern NVIDIA GPUs
-# RTX 30 series (Ampere): sm_86, sm_87
-# RTX 40 series (Ada Lovelace): sm_89
-# RTX 50 series (Ada Lovelace): sm_90
 # RTX 20 series (Turing): sm_75
-ENV TORCH_CUDA_ARCH_LIST="7.5;8.0;8.6;8.7;8.9;9.0"
+# RTX 30 series (Ampere): sm_80, sm_86, sm_87
+# RTX 40 series (Ada Lovelace): sm_89
+# RTX 50 series (Blackwell): sm_120
+# Hopper (H100): sm_90
+ENV TORCH_CUDA_ARCH_LIST="7.5;8.0;8.6;8.7;8.9;9.0;12.0"
 ENV CUDA_HOME="/usr/local/cuda"
 ENV LD_LIBRARY_PATH="/usr/local/cuda/lib64:${LD_LIBRARY_PATH}"
 

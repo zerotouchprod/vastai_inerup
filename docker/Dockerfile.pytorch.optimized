@@ -5,7 +5,7 @@
 # Build:
 #   docker build -f Dockerfile.pytorch.optimized -t vastai-interup:pytorch-optimized .
 
-FROM nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04 AS base
+FROM nvidia/cuda:12.6.0-cudnn-runtime-ubuntu22.04 AS base
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -34,11 +34,12 @@ ENV PATH="/opt/venv/bin:$PATH"
 # pip basics
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 
-# Install CUDA-enabled PyTorch wheels
+# Install CUDA-enabled PyTorch wheels with support for RTX 20-50 series
 RUN pip install --no-cache-dir \
-    "torch==2.2.2+cu121" \
-    "torchvision==0.17.2+cu121" \
-    --index-url https://download.pytorch.org/whl/cu121 && rm -rf /root/.cache/pip
+    torch==2.5.0 \
+    torchvision==0.20.0 \
+    torchaudio==2.5.0 \
+    --index-url https://download.pytorch.org/whl/cu126 && rm -rf /root/.cache/pip
 
 # Force numpy < 2 to avoid compatibility issues with some packages
 RUN pip install --no-cache-dir "numpy<2" && rm -rf /root/.cache/pip
@@ -57,6 +58,9 @@ RUN mkdir -p /opt/realesrgan_models && \
 
 # Set helpful runtime env to reduce GPU memory fragmentation
 ENV PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:128
+ENV TORCH_CUDA_ARCH_LIST="7.5;8.0;8.6;8.7;8.9;9.0;12.0"
+ENV CUDA_HOME="/usr/local/cuda"
+ENV LD_LIBRARY_PATH="/usr/local/cuda/lib64:${LD_LIBRARY_PATH}"
 
 # Provide a small script to set runtime envs and then exec the original entrypoint
 COPY scripts/entrypoint.sh /entrypoint.sh
@@ -73,4 +77,3 @@ CMD ["/bin/bash"]
 # - It intentionally does not include system TensorRT libraries. For large gains
 #   from TensorRT/ONNX, use the dedicated inference/TensorRT image provided in
 #   Dockerfile.pytorch.inference.trt.
-

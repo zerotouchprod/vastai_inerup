@@ -1,6 +1,6 @@
 # Build: docker build -f Dockerfile.pytorch.fat -t vastai-interup:pytorch-fat .
 
-FROM nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04 AS base
+FROM nvidia/cuda:12.6.0-cudnn-runtime-ubuntu22.04 AS base
 
 # Метки для порядка
 LABEL description="Pure Execution Environment: PyTorch Nightly + Real-ESRGAN + RIFE + OCR"
@@ -28,11 +28,11 @@ ENV PATH="/opt/venv/bin:$PATH"
 # Обновляем pip
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 
-# 3. PyTorch Nightly (Force Install Strategy)
+# 3. PyTorch Nightly (Force Install Strategy) with CUDA 12.6 support
 # Используем --no-deps для torchvision/audio, чтобы игнорировать conflicts версий в Nightly
 RUN pip uninstall -y torch torchvision torchaudio || true && \
-    pip install --no-cache-dir --pre torch --index-url https://download.pytorch.org/whl/nightly/cu124 && \
-    pip install --no-cache-dir --pre torchvision torchaudio --no-deps --index-url https://download.pytorch.org/whl/nightly/cu124 && \
+    pip install --no-cache-dir --pre torch --index-url https://download.pytorch.org/whl/nightly/cu126 && \
+    pip install --no-cache-dir --pre torchvision torchaudio --no-deps --index-url https://download.pytorch.org/whl/nightly/cu126 && \
     rm -rf /root/.cache/pip
 
 # 4. Фиксация Numpy (Критично для совместимости)
@@ -93,6 +93,10 @@ ENV STRICT_FRAME_COUNT=1
 # Указываем, где искать модели (если ваши скрипты используют эти ENV)
 ENV RIFE_MODEL_DIR="/opt/rife_models/train_log"
 ENV REALESRGAN_MODEL_DIR="/opt/realesrgan_models"
+# CUDA architecture support for RTX 20-50 series
+ENV TORCH_CUDA_ARCH_LIST="7.5;8.0;8.6;8.7;8.9;9.0;12.0"
+ENV CUDA_HOME="/usr/local/cuda"
+ENV LD_LIBRARY_PATH="/usr/local/cuda/lib64:${LD_LIBRARY_PATH}"
 
 # Скрипт входа
 COPY scripts/entrypoint.sh /entrypoint.sh

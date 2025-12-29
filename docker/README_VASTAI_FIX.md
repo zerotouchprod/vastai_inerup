@@ -1,27 +1,31 @@
-# Docker Fix for Vast.ai - RTX 30-50 Series Support
+# Docker Fix for Vast.ai - RTX 20-50 Series Support
 
 ## Проблема
-Ошибка `sm_120 is not compatible with the current PyTorch installation` возникает из-за неправильного определения архитектуры GPU. На самом деле, это ошибка в сообщении - система имеет RTX 2060 с compute capability 7.5 (sm_75), но PyTorch не может с ней работать.
+Ошибка `sm_120 is not compatible with the current PyTorch installation` возникает при использовании RTX 5080 (Blackwell) с compute capability 12.0 (sm_120). Старые версии PyTorch не поддерживают архитектуру Blackwell.
 
 ## Решение
 
 ### 1. Исправленный Dockerfile
 Используйте `Dockerfile.vastai.optimized` - он содержит все необходимые исправления:
 
-- **PyTorch с CUDA 12.1**: Совместим с CUDA 12.2-12.4 через forward compatibility
-- **Поддержка всех RTX серий**: sm_75 (20xx), sm_86/sm_87 (30xx), sm_89 (40xx), sm_90 (50xx)
+- **PyTorch 2.5.0 с CUDA 12.6**: Нативная поддержка архитектуры Blackwell (sm_120)
+- **Поддержка всех RTX серий**: sm_75 (20xx), sm_86/sm_87 (30xx), sm_89 (40xx), sm_120 (50xx)
 - **Оптимизированные зависимости**: Удалены ненужные пакеты, улучшена производительность
 
 ### 2. Ключевые изменения
 
 #### CUDA Architecture Support
 ```dockerfile
-ENV TORCH_CUDA_ARCH_LIST="7.5;8.0;8.6;8.7;8.9;9.0"
+ENV TORCH_CUDA_ARCH_LIST="7.5;8.0;8.6;8.7;8.9;9.0;12.0"
 ```
 
 #### PyTorch Installation
 ```dockerfile
-RUN pip install --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+RUN pip install --no-cache-dir \
+    torch==2.5.0 \
+    torchvision==0.20.0 \
+    torchaudio==2.5.0 \
+    --index-url https://download.pytorch.org/whl/cu126
 ```
 
 #### Environment Variables
@@ -49,9 +53,10 @@ docker build -f Dockerfile.pytorch.fat -t vastai-interup:pytorch-fat .
 | Серия | Архитектура | Compute Capability |
 |-------|-------------|-------------------|
 | RTX 20xx | Turing | sm_75 |
-| RTX 30xx | Ampere | sm_86, sm_87 |
+| RTX 30xx | Ampere | sm_80, sm_86, sm_87 |
 | RTX 40xx | Ada Lovelace | sm_89 |
-| RTX 50xx | Ada Lovelace | sm_90 |
+| RTX 50xx | Blackwell | sm_120 |
+| Hopper (H100) | Hopper | sm_90 |
 
 ### 5. Проверка работы
 
@@ -81,10 +86,10 @@ python3 -c "import torch; print(f'PyTorch: {torch.__version__}'); print(f'CUDA a
 
 ## Важные моменты
 
-- **CUDA 12.1**: Используется как базовая версия для forward compatibility
-- **PyTorch cu121**: Специальная сборка для CUDA 12.1
-- **TORCH_CUDA_ARCH_LIST**: Явно указывает поддерживаемые архитектуры
-- **Vast.ai**: Оптимизирован для работы на платформе Vast.ai
+- **CUDA 12.6**: Последняя стабильная версия с нативной поддержкой Blackwell
+- **PyTorch 2.5.0 cu126**: Специальная сборка для CUDA 12.6 с поддержкой sm_120
+- **TORCH_CUDA_ARCH_LIST**: Явно указывает поддерживаемые архитектуры, включая sm_120
+- **Vast.ai**: Оптимизирован для работы на платформе Vast.ai со всеми современными GPU
 
 ## Файлы
 

@@ -1,8 +1,10 @@
 # Dockerfile.vastai.optimized
 # Optimized Dockerfile for Vast.ai with full NVIDIA RTX 30-50 series support
 # This version fixes the sm_120 compatibility issue and ensures proper CUDA detection
+# Supports RTX 30 series (Ampere), 40 series (Ada Lovelace), 50 series (Blackwell)
+# Also maintains backward compatibility with RTX 20 series (Turing)
 
-FROM nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04
+FROM nvidia/cuda:12.6.0-cudnn-runtime-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -34,11 +36,15 @@ ENV PATH="/opt/venv/bin:$PATH"
 # Upgrade pip
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 
-# Install PyTorch with CUDA 12.1 (supports all RTX 30-50 series)
-# This version fixes the sm_120 -> sm_75 detection issue
+# Install PyTorch with CUDA 12.6 (supports all RTX 30-50 series including Blackwell sm_120)
+# PyTorch 2.5.0+ with CUDA 12.6 provides native support for RTX 5080 and newer GPUs
 RUN pip uninstall -y torch torchvision torchaudio || true && \
-    echo "Installing PyTorch with CUDA 12.1 for RTX 30-50 series compatibility..." && \
-    pip install --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121 && \
+    echo "Installing PyTorch 2.5.0 with CUDA 12.6 for RTX 30-50 series compatibility..." && \
+    pip install --no-cache-dir \
+        torch==2.5.0 \
+        torchvision==0.20.0 \
+        torchaudio==2.5.0 \
+        --index-url https://download.pytorch.org/whl/cu126 && \
     echo "PyTorch installation complete" && \
     rm -rf /root/.cache/pip
 
@@ -90,12 +96,13 @@ ENV CUDA_VISIBLE_DEVICES="0"
 ENV NVIDIA_VISIBLE_DEVICES="all"
 ENV NVIDIA_DRIVER_CAPABILITIES="compute,utility"
 
-# Fix CUDA architecture compatibility for all NVIDIA RTX 30-50 series
-# RTX 30 series (Ampere): sm_86, sm_87
-# RTX 40 series (Ada Lovelace): sm_89  
-# RTX 50 series (Ada Lovelace): sm_90
+# Fix CUDA architecture compatibility for all NVIDIA RTX 20-50 series
 # RTX 20 series (Turing): sm_75
-ENV TORCH_CUDA_ARCH_LIST="7.5;8.0;8.6;8.7;8.9;9.0"
+# RTX 30 series (Ampere): sm_80, sm_86, sm_87
+# RTX 40 series (Ada Lovelace): sm_89  
+# RTX 50 series (Blackwell): sm_120
+# Also include Hopper (H100) sm_90 for data center GPUs
+ENV TORCH_CUDA_ARCH_LIST="7.5;8.0;8.6;8.7;8.9;9.0;12.0"
 ENV CUDA_HOME="/usr/local/cuda"
 ENV LD_LIBRARY_PATH="/usr/local/cuda/lib64:${LD_LIBRARY_PATH}"
 
