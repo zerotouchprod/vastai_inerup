@@ -37,13 +37,13 @@ ENV PATH="/opt/venv/bin:$PATH"
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 
 # Install PyTorch with CUDA 12.6 (supports all RTX 30-50 series including Blackwell sm_120)
-# PyTorch 2.5.0+ with CUDA 12.6 provides native support for RTX 5080 and newer GPUs
+# PyTorch 2.9.1+ with CUDA 12.6 provides native support for RTX 5080 and newer GPUs
 RUN pip uninstall -y torch torchvision torchaudio || true && \
-    echo "Installing PyTorch 2.5.0 with CUDA 12.6 for RTX 30-50 series compatibility..." && \
+    echo "Installing PyTorch 2.9.1 with CUDA 12.6 for RTX 30-50 series compatibility..." && \
     pip install --no-cache-dir \
-        torch==2.5.0 \
-        torchvision==0.20.0 \
-        torchaudio==2.5.0 \
+        torch==2.9.1 \
+        torchvision \
+        torchaudio \
         --index-url https://download.pytorch.org/whl/cu126 && \
     echo "PyTorch installation complete" && \
     rm -rf /root/.cache/pip

@@ -8,7 +8,7 @@
 ### 1. Исправленный Dockerfile
 Используйте `Dockerfile.vastai.optimized` - он содержит все необходимые исправления:
 
-- **PyTorch 2.5.0 с CUDA 12.6**: Нативная поддержка архитектуры Blackwell (sm_120)
+- **PyTorch 2.9.1 с CUDA 12.6**: Нативная поддержка архитектуры Blackwell (sm_120)
 - **Поддержка всех RTX серий**: sm_75 (20xx), sm_86/sm_87 (30xx), sm_89 (40xx), sm_120 (50xx)
 - **Оптимизированные зависимости**: Удалены ненужные пакеты, улучшена производительность
 
@@ -22,9 +22,9 @@ ENV TORCH_CUDA_ARCH_LIST="7.5;8.0;8.6;8.7;8.9;9.0;12.0"
 #### PyTorch Installation
 ```dockerfile
 RUN pip install --no-cache-dir \
-    torch==2.5.0 \
-    torchvision==0.20.0 \
-    torchaudio==2.5.0 \
+    torch==2.9.1 \
+    torchvision \
+    torchaudio \
     --index-url https://download.pytorch.org/whl/cu126
 ```
 
@@ -87,7 +87,7 @@ python3 -c "import torch; print(f'PyTorch: {torch.__version__}'); print(f'CUDA a
 ## Важные моменты
 
 - **CUDA 12.6**: Последняя стабильная версия с нативной поддержкой Blackwell
-- **PyTorch 2.5.0 cu126**: Специальная сборка для CUDA 12.6 с поддержкой sm_120
+- **PyTorch 2.9.1 cu126**: Специальная сборка для CUDA 12.6 с поддержкой sm_120
 - **TORCH_CUDA_ARCH_LIST**: Явно указывает поддерживаемые архитектуры, включая sm_120
 - **Vast.ai**: Оптимизирован для работы на платформе Vast.ai со всеми современными GPU
 

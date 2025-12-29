@@ -39,16 +39,16 @@ ENV PATH="/opt/venv/bin:$PATH"
 # Upgrade pip and install minimal Python packages
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 
-# Устанавливаем PyTorch 2.5.0 с поддержкой CUDA 12.6 (совместим со всеми современными GPU)
+# Устанавливаем PyTorch 2.9.1 с поддержкой CUDA 12.6 (совместим со всеми современными GPU)
 # CUDA 12.6 имеет нативную поддержку архитектуры Blackwell (sm_120)
 # Сохраняем совместимость с более старыми картами через TORCH_CUDA_ARCH_LIST
 RUN pip uninstall -y torch torchvision torchaudio || true && \
-    echo "Installing PyTorch 2.5.0 with CUDA 12.6 support (compatible with RTX 20-50 series)..." && \
+    echo "Installing PyTorch 2.9.1 with CUDA 12.6 support (compatible with RTX 20-50 series)..." && \
     echo "Note: Building on machine without GPU, but installing CUDA-enabled PyTorch for runtime use on GPU machines" && \
     pip install --no-cache-dir \
-        torch==2.5.0 \
-        torchvision==0.20.0 \
-        torchaudio==2.5.0 \
+        torch==2.9.1 \
+        torchvision \
+        torchaudio \
         --index-url https://download.pytorch.org/whl/cu126 && \
     echo "Verifying PyTorch installation..." && \
     python3 -c "import torch; print(f'PyTorch version: {torch.__version__}'); print(f'PyTorch built with CUDA: {\"cu\" in torch.__version__}'); print(f'CUDA version: {torch.version.cuda}')" && \
