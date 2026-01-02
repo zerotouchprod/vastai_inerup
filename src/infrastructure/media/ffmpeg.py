@@ -152,7 +152,8 @@ class FFmpegWrapper:
                 cmd,
                 capture_output=True,
                 text=True,
-                check=True
+                check=True,
+                timeout=36000  # 10 hour timeout
             )
 
             # List extracted frames
@@ -161,8 +162,14 @@ class FFmpegWrapper:
 
             return frames
 
+        except subprocess.TimeoutExpired:
+            self._logger.error("Frame extraction timed out after 10 hour")
+            raise ExtractionError("Frame extraction timed out after 10 hour")
         except subprocess.CalledProcessError as e:
             raise ExtractionError(f"Frame extraction failed: {e.stderr}")
+        except Exception as e:
+            self._logger.error(f"Unexpected error during frame extraction: {e}")
+            raise ExtractionError(f"Frame extraction failed with unexpected error: {e}")
 
     def assemble_video(
         self,
@@ -232,8 +239,9 @@ class FFmpegWrapper:
         self._logger.info(f"Assembling video with encoder: {encoder}")
         self._logger.info(f"[ASSEMBLY DEBUG] FFmpeg command: {' '.join(cmd)}")
 
+        process = None
         try:
-            result = subprocess.run(
+            process = subprocess.run(
                 cmd,
                 capture_output=True,
                 text=True,
@@ -242,10 +250,10 @@ class FFmpegWrapper:
             )
 
             # Log ffmpeg output for debugging
-            if result.stdout:
-                self._logger.info(f"[ASSEMBLY DEBUG] FFmpeg stdout: {result.stdout[-2000:]}")
-            if result.stderr:
-                self._logger.info(f"[ASSEMBLY DEBUG] FFmpeg stderr (last 2000 chars): {result.stderr[-2000:]}")
+            if process.stdout:
+                self._logger.info(f"[ASSEMBLY DEBUG] FFmpeg stdout: {process.stdout[-2000:]}")
+            if process.stderr:
+                self._logger.info(f"[ASSEMBLY DEBUG] FFmpeg stderr (last 2000 chars): {process.stderr[-2000:]}")
 
             if not output_path.exists() or output_path.stat().st_size == 0:
                 raise AssemblyError("Output video is empty or missing")
@@ -262,14 +270,20 @@ class FFmpegWrapper:
             if abs(actual_duration - expected_duration) > 0.5:
                 self._logger.warning(f"[ASSEMBLY DEBUG] Duration mismatch! Expected {expected_duration:.2f}s but got {actual_duration:.2f}s")
                 self._logger.warning(f"[ASSEMBLY DEBUG] This suggests FPS encoding issue. Check ffmpeg output:")
-                self._logger.warning(f"[ASSEMBLY DEBUG] FFmpeg stderr: {result.stderr[:1000]}")
+                self._logger.warning(f"[ASSEMBLY DEBUG] FFmpeg stderr: {process.stderr[:1000]}")
 
             self._logger.info(f"Assembled video: {output_path}")
             return output_path
 
+        except subprocess.TimeoutExpired:
+            self._logger.error("FFmpeg assembly timed out after 1 hour")
+            raise AssemblyError("Video assembly timed out after 1 hour")
         except subprocess.CalledProcessError as e:
             # If nvenc fails, this will be caught by caller for fallback
             raise AssemblyError(f"Video assembly failed: {e.stderr}")
+        except Exception as e:
+            self._logger.error(f"Unexpected error during video assembly: {e}")
+            raise AssemblyError(f"Video assembly failed with unexpected error: {e}")
 
     def test_encoder(self, encoder: str) -> bool:
         """Test if encoder is available."""
@@ -288,4 +302,3 @@ class FFmpegWrapper:
             return encoder in result.stdout
         except:
             return False
-
