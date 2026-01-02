@@ -68,6 +68,26 @@ class VideoProcessingOrchestrator:
             frames = self._extractor.extract_frames(video_info, workspace / "frames")
             self._metrics.stop_timer('extraction')
 
+            # Compute target FPS to maintain original video duration
+            original_fps = 24.0  # Default fallback
+            original_duration = None
+            try:
+                original_frame_count = len(frames)
+                original_fps = float(video_info.fps)
+                original_duration = original_frame_count / original_fps if original_fps > 0 else None
+            except Exception:
+                pass  # Use defaults
+
+            # Calculate interp_factor if target_fps is provided (must happen before _process_frames)
+            if getattr(job, 'target_fps', None) and job.mode == 'interp':
+                if original_fps > 0:
+                    calculated_factor = max(2, round(float(job.target_fps) / original_fps))
+                    # Always set interp_factor to calculated value
+                    job.interp_factor = calculated_factor
+                    self._logger.info(f"Calculated interp_factor: {calculated_factor}x (from target FPS {job.target_fps} / original FPS {original_fps})")
+                else:
+                    self._logger.warning(f"Original FPS is zero or unknown, using default interp_factor")
+
             # 4. Process frames
             self._metrics.start_timer('processing')
             processed_frames = self._process_frames(job, frames, workspace)
@@ -92,16 +112,6 @@ class VideoProcessingOrchestrator:
 
             output_video = workspace / "output.mp4"
 
-            # Compute target FPS to maintain original video duration
-            original_fps = 24.0  # Default fallback
-            original_duration = None
-            try:
-                original_frame_count = len(frames)
-                original_fps = float(video_info.fps)
-                original_duration = original_frame_count / original_fps if original_fps > 0 else None
-            except Exception:
-                pass  # Use defaults
-
             processed_frame_count = len(frame_paths)
 
             # Calculate target FPS based on mode and available information
@@ -109,22 +119,6 @@ class VideoProcessingOrchestrator:
                 # Explicit target FPS takes priority
                 target_fps = float(job.target_fps)
                 self._logger.info(f"Using explicit target FPS: {target_fps}")
-                
-                # If mode is interpolation, calculate interp_factor from target_fps
-                if job.mode == 'interp':
-                    # Calculate interp_factor to achieve target_fps while preserving duration
-                    # factor = target_fps / original_fps
-                    if original_fps > 0:
-                        calculated_factor = max(2, round(target_fps / original_fps))
-                        # Update job.interp_factor if not set or different
-                        if not hasattr(job, 'interp_factor') or job.interp_factor != calculated_factor:
-                            self._logger.info(f"Calculated interp_factor: {calculated_factor}x (from target FPS {target_fps} / original FPS {original_fps})")
-                            # Set interp_factor on job object for use in _process_frames
-                            job.interp_factor = calculated_factor
-                        else:
-                            self._logger.info(f"Using provided interp_factor: {job.interp_factor}x")
-                    else:
-                        self._logger.warning(f"Original FPS is zero or unknown, using default interp_factor")
             elif job.mode == 'interp':
                 # For interpolation: MULTIPLY the FPS by the interpolation factor
                 # More frames at higher FPS = same duration, smoother motion
