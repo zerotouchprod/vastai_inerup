@@ -178,25 +178,30 @@ class FFmpegWrapper:
         fps: float,
         pattern: str = "frame_%06d.png",
         encoder: str = "h264_nvenc",
-        pix_fmt: str = "yuv420p"
+        pix_fmt: str = "yuv420p",
+        fallback_encoders: list = None
     ) -> Path:
         """
-        Assemble video from frames.
+        Assemble video from frames with encoder fallback support.
 
         Args:
             frames_dir: Directory containing frames
             output_path: Output video path
             fps: Frames per second
             pattern: Frame filename pattern
-            encoder: Video encoder to use
+            encoder: Primary video encoder to use
             pix_fmt: Pixel format
+            fallback_encoders: List of fallback encoders to try if primary fails
 
         Returns:
             Path to assembled video
 
         Raises:
-            AssemblyError: If assembly fails
+            AssemblyError: If assembly fails with all encoders
         """
+        if fallback_encoders is None:
+            fallback_encoders = ["libx264", "mpeg4"]  # Default fallbacks
+
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
         input_pattern = frames_dir / pattern
@@ -212,78 +217,98 @@ class FFmpegWrapper:
         self._logger.info(f"[ASSEMBLY DEBUG] Target FPS: {fps}")
         self._logger.info(f"[ASSEMBLY DEBUG] Expected duration: {expected_duration:.2f}s")
 
-        # Build ffmpeg command
-        # IMPORTANT:
-        # -framerate BEFORE -i sets how fast to READ input images
-        # -r AFTER input sets the OUTPUT video framerate
-        # Both are needed for correct encoding
-        cmd = [
-            'ffmpeg',
-            '-y',
-            '-framerate', str(fps),  # How fast to read input frames
-            '-i', str(input_pattern),
-            '-r', str(fps),  # Output video framerate (must match for CFR)
-            '-c:v', encoder,
-            '-pix_fmt', pix_fmt,
-            '-vsync', 'cfr',  # Constant frame rate - ensures timestamps are evenly spaced
-        ]
+        # Try encoders in order: primary + fallbacks
+        encoders_to_try = [encoder] + fallback_encoders
+        last_error = None
 
-        # Add encoder-specific options
-        if encoder == "h264_nvenc":
-            cmd.extend(['-preset', 'p6', '-cq', '19'])
-        elif encoder == "libx264":
-            cmd.extend(['-crf', '18', '-preset', 'medium'])
+        for enc in encoders_to_try:
+            # Skip if encoder is None or empty
+            if not enc:
+                continue
 
-        cmd.append(str(output_path))
+            # Check if encoder is available (optional, but helpful for logging)
+            if not self.test_encoder(enc):
+                self._logger.warning(f"Encoder '{enc}' appears unavailable, skipping")
+                continue
 
-        self._logger.info(f"Assembling video with encoder: {encoder}")
-        self._logger.info(f"[ASSEMBLY DEBUG] FFmpeg command: {' '.join(cmd)}")
+            # Build ffmpeg command
+            cmd = [
+                'ffmpeg',
+                '-y',
+                '-framerate', str(fps),  # How fast to read input frames
+                '-i', str(input_pattern),
+                '-r', str(fps),  # Output video framerate (must match for CFR)
+                '-c:v', enc,
+                '-pix_fmt', pix_fmt,
+                '-vsync', 'cfr',  # Constant frame rate - ensures timestamps are evenly spaced
+            ]
 
-        process = None
-        try:
-            process = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                check=True,
-                timeout=3600  # 1 hour timeout
-            )
+            # Add encoder-specific options
+            if enc == "h264_nvenc":
+                cmd.extend(['-preset', 'p6', '-cq', '19'])
+            elif enc == "libx264":
+                cmd.extend(['-crf', '18', '-preset', 'medium'])
+            elif enc == "mpeg4":
+                cmd.extend(['-qscale:v', '2'])
 
-            # Log ffmpeg output for debugging
-            if process.stdout:
-                self._logger.info(f"[ASSEMBLY DEBUG] FFmpeg stdout: {process.stdout[-2000:]}")
-            if process.stderr:
-                self._logger.info(f"[ASSEMBLY DEBUG] FFmpeg stderr (last 2000 chars): {process.stderr[-2000:]}")
+            cmd.append(str(output_path))
 
-            if not output_path.exists() or output_path.stat().st_size == 0:
-                raise AssemblyError("Output video is empty or missing")
+            self._logger.info(f"Assembling video with encoder: {enc}")
+            self._logger.info(f"[ASSEMBLY DEBUG] FFmpeg command: {' '.join(cmd)}")
 
-            # Verify output video
-            actual_duration = self.get_duration(output_path)
-            actual_fps = self.get_fps(output_path)
+            try:
+                process = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                    timeout=3600  # 1 hour timeout
+                )
 
-            self._logger.info(f"[ASSEMBLY DEBUG] Output video: {output_path}")
-            self._logger.info(f"[ASSEMBLY DEBUG] Actual FPS: {actual_fps:.2f}")
-            self._logger.info(f"[ASSEMBLY DEBUG] Actual duration: {actual_duration:.2f}s")
-            self._logger.info(f"[ASSEMBLY DEBUG] Duration ratio (actual/expected): {actual_duration/expected_duration:.2f}x")
+                # Log ffmpeg output for debugging
+                if process.stdout:
+                    self._logger.info(f"[ASSEMBLY DEBUG] FFmpeg stdout: {process.stdout[-2000:]}")
+                if process.stderr:
+                    self._logger.info(f"[ASSEMBLY DEBUG] FFmpeg stderr (last 2000 chars): {process.stderr[-2000:]}")
 
-            if abs(actual_duration - expected_duration) > 0.5:
-                self._logger.warning(f"[ASSEMBLY DEBUG] Duration mismatch! Expected {expected_duration:.2f}s but got {actual_duration:.2f}s")
-                self._logger.warning(f"[ASSEMBLY DEBUG] This suggests FPS encoding issue. Check ffmpeg output:")
-                self._logger.warning(f"[ASSEMBLY DEBUG] FFmpeg stderr: {process.stderr[:1000]}")
+                if not output_path.exists() or output_path.stat().st_size == 0:
+                    raise AssemblyError("Output video is empty or missing")
 
-            self._logger.info(f"Assembled video: {output_path}")
-            return output_path
+                # Verify output video
+                actual_duration = self.get_duration(output_path)
+                actual_fps = self.get_fps(output_path)
 
-        except subprocess.TimeoutExpired:
-            self._logger.error("FFmpeg assembly timed out after 1 hour")
-            raise AssemblyError("Video assembly timed out after 1 hour")
-        except subprocess.CalledProcessError as e:
-            # If nvenc fails, this will be caught by caller for fallback
-            raise AssemblyError(f"Video assembly failed: {e.stderr}")
-        except Exception as e:
-            self._logger.error(f"Unexpected error during video assembly: {e}")
-            raise AssemblyError(f"Video assembly failed with unexpected error: {e}")
+                self._logger.info(f"[ASSEMBLY DEBUG] Output video: {output_path}")
+                self._logger.info(f"[ASSEMBLY DEBUG] Actual FPS: {actual_fps:.2f}")
+                self._logger.info(f"[ASSEMBLY DEBUG] Actual duration: {actual_duration:.2f}s")
+                self._logger.info(f"[ASSEMBLY DEBUG] Duration ratio (actual/expected): {actual_duration/expected_duration:.2f}x")
+
+                if abs(actual_duration - expected_duration) > 0.5:
+                    self._logger.warning(f"[ASSEMBLY DEBUG] Duration mismatch! Expected {expected_duration:.2f}s but got {actual_duration:.2f}s")
+                    self._logger.warning(f"[ASSEMBLY DEBUG] This suggests FPS encoding issue. Check ffmpeg output:")
+                    self._logger.warning(f"[ASSEMBLY DEBUG] FFmpeg stderr: {process.stderr[:1000]}")
+
+                self._logger.info(f"Assembled video: {output_path}")
+                return output_path
+
+            except subprocess.TimeoutExpired:
+                self._logger.error(f"FFmpeg assembly with encoder '{enc}' timed out after 1 hour")
+                last_error = AssemblyError(f"Video assembly timed out after 1 hour")
+                # Continue to next encoder
+                continue
+            except subprocess.CalledProcessError as e:
+                self._logger.error(f"Encoder '{enc}' failed: {e.stderr[:500]}")
+                last_error = AssemblyError(f"Video assembly failed with encoder '{enc}': {e.stderr[:500]}")
+                # Continue to next encoder
+                continue
+            except Exception as e:
+                self._logger.error(f"Unexpected error during video assembly with encoder '{enc}': {e}")
+                last_error = AssemblyError(f"Video assembly failed with unexpected error: {e}")
+                continue
+
+        # If we get here, all encoders failed
+        self._logger.error(f"All encoders failed: {encoders_to_try}")
+        raise last_error if last_error else AssemblyError("Video assembly failed with no specific error")
 
     def test_encoder(self, encoder: str) -> bool:
         """Test if encoder is available."""
