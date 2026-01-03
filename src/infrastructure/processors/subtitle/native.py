@@ -54,13 +54,15 @@ class SubtitleRemoverNative:
     Работает на CPU, совместим с PyTorch Nightly билдами.
     """
 
-    def __init__(self, lang: str = 'en', mask_dilation: int = 8, confidence_threshold: float = 0.3):
+    def __init__(self, lang: str = 'en', mask_dilation: int = 8, confidence_threshold: float = 0.3, roi_str: Optional[str] = None):
         """
         :param lang: Язык субтитров ('en', 'ru' и т.д.)
         :param mask_dilation: На сколько пикселей расширять маску вокруг текста.
                               Больше = лучше убирает края, но мылит фон.
         :param confidence_threshold: Порог уверенности для детекции текста (0.0-1.0).
                                      Ниже = больше текста детектируется, но больше шума.
+        :param roi_str: Region of Interest string (e.g., "bottom", "top", "full", or "x,y,w,h").
+                       If provided, masks will be constrained to this region.
         """
         if PaddleOCR is None:
             raise ImportError("PaddleOCR not installed. Cannot remove subtitles.")
@@ -68,8 +70,9 @@ class SubtitleRemoverNative:
         self.lang = lang
         self.mask_dilation = mask_dilation
         self.confidence_threshold = confidence_threshold
-        logger.info(f"Initializing SubtitleRemoverNative (lang={lang}, mask_dilation={mask_dilation}, confidence={confidence_threshold})...")
-        
+        self.roi_str = roi_str
+        logger.info(f"Initializing SubtitleRemoverNative (lang={lang}, mask_dilation={mask_dilation}, confidence={confidence_threshold}, roi={roi_str})...")
+
         # Initialize PaddleOCR with OPTIMIZED settings to reduce memory usage
         # Critical optimizations:
         # 1. Use 'ch_ppocr_mobile_v2.0' instead of server models (smaller, faster)
@@ -327,7 +330,7 @@ class SubtitleRemoverNative:
                                     continue
                     
                     # Generate hybrid mask combining OCR, MSER, and Gradient
-                    hybrid_mask = self._generate_hybrid_mask(img, ocr_mask)
+                    hybrid_mask = self._generate_hybrid_mask(img, ocr_mask, roi_str=self.roi_str)
                     all_masks.append(hybrid_mask)
                     processed += 1
                     
@@ -382,6 +385,38 @@ class SubtitleRemoverNative:
             else:
                 smeared_masks.append(all_masks[i])
         
+        # Apply temporal consistency validation (voting filter)
+        # Reject isolated detections that appear in fewer than 2 frames
+        logger.info("Applying temporal consistency validation...")
+        validated_masks = []
+
+        for i, mask in enumerate(smeared_masks):
+            # Count how many frames in the window have this pixel lit
+            window_start = max(0, i - window_size)
+            window_end = min(len(all_masks), i + window_size + 1)
+
+            # Create voting map: count occurrences of each pixel across window
+            pixel_votes = np.zeros_like(mask, dtype=np.uint8)
+            for j in range(window_start, window_end):
+                pixel_votes += (all_masks[j] > 0).astype(np.uint8)
+
+            # Keep only pixels that appear in at least 2 frames (reduce flickering false positives)
+            min_votes = 2
+            validated_mask = ((pixel_votes >= min_votes).astype(np.uint8) * 255)
+            validated_masks.append(validated_mask)
+
+            # Log validation statistics
+            if i % 10 == 0:
+                original_coverage = np.sum(smeared_masks[i] > 0) / (mask.shape[0] * mask.shape[1])
+                validated_coverage = np.sum(validated_mask > 0) / (mask.shape[0] * mask.shape[1])
+                logger.debug(
+                    f"Frame {i}: Temporal validation removed "
+                    f"{(original_coverage - validated_coverage) * 100:.1f}% isolated pixels"
+                )
+
+        # Use validated masks for inpainting
+        smeared_masks = validated_masks
+
         # Second pass: apply dilation and inpainting with smeared masks
         logger.info("Second pass: Applying dilation and inpainting...")
         processed = 0

@@ -18,8 +18,13 @@ class StreamingSubtitleRemoverService:
         self.lang = lang or config.OCR_LANG
         self.use_gpu = use_gpu
         
+        # Extract ROI from kwargs
+        roi_str = kwargs.get('roi_str', None)
+        if roi_str:
+            logger.info(f"StreamingSubtitleRemoverService initialized with ROI: {roi_str}")
+
         # Services
-        self.mask_service = MaskGeneratorService(lang=self.lang, use_gpu=self.use_gpu, **kwargs)
+        self.mask_service = MaskGeneratorService(lang=self.lang, use_gpu=self.use_gpu, roi_str=roi_str, **kwargs)
         self.inpainter = ProPainterAdapter() # Subprocess wrapper
         
     def process_frames_direct(self, frame_paths: list[Path], output_dir: Path):

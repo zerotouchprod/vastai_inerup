@@ -2,7 +2,7 @@ import cv2
 import numpy as np
 import logging
 from pathlib import Path
-from typing import List, Dict, Any, Union
+from typing import List, Dict, Any, Union, Optional
 
 # Попытка импорта EasyOCR. Если не установлен, будет ошибка при инициализации,
 # но не при загрузке модуля (чтобы не ломать тесты/CI).
@@ -52,14 +52,15 @@ class PaddleWrapper:
             quantize=False # Отключаем квантование для максимальной точности
         )
 
-    def detect(self, image: Union[str, np.ndarray], confidence_threshold: float = 0.0) -> List[Dict[str, Any]]:
+    def detect(self, image: Union[str, np.ndarray], confidence_threshold: float = 0.0, roi_str: Optional[str] = None) -> List[Dict[str, Any]]:
         """
         Detect text using EasyOCR and adapt output to match Paddle format.
         
         Args:
             image: Path to image or numpy array (BGR).
             confidence_threshold: Min confidence to return box.
-            
+            roi_str: Optional ROI string to limit detection area (e.g., "bottom", "top", "x,y,w,h").
+
         Returns:
             List of dicts: {'points': [[x,y]...], 'text': str, 'confidence': float}
         """
@@ -77,7 +78,21 @@ class PaddleWrapper:
         else:
             return []
 
-        # 2. Инференс
+        # 2. Apply ROI cropping optimization if provided
+        roi_offset_x, roi_offset_y = 0, 0
+        if roi_str:
+            from src.infrastructure.image_processing.geometry import resolve_roi
+            h, w = img.shape[:2]
+            x, y, roi_w, roi_h = resolve_roi(roi_str, w, h)
+
+            # Crop image to ROI region
+            img_cropped = img[y:y+roi_h, x:x+roi_w]
+            roi_offset_x, roi_offset_y = x, y
+
+            logger.debug(f"ROI pre-cropping: {roi_str} -> cropped to {roi_w}x{roi_h} (offset: {x},{y})")
+            img = img_cropped
+
+        # 3. Инференс
         # EasyOCR returns list of tuples: (bbox, text, prob)
         # bbox = [[x1, y1], [x2, y2], [x3, y3], [x4, y4]]
         try:
@@ -88,7 +103,7 @@ class PaddleWrapper:
 
         bboxes = []
         
-        # 3. Адаптация формата под PaddleOCR (чтобы не ломать mask_service)
+        # 4. Адаптация формата под PaddleOCR (чтобы не ломать mask_service)
         for (bbox, text, prob) in results:
             if prob < confidence_threshold:
                 continue
@@ -96,15 +111,16 @@ class PaddleWrapper:
             # EasyOCR возвращает int coordinates, но в формате list of lists
             # Нам нужно [[x,y], [x,y]...]
             # Иногда bbox это numpy array, иногда list
-            points = [[int(pt[0]), int(pt[1])] for pt in bbox]
-            
+            # Adjust coordinates back to full frame if ROI was applied
+            points = [[int(pt[0]) + roi_offset_x, int(pt[1]) + roi_offset_y] for pt in bbox]
+
             bboxes.append({
                 "points": points,
                 "text": text,
                 "confidence": float(prob)
             })
 
-        logger.info(f"EasyOCR found {len(bboxes)} text blocks (thresh={confidence_threshold})")
+        logger.info(f"EasyOCR found {len(bboxes)} text blocks (thresh={confidence_threshold}, roi={roi_str})")
         return bboxes
 
     # --- Backward compatibility methods (Legacy) ---

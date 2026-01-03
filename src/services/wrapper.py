@@ -48,8 +48,8 @@ class SubtitleRemoverProPainterWrapper:
         if self._service is None:
             # Determine ROI: use instance-provided ROI if given, otherwise config
             roi_to_use = self._roi if self._roi is not None else get_config().ROI
-            print(f"DEBUG: Factory passing ROI to Service: {roi_to_use}")
-            
+            logger.info(f"SubtitleRemoverProPainterWrapper: Using ROI '{roi_to_use}' (instance: {self._roi}, config: {get_config().ROI})")
+
             self._service = StreamingSubtitleRemoverService(
                 lang=self._lang,
                 mask_dilation=self._mask_dilation,
