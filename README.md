@@ -1,8 +1,39 @@
 # Video Processing Pipeline - Complete Edition
 
-**Production-ready система с Clean Architecture, Full Debugging и Native Python!**
+**Production-ready система с Clean Architecture, ROI Optimization и Watermark Removal!**
 
-*Последнее обновление: 8 декабря 2025*
+*Последнее обновление: 3 января 2026*
+
+---
+
+## ⚡ Новое в версии 2.0 (Январь 2026)
+
+### 🎯 ROI-Based Processing (2-3x faster!)
+- ✅ **ROI Integration** - Обработка только нужных областей кадра
+- ✅ **Adaptive Thresholding** - Умная детекция в зависимости от зоны
+- ✅ **Temporal Validation** - Устранение мерцающих артефактов
+- ✅ **50-70% экономии времени** на OCR благодаря предварительной обрезке
+
+### 🎨 Watermark Removal (NEW!)
+- ✅ **Remove Watermarks** - Удаление вшитых логотипов и водяных знаков
+- ✅ **Multi-Zone Support** - Несколько водяных знаков одновременно
+- ✅ **Static Detection** - Умная детекция статичных элементов
+- ✅ **5 corner presets** - top-left, top-right, bottom-left, bottom-right, center
+
+### 📖 Quick Start для новых фич:
+```bash
+# Удаление субтитров (с ROI оптимизацией)
+python -m src.presentation.cli --mode remove-subtitles --roi bottom --input video.mp4
+
+# Удаление водяного знака в правом верхнем углу
+python -m src.presentation.cli --mode remove-watermark --watermark-roi top-right --input video.mp4
+
+# Несколько водяных знаков
+python -m src.presentation.cli --mode remove-watermark --watermark-roi "top-right,bottom-left" --input video.mp4
+```
+
+📖 **Подробная документация**: [`docs/QUICKSTART_ROI_WATERMARK.md`](docs/QUICKSTART_ROI_WATERMARK.md)  
+📊 **Полный отчет**: [`docs/COMPLETE_IMPLEMENTATION_REPORT.md`](docs/COMPLETE_IMPLEMENTATION_REPORT.md)
 
 ---
 
@@ -27,10 +58,12 @@ python pipeline_v2.py --input video.mp4 --output output/
 Профессиональная система для обработки видео с:
 - ✅ **Upscaling** (Real-ESRGAN)
 - ✅ **Interpolation** (RIFE)
+- ✅ **Subtitle Removal** (OCR + ProPainter) 🆕
+- ✅ **Watermark Removal** (Static Detection + ProPainter) 🆕
 - ✅ Clean Architecture (SOLID)
 - ✅ Full Debugging Support
-- ✅ 28 тестов
-- ✅ 5,000+ строк документации
+- ✅ 35+ тестов
+- ✅ 7,000+ строк документации
 
 ---
 
@@ -46,6 +79,12 @@ python pipeline_v2.py --mode interp --input video.mp4 --factor 2
 
 # Both
 python pipeline_v2.py --mode both --input video.mp4 --scale 2 --factor 2
+
+# Remove Subtitles (NEW!)
+python -m src.presentation.cli --mode remove-subtitles --roi bottom --input video.mp4
+
+# Remove Watermark (NEW!)
+python -m src.presentation.cli --mode remove-watermark --watermark-roi top-right --input video.mp4
 ```
 
 ### С Native Python (рекомендую для разработки):

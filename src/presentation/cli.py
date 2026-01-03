@@ -55,6 +55,7 @@ def create_orchestrator_from_config(config, allow_fallback: bool = False):
     upscaler = None
     interpolator = None
     subtitle_remover = None
+    watermark_remover = None
 
     # Create subtitle remover only for remove-subtitles mode
     if config.mode == 'remove-subtitles':
@@ -71,6 +72,21 @@ def create_orchestrator_from_config(config, allow_fallback: bool = False):
             get_logger(__name__).warning(f"Subtitle remover not available: {e}")
             # If subtitle remover fails but we're not strict, continue without it
             subtitle_remover = None
+
+    # Create watermark remover for remove-watermark mode
+    if config.mode == 'remove-watermark':
+        try:
+            watermark_roi = getattr(config, 'watermark_roi', 'top-right')
+            watermark_remover = factory.create_watermark_remover(
+                roi=watermark_roi,
+                prefer=config.prefer
+            )
+            get_logger(__name__).info(f"Watermark remover created (ROI: {watermark_roi})")
+        except Exception as e:
+            if config.strict:
+                raise
+            get_logger(__name__).warning(f"Watermark remover not available: {e}")
+            watermark_remover = None
 
     try:
         if config.mode in ('upscale', 'both', 'image'):
@@ -108,6 +124,10 @@ def create_orchestrator_from_config(config, allow_fallback: bool = False):
     # For subtitle removal mode, use subtitle remover as upscaler
     if config.mode == 'remove-subtitles':
         upscaler = subtitle_remover
+
+    # For watermark removal mode, use watermark remover as upscaler
+    if config.mode == 'remove-watermark':
+        upscaler = watermark_remover
 
     # Only create interpolator for video type with interp/both modes
     if config.type == 'video' and config.mode in ('interp', 'both'):
@@ -172,7 +192,7 @@ def main():
     parser.add_argument('--b2-secret', help='B2 secret key (overrides B2_SECRET)')
     parser.add_argument('--b2-region', help='B2 region name (overrides B2_REGION)')
     parser.add_argument('--type', choices=['video', 'image', 'audio'], default='video', help='Media type (default: video)')
-    parser.add_argument('--mode', help='Processing mode: for video: upscale, interp, both, remove-subtitles; for image: upscale, hdr, denoise; for audio: remove_reverb, enhance, normalize')
+    parser.add_argument('--mode', help='Processing mode: for video: upscale, interp, both, remove-subtitles, remove-watermark; for image: upscale, hdr, denoise; for audio: remove_reverb, enhance, normalize')
     parser.add_argument('--scale', type=float, help='Upscale factor')
     parser.add_argument('--target-fps', type=int, help='Target FPS')
     parser.add_argument('--prefer', choices=['auto', 'pytorch'], help='Backend')
@@ -180,7 +200,8 @@ def main():
     parser.add_argument('--image-mode', choices=['upscale', 'hdr', 'denoise'], help='Image processing mode (default: upscale)')
     parser.add_argument('--audio-mode', choices=['remove_reverb', 'enhance', 'normalize'], help='Audio processing mode (default: remove_reverb)')
     parser.add_argument('--subs-lang', type=str, default='en', help='Language code for subtitle OCR when using remove-subtitles mode (default: en)')
-    parser.add_argument('--roi', type=str, default='bottom', help='Region of Interest. Presets: "bottom" (default), "top", "full". Or coords "x,y,w,h" (0.0-1.0).')
+    parser.add_argument('--roi', type=str, default='bottom', help='Region of Interest for subtitles. Presets: "bottom" (default), "top", "full". Or coords "x,y,w,h" (0.0-1.0).')
+    parser.add_argument('--watermark-roi', type=str, default='top-right', help='Watermark ROI. Presets: "top-left", "top-right" (default), "bottom-left", "bottom-right", "center". Multi-zone: "top-right,bottom-left"')
     parser.add_argument('--strict', action='store_true', help='Strict mode')
     parser.add_argument('--allow-fallback', action='store_true', help='Allow ffmpeg fallback when RIFE is not available (default: disabled)')
     parser.add_argument('--verbose', '-v', action='store_true', help='Verbose')
@@ -258,6 +279,11 @@ def main():
         # ROI configuration (Region of Interest)
         # Always set ROI from CLI argument (default is "bottom")
         config.ROI = args.roi
+
+        # Watermark ROI configuration (for remove-watermark mode)
+        if hasattr(args, 'watermark_roi') and args.watermark_roi:
+            config.watermark_roi = args.watermark_roi
+            logger.info(f"Watermark ROI set to: {args.watermark_roi}")
         print(f"!!! FORCE OVERRIDE ROI CONFIG: {args.roi}")
         # Also update the singleton AppConfig used by subtitle removal service
         from src.core.config import get_config as get_app_config

@@ -149,7 +149,7 @@ class SubtitleRemoverNative:
         """
         # Import here to avoid circular imports
         from src.infrastructure.image_processing.detectors import (
-            get_mser_mask, get_gradient_mask, filter_mask_by_geometry
+            get_mser_mask, get_gradient_mask, filter_mask_by_geometry, filter_subtitle_regions
         )
         from src.infrastructure.image_processing.mask_cleaning import apply_safety_clamp
         
@@ -180,6 +180,10 @@ class SubtitleRemoverNative:
         # Step 7: Apply safety clamp to prevent "global hallucination"
         safe_mask = apply_safety_clamp(combined, ocr_mask, safety_threshold=0.20)
         
+        # Step 7.5: Apply geometry-based subtitle filtering (reject non-subtitle regions)
+        if roi_str:
+            safe_mask = filter_subtitle_regions(safe_mask, roi_str=roi_str)
+
         # Step 8: Apply ROI constraint if provided (HARD CONSTRAINT - "Mask Guillotine")
         if roi_str:
             from src.infrastructure.image_processing.geometry import resolve_roi

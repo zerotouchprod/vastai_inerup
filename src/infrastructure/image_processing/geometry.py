@@ -175,6 +175,23 @@ def resolve_roi(roi_str: str, img_w: int, img_h: int) -> tuple[int, int, int, in
         h = int(img_h * 0.30)
         return 0, 0, img_w, h
 
+    # Watermark corner presets (20% of frame width/height)
+    elif roi_str == 'top-left':
+        return 0, 0, int(img_w * 0.2), int(img_h * 0.2)
+    elif roi_str == 'top-right':
+        x = int(img_w * 0.8)
+        return x, 0, img_w - x, int(img_h * 0.2)
+    elif roi_str == 'bottom-left':
+        y = int(img_h * 0.8)
+        return 0, y, int(img_w * 0.2), img_h - y
+    elif roi_str == 'bottom-right':
+        x, y = int(img_w * 0.8), int(img_h * 0.8)
+        return x, y, img_w - x, img_h - y
+    elif roi_str == 'center':
+        cx, cy = int(img_w * 0.3), int(img_h * 0.3)
+        cw, ch = int(img_w * 0.4), int(img_h * 0.4)
+        return cx, cy, cw, ch
+
     # 2. Custom Coordinates "x,y,w,h"
     try:
         parts = [float(p) for p in roi_str.split(',')]
@@ -197,6 +214,51 @@ def resolve_roi(roi_str: str, img_w: int, img_h: int) -> tuple[int, int, int, in
         # Fallback to bottom preset
         h = int(img_h * 0.45)
         return 0, img_h - h, img_w, h
+
+
+def resolve_multi_roi(roi_str: str, img_w: int, img_h: int) -> list[tuple[int, int, int, int]]:
+    """
+    Parse comma-separated ROI string into list of (x, y, w, h) tuples for multi-zone processing.
+
+    Args:
+        roi_str: ROI string - can be:
+                 - Single preset: "bottom", "top-right", etc.
+                 - Multi-preset: "top-right,bottom-left" (comma-separated presets)
+                 - Single coordinates: "0.1,0.2,0.3,0.4" (single zone)
+        img_w: Image width
+        img_h: Image height
+
+    Returns:
+        List of (x, y, w, h) tuples in pixels
+
+    Examples:
+        >>> resolve_multi_roi("top-right,bottom-left", 1920, 1080)
+        [(1536, 0, 384, 216), (0, 864, 384, 216)]
+
+        >>> resolve_multi_roi("bottom", 1920, 1080)
+        [(0, 594, 1920, 486)]
+    """
+    roi_str = roi_str.strip()
+
+    # Check if this is a multi-preset string (contains comma and alpha characters)
+    # Distinguish from single coordinate string (which also has commas but no alpha)
+    parts = [p.strip() for p in roi_str.split(',')]
+
+    # If we have more than 4 parts, or any part contains alpha chars, it's multi-preset
+    has_alpha = any(any(c.isalpha() for c in part) for part in parts)
+
+    if len(parts) > 4 or (len(parts) > 1 and has_alpha):
+        # Multi-preset mode: "top-right,bottom-left"
+        roi_list = []
+        for preset in parts:
+            try:
+                roi_list.append(resolve_roi(preset, img_w, img_h))
+            except Exception as e:
+                logger.warning(f"Failed to resolve ROI preset '{preset}': {e}")
+        return roi_list
+    else:
+        # Single ROI (preset or coordinates)
+        return [resolve_roi(roi_str, img_w, img_h)]
 
 
 def parse_roi_string(roi_str: str, width: int, height: int) -> tuple[int, int, int, int]:
@@ -285,7 +347,7 @@ def parse_roi_string(roi_str: str, width: int, height: int) -> tuple[int, int, i
     return x, y, w, h
 
 
-def select_best_roi_zone(masks: torch.Tensor, roi_height: int, border_check_rows: int = 4) -> tuple[str, int, int]:
+def select_best_roi_zone(masks: torch.Tensor, roi_height: int, border_check_rows: int = 4) -> tuple[str | None, int, int]:
     """
     Select the best ROI zone based on mask distribution.
     

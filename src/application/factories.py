@@ -149,6 +149,41 @@ class ProcessorFactory:
         
         raise ProcessorNotAvailableError(f"Unknown backend: {backend}")
 
+    def create_watermark_remover(self,
+                                 roi: str = 'top-right',
+                                 prefer: str = 'auto',
+                                 persistence_threshold: float = 0.8,
+                                 expansion: int = 10) -> Optional[IProcessor]:
+        """
+        Create watermark removal processor.
+
+        Args:
+            roi: ROI string (single or multi: "top-right,bottom-left")
+            prefer: Backend preference (currently only 'auto' supported)
+            persistence_threshold: Ratio of frames a pixel must appear in (0.0-1.0)
+            expansion: Mask expansion radius in pixels
+
+        Returns:
+            Watermark remover processor instance
+        """
+        try:
+            from src.infrastructure.processors.watermark.wrapper import WatermarkRemoverWrapper
+
+            if WatermarkRemoverWrapper.is_available():
+                self._logger.info(f"Creating watermark remover (roi={roi}, persistence={persistence_threshold})")
+                return WatermarkRemoverWrapper(
+                    roi=roi,
+                    static_detection=True,
+                    persistence_threshold=persistence_threshold,
+                    expansion=expansion
+                )
+            else:
+                raise ProcessorNotAvailableError(
+                    "Watermark remover not available (requires ProPainter installation in /opt/ProPainter)"
+                )
+        except ImportError as e:
+            raise ProcessorNotAvailableError(f"Watermark remover dependencies not found: {e}")
+
     def create_upscaler(self, prefer: str = 'auto') -> Optional[IProcessor]:
         """
         Create upscaler processor.

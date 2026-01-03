@@ -136,6 +136,8 @@ class Job:
     strategy: str = 'interp-then-upscale'
     # Subtitle removal (only for remove-subtitles mode)
     subtitle_language: str = 'en'
+    # Watermark removal (only for remove-watermark mode)
+    watermark_roi: str = 'top-right'  # Can be single or multi: "top-right,bottom-left"
     # Audio-specific
     audio_mode: str = 'remove_reverb'  # 'remove_reverb', 'enhance', 'normalize'
     # Image-specific
@@ -152,7 +154,7 @@ class Job:
         
         # Validate based on type
         if self.type == 'video':
-            if self.mode not in ('upscale', 'interp', 'both', 'remove-subtitles'):
+            if self.mode not in ('upscale', 'interp', 'both', 'remove-subtitles', 'remove-watermark'):
                 raise ValueError(f"Invalid video mode: {self.mode}")
             if self.scale <= 0:
                 raise ValueError("Scale must be positive")
