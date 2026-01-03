@@ -202,6 +202,7 @@ def main():
     parser.add_argument('--subs-lang', type=str, default='en', help='Language code for subtitle OCR when using remove-subtitles mode (default: en)')
     parser.add_argument('--roi', type=str, default='bottom', help='Region of Interest for subtitles. Presets: "bottom" (default), "top", "full". Or coords "x,y,w,h" (0.0-1.0).')
     parser.add_argument('--watermark-roi', type=str, default='top-right', help='Watermark ROI. Presets: "top-left", "top-right" (default), "bottom-left", "bottom-right", "center". Multi-zone: "top-right,bottom-left"')
+    parser.add_argument('--animated', action='store_true', default=False, help='Enable animated text detection (v2.1 EXPERIMENTAL). Uses optical flow for karaoke/moving subtitles. May use +200MB RAM.')
     parser.add_argument('--strict', action='store_true', help='Strict mode')
     parser.add_argument('--allow-fallback', action='store_true', help='Allow ffmpeg fallback when RIFE is not available (default: disabled)')
     parser.add_argument('--verbose', '-v', action='store_true', help='Verbose')
@@ -284,6 +285,14 @@ def main():
         if hasattr(args, 'watermark_roi') and args.watermark_roi:
             config.watermark_roi = args.watermark_roi
             logger.info(f"Watermark ROI set to: {args.watermark_roi}")
+
+        # Animated text detection (v2.1 experimental)
+        if hasattr(args, 'animated') and args.animated:
+            from src.core.config import get_config as get_app_config
+            app_config = get_app_config()
+            app_config.USE_OPTICAL_FLOW = True
+            logger.info("⚡ Optical flow enabled (v2.1 experimental - animated text detection)")
+
         print(f"!!! FORCE OVERRIDE ROI CONFIG: {args.roi}")
         # Also update the singleton AppConfig used by subtitle removal service
         from src.core.config import get_config as get_app_config

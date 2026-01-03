@@ -47,6 +47,13 @@ class AppConfig(BaseSettings):
     AUDIO_BITRATE: str = "192k"  # Audio bitrate
     FALLBACK_TO_SILENT: bool = True  # Create silent video if audio processing fails
 
+    # Animated Text Detection settings (v2.1+) - EXPERIMENTAL
+    USE_OPTICAL_FLOW: bool = False  # Enable optical flow for animated/moving text (OFF by default)
+    OPTICAL_FLOW_KEYFRAME_INTERVAL: int = 5  # OCR every N frames (5 = 2.1x speedup)
+    OPTICAL_FLOW_MAX_DIMENSION: int = 1280  # Max resolution for flow computation (prevents OOM on 4K)
+    OPTICAL_FLOW_COLOR_THRESHOLD: float = 50.0  # Threshold for karaoke color change detection
+    OPTICAL_FLOW_MOTION_THRESHOLD: float = 5.0  # Threshold for moving text detection (pixels)
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

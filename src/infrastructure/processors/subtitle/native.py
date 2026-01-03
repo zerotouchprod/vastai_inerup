@@ -54,7 +54,7 @@ class SubtitleRemoverNative:
     Работает на CPU, совместим с PyTorch Nightly билдами.
     """
 
-    def __init__(self, lang: str = 'en', mask_dilation: int = 8, confidence_threshold: float = 0.3, roi_str: Optional[str] = None):
+    def __init__(self, lang: str = 'en', mask_dilation: int = 8, confidence_threshold: float = 0.3, roi_str: Optional[str] = None, use_optical_flow: bool = False):
         """
         :param lang: Язык субтитров ('en', 'ru' и т.д.)
         :param mask_dilation: На сколько пикселей расширять маску вокруг текста.
@@ -63,6 +63,7 @@ class SubtitleRemoverNative:
                                      Ниже = больше текста детектируется, но больше шума.
         :param roi_str: Region of Interest string (e.g., "bottom", "top", "full", or "x,y,w,h").
                        If provided, masks will be constrained to this region.
+        :param use_optical_flow: Enable optical flow for animated text (v2.1 experimental, default: False)
         """
         if PaddleOCR is None:
             raise ImportError("PaddleOCR not installed. Cannot remove subtitles.")
@@ -71,7 +72,28 @@ class SubtitleRemoverNative:
         self.mask_dilation = mask_dilation
         self.confidence_threshold = confidence_threshold
         self.roi_str = roi_str
-        logger.info(f"Initializing SubtitleRemoverNative (lang={lang}, mask_dilation={mask_dilation}, confidence={confidence_threshold}, roi={roi_str})...")
+        self.use_optical_flow = use_optical_flow
+
+        # Initialize v2.1 animated detector if enabled
+        self.animated_detector = None
+        if use_optical_flow:
+            try:
+                from src.infrastructure.detection import AnimatedTextDetector
+                from src.core.config import get_config
+                config = get_config()
+
+                # Will be initialized lazily when needed (needs OCR first)
+                self._animated_detector_config = {
+                    'keyframe_interval': config.OPTICAL_FLOW_KEYFRAME_INTERVAL,
+                    'color_threshold': config.OPTICAL_FLOW_COLOR_THRESHOLD,
+                    'motion_threshold': config.OPTICAL_FLOW_MOTION_THRESHOLD,
+                }
+                logger.info("⚡ Optical flow enabled for animated text detection (v2.1)")
+            except ImportError as e:
+                logger.warning(f"Failed to import AnimatedTextDetector: {e}. Falling back to v2.0 stable path.")
+                self.use_optical_flow = False
+
+        logger.info(f"Initializing SubtitleRemoverNative (lang={lang}, mask_dilation={mask_dilation}, confidence={confidence_threshold}, roi={roi_str}, optical_flow={use_optical_flow})...")
 
         # Initialize PaddleOCR with OPTIMIZED settings to reduce memory usage
         # Critical optimizations:
