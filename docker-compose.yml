@@ -5,7 +5,7 @@ services:
 #    build:
 #      context: .
 #      dockerfile: docker/Dockerfile.pytorch.fat
-    image: registry.gitlab.com/gfever/vastai_interup:pytorch-fat-181225
+    image: registry.gitlab.com/gfever/vastai_interup:pytorch-fat-291225
     container_name: vastai_interup_dev
     entrypoint: /bin/bash
     environment:
