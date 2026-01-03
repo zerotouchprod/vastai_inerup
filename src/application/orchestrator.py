@@ -58,6 +58,46 @@ class VideoProcessingOrchestrator:
             input_file = self._downloader.download(job.input_url, workspace / "input.mp4")
             self._metrics.stop_timer('download')
 
+            # 2.1. Extract audio BEFORE frame extraction (NEW - v2.0.1)
+            audio_path = None
+            from src.infrastructure.video.audio_handler import AudioPreserver
+            from src.core.config import get_config
+
+            config = get_config()
+            if config.PRESERVE_AUDIO:
+                try:
+                    self._logger.info("Step 0: Extracting audio track for preservation")
+                    audio_preserver = AudioPreserver(
+                        audio_codec=config.AUDIO_CODEC,
+                        audio_bitrate=config.AUDIO_BITRATE,
+                        fallback_to_silent=config.FALLBACK_TO_SILENT
+                    )
+
+                    audio_path = workspace / "original_audio.aac"
+                    has_audio = audio_preserver.extract_audio(input_file, audio_path)
+
+                    if has_audio:
+                        self._logger.info(f"✅ Audio extracted successfully: {audio_path}")
+                        # Get audio info for logging
+                        audio_info = audio_preserver.get_audio_info(audio_path)
+                        if audio_info:
+                            self._logger.info(
+                                f"Audio: {audio_info['codec']}, "
+                                f"{audio_info['duration']:.2f}s, "
+                                f"{audio_info.get('bitrate', 'unknown')}kbps"
+                            )
+                    else:
+                        self._logger.warning("⚠️ No audio track found in input video")
+                        audio_path = None
+
+                except Exception as e:
+                    self._logger.warning(f"⚠️ Audio extraction failed: {e}")
+                    if config.FALLBACK_TO_SILENT:
+                        self._logger.info("Continuing with silent video (fallback mode)")
+                        audio_path = None
+                    else:
+                        raise
+
             # 2.5. For subtitle removal mode, test the processor before extracting frames
             if job.mode == "remove-subtitles":
                 self._test_subtitle_remover()
@@ -148,6 +188,36 @@ class VideoProcessingOrchestrator:
                 self._logger.error(f"❌ Video assembly failed: {e}")
                 raise
             self._metrics.stop_timer('assembly')
+
+            # 5.5. Merge audio back (NEW - v2.0.1)
+            final_video = output_video
+            if config.PRESERVE_AUDIO and audio_path and audio_path.exists():
+                try:
+                    self._logger.info("Step 6: Merging audio track back into video")
+                    final_video = workspace / "final_with_audio.mp4"
+
+                    audio_preserver.merge_audio_video(
+                        video_path=output_video,
+                        audio_path=audio_path,
+                        output_path=final_video
+                    )
+
+                    self._logger.info(f"✅ Audio merged successfully: {final_video}")
+
+                    # Update output_video to point to final video with audio
+                    output_video = final_video
+
+                except Exception as e:
+                    self._logger.warning(f"⚠️ Audio merge failed: {e}")
+                    if config.FALLBACK_TO_SILENT:
+                        self._logger.info("Using silent video (audio merge failed)")
+                        # output_video remains the silent version
+                    else:
+                        raise
+            elif not config.PRESERVE_AUDIO:
+                self._logger.info("Audio preservation disabled in config")
+            else:
+                self._logger.info("No audio to merge (video was silent)")
 
             # 6. Upload
             self._metrics.start_timer('upload')

@@ -1,12 +1,32 @@
 # Video Processing Pipeline - Complete Edition
 
-**Production-ready система с Clean Architecture, ROI Optimization и Watermark Removal!**
+**Production-ready система с Clean Architecture, ROI Optimization, Watermark Removal и Audio Preservation!**
 
-*Последнее обновление: 3 января 2026*
+*Последнее обновление: 3 января 2026 (v2.0.1)*
 
 ---
 
-## ⚡ Новое в версии 2.0 (Январь 2026)
+## ⚡ Новое в версии 2.0.1 (Январь 2026) 🆕
+
+### 🎵 **CRITICAL FIX: Audio Preservation** (Sprint 1)
+- ✅ **Исправлен критический баг потери аудио** - теперь звук сохраняется!
+- ✅ **Автоматическое извлечение аудио** перед обработкой кадров
+- ✅ **Автоматическое объединение аудио** после сборки видео
+- ✅ **Fallback на беззвучное видео** при ошибках обработки аудио
+- ✅ **15+ unit тестов** для audio preservation
+
+**До:** Обработанное видео 🔇 без звука  
+**После:** Обработанное видео 🔊 со звуком!
+
+```bash
+# Audio preservation включен по умолчанию
+python -m src.presentation.cli --mode remove-subtitles --input video.mp4
+# → Результат: video.mp4 БЕЗ субтитров, но СО ЗВУКОМ! 🎉
+```
+
+---
+
+## ⚡ Версия 2.0 (Январь 2026)
 
 ### 🎯 ROI-Based Processing (2-3x faster!)
 - ✅ **ROI Integration** - Обработка только нужных областей кадра

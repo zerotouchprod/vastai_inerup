@@ -41,6 +41,12 @@ class AppConfig(BaseSettings):
     ROI: str = "bottom"  # Region of Interest: "bottom", "top", "full", or "x,y,w,h" (0.0-1.0)
     ROI_ZONE_HEIGHT_RATIO: float = 0.4  # Height of each zone for dynamic multi-zone ROI (top/middle/bottom)
     
+    # Audio preservation settings (v2.0.1+)
+    PRESERVE_AUDIO: bool = True  # Enable audio preservation during video processing
+    AUDIO_CODEC: str = "aac"     # Output audio codec
+    AUDIO_BITRATE: str = "192k"  # Audio bitrate
+    FALLBACK_TO_SILENT: bool = True  # Create silent video if audio processing fails
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
