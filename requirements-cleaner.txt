@@ -1,0 +1,71 @@
+# Lightweight Requirements for Video Cleaning Pipeline
+# Subtitle Removal + Watermark Removal + Optical Flow (v2.1)
+# Excludes: RIFE, Real-ESRGAN, GFPGAN dependencies
+
+# ========================================
+# Core Framework (PyTorch for ProPainter)
+# ========================================
+torch==2.1.0
+torchvision==0.16.0
+# Note: Using CPU-only torch by default. For GPU, replace with:
+# torch==2.1.0+cu118 -f https://download.pytorch.org/whl/torch_stable.html
+
+# ========================================
+# Computer Vision & Image Processing
+# ========================================
+opencv-python-headless==4.8.1.78  # Headless for Docker (no GUI deps)
+scikit-image==0.21.0               # PSNR, SSIM metrics
+numpy<2.0.0                        # Pin to 1.x for compatibility
+Pillow==10.1.0                     # Image I/O
+
+# ========================================
+# OCR (PaddleOCR for Subtitle Detection)
+# ========================================
+paddlepaddle-gpu==2.5.2            # GPU version for faster OCR
+# For CPU-only: paddlepaddle==2.5.2
+paddleocr==2.7.0.3                 # Subtitle text detection
+
+# ========================================
+# Video Processing (FFmpeg wrapper)
+# ========================================
+ffmpeg-python==0.2.0               # FFmpeg Python bindings
+
+# ========================================
+# Configuration & Utils
+# ========================================
+pydantic==2.5.0                    # Config validation
+pydantic_settings==2.1.0           # Settings management
+PyYAML==6.0.1                      # YAML config files
+python-dotenv==1.0.0               # Environment variables
+
+# ========================================
+# HTTP & Cloud Storage
+# ========================================
+requests==2.31.0                   # HTTP client
+boto3==1.34.0                      # AWS S3 / B2 storage
+urllib3<2.0.0                      # Pin for boto3 compatibility
+
+# ========================================
+# Testing (Optional - can be excluded in prod)
+# ========================================
+# pytest==7.4.3
+# pytest-mock==3.12.0
+# pytest-benchmark==4.0.0
+
+# ========================================
+# Excluded from Cleaner Image:
+# ========================================
+# basicsr - Real-ESRGAN dependency
+# facexlib - GFPGAN dependency
+# realesrgan - Upscaling models
+# gfpgan - Face enhancement
+# Any RIFE-specific packages
+
+# ========================================
+# Image Size Optimization Notes:
+# ========================================
+# - Using opencv-python-headless (saves ~200MB vs opencv-python)
+# - Excluding all upscaling/interpolation libs
+# - No dev tools (black, pylint, mypy) in production
+# - Expected size reduction: 40-60% vs full image
+

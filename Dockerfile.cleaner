@@ -1,0 +1,98 @@
+# Lightweight Docker Image for Video Cleaning Pipeline
+# Subtitle Removal + Watermark Removal + Optical Flow (v2.1)
+# Excludes: RIFE, Real-ESRGAN, GFPGAN
+# Target Size: <4GB (60% reduction vs production image)
+
+# ============================================
+# Stage 1: Builder (Compile-time dependencies)
+# ============================================
+FROM python:3.10-slim as builder
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    cmake \
+    git \
+    wget \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create virtual environment
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+# Copy requirements
+COPY requirements-cleaner.txt /tmp/requirements-cleaner.txt
+
+# Install Python packages
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r /tmp/requirements-cleaner.txt
+
+# ============================================
+# Stage 2: Runtime (Production image)
+# ============================================
+FROM python:3.10-slim
+
+LABEL maintainer="Video Cleaning Pipeline v2.1"
+LABEL description="Lightweight image for subtitle & watermark removal (OCR + ProPainter + Optical Flow)"
+
+# Install runtime dependencies (FFmpeg + system libs)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg \
+    libsm6 \
+    libxext6 \
+    libxrender-dev \
+    libgomp1 \
+    libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy Python environment from builder
+COPY --from=builder /opt/venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+# Set working directory
+WORKDIR /app
+
+# Copy application source code
+COPY src/ /app/src/
+COPY config.yaml /app/config.yaml
+COPY .env.example /app/.env
+
+# Create directories for models and output
+RUN mkdir -p /app/models /app/output /app/temp
+
+# Download ProPainter weights (cleaning models only)
+RUN echo "Downloading ProPainter weights..." && \
+    wget -q https://github.com/sczhou/ProPainter/releases/download/v0.1.0/ProPainter.pth \
+         -O /app/models/ProPainter.pth && \
+    echo "ProPainter weights downloaded successfully"
+
+# Download PaddleOCR models (will be cached on first run)
+# Note: PaddleOCR auto-downloads on first use, no manual download needed
+
+# Set environment variables
+ENV PYTHONPATH="/app:$PYTHONPATH"
+ENV PYTHONUNBUFFERED=1
+ENV USE_NATIVE_PROCESSORS=1
+ENV PROPAINTER_ROOT=/app/models
+
+# Health check (verify Python and dependencies)
+RUN python -c "import torch; import cv2; import paddleocr; print('✅ All dependencies loaded')"
+
+# Expose port (if needed for API)
+# EXPOSE 8000
+
+# Default command
+CMD ["python", "-m", "src.presentation.cli", "--help"]
+
+# ============================================
+# Build Instructions:
+# ============================================
+# docker build -f Dockerfile.cleaner -t video-cleaner:light .
+#
+# Run Examples:
+# docker run --rm video-cleaner:light python -m src.presentation.cli --mode remove-subtitles --input video.mp4
+# docker run --rm video-cleaner:light python -m src.presentation.cli --mode remove-watermark --input video.mp4
+#
+# Expected Image Size: ~3-4GB (vs ~10GB production)
+# ============================================
+
