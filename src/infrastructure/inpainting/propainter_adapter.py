@@ -19,11 +19,120 @@ class ProPainterAdapter:
             logger.warning("ProPainter may not be installed or path is incorrect")
         else:
             logger.info(f"ProPainter inference script found at {self.inference_script}")
-        
+            # Apply emergency patch for torch version parsing bug
+            self._patch_propainter_misc()
+
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         # Sliding Window settings for OOM protection (Exit code -9)
         self.CHUNK_SIZE = 20    # Process 20 frames at a time (reduced from 40 due to OOM)
         self.OVERLAP = 5        # Reduced overlap proportionally
+
+    def _patch_propainter_misc(self) -> None:
+        """
+        Emergency patch for ProPainter's model/misc.py to fix PyTorch version parsing bug.
+
+        Bug: misc.py uses strict regex that crashes with IndexError on non-standard torch versions.
+        Fix: Replace the problematic version parsing with a safer try-except wrapper.
+        """
+        misc_file = self.root / "model" / "misc.py"
+
+        if not misc_file.exists():
+            logger.debug(f"ProPainter misc.py not found at {misc_file}, skipping patch")
+            return
+
+        try:
+            content = misc_file.read_text(encoding='utf-8')
+
+            # Check if already patched
+            if "# PATCHED by vastai_inerup" in content:
+                logger.debug("ProPainter misc.py already patched")
+                return
+
+            # Look for the problematic line
+            buggy_marker = "IS_HIGH_VERSION = [int(m) for m in list(re.findall"
+
+            if buggy_marker not in content:
+                logger.debug("ProPainter misc.py doesn't contain expected bug pattern, skipping")
+                return
+
+            # Simple and robust fix: replace the entire version detection block
+            # Original problematic code:
+            # IS_HIGH_VERSION = [int(m) for m in list(re.findall(r"^([0-9]+)\.([0-9]+)\.([0-9]+)([^0-9][a-zA-Z0-9]*)?(\+git.*)?$",\
+            #                    torch.__version__)[0])]
+
+            # Safe replacement:
+            old_code = """IS_HIGH_VERSION = [int(m) for m in list(re.findall(r"^([0-9]+)\\.([0-9]+)\\.([0-9]+)([^0-9][a-zA-Z0-9]*)?(\\+git.*)?$",\\
+                       torch.__version__)[0])]"""
+
+            new_code = """# PATCHED by vastai_inerup: fix torch version parsing for non-standard builds
+try:
+    IS_HIGH_VERSION = [int(m) for m in list(re.findall(r"^([0-9]+)\\.([0-9]+)\\.([0-9]+)([^0-9][a-zA-Z0-9]*)?(\\+git.*)?$",\\
+                       torch.__version__)[0])]
+except (IndexError, AttributeError, ValueError):
+    # Fallback for non-standard torch versions (dev builds, custom compiles)
+    import torch
+    version_parts = torch.__version__.split('.')
+    IS_HIGH_VERSION = [int(version_parts[0]) if len(version_parts) > 0 else 1,
+                       int(version_parts[1].split('+')[0].split('a')[0].split('b')[0].split('rc')[0]) if len(version_parts) > 1 else 7,
+                       0]"""
+
+            if old_code in content:
+                patched_content = content.replace(old_code, new_code)
+                misc_file.write_text(patched_content, encoding='utf-8')
+                logger.info(f"✅ Successfully patched {misc_file} to fix PyTorch version parsing bug")
+            else:
+                # Try alternative format (different whitespace)
+                logger.warning(f"Could not find exact match for buggy code pattern in {misc_file}")
+                logger.warning("Attempting line-by-line replacement...")
+
+                lines = content.split('\n')
+                patched_lines = []
+                i = 0
+                patched = False
+
+                while i < len(lines):
+                    line = lines[i]
+
+                    if "IS_HIGH_VERSION = [int(m)" in line and "re.findall" in line:
+                        # Found the start of the problematic block
+                        logger.info(f"Found problematic line at {i}: {line[:80]}...")
+
+                        # Add patched version
+                        indent = len(line) - len(line.lstrip())
+                        patched_lines.append(" " * indent + "# PATCHED by vastai_inerup: fix torch version parsing")
+                        patched_lines.append(" " * indent + "try:")
+                        patched_lines.append(" " * (indent + 4) + line.strip())
+
+                        # Continue copying until we find the closing bracket and end of statement
+                        i += 1
+                        while i < len(lines) and (lines[i].strip().endswith('\\') or
+                                                   not lines[i-1].strip().endswith(')]')):
+                            patched_lines.append(" " * (indent + 4) + lines[i].strip())
+                            i += 1
+                            if i < len(lines) and ')]' in lines[i-1]:
+                                break
+
+                        # Add except block
+                        patched_lines.append(" " * indent + "except (IndexError, AttributeError, ValueError):")
+                        patched_lines.append(" " * (indent + 4) + "import torch")
+                        patched_lines.append(" " * (indent + 4) + "version_parts = torch.__version__.split('.')")
+                        patched_lines.append(" " * (indent + 4) + "IS_HIGH_VERSION = [int(version_parts[0]) if len(version_parts) > 0 else 1,")
+                        patched_lines.append(" " * (indent + 19) + "int(version_parts[1].split('+')[0].split('a')[0].split('b')[0].split('rc')[0]) if len(version_parts) > 1 else 7,")
+                        patched_lines.append(" " * (indent + 19) + "0]")
+                        patched = True
+                    else:
+                        patched_lines.append(line)
+                        i += 1
+
+                if patched:
+                    misc_file.write_text('\n'.join(patched_lines), encoding='utf-8')
+                    logger.info(f"✅ Successfully patched {misc_file} (line-by-line method)")
+                else:
+                    logger.warning(f"Could not apply patch to {misc_file} - manual intervention may be required")
+
+        except Exception as e:
+            logger.warning(f"Failed to patch ProPainter misc.py: {e}")
+            logger.warning("ProPainter may fail on non-standard PyTorch versions")
 
     def process(self, input_path, mask_dir: Path, output_path: Path) -> Path:
         """
