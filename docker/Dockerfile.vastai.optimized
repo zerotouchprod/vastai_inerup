@@ -4,7 +4,8 @@
 # Supports RTX 30 series (Ampere), 40 series (Ada Lovelace), 50 series (Blackwell)
 # Also maintains backward compatibility with RTX 20 series (Turing)
 
-FROM nvidia/cuda:12.9.0-cudnn-runtime-ubuntu22.04
+#FROM nvidia/cuda:12.9.0-cudnn-runtime-ubuntu22.04
+FROM nvidia/cuda:13.0.2-cudnn-runtime-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -50,7 +51,7 @@ RUN echo "Checking disk space before PyTorch installation..." && \
         torch \
         torchvision \
         torchaudio \
-        --index-url https://download.pytorch.org/whl/nightly/cu126 && \
+        --index-url https://download.pytorch.org/whl/nightly/cu130 && \
     echo "PyTorch installation complete" && \
     python3 -c "import torch; print(f'PyTorch version: {torch.__version__}'); print(f'CUDA version: {torch.version.cuda if hasattr(torch.version, \"cuda\") else \"N/A\"}'); print(f'CUDA available at build time: {torch.cuda.is_available()}')" && \
     rm -rf /root/.cache/pip && \
