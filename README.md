@@ -26,6 +26,38 @@ python -m src.presentation.cli --mode remove-subtitles --input video.mp4
 
 ---
 
+## ⚡ Новое в версии 2.0.2 (Январь 2026) 🆕
+
+### 🧪 **Comprehensive Test Suite** (Sprint 2)
+- ✅ **54+ автоматических тестов** - unit, integration, benchmarks, quality
+- ✅ **Synthetic video generator** - создание тестовых видео
+- ✅ **Quality metrics** - PSNR, SSIM для валидации качества
+- ✅ **Performance benchmarks** - регрессионное тестирование
+- ✅ **CI/CD pipeline** - GitHub Actions автоматизация
+- ✅ **Coverage reporting** - отслеживание покрытия кода
+
+**Тесты:**
+```bash
+# Все тесты
+pytest tests/ -v
+
+# Только быстрые unit тесты
+pytest -m unit -v
+
+# Integration тесты
+pytest -m integration -v
+
+# Performance benchmarks
+pytest -m benchmark --benchmark-only
+
+# Quality metrics
+pytest -m quality -v
+```
+
+📖 **Документация тестов**: [`docs/SPRINT2_TEST_SUITE.md`](docs/SPRINT2_TEST_SUITE.md)
+
+---
+
 ## ⚡ Версия 2.0 (Январь 2026)
 
 ### 🎯 ROI-Based Processing (2-3x faster!)
