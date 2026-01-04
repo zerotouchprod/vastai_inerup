@@ -58,36 +58,5 @@ Thumbs.db
 # Any other heavy folders/files you don't want in image
 out_*/
 
-# ========================================
-# Cleaner Image Specific (Dockerfile.cleaner)
-# ========================================
-# Exclude heavy model weights not needed for cleaning
-*.pth
-*.safetensors
-*.ckpt
-!ProPainter.pth  # Exception: Keep ProPainter
-
-# Exclude RIFE/Real-ESRGAN specific files
-RIFE_trained_model*/
-RIFEv*/
-realesrgan/
-gfpgan/
-external/
-
-# Exclude dev/test artifacts
-tests/
-test_*/
-dev_tests/
-docs/
-*.md
-!README.md  # Exception: Keep README
-
-# Exclude large test fixtures
-tests/fixtures/videos/
-test_img/
-testsubs/
-
 # End of file
-
-
 
