@@ -96,6 +96,47 @@ class SubtitleRemoverService:
         
         return center_y > roi_limit, center_y, roi_limit
 
+    def _merge_detections(self, bboxes1: list, bboxes2: list) -> list:
+        """Merge detections from two OCR passes, removing duplicates by IoU."""
+        if not bboxes1:
+            return bboxes2 or []
+        if not bboxes2:
+            return bboxes1
+
+        merged = list(bboxes1)
+
+        for bbox2 in bboxes2:
+            is_duplicate = False
+            pts2 = np.array(bbox2['points'])
+            x2_min, y2_min = pts2.min(axis=0)
+            x2_max, y2_max = pts2.max(axis=0)
+
+            for bbox1 in bboxes1:
+                pts1 = np.array(bbox1['points'])
+                x1_min, y1_min = pts1.min(axis=0)
+                x1_max, y1_max = pts1.max(axis=0)
+
+                # Calculate IoU
+                inter_x1 = max(x1_min, x2_min)
+                inter_y1 = max(y1_min, y2_min)
+                inter_x2 = min(x1_max, x2_max)
+                inter_y2 = min(y1_max, y2_max)
+
+                if inter_x2 > inter_x1 and inter_y2 > inter_y1:
+                    inter_area = (inter_x2 - inter_x1) * (inter_y2 - inter_y1)
+                    area1 = (x1_max - x1_min) * (y1_max - y1_min)
+                    area2 = (x2_max - x2_min) * (y2_max - y2_min)
+                    iou = inter_area / (area1 + area2 - inter_area + 1e-6)
+
+                    if iou > 0.3:  # Считаем дубликатом если IoU > 30%
+                        is_duplicate = True
+                        break
+
+            if not is_duplicate:
+                merged.append(bbox2)
+
+        return merged
+
     def process(self, input_path, output_path: Path, **kwargs):
         logger.info(f"Removing subtitles from {input_path}")
         
@@ -170,6 +211,10 @@ class SubtitleRemoverService:
         total_frames = len(frames)
         log_interval = max(1, total_frames // 10)  # Log every 10% progress
 
+        # Aggressive OCR threshold for subtitle detection (lower = more detections)
+        # 0.05 catches short words like "на", "и", "в" that 0.15 misses
+        OCR_THRESHOLD = 0.05
+
         for idx, frame_path in enumerate(frames):
             img = cv2.imread(str(frame_path))
             if img is None:
@@ -178,16 +223,17 @@ class SubtitleRemoverService:
             h, w = img.shape[:2]
             mask = np.zeros((h, w), dtype=np.uint8)
             
-            # А. Улучшаем
+            # А. Улучшаем для OCR
             enhanced_img = self._enhance_image_for_ocr(img)
             
-            # Б. Детектим ВСЁ (агрессивно)
-            bboxes = self.ocr.detect(enhanced_img, confidence_threshold=0.15)
-            
-            # Фолбэк на оригинал
-            if not bboxes:
-                bboxes = self.ocr.detect(img, confidence_threshold=0.15)
-            
+            # Б. Агрессивная детекция: запускаем OCR на ОБОИХ изображениях и объединяем
+            # Это увеличивает шанс поймать короткие слова типа "на", "и"
+            bboxes_enhanced = self.ocr.detect(enhanced_img, confidence_threshold=OCR_THRESHOLD)
+            bboxes_original = self.ocr.detect(img, confidence_threshold=OCR_THRESHOLD)
+
+            # Объединяем результаты (убираем дубликаты по IoU)
+            bboxes = self._merge_detections(bboxes_enhanced, bboxes_original)
+
             if not bboxes:
                 cv2.imwrite(str(mask_dir / f"{frame_path.stem}.png"), mask)
                 continue
@@ -239,8 +285,9 @@ class SubtitleRemoverService:
                 points = np.array(bbox['points'], dtype=np.int32)
                 cv2.fillPoly(mask, [points], 255)
             
-            # Д. Mega Dilation (от фиолетового тумана)
-            kernel = np.ones((25, 25), np.uint8)
+            # Д. Mega Dilation (расширяем маску чтобы захватить остатки текста и свечение)
+            # Увеличен с 25x25 до 35x35 для лучшего покрытия
+            kernel = np.ones((35, 35), np.uint8)
             mask = cv2.dilate(mask, kernel, iterations=3)
             
             cv2.imwrite(str(mask_dir / f"{frame_path.stem}.png"), mask)
