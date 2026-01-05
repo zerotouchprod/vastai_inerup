@@ -15,12 +15,18 @@ class SubtitleRemoverService:
     Dynamic ROI-Based Cleaner.
     
     1. Accepts 'roi_factor' (float) from CLI.
-       - 0.35 = Bottom 35% of screen.
+       - 0.6 = Bottom 60% of screen (default).
        - 1.0 = Full screen (no filtering).
     2. Detects Aggressively (0.15 threshold + CLAHE).
     3. Discards any text found physically above the ROI limit.
+
+    Supported GPU: RTX 3060 - RTX 5090 (6GB - 24GB VRAM)
     """
-    def __init__(self, mask_service, inpainter, lang='ru', roi_factor=0.35):
+
+    # Default ROI: bottom 60% of screen (covers subtitles slightly below center)
+    DEFAULT_ROI_FACTOR = 0.6
+
+    def __init__(self, mask_service, inpainter, lang='ru', roi_factor=None):
         self.inpainter = inpainter
         
         # Обработка языков
@@ -34,21 +40,31 @@ class SubtitleRemoverService:
         self.ocr = PaddleWrapper(lang=self.ocr_langs, use_gpu=True)
         
         # ПАРАМЕТР ROI: Прокидывается из CLI
-        # Если пришло строкой "bottom" -> 0.35, "full" -> 1.0
-        if isinstance(roi_factor, str):
+        # Если пришло строкой "bottom" -> 0.6, "full" -> 1.0
+        if roi_factor is None:
+            self.roi_height_factor = self.DEFAULT_ROI_FACTOR
+        elif isinstance(roi_factor, str):
             if roi_factor.lower() == "full":
                 self.roi_height_factor = 1.0
             elif roi_factor.lower() == "bottom":
-                self.roi_height_factor = 0.35
+                self.roi_height_factor = self.DEFAULT_ROI_FACTOR
             else:
                 try:
                     self.roi_height_factor = float(roi_factor)
                 except:
-                    self.roi_height_factor = 0.35 # Fallback
+                    self.roi_height_factor = self.DEFAULT_ROI_FACTOR
         else:
-            self.roi_height_factor = float(roi_factor) if roi_factor else 0.35
-            
-        logger.info(f"SubtitleRemoverService initialized. ROI: Bottom {int(self.roi_height_factor*100)}%")
+            self.roi_height_factor = float(roi_factor) if roi_factor else self.DEFAULT_ROI_FACTOR
+
+        # Statistics for logging
+        self._stats = {
+            'total_detections': 0,
+            'total_kept': 0,
+            'total_filtered': 0,
+            'frames_with_text': 0
+        }
+
+        logger.info(f"SubtitleRemoverService initialized. ROI: Bottom {int(self.roi_height_factor*100)}% of screen")
 
     def _enhance_image_for_ocr(self, img: np.ndarray) -> np.ndarray:
         """CLAHE: Вытягивает скрытый текст."""
@@ -66,18 +82,19 @@ class SubtitleRemoverService:
     def _is_box_in_roi(self, box, img_height):
         """
         Проверяет, попадает ли центр текста в нижнюю зону экрана.
+        Returns: (is_in_roi: bool, center_y: float, roi_limit: float)
         """
         # Если ROI = 1.0 (Full), фильтрация отключена
         if self.roi_height_factor >= 0.99:
-            return True
-            
+            return True, 0, 0
+
         points = np.array(box, dtype=np.int32)
         center_y = np.mean(points[:, 1])
         
-        # Граница: Высота * (1 - 0.35) = Точка начала нижних 35%
+        # Граница: Высота * (1 - 0.6) = Точка начала нижних 60%
         roi_limit = img_height * (1.0 - self.roi_height_factor)
         
-        return center_y > roi_limit
+        return center_y > roi_limit, center_y, roi_limit
 
     def process(self, input_path, output_path: Path, **kwargs):
         logger.info(f"Removing subtitles from {input_path}")
@@ -131,16 +148,33 @@ class SubtitleRemoverService:
             return SimpleResult(success=False, output_path=None, errors=[str(e)])
 
     def _generate_roi_masks(self, frames_dir: Path, mask_dir: Path):
-        logger.info(f"Generating binary masks (ROI Strategy)...")
-        
+        """Generate binary masks with ROI filtering and detailed logging."""
+        roi_pct = int(self.roi_height_factor * 100)
+        logger.info(f"Generating masks (ROI: bottom {roi_pct}% of screen)...")
+
         frames = sorted(list(frames_dir.glob("*.jpg")) + list(frames_dir.glob("*.png")))
         if not frames:
             raise ValueError(f"No frames found in {frames_dir}")
         
-        for frame_path in frames:
+        # Reset statistics
+        self._stats = {
+            'total_detections': 0,
+            'total_kept': 0,
+            'total_filtered': 0,
+            'frames_with_text': 0,
+            'confidence_min': 1.0,
+            'confidence_max': 0.0,
+            'confidence_sum': 0.0
+        }
+
+        total_frames = len(frames)
+        log_interval = max(1, total_frames // 10)  # Log every 10% progress
+
+        for idx, frame_path in enumerate(frames):
             img = cv2.imread(str(frame_path))
-            if img is None: continue
-            
+            if img is None:
+                continue
+
             h, w = img.shape[:2]
             mask = np.zeros((h, w), dtype=np.uint8)
             
@@ -158,12 +192,44 @@ class SubtitleRemoverService:
                 cv2.imwrite(str(mask_dir / f"{frame_path.stem}.png"), mask)
                 continue
             
+            # Track confidence scores
+            for bbox in bboxes:
+                conf = bbox.get('confidence', 0)
+                self._stats['confidence_min'] = min(self._stats['confidence_min'], conf)
+                self._stats['confidence_max'] = max(self._stats['confidence_max'], conf)
+                self._stats['confidence_sum'] += conf
+
+            detected_count = len(bboxes)
+            self._stats['total_detections'] += detected_count
+
             # В. ФИЛЬТРАЦИЯ ПО ROI (Отсекаем глаза/волосы сверху)
             valid_boxes = []
+            filtered_boxes = []
             for bbox in bboxes:
-                if self._is_box_in_roi(bbox['points'], h):
+                is_in_roi, center_y, roi_limit = self._is_box_in_roi(bbox['points'], h)
+                if is_in_roi:
                     valid_boxes.append(bbox)
-            
+                else:
+                    filtered_boxes.append({
+                        'text': bbox.get('text', '?')[:20],
+                        'center_y': center_y,
+                        'roi_limit': roi_limit
+                    })
+
+            kept_count = len(valid_boxes)
+            filtered_count = detected_count - kept_count
+
+            self._stats['total_kept'] += kept_count
+            self._stats['total_filtered'] += filtered_count
+
+            if kept_count > 0:
+                self._stats['frames_with_text'] += 1
+
+            # Debug log for frames with filtered boxes
+            if filtered_count > 0 and logger.isEnabledFor(10):  # DEBUG level
+                for fb in filtered_boxes[:3]:  # Max 3 examples
+                    logger.debug(f"[Frame {idx}] Filtered: '{fb['text']}' center_y={fb['center_y']:.0f} < roi_limit={fb['roi_limit']:.0f}")
+
             if not valid_boxes:
                 cv2.imwrite(str(mask_dir / f"{frame_path.stem}.png"), mask)
                 continue
@@ -179,7 +245,33 @@ class SubtitleRemoverService:
             
             cv2.imwrite(str(mask_dir / f"{frame_path.stem}.png"), mask)
             
-        logger.info(f"Generated {len(frames)} masks")
+            # Progress logging
+            if (idx + 1) % log_interval == 0:
+                progress = (idx + 1) / total_frames * 100
+                logger.info(f"Mask generation progress: {progress:.0f}% ({idx + 1}/{total_frames})")
+
+            # GPU memory cleanup every 50 frames (helps on 6GB GPUs like 3060)
+            if (idx + 1) % 50 == 0:
+                try:
+                    import torch
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                except ImportError:
+                    pass
+
+        # Final summary
+        avg_conf = (self._stats['confidence_sum'] / self._stats['total_detections']
+                   if self._stats['total_detections'] > 0 else 0)
+
+        logger.info(f"Mask generation complete:")
+        logger.info(f"  - Frames processed: {total_frames}")
+        logger.info(f"  - Frames with text: {self._stats['frames_with_text']}")
+        logger.info(f"  - Total detections: {self._stats['total_detections']}")
+        logger.info(f"  - Kept (in ROI): {self._stats['total_kept']}")
+        logger.info(f"  - Filtered (outside ROI): {self._stats['total_filtered']}")
+        if self._stats['total_detections'] > 0:
+            logger.info(f"  - Confidence: min={self._stats['confidence_min']:.2f}, "
+                       f"max={self._stats['confidence_max']:.2f}, avg={avg_conf:.2f}")
 
 # Заглушка
 class LegacySubtitleRemoverService:

@@ -103,7 +103,7 @@ class ProcessorFactory:
             prefer: Backend preference ('auto', 'native', 'propainter') - deprecated, use backend parameter
             lang: Language code for OCR ('en', 'ru', etc.)
             backend: Backend preference ('auto', 'native', 'propainter', 'sam2')
-            roi: Region of Interest string (e.g., "bottom", "full", "0.35", or "x,y,w,h")
+            roi: Region of Interest string. "bottom" (default, 60%), "full" (100%), or float 0.0-1.0
 
         Returns:
             Subtitle remover processor instance

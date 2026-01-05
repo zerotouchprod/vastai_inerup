@@ -13,11 +13,11 @@ class TestROIResolution:
     """Test ROI string resolution to pixel coordinates."""
 
     def test_resolve_roi_bottom_preset(self):
-        """Test 'bottom' preset ROI."""
+        """Test 'bottom' preset ROI (60% of height from bottom)."""
         x, y, w, h = resolve_roi('bottom', 1920, 1080)
         assert x == 0
         assert w == 1920
-        assert h == int(1080 * 0.45)  # Bottom 45%
+        assert h == int(1080 * 0.60)  # Bottom 60%
         assert y == 1080 - h
 
     def test_resolve_roi_top_preset(self):

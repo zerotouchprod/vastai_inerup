@@ -48,10 +48,11 @@ def test_roi_parameter():
         
         # Test with different ROI values
         test_cases = [
-            ('bottom', 0.35),
+            ('bottom', 0.6),  # Default is now 60%
             ('full', 1.0),
             ('0.35', 0.35),
             ('0.5', 0.5),
+            ('0.6', 0.6),
         ]
         
         for roi_input, expected_factor in test_cases:

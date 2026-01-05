@@ -168,8 +168,8 @@ def resolve_roi(roi_str: str, img_w: int, img_h: int) -> tuple[int, int, int, in
     if roi_str == 'full':
         return 0, 0, img_w, img_h
     elif roi_str == 'bottom':
-        # Legacy "0.55" equivalent: Bottom 45-55%
-        h = int(img_h * 0.45)  # Safety margin
+        # Bottom 60% of screen (default for subtitles, including those slightly below center)
+        h = int(img_h * 0.60)
         return 0, img_h - h, img_w, h
     elif roi_str == 'top':
         h = int(img_h * 0.30)
@@ -210,9 +210,9 @@ def resolve_roi(roi_str: str, img_w: int, img_h: int) -> tuple[int, int, int, in
         
         return x, y, w, h
     except Exception as e:
-        logger.warning(f"Invalid ROI format '{roi_str}': {e}. Fallback to bottom.")
-        # Fallback to bottom preset
-        h = int(img_h * 0.45)
+        logger.warning(f"Invalid ROI format '{roi_str}': {e}. Fallback to bottom (60%).")
+        # Fallback to bottom preset (60%)
+        h = int(img_h * 0.60)
         return 0, img_h - h, img_w, h
 
 
