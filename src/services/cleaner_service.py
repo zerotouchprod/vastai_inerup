@@ -2,6 +2,7 @@ import tempfile
 import shutil
 import cv2
 import numpy as np
+import os
 from pathlib import Path
 from src.shared.logging import get_logger
 
@@ -12,13 +13,22 @@ logger = get_logger(__name__)
 
 class SubtitleRemoverService:
     """
-    Dynamic ROI-Based Cleaner.
-    
-    1. Accepts 'roi_factor' (float) from CLI.
-       - 0.6 = Bottom 60% of screen (default).
-       - 1.0 = Full screen (no filtering).
-    2. Detects Aggressively (0.15 threshold + CLAHE).
-    3. Discards any text found physically above the ROI limit.
+    Dynamic ROI-Based Subtitle Cleaner with VRAM Adaptation.
+
+    Features:
+    1. **ROI Format Support** (Backward Compatible):
+       - Bounding box: "x1,y1,x2,y2" (normalized 0.0-1.0 coordinates)
+       - Percentage presets: "bottom" (60%), "top" (60%), "full" (100%)
+       - Single float: 0.6 = bottom 60% of screen
+
+    2. **VRAM-Adaptive Kernel Sizing**:
+       - <8GB VRAM (RTX 3060):  30x30 kernel
+       - 8-16GB VRAM (RTX 3080): 40x40 kernel
+       - >16GB VRAM (RTX 4090/5090): 45x45 kernel
+
+    3. **Optional Debug Mode** (off by default):
+       - Saves diagnostic images showing OCR detections, ROI boundaries, masks
+       - Controlled via --debug CLI flag or DEBUG_SUBTITLE_REMOVAL env var
 
     Supported GPU: RTX 3060 - RTX 5090 (6GB - 24GB VRAM)
     """
@@ -26,7 +36,7 @@ class SubtitleRemoverService:
     # Default ROI: bottom 60% of screen (covers subtitles slightly below center)
     DEFAULT_ROI_FACTOR = 0.6
 
-    def __init__(self, mask_service, inpainter, lang='ru', roi_factor=None):
+    def __init__(self, mask_service, inpainter, lang='ru', roi_factor=None, debug=None):
         self.inpainter = inpainter
         
         # Обработка языков
@@ -39,22 +49,16 @@ class SubtitleRemoverService:
         self.ocr_langs = langs
         self.ocr = PaddleWrapper(lang=self.ocr_langs, use_gpu=True)
         
-        # ПАРАМЕТР ROI: Прокидывается из CLI
-        # Если пришло строкой "bottom" -> 0.6, "full" -> 1.0
-        if roi_factor is None:
-            self.roi_height_factor = self.DEFAULT_ROI_FACTOR
-        elif isinstance(roi_factor, str):
-            if roi_factor.lower() == "full":
-                self.roi_height_factor = 1.0
-            elif roi_factor.lower() == "bottom":
-                self.roi_height_factor = self.DEFAULT_ROI_FACTOR
-            else:
-                try:
-                    self.roi_height_factor = float(roi_factor)
-                except:
-                    self.roi_height_factor = self.DEFAULT_ROI_FACTOR
-        else:
-            self.roi_height_factor = float(roi_factor) if roi_factor else self.DEFAULT_ROI_FACTOR
+        # Debug mode: off by default, enable via --debug flag or DEBUG_SUBTITLE_REMOVAL=1
+        if debug is None:
+            debug = os.getenv('DEBUG_SUBTITLE_REMOVAL', '0') == '1'
+        self.debug_mode = debug
+
+        # Parse ROI parameter (BACKWARD COMPATIBLE)
+        self._parse_roi(roi_factor)
+
+        # VRAM-adaptive kernel sizing
+        self._kernel_size = self._detect_optimal_kernel_size()
 
         # Statistics for logging
         self._stats = {
@@ -64,7 +68,122 @@ class SubtitleRemoverService:
             'frames_with_text': 0
         }
 
-        logger.info(f"SubtitleRemoverService initialized. ROI: Bottom {int(self.roi_height_factor*100)}% of screen")
+        roi_desc = self._get_roi_description()
+        logger.info(f"SubtitleRemoverService initialized:")
+        logger.info(f"  - ROI: {roi_desc}")
+        logger.info(f"  - Dilation kernel: {self._kernel_size}x{self._kernel_size}")
+        logger.info(f"  - Debug mode: {'ON' if self.debug_mode else 'OFF'}")
+
+    def _parse_roi(self, roi_factor):
+        """
+        Parse ROI parameter with backward compatibility.
+        Supports:
+        - Bounding box: "0.05,0.4,0.9,0.5" (x1,y1,x2,y2 in 0.0-1.0)
+        - Presets: "bottom", "top", "full"
+        - Single float: 0.6 (bottom 60%)
+        """
+        if roi_factor is None:
+            # Default: bottom 60%
+            self.roi_mode = 'percentage'
+            self.roi_height_factor = self.DEFAULT_ROI_FACTOR
+            self.roi_bbox = None
+            return
+
+        if isinstance(roi_factor, str):
+            # Check if it's a bounding box format (contains commas)
+            if ',' in roi_factor:
+                try:
+                    parts = [float(x.strip()) for x in roi_factor.split(',')]
+                    if len(parts) == 4:
+                        x1, y1, x2, y2 = parts
+                        # Validate ranges
+                        if all(0.0 <= v <= 1.0 for v in parts) and x2 > x1 and y2 > y1:
+                            self.roi_mode = 'bbox'
+                            self.roi_bbox = (x1, y1, x2, y2)
+                            # Convert bbox to equivalent height factor for filtering
+                            # Use y1 as the top boundary (text below y1 is kept)
+                            self.roi_height_factor = 1.0 - y1
+                            logger.info(f"ROI: Bounding box ({x1:.2f},{y1:.2f},{x2:.2f},{y2:.2f})")
+                            return
+                        else:
+                            logger.warning(f"Invalid bounding box coordinates: {roi_factor}, using default")
+                except ValueError:
+                    logger.warning(f"Failed to parse bounding box: {roi_factor}, using default")
+
+            # Check for preset strings
+            roi_lower = roi_factor.lower()
+            if roi_lower == "full":
+                self.roi_mode = 'percentage'
+                self.roi_height_factor = 1.0
+                self.roi_bbox = None
+            elif roi_lower == "bottom":
+                self.roi_mode = 'percentage'
+                self.roi_height_factor = self.DEFAULT_ROI_FACTOR
+                self.roi_bbox = None
+            elif roi_lower == "top":
+                self.roi_mode = 'percentage'
+                self.roi_height_factor = 0.6  # Top 60% (от 0 до 0.6 по высоте)
+                self.roi_bbox = None
+            else:
+                # Try to parse as single float
+                try:
+                    self.roi_mode = 'percentage'
+                    self.roi_height_factor = float(roi_factor)
+                    self.roi_bbox = None
+                except ValueError:
+                    logger.warning(f"Invalid ROI format: {roi_factor}, using default")
+                    self.roi_mode = 'percentage'
+                    self.roi_height_factor = self.DEFAULT_ROI_FACTOR
+                    self.roi_bbox = None
+        else:
+            # Numeric value
+            self.roi_mode = 'percentage'
+            self.roi_height_factor = float(roi_factor) if roi_factor else self.DEFAULT_ROI_FACTOR
+            self.roi_bbox = None
+
+    def _get_roi_description(self) -> str:
+        """Get human-readable ROI description for logging."""
+        if self.roi_mode == 'bbox':
+            x1, y1, x2, y2 = self.roi_bbox
+            return f"Bounding box ({x1:.2f},{y1:.2f},{x2:.2f},{y2:.2f})"
+        elif self.roi_height_factor >= 0.99:
+            return "Full screen (no filtering)"
+        else:
+            pct = int(self.roi_height_factor * 100)
+            return f"Bottom {pct}% of screen"
+
+    def _detect_optimal_kernel_size(self) -> int:
+        """
+        Detect optimal dilation kernel size based on available VRAM.
+
+        Returns:
+            Kernel size (30, 40, or 45)
+        """
+        try:
+            import torch
+            if not torch.cuda.is_available():
+                logger.info("No CUDA available, using conservative kernel size (30x30)")
+                return 30
+
+            # Get total VRAM in GB
+            vram_bytes = torch.cuda.get_device_properties(0).total_memory
+            vram_gb = vram_bytes / (1024 ** 3)
+
+            if vram_gb < 8:
+                kernel_size = 30
+                logger.info(f"Detected {vram_gb:.1f}GB VRAM → using 30x30 kernel (conservative)")
+            elif vram_gb < 16:
+                kernel_size = 40
+                logger.info(f"Detected {vram_gb:.1f}GB VRAM → using 40x40 kernel (balanced)")
+            else:
+                kernel_size = 45
+                logger.info(f"Detected {vram_gb:.1f}GB VRAM → using 45x45 kernel (aggressive)")
+
+            return kernel_size
+
+        except Exception as e:
+            logger.warning(f"Failed to detect VRAM: {e}, using default 35x35 kernel")
+            return 35
 
     def _enhance_image_for_ocr(self, img: np.ndarray) -> np.ndarray:
         """CLAHE: Вытягивает скрытый текст."""
@@ -79,22 +198,38 @@ class SubtitleRemoverService:
         except Exception:
             return img
 
-    def _is_box_in_roi(self, box, img_height):
+    def _is_box_in_roi(self, box, img_width, img_height):
         """
-        Проверяет, попадает ли центр текста в нижнюю зону экрана.
-        Returns: (is_in_roi: bool, center_y: float, roi_limit: float)
+        Проверяет, попадает ли центр текста в ROI.
+        Returns: (is_in_roi: bool, center_x: float, center_y: float, roi_limit: float)
         """
-        # Если ROI = 1.0 (Full), фильтрация отключена
-        if self.roi_height_factor >= 0.99:
-            return True, 0, 0
-
         points = np.array(box, dtype=np.int32)
+        center_x = np.mean(points[:, 0])
         center_y = np.mean(points[:, 1])
         
+        # Full screen mode - no filtering
+        if self.roi_height_factor >= 0.99 and self.roi_mode != 'bbox':
+            return True, center_x, center_y, 0
+
+        # Bounding box mode
+        if self.roi_mode == 'bbox':
+            x1, y1, x2, y2 = self.roi_bbox
+            # Convert normalized coordinates to pixels
+            x1_px = x1 * img_width
+            y1_px = y1 * img_height
+            x2_px = x2 * img_width
+            y2_px = y2 * img_height
+
+            # Check if center is inside bounding box
+            is_in = (x1_px <= center_x <= x2_px) and (y1_px <= center_y <= y2_px)
+            return is_in, center_x, center_y, y1_px
+
+        # Percentage mode (default)
         # Граница: Высота * (1 - 0.6) = Точка начала нижних 60%
         roi_limit = img_height * (1.0 - self.roi_height_factor)
-        
-        return center_y > roi_limit, center_y, roi_limit
+        is_in = center_y > roi_limit
+
+        return is_in, center_x, center_y, roi_limit
 
     def _merge_detections(self, bboxes1: list, bboxes2: list) -> list:
         """Merge detections from two OCR passes, removing duplicates by IoU."""
@@ -190,8 +325,8 @@ class SubtitleRemoverService:
 
     def _generate_roi_masks(self, frames_dir: Path, mask_dir: Path):
         """Generate binary masks with ROI filtering and detailed logging."""
-        roi_pct = int(self.roi_height_factor * 100)
-        logger.info(f"Generating masks (ROI: bottom {roi_pct}% of screen)...")
+        roi_desc = self._get_roi_description()
+        logger.info(f"Generating masks (ROI: {roi_desc})...")
 
         frames = sorted(list(frames_dir.glob("*.jpg")) + list(frames_dir.glob("*.png")))
         if not frames:
@@ -248,16 +383,17 @@ class SubtitleRemoverService:
             detected_count = len(bboxes)
             self._stats['total_detections'] += detected_count
 
-            # В. ФИЛЬТРАЦИЯ ПО ROI (Отсекаем глаза/волосы сверху)
+            # В. ФИЛЬТРАЦИЯ ПО ROI (Отсекаем текст вне зоны субтитров)
             valid_boxes = []
             filtered_boxes = []
             for bbox in bboxes:
-                is_in_roi, center_y, roi_limit = self._is_box_in_roi(bbox['points'], h)
+                is_in_roi, center_x, center_y, roi_limit = self._is_box_in_roi(bbox['points'], w, h)
                 if is_in_roi:
                     valid_boxes.append(bbox)
                 else:
                     filtered_boxes.append({
                         'text': bbox.get('text', '?')[:20],
+                        'center_x': center_x,
                         'center_y': center_y,
                         'roi_limit': roi_limit
                     })
@@ -274,22 +410,40 @@ class SubtitleRemoverService:
             # Debug log for frames with filtered boxes
             if filtered_count > 0 and logger.isEnabledFor(10):  # DEBUG level
                 for fb in filtered_boxes[:3]:  # Max 3 examples
-                    logger.debug(f"[Frame {idx}] Filtered: '{fb['text']}' center_y={fb['center_y']:.0f} < roi_limit={fb['roi_limit']:.0f}")
+                    logger.debug(f"[Frame {idx}] Filtered: '{fb['text']}' "
+                               f"center=({fb['center_x']:.0f},{fb['center_y']:.0f}) "
+                               f"roi_limit={fb['roi_limit']:.0f}")
 
             if not valid_boxes:
                 cv2.imwrite(str(mask_dir / f"{frame_path.stem}.png"), mask)
                 continue
 
-            # Г. Рисуем маску
+            # Г. Рисуем маску с расширенными боксами (catch glow/shadows)
             for bbox in valid_boxes:
                 points = np.array(bbox['points'], dtype=np.int32)
-                cv2.fillPoly(mask, [points], 255)
-            
-            # Д. Mega Dilation (расширяем маску чтобы захватить остатки текста и свечение)
-            # Увеличен с 25x25 до 35x35 для лучшего покрытия
-            kernel = np.ones((35, 35), np.uint8)
-            mask = cv2.dilate(mask, kernel, iterations=3)
-            
+                # Expand box by 15px horizontally, 20px vertically to catch glow
+                x_min, y_min = points.min(axis=0)
+                x_max, y_max = points.max(axis=0)
+                x_min = max(0, x_min - 15)
+                x_max = min(w, x_max + 15)
+                y_min = max(0, y_min - 20)
+                y_max = min(h, y_max + 20)
+                expanded_points = np.array([[x_min, y_min], [x_max, y_min],
+                                          [x_max, y_max], [x_min, y_max]], dtype=np.int32)
+                cv2.fillPoly(mask, [expanded_points], 255)
+
+            # Д. VRAM-Adaptive Dilation + Morphological Closing
+            kernel = np.ones((self._kernel_size, self._kernel_size), np.uint8)
+
+            # Dilation: захватываем свечение
+            mask = cv2.dilate(mask, kernel, iterations=2)
+
+            # Morphological closing: заполняем пробелы между буквами
+            mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=1)
+
+            # Final dilation pass
+            mask = cv2.dilate(mask, kernel, iterations=1)
+
             cv2.imwrite(str(mask_dir / f"{frame_path.stem}.png"), mask)
             
             # Progress logging

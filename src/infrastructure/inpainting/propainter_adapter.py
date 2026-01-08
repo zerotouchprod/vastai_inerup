@@ -396,6 +396,15 @@ except (IndexError, AttributeError, ValueError):
         logger.info(f"Merging chunks (Found {len(processed_frames_map)} unique frames)...")
         output_dir.mkdir(parents=True, exist_ok=True)
         
+        # Get original dimensions from first input frame
+        first_input_frame = all_frames[0]
+        import cv2
+        first_img = cv2.imread(str(first_input_frame))
+        if first_img is not None:
+            orig_height, orig_width = first_img.shape[:2]
+        else:
+            orig_width, orig_height = 1920, 1080  # Fallback
+
         final_count = 0
         # Сортируем по имени файла (frame_00001, frame_00002...)
         for stem in sorted(processed_frames_map.keys()):
@@ -413,7 +422,12 @@ except (IndexError, AttributeError, ValueError):
              logger.error("CRITICAL: No frames were merged! ProPainter failed to produce output files.")
         else:
              logger.info(f"✅ Merged {final_count} frames successfully.")
-             
+
+        # ASPECT RATIO VALIDATION: Check and restore if needed
+        output_frames = sorted(list(output_dir.glob("*.png")) + list(output_dir.glob("*.jpg")))
+        if output_frames:
+            self._validate_and_restore_aspect_ratio(output_frames, orig_width, orig_height)
+
         return output_dir
 
     def _run_inference_subprocess(self, video_path: Path, mask_path: Path, output_path: Path) -> Path:
@@ -552,7 +566,12 @@ except (IndexError, AttributeError, ValueError):
                 # Перемещаем в корень
                 shutil.move(str(img), str(output_path / img.name))
                 logger.info(f"Moved {img} to {output_path / img.name}")
-                
+
+            # ASPECT RATIO VALIDATION: Check and restore if needed
+            output_frames = sorted(list(output_path.glob("*.png")) + list(output_path.glob("*.jpg")))
+            if output_frames:
+                self._validate_and_restore_aspect_ratio(output_frames, original_width, original_height)
+
             return output_path
 
         except subprocess.CalledProcessError as e:
@@ -599,6 +618,101 @@ except (IndexError, AttributeError, ValueError):
             logger.error(f"STDERR: {e.stderr[:1000] if e.stderr else 'None'}")
             # Пытаемся освободить память перед падением
             raise RuntimeError(f"ProPainter execution failed with code {e.returncode}")
+
+    def _validate_and_restore_aspect_ratio(self, output_frames: list, original_width: int, original_height: int) -> list:
+        """
+        Validate output frame dimensions and restore original aspect ratio if needed.
+
+        Args:
+            output_frames: List of output frame paths
+            original_width: Original frame width
+            original_height: Original frame height
+
+        Returns:
+            List of validated/corrected frame paths
+        """
+        import cv2
+
+        if not output_frames:
+            return output_frames
+
+        # Check first frame dimensions
+        first_frame = cv2.imread(str(output_frames[0]))
+        if first_frame is None:
+            logger.warning(f"Could not read first output frame: {output_frames[0]}")
+            return output_frames
+
+        output_height, output_width = first_frame.shape[:2]
+        original_aspect = original_width / original_height
+        output_aspect = output_width / output_height
+
+        logger.info(f"Aspect ratio check:")
+        logger.info(f"  Original: {original_width}x{original_height} (ratio: {original_aspect:.3f})")
+        logger.info(f"  Output:   {output_width}x{output_height} (ratio: {output_aspect:.3f})")
+
+        # Check if dimensions are swapped (portrait became landscape or vice versa)
+        aspect_diff = abs(original_aspect - output_aspect)
+        swapped_aspect = output_height / output_width
+        swapped_diff = abs(original_aspect - swapped_aspect)
+
+        if swapped_diff < aspect_diff and swapped_diff < 0.1:
+            # Dimensions are swapped! Need to rotate/transpose
+            logger.warning(f"⚠️  Aspect ratio mismatch detected!")
+            logger.warning(f"   Expected ratio: {original_aspect:.3f}, got: {output_aspect:.3f}")
+            logger.warning(f"   Dimensions appear swapped. Rotating frames to restore aspect ratio...")
+
+            corrected_count = 0
+            for frame_path in output_frames:
+                try:
+                    frame = cv2.imread(str(frame_path))
+                    if frame is None:
+                        continue
+
+                    # Rotate 90 degrees to restore portrait orientation
+                    if original_height > original_width:
+                        # Original was portrait, rotate clockwise
+                        corrected = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
+                    else:
+                        # Original was landscape, rotate counter-clockwise
+                        corrected = cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
+
+                    # Save corrected frame
+                    cv2.imwrite(str(frame_path), corrected)
+                    corrected_count += 1
+
+                except Exception as e:
+                    logger.error(f"Failed to rotate frame {frame_path}: {e}")
+
+            logger.info(f"✅ Corrected aspect ratio for {corrected_count}/{len(output_frames)} frames")
+
+        elif aspect_diff > 0.05:
+            # Aspect ratio is different but not swapped - need to resize
+            logger.warning(f"⚠️  Aspect ratio mismatch: {original_aspect:.3f} vs {output_aspect:.3f}")
+            logger.info(f"   Resizing frames back to original dimensions...")
+
+            resized_count = 0
+            for frame_path in output_frames:
+                try:
+                    frame = cv2.imread(str(frame_path))
+                    if frame is None:
+                        continue
+
+                    # Resize back to original dimensions
+                    resized = cv2.resize(frame, (original_width, original_height),
+                                       interpolation=cv2.INTER_LANCZOS4)
+
+                    # Save resized frame
+                    cv2.imwrite(str(frame_path), resized)
+                    resized_count += 1
+
+                except Exception as e:
+                    logger.error(f"Failed to resize frame {frame_path}: {e}")
+
+            logger.info(f"✅ Resized {resized_count}/{len(output_frames)} frames to {original_width}x{original_height}")
+        else:
+            logger.info(f"✅ Aspect ratio preserved correctly (diff: {aspect_diff:.4f})")
+
+        return output_frames
 
     def _extract_frames_from_video(self, video_path: Path, output_dir: Path) -> list[Path]:
         """Extract frames from video file using ffmpeg."""

@@ -130,8 +130,12 @@ class ProcessorFactory:
                 # 4. Inpainter
                 inpainter = ProPainterAdapter()
                 
-                # 5. Главный сервис
-                return SubtitleRemoverService(mask_service, inpainter, lang=lang, roi_factor=roi)
+                # 5. Debug mode detection
+                import os
+                debug_mode = os.getenv('DEBUG_SUBTITLE_REMOVAL', '0') == '1'
+
+                # 6. Главный сервис
+                return SubtitleRemoverService(mask_service, inpainter, lang=lang, roi_factor=roi, debug=debug_mode)
             except Exception as e:
                 self._logger.warning(f"SAM2 pipeline failed to initialize: {e}")
                 if backend == 'sam2':

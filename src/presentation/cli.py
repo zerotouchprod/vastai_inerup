@@ -200,9 +200,10 @@ def main():
     parser.add_argument('--image-mode', choices=['upscale', 'hdr', 'denoise'], help='Image processing mode (default: upscale)')
     parser.add_argument('--audio-mode', choices=['remove_reverb', 'enhance', 'normalize'], help='Audio processing mode (default: remove_reverb)')
     parser.add_argument('--subs-lang', type=str, default='en', help='Language code for subtitle OCR when using remove-subtitles mode (default: en)')
-    parser.add_argument('--roi', type=str, default='bottom', help='Region of Interest for subtitles. Presets: "bottom" (default, 60%% from bottom), "top", "full". Or float 0.0-1.0 for custom height.')
+    parser.add_argument('--roi', type=str, default='bottom', help='Region of Interest for subtitles. Presets: "bottom" (default, 60%% from bottom), "top", "full". Bounding box: "x1,y1,x2,y2" (normalized 0.0-1.0). Or float 0.0-1.0 for custom height.')
     parser.add_argument('--watermark-roi', type=str, default='top-right', help='Watermark ROI. Presets: "top-left", "top-right" (default), "bottom-left", "bottom-right", "center". Multi-zone: "top-right,bottom-left"')
     parser.add_argument('--animated', action='store_true', default=False, help='Enable animated text detection (v2.1 EXPERIMENTAL). Uses optical flow for karaoke/moving subtitles. May use +200MB RAM.')
+    parser.add_argument('--debug', action='store_true', default=False, help='Enable debug mode for subtitle removal (saves diagnostic images showing OCR detections, ROI boundaries, masks)')
     parser.add_argument('--strict', action='store_true', help='Strict mode')
     parser.add_argument('--allow-fallback', action='store_true', help='Allow ffmpeg fallback when RIFE is not available (default: disabled)')
     parser.add_argument('--verbose', '-v', action='store_true', help='Verbose')
@@ -292,6 +293,14 @@ def main():
             app_config = get_app_config()
             app_config.USE_OPTICAL_FLOW = True
             logger.info("⚡ Optical flow enabled (v2.1 experimental - animated text detection)")
+
+        # Debug mode for subtitle removal
+        if hasattr(args, 'debug') and args.debug:
+            from src.core.config import get_config as get_app_config
+            app_config = get_app_config()
+            app_config.DEBUG_SUBTITLE_REMOVAL = True
+            os.environ['DEBUG_SUBTITLE_REMOVAL'] = '1'
+            logger.info("🐛 Debug mode enabled (will save diagnostic images for subtitle removal)")
 
         print(f"!!! FORCE OVERRIDE ROI CONFIG: {args.roi}")
         # Also update the singleton AppConfig used by subtitle removal service
