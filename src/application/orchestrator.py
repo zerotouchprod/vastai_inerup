@@ -30,7 +30,8 @@ class VideoProcessingOrchestrator:
         uploader: IUploader,
         logger: ILogger,
         metrics: IMetricsCollector,
-        subtitle_remover: Optional[IProcessor] = None
+        subtitle_remover: Optional[IProcessor] = None,
+        watermark_remover: Optional[IProcessor] = None
     ):
         self._downloader = downloader
         self._extractor = extractor
@@ -41,6 +42,7 @@ class VideoProcessingOrchestrator:
         self._logger = logger
         self._metrics = metrics
         self._subtitle_remover = subtitle_remover
+        self._watermark_remover = watermark_remover
 
     def process(self, job: Job) -> ProcessingResult:
         """Execute video processing job."""
@@ -332,6 +334,41 @@ class VideoProcessingOrchestrator:
             
             return processed_frames
 
+        elif job.mode == "remove-watermark":
+            if not self._watermark_remover:
+                raise VideoProcessingError("Watermark remover not available")
+            output_dir = workspace / "watermark_removed"
+            options = {'job_id': job.job_id}
+            if isinstance(job.config, dict):
+                options['b2_output_key'] = job.config.get('b2_output_key')
+                options['b2_bucket'] = job.config.get('b2_bucket')
+            # Use watermark remover processor
+            self._logger.info(f"Starting watermark removal for {len(frame_paths)} frames")
+            result = self._watermark_remover.process(frame_paths, output_dir, **options)
+            if not result.success:
+                raise VideoProcessingError(f"Watermark removal failed: {result.errors}")
+
+            # Debug: list files in output directory
+            all_files = list(output_dir.iterdir())
+            self._logger.info(f"Watermark removal completed. Output directory contains {len(all_files)} files")
+            if all_files:
+                self._logger.info(f"First 5 files: {[f.name for f in all_files[:5]]}")
+                # Check file extensions
+                extensions = {}
+                for f in all_files:
+                    ext = f.suffix.lower()
+                    extensions[ext] = extensions.get(ext, 0) + 1
+                self._logger.info(f"File extensions: {extensions}")
+
+            # Look for both .png and .jpg files
+            processed_frames = sorted(output_dir.glob("*.png")) + sorted(output_dir.glob("*.jpg"))
+            self._logger.info(f"Found {len(processed_frames)} processed frames (.png + .jpg)")
+
+            if not processed_frames:
+                raise VideoProcessingError(f"No processed frames found in {output_dir}")
+
+            return processed_frames
+
         elif job.mode == "both":
             if not self._upscaler or not self._interpolator:
                 raise VideoProcessingError("Both processors required")
@@ -484,6 +521,8 @@ class VideoProcessingOrchestrator:
             return f"interp/{base_name}-{timestamp}.mp4"
         elif job.mode == "remove-subtitles":
             return f"subtitles_removed/{base_name}-{timestamp}.mp4"
+        elif job.mode == "remove-watermark":
+            return f"watermark_removed/{base_name}-{timestamp}.mp4"
         else:
             return f"both/{base_name}-{timestamp}.mp4"
 

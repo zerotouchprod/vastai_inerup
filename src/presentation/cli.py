@@ -121,14 +121,6 @@ def create_orchestrator_from_config(config, allow_fallback: bool = False):
     extractor = FFmpegExtractor()
     assembler = FFmpegAssembler()
 
-    # For subtitle removal mode, use subtitle remover as upscaler
-    if config.mode == 'remove-subtitles':
-        upscaler = subtitle_remover
-
-    # For watermark removal mode, use watermark remover as upscaler
-    if config.mode == 'remove-watermark':
-        upscaler = watermark_remover
-
     # Only create interpolator for video type with interp/both modes
     if config.type == 'video' and config.mode in ('interp', 'both'):
         try:
@@ -176,7 +168,8 @@ def create_orchestrator_from_config(config, allow_fallback: bool = False):
         uploader=uploader,
         logger=logger,
         metrics=metrics,
-        subtitle_remover=subtitle_remover
+        subtitle_remover=subtitle_remover,
+        watermark_remover=watermark_remover  # ← Теперь передаём отдельно!
     )
 
 
