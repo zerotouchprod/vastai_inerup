@@ -17,7 +17,7 @@ class SubtitleRemoverService:
 
     Features:
     1. **ROI Format Support** (Backward Compatible):
-       - Bounding box: "x1,y1,x2,y2" (normalized 0.0-1.0 coordinates)
+       - ROI format: "x,y,w,h" (normalized 0.0-1.0 coordinates, where x,y is position and w,h is size)
        - Percentage presets: "bottom" (60%), "top" (60%), "full" (100%)
        - Single float: 0.6 = bottom 60% of screen
 
@@ -83,7 +83,7 @@ class SubtitleRemoverService:
         """
         Parse ROI parameter with backward compatibility.
         Supports:
-        - Bounding box: "0.05,0.4,0.9,0.5" (x1,y1,x2,y2 in 0.0-1.0)
+        - ROI format: "x,y,w,h" (normalized 0.0-1.0 coordinates, where x,y is position and w,h is size)
         - Presets: "bottom", "top", "full"
         - Single float: 0.6 (bottom 60%)
         """
@@ -95,25 +95,49 @@ class SubtitleRemoverService:
             return
 
         if isinstance(roi_factor, str):
-            # Check if it's a bounding box format (contains commas)
+            # Check if it's a ROI format (contains commas)
             if ',' in roi_factor:
                 try:
                     parts = [float(x.strip()) for x in roi_factor.split(',')]
                     if len(parts) == 4:
-                        x1, y1, x2, y2 = parts
+                        # Parse as x,y,w,h format
+                        x, y, w, h = parts
+
                         # Validate ranges
-                        if all(0.0 <= v <= 1.0 for v in parts) and x2 > x1 and y2 > y1:
-                            self.roi_mode = 'bbox'
-                            self.roi_bbox = (x1, y1, x2, y2)
-                            # Convert bbox to equivalent height factor for filtering
-                            # Use y1 as the top boundary (text below y1 is kept)
-                            self.roi_height_factor = 1.0 - y1
-                            logger.info(f"ROI: Bounding box ({x1:.2f},{y1:.2f},{x2:.2f},{y2:.2f})")
-                            return
+                        if all(0.0 <= v <= 1.0 for v in [x, y, w, h]):
+                            # Additional validation: ensure box has non-zero area
+                            if w > 0 and h > 0:
+                                # Convert x,y,w,h to x1,y1,x2,y2 for internal use
+                                x1 = x
+                                y1 = y
+                                x2 = x + w
+                                y2 = y + h
+
+                                # Clamp to [0, 1] range
+                                x2 = min(x2, 1.0)
+                                y2 = min(y2, 1.0)
+
+                                self.roi_mode = 'bbox'
+                                self.roi_bbox = (x1, y1, x2, y2)
+                                # Convert bbox to equivalent height factor for filtering
+                                # Use y1 as the top boundary (text below y1 is kept)
+                                self.roi_height_factor = 1.0 - y1
+                                logger.info(f"✅ ROI: x={x:.2f}, y={y:.2f}, w={w:.2f}, h={h:.2f} → "
+                                          f"bbox ({x1:.2f},{y1:.2f},{x2:.2f},{y2:.2f})")
+                                return
+                            else:
+                                logger.error(f"❌ Invalid ROI: zero-area region {roi_factor}")
+                                logger.error(f"   Parsed: x={x:.2f}, y={y:.2f}, w={w:.2f}, h={h:.2f}")
+                                logger.error(f"   Requirements: w > 0 and h > 0")
+                                logger.error(f"   Using default ROI (bottom 60%)")
                         else:
-                            logger.warning(f"Invalid bounding box coordinates: {roi_factor}, using default")
-                except ValueError:
-                    logger.warning(f"Failed to parse bounding box: {roi_factor}, using default")
+                            logger.error(f"❌ Invalid ROI: coordinates must be in range [0.0, 1.0]: {roi_factor}")
+                            logger.error(f"   Using default ROI (bottom 60%)")
+                except ValueError as e:
+                    logger.error(f"❌ Failed to parse ROI: {roi_factor}")
+                    logger.error(f"   Error: {e}")
+                    logger.error(f"   Expected format: 'x,y,w,h' (example: '0.0,0.5,1.0,0.4')")
+                    logger.error(f"   Using default ROI (bottom 60%)")
 
             # Check for preset strings
             roi_lower = roi_factor.lower()
@@ -150,7 +174,9 @@ class SubtitleRemoverService:
         """Get human-readable ROI description for logging."""
         if self.roi_mode == 'bbox':
             x1, y1, x2, y2 = self.roi_bbox
-            return f"Bounding box ({x1:.2f},{y1:.2f},{x2:.2f},{y2:.2f})"
+            w = x2 - x1
+            h = y2 - y1
+            return f"Custom ROI (x={x1:.2f}, y={y1:.2f}, w={w:.2f}, h={h:.2f})"
         elif self.roi_height_factor >= 0.99:
             return "Full screen (no filtering)"
         else:

@@ -193,7 +193,7 @@ def main():
     parser.add_argument('--image-mode', choices=['upscale', 'hdr', 'denoise'], help='Image processing mode (default: upscale)')
     parser.add_argument('--audio-mode', choices=['remove_reverb', 'enhance', 'normalize'], help='Audio processing mode (default: remove_reverb)')
     parser.add_argument('--subs-lang', type=str, default='en', help='Language code for subtitle OCR when using remove-subtitles mode (default: en)')
-    parser.add_argument('--roi', type=str, default='bottom', help='Region of Interest for subtitles. Presets: "bottom" (default, 60%% from bottom), "top", "full". Bounding box: "x1,y1,x2,y2" (normalized 0.0-1.0). Or float 0.0-1.0 for custom height.')
+    parser.add_argument('--roi', type=str, default='bottom', help='Region of Interest for subtitles. Presets: "bottom" (default, 60%% from bottom), "top", "full". Custom format: "x,y,w,h" (normalized 0.0-1.0, where x,y is position and w,h is size). Or float 0.0-1.0 for custom height.')
     parser.add_argument('--watermark-roi', type=str, default='top-right', help='Watermark ROI. Presets: "top-left", "top-right" (default), "bottom-left", "bottom-right", "center". Multi-zone: "top-right,bottom-left"')
     parser.add_argument('--animated', action='store_true', default=False, help='Enable animated text detection (v2.1 EXPERIMENTAL). Uses optical flow for karaoke/moving subtitles. May use +200MB RAM.')
     parser.add_argument('--debug', action='store_true', default=False, help='Enable debug mode for subtitle removal (saves diagnostic images showing OCR detections, ROI boundaries, masks)')
