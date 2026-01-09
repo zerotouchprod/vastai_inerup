@@ -15,6 +15,9 @@ import logging
 from pathlib import Path
 from typing import List, Tuple, Optional
 
+# Import tunable configuration constants
+from src.infrastructure.processors import watermark_removal_config as WRC
+
 logger = logging.getLogger(__name__)
 
 
@@ -40,6 +43,7 @@ def _detect_gpu_vram() -> float:
 def _get_adaptive_sample_params(total_frames: int, vram_gb: float) -> Tuple[int, float]:
     """
     Get adaptive sampling parameters based on VRAM.
+    Uses WRC.SAMPLE_FRAME_COUNT as base, scales with VRAM availability.
 
     Args:
         total_frames: Total number of frames
@@ -48,21 +52,24 @@ def _get_adaptive_sample_params(total_frames: int, vram_gb: float) -> Tuple[int,
     Returns:
         Tuple of (max_samples, sample_ratio)
     """
+    # Base on config, then scale by VRAM
+    base_samples = WRC.SAMPLE_FRAME_COUNT
+
     if vram_gb >= 16:
         # High VRAM (RTX 4090/5090): Process more frames for better accuracy
-        max_samples = 100
+        max_samples = int(base_samples * 1.5)
         sample_ratio = 0.5
     elif vram_gb >= 8:
-        # Medium VRAM (RTX 3080): Balanced
-        max_samples = 60
+        # Medium VRAM (RTX 3080): Use config default
+        max_samples = base_samples
         sample_ratio = 0.4
     elif vram_gb >= 4:
         # Low VRAM (RTX 3060): Conservative
-        max_samples = 40
+        max_samples = int(base_samples * 0.7)
         sample_ratio = 0.3
     else:
         # Very low VRAM or CPU: Minimal
-        max_samples = 20
+        max_samples = int(base_samples * 0.5)
         sample_ratio = 0.2
 
     # Don't exceed total frames

@@ -19,6 +19,9 @@ from src.infrastructure.image_processing.watermark_detector import (
 )
 from src.infrastructure.inpainting.propainter_adapter import ProPainterAdapter
 
+# Import tunable configuration constants
+from src.infrastructure.processors import watermark_removal_config as WRC
+
 logger = logging.getLogger(__name__)
 
 
@@ -33,20 +36,24 @@ class WatermarkRemoverWrapper(IProcessor):
     """
 
     def __init__(self,
-                 roi: str = 'top-right',
+                 roi: str = None,
                  static_detection: bool = True,
-                 persistence_threshold: float = 0.8,
-                 expansion: int = 10,
-                 use_color: bool = True):
+                 persistence_threshold: float = None,
+                 expansion: int = None,
+                 use_color: bool = None):
         """
         Initialize watermark remover.
 
         Args:
             roi: ROI string (single or multi: "top-right,bottom-left")
+                 Default: from WRC.DEFAULT_WATERMARK_ROI
             static_detection: Use static detection (True) or per-frame OCR (False)
             persistence_threshold: Ratio of frames a pixel must appear in (0.0-1.0)
+                                  Default: from WRC.PERSISTENCE_THRESHOLD
             expansion: Mask expansion radius in pixels
-            use_color: Use color-aware detection for colored watermarks (recommended)
+                      Default: from WRC.MASK_EXPANSION_RADIUS
+            use_color: Use color-aware detection for colored watermarks
+                      Default: from WRC.USE_COLOR_DETECTION
 
         Raises:
             GPURequiredError: If GPU is not available (CPU processing too slow)
@@ -56,21 +63,31 @@ class WatermarkRemoverWrapper(IProcessor):
         from src.infrastructure.utils.gpu_utils import require_gpu
         require_gpu("watermark removal")
 
-        self._roi = roi
+        # Use config defaults if not provided
+        self._roi = roi if roi is not None else WRC.DEFAULT_WATERMARK_ROI
         self._static_detection = static_detection
-        self._persistence_threshold = persistence_threshold
-        self._expansion = expansion
-        self._use_color = use_color
+        self._persistence_threshold = (
+            persistence_threshold if persistence_threshold is not None
+            else WRC.PERSISTENCE_THRESHOLD
+        )
+        self._expansion = (
+            expansion if expansion is not None
+            else WRC.MASK_EXPANSION_RADIUS
+        )
+        self._use_color = (
+            use_color if use_color is not None
+            else WRC.USE_COLOR_DETECTION
+        )
         self._logger = logging.getLogger(__name__)
 
         self._logger.info(
             f"WatermarkRemoverWrapper initialized:"
         )
-        self._logger.info(f"  ROI: {roi}")
-        self._logger.info(f"  Static detection: {static_detection}")
-        self._logger.info(f"  Persistence threshold: {persistence_threshold}")
-        self._logger.info(f"  Expansion: {expansion}px")
-        self._logger.info(f"  Color-aware: {use_color}")
+        self._logger.info(f"  ROI: {self._roi}")
+        self._logger.info(f"  Static detection: {self._static_detection}")
+        self._logger.info(f"  Persistence threshold: {self._persistence_threshold}")
+        self._logger.info(f"  Expansion: {self._expansion}px")
+        self._logger.info(f"  Color-aware: {self._use_color}")
 
     def process(self, input_frames: List[Path], output_dir: Path, **options) -> ProcessingResult:
         """
