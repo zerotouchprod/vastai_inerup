@@ -40,3 +40,9 @@ class ProcessorNotAvailableError(DomainException):
     """Raised when requested processor is not available."""
     pass
 
+
+class GPURequiredError(DomainException):
+    """Raised when GPU is required but not available."""
+    pass
+
+

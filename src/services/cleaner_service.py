@@ -37,6 +37,11 @@ class SubtitleRemoverService:
     DEFAULT_ROI_FACTOR = 0.6
 
     def __init__(self, mask_service, inpainter, lang='ru', roi_factor=None, debug=None):
+        # CRITICAL: Subtitle removal requires GPU for OCR and ProPainter inpainting
+        # CPU processing would take hours instead of minutes
+        from src.infrastructure.utils.gpu_utils import require_gpu
+        require_gpu("subtitle removal")
+
         self.inpainter = inpainter
         
         # Обработка языков

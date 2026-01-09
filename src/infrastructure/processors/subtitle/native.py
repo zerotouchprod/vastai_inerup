@@ -65,6 +65,11 @@ class SubtitleRemoverNative:
                        If provided, masks will be constrained to this region.
         :param use_optical_flow: Enable optical flow for animated text (v2.1 experimental, default: False)
         """
+        # CRITICAL: Subtitle removal requires GPU for OCR and inpainting
+        # CPU processing would take hours instead of minutes
+        from src.infrastructure.utils.gpu_utils import require_gpu
+        require_gpu("subtitle removal (native)")
+
         if PaddleOCR is None:
             raise ImportError("PaddleOCR not installed. Cannot remove subtitles.")
             

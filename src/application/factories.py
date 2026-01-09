@@ -107,7 +107,14 @@ class ProcessorFactory:
 
         Returns:
             Subtitle remover processor instance
+
+        Raises:
+            GPURequiredError: If GPU is not available (required for subtitle removal)
         """
+        # CRITICAL: Check GPU availability before creating any subtitle removal components
+        from src.infrastructure.utils.gpu_utils import require_gpu
+        require_gpu("subtitle removal")
+
         # Determine backend (prefer parameter for backward compatibility)
         if backend == 'auto' and prefer != 'auto':
             # If prefer is specified and backend is auto, use prefer
@@ -169,7 +176,14 @@ class ProcessorFactory:
 
         Returns:
             Watermark remover processor instance
+
+        Raises:
+            GPURequiredError: If GPU is not available (required for watermark removal)
         """
+        # CRITICAL: Check GPU availability before creating watermark removal components
+        from src.infrastructure.utils.gpu_utils import require_gpu
+        require_gpu("watermark removal")
+
         try:
             from src.infrastructure.processors.watermark.wrapper import WatermarkRemoverWrapper
 

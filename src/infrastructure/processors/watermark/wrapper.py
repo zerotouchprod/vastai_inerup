@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from src.domain.protocols import IProcessor
-from src.domain.models import ProcessingResult, LegacyProcessingResult
+from src.domain.models import ProcessingResult
 from src.infrastructure.image_processing.geometry import resolve_multi_roi
 from src.infrastructure.image_processing.watermark_detector import (
     create_persistent_mask, expand_watermark_mask, validate_watermark_regions
@@ -47,7 +47,15 @@ class WatermarkRemoverWrapper(IProcessor):
             persistence_threshold: Ratio of frames a pixel must appear in (0.0-1.0)
             expansion: Mask expansion radius in pixels
             use_color: Use color-aware detection for colored watermarks (recommended)
+
+        Raises:
+            GPURequiredError: If GPU is not available (CPU processing too slow)
         """
+        # CRITICAL: Watermark removal requires GPU for ProPainter inpainting
+        # CPU processing would take hours instead of minutes
+        from src.infrastructure.utils.gpu_utils import require_gpu
+        require_gpu("watermark removal")
+
         self._roi = roi
         self._static_detection = static_detection
         self._persistence_threshold = persistence_threshold
@@ -115,6 +123,7 @@ class WatermarkRemoverWrapper(IProcessor):
                 self._logger.info(f"✅ Staged {len(input_frames)} frames")
 
                 # Generate persistent mask
+                mask_coverage = 0.0  # Initialize default value
                 if self._static_detection:
                     self._logger.info("=== Static Watermark Detection ===")
                     persistent_mask = self._generate_static_mask(input_frames)

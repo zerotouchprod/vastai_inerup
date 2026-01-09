@@ -6,7 +6,7 @@ from pathlib import Path
 from datetime import datetime
 
 from src.domain.models import Job
-from src.domain.exceptions import DomainException, ProcessorNotAvailableError
+from src.domain.exceptions import DomainException, ProcessorNotAvailableError, GPURequiredError
 from src.infrastructure.config import ConfigLoader
 from src.infrastructure.io import HttpDownloader, B2S3Uploader
 from src.infrastructure.media import FFmpegExtractor, FFmpegAssembler
@@ -386,6 +386,18 @@ def main():
                 logger.error(f"  - {error}")
             return 1
 
+    except GPURequiredError as e:
+        logger.error("="*60)
+        logger.error("❌ GPU REQUIRED")
+        logger.error("="*60)
+        logger.error(str(e))
+        logger.error("")
+        logger.error("💡 Solutions:")
+        logger.error("   1. Run on a GPU-enabled instance (NVIDIA GPU with CUDA)")
+        logger.error("   2. For subtitle/watermark removal, GPU is mandatory")
+        logger.error("   3. CPU processing is disabled (would take hours)")
+        logger.error("="*60)
+        return 2  # Special exit code for GPU requirement
     except DomainException as e:
         logger.error(f"Pipeline error: {e}")
         return 1
