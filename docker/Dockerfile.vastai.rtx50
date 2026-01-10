@@ -1,11 +1,9 @@
-# Dockerfile.vastai.optimized
-# Optimized Dockerfile for Vast.ai with full NVIDIA RTX 30-50 series support
-# This version uses CUDA 12.9.0 with PyTorch nightly for CUDA 12.6 compatibility
-# Supports RTX 30 series (Ampere), 40 series (Ada Lovelace), 50 series (Blackwell)
-# Also maintains backward compatibility with RTX 20 series (Turing)
+# Dockerfile.vastai.rtx50
+# Specialized Dockerfile for NVIDIA RTX 50 series (Blackwell) support
+# RTX 5080/5090 require CUDA 12.8+ and PyTorch with sm_120 compute capability
+# Based on CUDA 13.0.2 for maximum forward compatibility
 
-FROM nvidia/cuda:12.9.0-cudnn-runtime-ubuntu22.04
-#FROM nvidia/cuda:13.0.2-cudnn-runtime-ubuntu22.04
+FROM nvidia/cuda:13.0.2-cudnn-runtime-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -39,25 +37,23 @@ ENV PATH="/opt/venv/bin:$PATH"
 # Upgrade pip
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 
-# Install PyTorch with CUDA 12.8 (supports RTX 20-50 series including Blackwell sm_120)
-# RTX 5080/5090 (Blackwell, CC 12.0) requires PyTorch built with sm_120 support
-# PyTorch started supporting sm_120 in nightly builds around late 2024
-# Using CUDA 12.8 wheels which are compatible with CUDA 12.9.0 runtime
-# See: https://pytorch.org/get-started/locally/
-RUN echo "Checking disk space before PyTorch installation..." && \
+# Install PyTorch Nightly with CUDA 12.8+ (supports Blackwell sm_120)
+# RTX 5080/5090 require sm_120 support which is only in latest PyTorch nightlies
+# Using nightly builds ensures maximum compatibility with newest GPUs
+RUN echo "=== Installing PyTorch Nightly for RTX 50 series (Blackwell) ===" && \
     df -h && \
     rm -rf /root/.cache/pip && \
     pip uninstall -y torch torchvision torchaudio 2>/dev/null || true && \
-    echo "Installing PyTorch with CUDA 12.8 for RTX 20-50 series (including Blackwell sm_120)..." && \
+    echo "Installing PyTorch nightly with CUDA 12.8 (sm_120 support for RTX 5080/5090)..." && \
     pip install --no-cache-dir --pre \
         torch \
         torchvision \
         torchaudio \
         --index-url https://download.pytorch.org/whl/nightly/cu128 && \
-    echo "PyTorch installation complete" && \
-    python3 -c "import torch; print(f'PyTorch version: {torch.__version__}'); print(f'CUDA version: {torch.version.cuda if hasattr(torch.version, \"cuda\") else \"N/A\"}'); print(f'CUDA available: {torch.cuda.is_available()}'); print(f'Supported CCs: {[int(x.split(\"_\")[1])/10 for x in torch.cuda.get_arch_list()] if hasattr(torch.cuda, \"get_arch_list\") and torch.cuda.is_available() else \"Checking at runtime...\"}')" && \
+    echo "PyTorch installation complete. Verifying CUDA support..." && \
+    python3 -c "import torch; print(f'✓ PyTorch: {torch.__version__}'); print(f'✓ CUDA version: {torch.version.cuda}'); print(f'✓ Build supports: {torch.cuda.get_arch_list() if hasattr(torch.cuda, \"get_arch_list\") else \"Runtime check required\"}')" && \
     rm -rf /root/.cache/pip && \
-    echo "Disk space after installation:" && \
+    echo "Disk space after PyTorch:" && \
     df -h
 
 # Install numpy with compatibility fix
@@ -113,17 +109,17 @@ ENV CUDA_VISIBLE_DEVICES="0"
 ENV NVIDIA_VISIBLE_DEVICES="all"
 ENV NVIDIA_DRIVER_CAPABILITIES="compute,utility"
 
-# Fix CUDA architecture compatibility for all NVIDIA RTX 20-50 series
+# CRITICAL: CUDA architecture list for RTX 20-50 series
 # RTX 20 series (Turing): sm_75
 # RTX 30 series (Ampere): sm_80, sm_86, sm_87
-# RTX 40 series (Ada Lovelace): sm_89  
-# RTX 50 series (Blackwell): sm_120
-# Also include Hopper (H100) sm_90 for data center GPUs
+# RTX 40 series (Ada Lovelace): sm_89
+# RTX 50 series (Blackwell): sm_120 ← REQUIRED FOR RTX 5080/5090
+# Hopper (H100): sm_90
 ENV TORCH_CUDA_ARCH_LIST="7.5;8.0;8.6;8.7;8.9;9.0;12.0"
 ENV CUDA_HOME="/usr/local/cuda"
 ENV LD_LIBRARY_PATH="/usr/local/cuda/lib64:${LD_LIBRARY_PATH}"
 
-# SAM 2 Installation with explicit CUDA architecture support for RTX 20-50 series
+# SAM 2 Installation with explicit CUDA architecture support
 ENV FORCE_CUDA="1"
 ENV MAX_JOBS="4"
 RUN pip install --no-cache-dir --no-build-isolation git+https://github.com/facebookresearch/segment-anything-2.git
@@ -152,3 +148,4 @@ RUN chmod +x /entrypoint.sh
 
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["/bin/bash"]
+
