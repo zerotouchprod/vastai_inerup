@@ -167,8 +167,33 @@ class VideoProcessingOrchestrator:
                 # Example: 145→289 frames @ 48 fps (24*2) → stays 6s but smoother
                 interp_factor = int(job.interp_factor) if hasattr(job, 'interp_factor') else 2
                 target_fps = original_fps * interp_factor
-                expected_duration = processed_frame_count / target_fps
-                self._logger.info(f"Interp mode: {processed_frame_count} frames @ {target_fps} fps (was {original_fps} fps * {interp_factor}x factor) = {expected_duration:.2f}s (original duration)")
+                expected_duration = processed_frame_count / target_fps if target_fps > 0 else 0
+
+                self._logger.info(f"═══ INTERPOLATION FPS CALCULATION ═══")
+                self._logger.info(f"Input frames: {original_frame_count} @ {original_fps:.2f} fps = {original_duration:.2f}s")
+                self._logger.info(f"Interpolation factor: {interp_factor}x")
+                self._logger.info(f"Output frames: {processed_frame_count}")
+                self._logger.info(f"Target FPS: {original_fps:.2f} × {interp_factor} = {target_fps:.2f} fps")
+                self._logger.info(f"Expected duration: {processed_frame_count} ÷ {target_fps:.2f} = {expected_duration:.2f}s")
+
+                # Verify frame count matches expectation
+                expected_frames = original_frame_count + (original_frame_count - 1) * (interp_factor - 1)
+                if processed_frame_count != expected_frames:
+                    self._logger.warning(
+                        f"⚠️ Frame count discrepancy: expected {expected_frames} frames "
+                        f"({original_frame_count} + {original_frame_count-1} pairs × {interp_factor-1} mids), "
+                        f"got {processed_frame_count} (difference: {processed_frame_count - expected_frames})"
+                    )
+
+                if original_duration and abs(expected_duration - original_duration) > 0.5:
+                    self._logger.warning(
+                        f"⚠️ Duration mismatch detected! "
+                        f"Original: {original_duration:.2f}s, Expected after interp: {expected_duration:.2f}s "
+                        f"(difference: {abs(expected_duration - original_duration):.2f}s)"
+                    )
+
+                self._logger.info(f"═══════════════════════════════════")
+
             elif job.mode == 'both' and original_duration and original_duration > 0:
                 # For 'both' mode, calculate FPS to maintain original duration
                 target_fps = max(1.0, float(processed_frame_count) / original_duration)
@@ -294,10 +319,33 @@ class VideoProcessingOrchestrator:
             if isinstance(job.config, dict):
                 options['b2_output_key'] = job.config.get('b2_output_key')
                 options['b2_bucket'] = job.config.get('b2_bucket')
+
+            input_frame_count = len(frame_paths)
+            self._logger.info(f"Starting interpolation: {input_frame_count} input frames × {job.interp_factor}x factor")
+
             result = self._interpolator.process(frame_paths, output_dir, **options)
             if not result.success:
                 raise VideoProcessingError(f"Interpolation failed: {result.errors}")
-            return sorted(output_dir.glob("*.png"))
+
+            # Verify interpolated frames
+            interpolated_frames = sorted(output_dir.glob("*.png"))
+            actual_count = len(interpolated_frames)
+            # Expected: original_frames + (original_frames-1) * (factor-1) intermediate frames
+            expected_count = input_frame_count + (input_frame_count - 1) * (int(job.interp_factor) - 1)
+
+            self._logger.info(f"Interpolation complete: {actual_count} output frames (expected: {expected_count})")
+
+            if actual_count != expected_count:
+                self._logger.warning(
+                    f"⚠️ Frame count mismatch after interpolation! "
+                    f"Expected {expected_count} frames, got {actual_count} "
+                    f"(input: {input_frame_count}, factor: {job.interp_factor}x)"
+                )
+
+            if actual_count == 0:
+                raise VideoProcessingError(f"No interpolated frames found in {output_dir}")
+
+            return interpolated_frames
 
         elif job.mode == "remove-subtitles":
             if not self._subtitle_remover:

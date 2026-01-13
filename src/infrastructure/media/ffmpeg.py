@@ -209,13 +209,36 @@ class FFmpegWrapper:
         # Count frames for verification
         frame_files = sorted(frames_dir.glob("*.png"))
         frame_count = len(frame_files)
-        expected_duration = frame_count / fps
+        expected_duration = frame_count / fps if fps > 0 else 0
 
         self._logger.info(f"[ASSEMBLY DEBUG] Frames dir: {frames_dir}")
         self._logger.info(f"[ASSEMBLY DEBUG] Frame pattern: {pattern}")
         self._logger.info(f"[ASSEMBLY DEBUG] Frame count: {frame_count}")
-        self._logger.info(f"[ASSEMBLY DEBUG] Target FPS: {fps}")
+        self._logger.info(f"[ASSEMBLY DEBUG] Target FPS: {fps:.2f}")
         self._logger.info(f"[ASSEMBLY DEBUG] Expected duration: {expected_duration:.2f}s")
+
+        # Verify frame naming is sequential without gaps
+        if frame_files:
+            frame_numbers = []
+            for f in frame_files[:20]:  # Check first 20 frames
+                try:
+                    # Extract number from frame_000001.png -> 1
+                    num = int(f.stem.split('_')[1])
+                    frame_numbers.append(num)
+                except (IndexError, ValueError):
+                    self._logger.warning(f"Could not parse frame number from {f.name}")
+
+            if frame_numbers:
+                frame_numbers.sort()
+                expected_seq = list(range(frame_numbers[0], frame_numbers[0] + len(frame_numbers)))
+                if frame_numbers != expected_seq:
+                    missing = set(expected_seq) - set(frame_numbers)
+                    self._logger.warning(f"⚠️ Frame numbering gaps detected in first 20 frames: {missing}")
+                else:
+                    self._logger.info(f"✓ Frame numbering is sequential (checked first 20 frames: {frame_numbers[0]}-{frame_numbers[-1]})")
+
+        self._logger.info(f"[ASSEMBLY DEBUG] First frame: {frame_files[0].name if frame_files else 'NONE'}")
+        self._logger.info(f"[ASSEMBLY DEBUG] Last frame: {frame_files[-1].name if frame_files else 'NONE'}")
 
         # Try encoders in order: primary + fallbacks
         encoders_to_try = [encoder] + fallback_encoders

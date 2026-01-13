@@ -481,8 +481,11 @@ class RIFENative:
 
     def _calculate_mids_per_pair(self) -> int:
         """Calculate how many intermediate frames per pair."""
-        # factor 2 -> 1 mid, factor 4 -> 3 mids, etc.
-        return max(1, int(self.factor) - 1)
+        # factor 2 -> 1 mid, factor 3 -> 2 mids, factor 4 -> 3 mids, etc.
+        # For factor=3: we want frame_A, mid1, mid2, frame_B (2 mids between each pair)
+        mids = max(1, int(round(self.factor)) - 1)
+        self.logger.debug(f"Factor {self.factor} -> {mids} intermediate frames per pair")
+        return mids
 
     def _pad_to_multiple(self, tensor: 'torch.Tensor', multiple: int = 64) -> tuple:
         """
@@ -705,6 +708,10 @@ class RIFENative:
         start_time = time.time()
         frame_counter = 1  # Sequential frame counter for output
 
+        # Debug: Log expected output frame count
+        expected_output_frames = len(input_frames) + (total_pairs * mids_per_pair)
+        self.logger.info(f"Expected output: {expected_output_frames} frames ({len(input_frames)} orig + {total_pairs} pairs × {mids_per_pair} mids)")
+
         # Process pairs
         for idx in range(total_pairs):
             frame1_path = input_frames[idx]
@@ -726,16 +733,28 @@ class RIFENative:
                         import shutil
                         shutil.copy2(frame1_path, orig_output_path)
                 output_frames.append(orig_output_path)
+
+                # Debug log every first pair
+                if idx == 0:
+                    self.logger.debug(f"Frame {frame_counter}: Original {frame1_path.name}")
                 frame_counter += 1
 
                 # Generate intermediate frames
                 mids = self._interpolate_pair(frame1, frame2, mids_per_pair)
+
+                # Verify we got the expected number of mids
+                if len(mids) != mids_per_pair:
+                    self.logger.warning(f"Pair {idx}: Expected {mids_per_pair} mids, got {len(mids)}")
 
                 # Save intermediate frames with sequential numbering
                 for mid_idx, mid in enumerate(mids, 1):
                     mid_path = output_dir / f"frame_{frame_counter:06d}.png"
                     self._save_tensor_as_frame(mid, mid_path)
                     output_frames.append(mid_path)
+
+                    # Debug log first pair's mids
+                    if idx == 0:
+                        self.logger.debug(f"Frame {frame_counter}: Interpolated mid {mid_idx}/{len(mids)}")
                     frame_counter += 1
 
                 # Progress
@@ -768,15 +787,47 @@ class RIFENative:
                 import shutil
                 shutil.copy2(last_frame_path, last_output_path)
         output_frames.append(last_output_path)
+        self.logger.debug(f"Frame {frame_counter}: Last original frame {last_frame_path.name}")
 
         elapsed = time.time() - start_time
         avg_fps = total_pairs / elapsed if elapsed > 0 else 0
+
+        # Verify frame count matches expectation
+        actual_frames = len(output_frames)
+        if actual_frames != expected_output_frames:
+            self.logger.warning(
+                f"⚠️ Frame count mismatch! Expected {expected_output_frames}, got {actual_frames} "
+                f"(difference: {actual_frames - expected_output_frames})"
+            )
+        else:
+            self.logger.info(f"✓ Frame count verified: {actual_frames} frames as expected")
 
         self.logger.info(
             f"✅ Completed {total_pairs} pairs in {elapsed:.1f}s "
             f"({avg_fps:.2f} fps)"
         )
         self.logger.info(f"Generated {len(output_frames)} total frames")
+
+        # Final verification: check for gaps in frame numbering
+        frame_numbers = []
+        for f in output_frames:
+            try:
+                # Extract frame number from filename (frame_000001.png -> 1)
+                num = int(f.stem.split('_')[1])
+                frame_numbers.append(num)
+            except (IndexError, ValueError):
+                pass
+
+        if frame_numbers:
+            missing = []
+            for expected in range(1, max(frame_numbers) + 1):
+                if expected not in frame_numbers:
+                    missing.append(expected)
+
+            if missing:
+                self.logger.error(f"❌ Missing frame numbers: {missing[:10]}{'...' if len(missing) > 10 else ''}")
+            else:
+                self.logger.info(f"✓ No gaps in frame numbering (1-{max(frame_numbers)})")
 
         return output_frames
 
