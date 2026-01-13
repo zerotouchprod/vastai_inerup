@@ -553,7 +553,7 @@ class RIFENative:
         except Exception:
             model_dev = torch.device('cpu')
 
-        # Check available GPU memory and adaptively downscale if needed
+        # ADAPTIVE MEMORY MANAGEMENT: Calculate optimal scale_factor based on available VRAM
         scale_factor = 1.0
         if torch.cuda.is_available() and model_dev.type == 'cuda':
             gpu_mem_total = torch.cuda.get_device_properties(0).total_memory
@@ -561,21 +561,59 @@ class RIFENative:
             gpu_mem_reserved = torch.cuda.memory_reserved(0)
             gpu_mem_free = gpu_mem_total - gpu_mem_allocated
 
-            # Calculate estimated memory needed for this frame pair
-            # Rough estimate: input frames + intermediate buffers ≈ 4x frame size
+            # Calculate estimated memory needed for this frame pair at full resolution
+            # Empirical formula: input frames (2x) + padded (2x) + intermediate buffers (4x) + output (2x) = ~10x frame size
             bytes_per_pixel = 4  # float32
             frame_size_bytes = orig_h * orig_w * 3 * bytes_per_pixel
-            estimated_needed = frame_size_bytes * 8  # Conservative estimate for all buffers
+            estimated_needed_full = frame_size_bytes * 10  # Conservative estimate for all buffers
 
-            # If less than 3GB free, or if we need more than 80% of free memory, downscale
-            if gpu_mem_free < 3 * 1024**3 or estimated_needed > gpu_mem_free * 0.8:
-                # Calculate downscale factor to fit in memory
-                if orig_h > 1080 or orig_w > 1920:
-                    scale_factor = 0.5  # Downscale to half resolution
-                    self.logger.warning(
-                        f"⚠️ Low GPU memory ({gpu_mem_free/1024**3:.2f}GB free), "
-                        f"downscaling {orig_w}x{orig_h} → {int(orig_w*scale_factor)}x{int(orig_h*scale_factor)}"
-                    )
+            # Reserve 20% of total VRAM for model weights and other overhead
+            # Use 70% of free memory for frame processing (safety margin)
+            available_for_frames = gpu_mem_free * 0.7
+
+            # Calculate if we need to downscale
+            if estimated_needed_full > available_for_frames:
+                # Calculate optimal scale_factor to fit in available memory
+                # Memory needed scales with (scale^2) for 2D images
+                optimal_scale_squared = available_for_frames / estimated_needed_full
+                optimal_scale = optimal_scale_squared ** 0.5
+
+                # Round down to safe values: 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.25
+                if optimal_scale >= 0.9:
+                    scale_factor = 0.9
+                elif optimal_scale >= 0.8:
+                    scale_factor = 0.8
+                elif optimal_scale >= 0.7:
+                    scale_factor = 0.7
+                elif optimal_scale >= 0.6:
+                    scale_factor = 0.6
+                elif optimal_scale >= 0.5:
+                    scale_factor = 0.5
+                elif optimal_scale >= 0.4:
+                    scale_factor = 0.4
+                elif optimal_scale >= 0.3:
+                    scale_factor = 0.3
+                else:
+                    scale_factor = 0.25  # Minimum scale
+
+                new_h = int(orig_h * scale_factor)
+                new_w = int(orig_w * scale_factor)
+                estimated_needed_scaled = frame_size_bytes * (scale_factor ** 2) * 10
+
+                self.logger.warning(
+                    f"⚠️ Adaptive downscaling: {orig_w}x{orig_h} → {new_w}x{new_h} (scale={scale_factor:.2f})"
+                )
+                self.logger.info(
+                    f"GPU Memory: {gpu_mem_free/1024**3:.2f}GB free, "
+                    f"need {estimated_needed_full/1024**3:.2f}GB @ full res, "
+                    f"{estimated_needed_scaled/1024**3:.2f}GB @ {scale_factor:.2f}x"
+                )
+            else:
+                # Enough memory, log that we're using full resolution
+                self.logger.debug(
+                    f"GPU Memory OK: {gpu_mem_free/1024**3:.2f}GB free, "
+                    f"need {estimated_needed_full/1024**3:.2f}GB - processing at full resolution"
+                )
 
 
         # --- FIX: ensure inputs are on the same device as the model parameters ---
@@ -765,12 +803,32 @@ class RIFENative:
         self.logger.info(f"  Pairs to process: {total_pairs}")
         self.logger.info(f"  Mids per pair: {mids_per_pair}")
 
-        # Log initial GPU memory state
+        # Log initial GPU memory state and determine cache clearing frequency
+        cache_clear_interval = 10  # Default: every 10 pairs
         if torch.cuda.is_available():
             gpu_mem_total = torch.cuda.get_device_properties(0).total_memory / 1024**3
             gpu_mem_allocated = torch.cuda.memory_allocated(0) / 1024**3
             gpu_mem_reserved = torch.cuda.memory_reserved(0) / 1024**3
             self.logger.info(f"GPU Memory: {gpu_mem_allocated:.2f}GB allocated, {gpu_mem_reserved:.2f}GB reserved, {gpu_mem_total:.2f}GB total")
+
+            # ADAPTIVE CACHE CLEARING: Adjust frequency based on total VRAM
+            # More VRAM = less frequent clearing (better performance)
+            # Less VRAM = more frequent clearing (prevent OOM)
+            if gpu_mem_total >= 20:  # 20GB+ (RTX 3090, 4090, A100, etc.)
+                cache_clear_interval = 20
+                self.logger.info("High VRAM detected (20GB+): cache clearing every 20 pairs")
+            elif gpu_mem_total >= 16:  # 16GB+ (RTX 4080, 4070 Ti Super, etc.)
+                cache_clear_interval = 15
+                self.logger.info("Medium-High VRAM detected (16GB+): cache clearing every 15 pairs")
+            elif gpu_mem_total >= 12:  # 12GB+ (RTX 3060, 4070, etc.)
+                cache_clear_interval = 10
+                self.logger.info("Medium VRAM detected (12GB+): cache clearing every 10 pairs")
+            elif gpu_mem_total >= 8:   # 8GB+ (RTX 3060 Ti, 3070, etc.)
+                cache_clear_interval = 5
+                self.logger.info("Low-Medium VRAM detected (8GB+): cache clearing every 5 pairs")
+            else:  # <8GB
+                cache_clear_interval = 3
+                self.logger.warning("Low VRAM detected (<8GB): aggressive cache clearing every 3 pairs")
 
         output_frames = []
         start_time = time.time()
@@ -828,12 +886,12 @@ class RIFENative:
                 # MEMORY CLEANUP: Explicitly delete tensors and free GPU memory
                 del frame1, frame2, mids
 
-                # Clear CUDA cache every 10 pairs to prevent memory fragmentation
-                if torch.cuda.is_available() and (idx + 1) % 10 == 0:
+                # Clear CUDA cache at adaptive intervals to prevent memory fragmentation
+                if torch.cuda.is_available() and (idx + 1) % cache_clear_interval == 0:
                     torch.cuda.empty_cache()
 
-                    # Log memory usage every 20 pairs
-                    if (idx + 1) % 20 == 0:
+                    # Log memory usage at double the cache clear interval
+                    if (idx + 1) % (cache_clear_interval * 2) == 0:
                         gpu_mem_allocated = torch.cuda.memory_allocated(0) / 1024**3
                         gpu_mem_reserved = torch.cuda.memory_reserved(0) / 1024**3
                         self.logger.debug(f"GPU Memory after pair {idx+1}: {gpu_mem_allocated:.2f}GB allocated, {gpu_mem_reserved:.2f}GB reserved")
