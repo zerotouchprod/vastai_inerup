@@ -57,13 +57,31 @@ class RIFENative:
         self.device = device
         self.logger = logger or logging.getLogger(__name__)
 
+        # MULTI-GPU SUPPORT: Detect available GPUs
+        if TORCH_AVAILABLE and torch is not None and torch.cuda.is_available():
+            self.num_gpus = torch.cuda.device_count()
+            self.devices = [torch.device(f'cuda:{i}') for i in range(self.num_gpus)]
+            if self.num_gpus > 1:
+                self.logger.info(f"🚀 Multi-GPU detected: {self.num_gpus} GPUs available")
+                for i in range(self.num_gpus):
+                    gpu_name = torch.cuda.get_device_name(i)
+                    gpu_mem = torch.cuda.get_device_properties(i).total_memory / 1024**3
+                    self.logger.info(f"  GPU {i}: {gpu_name} ({gpu_mem:.1f}GB)")
+            else:
+                self.logger.info(f"Single GPU detected: {torch.cuda.get_device_name(0)}")
+        else:
+            self.num_gpus = 1
+            self.devices = [torch.device('cpu')]
+            self.logger.info("Using CPU (no CUDA available)")
+
         # Find model
         if model_path is None:
             model_path = self._find_model_path()
         self.model_path = model_path
 
-        # Model will be loaded on first use
-        self._model = None
+        # Models will be loaded on first use (one per GPU for multi-GPU)
+        self._models = {}  # Dict[int, model] - one model per GPU
+        self._model = None  # Backward compatibility
 
     def _find_model_path(self) -> Path:
         """
@@ -494,6 +512,42 @@ class RIFENative:
                 f"Failed to load RIFE model. Weights from {self.model_path}: {e}"
             ) from e
 
+    def _load_model_on_device(self, gpu_id: int):
+        """
+        Load RIFE model on specific GPU (for multi-GPU processing).
+
+        Args:
+            gpu_id: GPU index (0, 1, 2, ...)
+
+        Returns:
+            Loaded model on specified device
+        """
+        # Check if model already loaded for this GPU
+        if gpu_id in self._models:
+            return self._models[gpu_id]
+
+        self.logger.info(f"Loading RIFE model on GPU {gpu_id}...")
+
+        # Use the standard _load_model but override device temporarily
+        original_device = self.device
+        try:
+            # Set device to specific GPU
+            self.device = self.devices[gpu_id] if gpu_id < len(self.devices) else torch.device(f'cuda:{gpu_id}')
+
+            # Load model (will use self.device internally)
+            self._load_model()
+
+            # Store model for this GPU
+            self._models[gpu_id] = self._model
+
+            self.logger.info(f"✓ RIFE model loaded on GPU {gpu_id}")
+
+            return self._model
+
+        finally:
+            # Restore original device
+            self.device = original_device
+
     def _calculate_mids_per_pair(self) -> int:
         """Calculate how many intermediate frames per pair."""
         # factor 2 -> 1 mid, factor 3 -> 2 mids, factor 4 -> 3 mids, etc.
@@ -773,6 +827,68 @@ class RIFENative:
         # Save
         cv2.imwrite(str(output_path), img)
 
+    def _process_pairs_on_gpu(
+        self,
+        pairs: List[tuple],  # List of (pair_idx, frame1_path, frame2_path)
+        output_dir: Path,
+        gpu_id: int,
+        mids_per_pair: int
+    ) -> List[tuple]:  # Returns List of (pair_idx, output_frames)
+        """
+        Process a batch of frame pairs on a specific GPU.
+
+        Args:
+            pairs: List of tuples (pair_idx, frame1_path, frame2_path)
+            output_dir: Output directory for frames
+            gpu_id: GPU index to use
+            mids_per_pair: Number of intermediate frames per pair
+
+        Returns:
+            List of (pair_idx, [output_frame_paths]) tuples
+        """
+        device = self.devices[gpu_id] if gpu_id < len(self.devices) else torch.device(f'cuda:{gpu_id}')
+
+        # Load model on this GPU
+        self._load_model_on_device(gpu_id)
+        model = self._models[gpu_id]
+
+        # Temporarily set model for interpolation
+        original_model = self._model
+        self._model = model
+
+        results = []
+
+        try:
+            for pair_idx, frame1_path, frame2_path in pairs:
+                # Load frames
+                frame1 = self._load_frame_as_tensor(frame1_path)
+                frame2 = self._load_frame_as_tensor(frame2_path)
+
+                # Interpolate on this GPU
+                mids = self._interpolate_pair(frame1, frame2, mids_per_pair)
+
+                # Save intermediate frames
+                mid_paths = []
+                for mid_idx, mid in enumerate(mids):
+                    mid_path = output_dir / f"pair_{pair_idx:06d}_mid_{mid_idx:02d}.png"
+                    self._save_tensor_as_frame(mid.cpu(), mid_path)
+                    mid_paths.append(mid_path)
+
+                results.append((pair_idx, mid_paths))
+
+                # Cleanup
+                del frame1, frame2, mids
+
+                # Aggressive cleanup for this GPU
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+
+        finally:
+            # Restore original model
+            self._model = original_model
+
+        return results
+
     def process_frames(
         self,
         input_frames: List[Path],
@@ -781,6 +897,8 @@ class RIFENative:
     ) -> List[Path]:
         """
         Interpolate frames using RIFE.
+
+        Automatically uses multi-GPU if available.
 
         Args:
             input_frames: List of input frame paths
@@ -792,9 +910,6 @@ class RIFENative:
         """
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        # Load model
-        self._load_model()
-
         total_pairs = len(input_frames) - 1
         mids_per_pair = self._calculate_mids_per_pair()
 
@@ -802,6 +917,157 @@ class RIFENative:
         self.logger.info(f"  Factor: {self.factor}x")
         self.logger.info(f"  Pairs to process: {total_pairs}")
         self.logger.info(f"  Mids per pair: {mids_per_pair}")
+
+        # Choose processing strategy based on GPU count
+        if self.num_gpus > 1 and total_pairs >= self.num_gpus * 2:
+            self.logger.info(f"🚀 Using MULTI-GPU mode with {self.num_gpus} GPUs")
+            return self._process_frames_multi_gpu(
+                input_frames, output_dir, progress_callback
+            )
+        else:
+            if self.num_gpus > 1:
+                self.logger.info(f"Using single GPU (too few pairs: {total_pairs} < {self.num_gpus * 2})")
+            return self._process_frames_single_gpu(
+                input_frames, output_dir, progress_callback
+            )
+
+    def _process_frames_multi_gpu(
+        self,
+        input_frames: List[Path],
+        output_dir: Path,
+        progress_callback: Optional[callable] = None
+    ) -> List[Path]:
+        """Process frames using multiple GPUs in parallel."""
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        import threading
+
+        total_pairs = len(input_frames) - 1
+        mids_per_pair = self._calculate_mids_per_pair()
+
+        # Distribute pairs across GPUs (round-robin)
+        pairs_per_gpu = [[] for _ in range(self.num_gpus)]
+        for idx in range(total_pairs):
+            gpu_id = idx % self.num_gpus
+            pairs_per_gpu[gpu_id].append((idx, input_frames[idx], input_frames[idx + 1]))
+
+        # Log distribution
+        for gpu_id, pairs in enumerate(pairs_per_gpu):
+            self.logger.info(f"  GPU {gpu_id}: {len(pairs)} pairs")
+
+        # Process pairs in parallel on different GPUs
+        start_time = time.time()
+        all_mid_results = []
+
+        progress_lock = threading.Lock()
+        completed_pairs = [0]  # Mutable for closure
+
+        def process_gpu_batch(gpu_id, pairs):
+            """Process batch on specific GPU with progress tracking."""
+            results = self._process_pairs_on_gpu(pairs, output_dir, gpu_id, mids_per_pair)
+
+            # Update progress
+            with progress_lock:
+                completed_pairs[0] += len(pairs)
+                if progress_callback:
+                    progress_callback(completed_pairs[0], total_pairs)
+
+                # Log progress
+                if completed_pairs[0] % 10 == 0 or completed_pairs[0] == total_pairs:
+                    elapsed = time.time() - start_time
+                    fps = completed_pairs[0] / elapsed if elapsed > 0 else 0
+                    eta = (total_pairs - completed_pairs[0]) / fps if fps > 0 else 0
+                    self.logger.info(
+                        f"Processed {completed_pairs[0]}/{total_pairs} pairs "
+                        f"({100*completed_pairs[0]/total_pairs:.1f}%) | "
+                        f"{fps:.2f} fps | ETA: {eta:.0f}s"
+                    )
+
+            return results
+
+        # Submit tasks to thread pool
+        with ThreadPoolExecutor(max_workers=self.num_gpus) as executor:
+            futures = []
+            for gpu_id, pairs in enumerate(pairs_per_gpu):
+                if pairs:  # Only submit if there are pairs to process
+                    future = executor.submit(process_gpu_batch, gpu_id, pairs)
+                    futures.append(future)
+
+            # Collect results
+            for future in as_completed(futures):
+                try:
+                    results = future.result()
+                    all_mid_results.extend(results)
+                except Exception as e:
+                    self.logger.error(f"GPU processing failed: {e}")
+                    raise
+
+        # Sort results by pair index
+        all_mid_results.sort(key=lambda x: x[0])
+
+        # Assemble final output with interleaved frames
+        output_frames = []
+        frame_counter = 1
+
+        for pair_idx in range(total_pairs):
+            # Original frame
+            orig_frame = input_frames[pair_idx]
+            orig_output_path = output_dir / f"frame_{frame_counter:06d}.png"
+            if not orig_output_path.exists():
+                try:
+                    orig_output_path.symlink_to(orig_frame.absolute())
+                except (OSError, NotImplementedError):
+                    import shutil
+                    shutil.copy2(orig_frame, orig_output_path)
+            output_frames.append(orig_output_path)
+            frame_counter += 1
+
+            # Intermediate frames (find in results)
+            mid_paths = None
+            for res_idx, res_mid_paths in all_mid_results:
+                if res_idx == pair_idx:
+                    mid_paths = res_mid_paths
+                    break
+
+            if mid_paths:
+                for mid_path in mid_paths:
+                    final_mid_path = output_dir / f"frame_{frame_counter:06d}.png"
+                    if mid_path != final_mid_path:
+                        import shutil
+                        shutil.move(str(mid_path), str(final_mid_path))
+                    output_frames.append(final_mid_path)
+                    frame_counter += 1
+
+        # Last original frame
+        last_frame = input_frames[-1]
+        last_output_path = output_dir / f"frame_{frame_counter:06d}.png"
+        if not last_output_path.exists():
+            try:
+                last_output_path.symlink_to(last_frame.absolute())
+            except (OSError, NotImplementedError):
+                import shutil
+                shutil.copy2(last_frame, last_output_path)
+        output_frames.append(last_output_path)
+
+        elapsed = time.time() - start_time
+        avg_fps = total_pairs / elapsed if elapsed > 0 else 0
+
+        self.logger.info(f"✅ Multi-GPU completed {total_pairs} pairs in {elapsed:.1f}s ({avg_fps:.2f} fps)")
+        self.logger.info(f"Generated {len(output_frames)} total frames")
+
+        return output_frames
+
+    def _process_frames_single_gpu(
+        self,
+        input_frames: List[Path],
+        output_dir: Path,
+        progress_callback: Optional[callable] = None
+    ) -> List[Path]:
+        """Process frames using single GPU (original implementation)."""
+        # Load model
+        self._load_model()
+
+        total_pairs = len(input_frames) - 1
+        mids_per_pair = self._calculate_mids_per_pair()
 
         # Log initial GPU memory state and determine cache clearing frequency
         cache_clear_interval = 10  # Default: every 10 pairs

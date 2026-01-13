@@ -22,7 +22,25 @@ class ProPainterAdapter:
             # Apply emergency patch for torch version parsing bug
             self._patch_propainter_misc()
 
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        # MULTI-GPU SUPPORT: Detect available GPUs
+        if torch.cuda.is_available():
+            self.num_gpus = torch.cuda.device_count()
+            self.devices = [f"cuda:{i}" for i in range(self.num_gpus)]
+            if self.num_gpus > 1:
+                logger.info(f"🚀 ProPainter Multi-GPU detected: {self.num_gpus} GPUs available")
+                for i in range(self.num_gpus):
+                    gpu_name = torch.cuda.get_device_name(i)
+                    gpu_mem = torch.cuda.get_device_properties(i).total_memory / 1024**3
+                    logger.info(f"  GPU {i}: {gpu_name} ({gpu_mem:.1f}GB)")
+            else:
+                logger.info(f"ProPainter using single GPU: {torch.cuda.get_device_name(0)}")
+            self.device = "cuda:0"  # Default to first GPU
+        else:
+            self.num_gpus = 1
+            self.devices = ["cpu"]
+            self.device = "cpu"
+            logger.info("ProPainter using CPU (no CUDA available)")
+
         # Sliding Window settings for OOM protection (Exit code -9)
         self.CHUNK_SIZE = 20    # Process 20 frames at a time (reduced from 40 due to OOM)
         self.OVERLAP = 5        # Reduced overlap proportionally
@@ -286,6 +304,10 @@ except (IndexError, AttributeError, ValueError):
         # --- SLOW PATH (Sliding Window) ---
         logger.info(f"Video too long ({total_frames} > {self.CHUNK_SIZE}). Using Sliding Window processing.")
         
+        # Multi-GPU support: check if we should parallelize
+        if self.num_gpus > 1:
+            logger.info(f"🚀 Using MULTI-GPU processing with {self.num_gpus} GPUs")
+
         import math
         chunk_base_dir = output_dir.parent / "propainter_chunks"
         if chunk_base_dir.exists(): 
@@ -295,8 +317,8 @@ except (IndexError, AttributeError, ValueError):
         step = self.CHUNK_SIZE - self.OVERLAP
         num_chunks = math.ceil((total_frames - self.OVERLAP) / step)
         
-        processed_frames_map = {} 
-
+        # Prepare all chunks first
+        chunks_to_process = []
         for i in range(num_chunks):
             start_idx = i * step
             end_idx = min(start_idx + self.CHUNK_SIZE, total_frames)
@@ -307,8 +329,6 @@ except (IndexError, AttributeError, ValueError):
             chunk_frames = all_frames[start_idx:end_idx]
             chunk_id = f"chunk_{i:03d}"
             
-            logger.info(f"Processing Chunk {i+1}/{num_chunks}: Frames {start_idx}-{end_idx} ({len(chunk_frames)})")
-            
             c_input = chunk_base_dir / chunk_id / "frames"
             c_mask = chunk_base_dir / chunk_id / "masks"
             c_output = chunk_base_dir / chunk_id / "output"
@@ -316,10 +336,9 @@ except (IndexError, AttributeError, ValueError):
             c_mask.mkdir(parents=True)
             c_output.mkdir(parents=True)
             
-            # Копирование файлов
+            # Copy files
             for f in chunk_frames:
                 shutil.copy(f, c_input / f.name)
-                # Ищем маску (она может быть .png даже если кадр .jpg)
                 mask_src_png = mask_dir / f"{f.stem}.png"
                 mask_src_jpg = mask_dir / f"{f.stem}.jpg"
                 
@@ -330,67 +349,89 @@ except (IndexError, AttributeError, ValueError):
                 else:
                     logger.warning(f"Mask not found for {f.name}")
             
-            # ЗАПУСК ИНФЕРЕНСА
-            self._run_inference_subprocess(c_input, c_mask, c_output)
-            
-            # СБОР РЕЗУЛЬТАТОВ
-            # ProPainter может создать подпапки. Ищем везде.
-            # Look for both images and videos
-            results = list(c_output.rglob("*.png")) + list(c_output.rglob("*.jpg")) + list(c_output.rglob("*.mp4")) + list(c_output.rglob("*.avi"))
-            
-            logger.info(f"   -> Chunk {i+1} returned {len(results)} files (images + videos)")
+            chunks_to_process.append({
+                'chunk_id': i,
+                'chunk_frames': chunk_frames,
+                'input_dir': c_input,
+                'mask_dir': c_mask,
+                'output_dir': c_output,
+            })
 
-            # Sort results to ensure consistent ordering
-            results = sorted(results)
-            
-            # Process image files first
-            image_files = [r for r in results if r.suffix.lower() in ['.png', '.jpg', '.jpeg']]
-            video_files = [r for r in results if r.suffix.lower() in ['.mp4', '.avi']]
-            
-            # Process image files
-            for idx, res_file in enumerate(image_files):
-                # It's an image file
-                # ProPainter outputs files as 0000.png, 0001.png, etc.
-                # Map these to the original frame names in this chunk
-                if idx < len(chunk_frames):
-                    original_frame = chunk_frames[idx]
-                    original_name = original_frame.stem  # e.g., frame_000015
-                    # Важно: сохраняем по оригинальному имени (frame_00001.png)
-                    processed_frames_map[original_name] = res_file
-                    logger.debug(f"Mapped ProPainter output {res_file.name} to original frame {original_name}")
-                else:
-                    # If we have more results than expected, use the stem as-is
-                    frame_name = res_file.stem
-                    processed_frames_map[frame_name] = res_file
-                    logger.warning(f"Could not map ProPainter output {res_file.name} to original frame (idx={idx}, chunk_size={len(chunk_frames)})")
-            
-            # Process video files - ONLY process inpaint_out.mp4 (actual result), ignore masked_in.mp4 (visualization)
-            for video_file in video_files:
-                # Only process inpaint_out.mp4 files (actual inpainted output)
-                # Skip masked_in.mp4 files (input with masks visualized)
-                if "masked_in" in video_file.name.lower():
-                    logger.info(f"   -> Skipping visualization video: {video_file.name}")
-                    continue
-                    
-                logger.info(f"   -> Processing result video: {video_file.name}")
-                try:
-                    extracted_frames = self._extract_frames_from_video(video_file, c_output)
-                    # Map each extracted frame to its corresponding original frame
-                    for frame_idx, frame_file in enumerate(extracted_frames):
-                        if frame_idx < len(chunk_frames):
-                            original_frame = chunk_frames[frame_idx]
-                            original_name = original_frame.stem  # e.g., frame_000015
-                            processed_frames_map[original_name] = frame_file
-                            logger.debug(f"Mapped extracted frame {frame_idx} from {video_file.name} to {original_name}")
-                    logger.info(f"   -> Extracted {len(extracted_frames)} frames from {video_file.name}")
-                except Exception as e:
-                    logger.error(f"Failed to extract frames from video {video_file}: {e}")
+        # Process chunks (parallel if multi-GPU)
+        processed_frames_map = {}
 
-            # Clear CUDA cache between chunks to prevent OOM
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-                import gc
-                gc.collect()
+        if self.num_gpus > 1 and num_chunks >= self.num_gpus:
+            # Multi-GPU parallel processing
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            import threading
+
+            progress_lock = threading.Lock()
+            completed_chunks = [0]
+
+            def process_chunk_on_gpu(chunk_info, gpu_id):
+                """Process chunk on specific GPU."""
+                chunk_idx = chunk_info['chunk_id']
+                logger.info(f"Processing Chunk {chunk_idx+1}/{num_chunks} on GPU {gpu_id}: Frames {len(chunk_info['chunk_frames'])}")
+
+                # Run inference with specific GPU
+                self._run_inference_subprocess(
+                    chunk_info['input_dir'],
+                    chunk_info['mask_dir'],
+                    chunk_info['output_dir'],
+                    gpu_id=gpu_id
+                )
+
+                # Collect results
+                results = self._collect_chunk_results(chunk_info)
+
+                # Update progress
+                with progress_lock:
+                    completed_chunks[0] += 1
+                    logger.info(f"Completed {completed_chunks[0]}/{num_chunks} chunks ({100*completed_chunks[0]/num_chunks:.1f}%)")
+
+                # Clear CUDA cache for this GPU
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+
+                return (chunk_idx, results)
+
+            # Submit chunks to thread pool
+            with ThreadPoolExecutor(max_workers=self.num_gpus) as executor:
+                futures = []
+                for chunk_info in chunks_to_process:
+                    gpu_id = chunk_info['chunk_id'] % self.num_gpus
+                    future = executor.submit(process_chunk_on_gpu, chunk_info, gpu_id)
+                    futures.append(future)
+
+                # Collect results
+                for future in as_completed(futures):
+                    try:
+                        chunk_idx, chunk_results = future.result()
+                        processed_frames_map.update(chunk_results)
+                    except Exception as e:
+                        logger.error(f"Chunk processing failed: {e}")
+                        raise
+        else:
+            # Single GPU sequential processing
+            for i, chunk_info in enumerate(chunks_to_process):
+                logger.info(f"Processing Chunk {i+1}/{num_chunks}: Frames {len(chunk_info['chunk_frames'])}")
+
+                # Run inference
+                self._run_inference_subprocess(
+                    chunk_info['input_dir'],
+                    chunk_info['mask_dir'],
+                    chunk_info['output_dir']
+                )
+
+                # Collect results
+                chunk_results = self._collect_chunk_results(chunk_info)
+                processed_frames_map.update(chunk_results)
+
+                # Clear CUDA cache
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    import gc
+                    gc.collect()
 
         # 3. Финальная сборка
         logger.info(f"Merging chunks (Found {len(processed_frames_map)} unique frames)...")
@@ -430,8 +471,16 @@ except (IndexError, AttributeError, ValueError):
 
         return output_dir
 
-    def _run_inference_subprocess(self, video_path: Path, mask_path: Path, output_path: Path) -> Path:
-        """Helper to run the actual CLI command"""
+    def _run_inference_subprocess(self, video_path: Path, mask_path: Path, output_path: Path, gpu_id: int = None) -> Path:
+        """
+        Helper to run the actual CLI command.
+
+        Args:
+            video_path: Path to video or frames directory
+            mask_path: Path to masks directory
+            output_path: Path to output directory
+            gpu_id: GPU ID to use (for multi-GPU processing). None = use default.
+        """
         # Get original frame dimensions to preserve aspect ratio
         import cv2
         import numpy as np
@@ -498,12 +547,19 @@ except (IndexError, AttributeError, ValueError):
             mask_files = list(mask_path.glob("*"))
             logger.info(f"Mask directory contains {len(mask_files)} files: {[f.name for f in mask_files[:5]]}{'...' if len(mask_files) > 5 else ''}")
         
+        # Set environment for specific GPU if multi-GPU
+        env = os.environ.copy()
+        if gpu_id is not None:
+            env['CUDA_VISIBLE_DEVICES'] = str(gpu_id)
+            logger.info(f"Setting CUDA_VISIBLE_DEVICES={gpu_id} for this ProPainter process")
+
         try:
             result = subprocess.run(
                 cmd, 
                 capture_output=True, 
                 text=True, 
                 cwd=str(self.root),
+                env=env,  # Pass environment with CUDA_VISIBLE_DEVICES
                 check=True
             )
             
@@ -618,6 +674,63 @@ except (IndexError, AttributeError, ValueError):
             logger.error(f"STDERR: {e.stderr[:1000] if e.stderr else 'None'}")
             # Пытаемся освободить память перед падением
             raise RuntimeError(f"ProPainter execution failed with code {e.returncode}")
+
+    def _collect_chunk_results(self, chunk_info: dict) -> dict:
+        """
+        Collect results from processed chunk.
+
+        Args:
+            chunk_info: Dict with 'chunk_frames', 'output_dir', etc.
+
+        Returns:
+            Dict mapping original frame names to result file paths
+        """
+        c_output = chunk_info['output_dir']
+        chunk_frames = chunk_info['chunk_frames']
+
+        results_map = {}
+
+        # Look for both images and videos
+        results = list(c_output.rglob("*.png")) + list(c_output.rglob("*.jpg")) + \
+                  list(c_output.rglob("*.mp4")) + list(c_output.rglob("*.avi"))
+
+        logger.info(f"   -> Chunk {chunk_info['chunk_id']+1} returned {len(results)} files (images + videos)")
+
+        # Sort results
+        results = sorted(results)
+
+        # Process image files
+        image_files = [r for r in results if r.suffix.lower() in ['.png', '.jpg', '.jpeg']]
+        video_files = [r for r in results if r.suffix.lower() in ['.mp4', '.avi']]
+
+        # Map image files to original frames
+        for idx, res_file in enumerate(image_files):
+            if idx < len(chunk_frames):
+                original_frame = chunk_frames[idx]
+                original_name = original_frame.stem
+                results_map[original_name] = res_file
+                logger.debug(f"Mapped ProPainter output {res_file.name} to original frame {original_name}")
+
+        # Extract frames from videos (skip visualization videos)
+        for video_file in video_files:
+            if "masked_in" in video_file.name.lower():
+                logger.info(f"   -> Skipping visualization video: {video_file.name}")
+                continue
+
+            logger.info(f"   -> Processing result video: {video_file.name}")
+            try:
+                extracted_frames = self._extract_frames_from_video(video_file, c_output)
+                for frame_idx, frame_file in enumerate(extracted_frames):
+                    if frame_idx < len(chunk_frames):
+                        original_frame = chunk_frames[frame_idx]
+                        original_name = original_frame.stem
+                        results_map[original_name] = frame_file
+                        logger.debug(f"Mapped extracted frame {frame_idx} from {video_file.name} to {original_name}")
+                logger.info(f"   -> Extracted {len(extracted_frames)} frames from {video_file.name}")
+            except Exception as e:
+                logger.error(f"Failed to extract frames from video {video_file}: {e}")
+
+        return results_map
 
     def _validate_and_restore_aspect_ratio(self, output_frames: list, original_width: int, original_height: int) -> list:
         """
