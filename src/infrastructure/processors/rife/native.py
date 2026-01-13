@@ -330,6 +330,21 @@ class RIFENative:
 
         if self.device.type == 'cpu':
             self.logger.warning("⚠️ Using CPU for RIFE - processing will be much slower!")
+        else:
+            # Log GPU memory info
+            if torch.cuda.is_available():
+                gpu_name = torch.cuda.get_device_name(0)
+                gpu_mem_total = torch.cuda.get_device_properties(0).total_memory / 1024**3
+                gpu_mem_allocated = torch.cuda.memory_allocated(0) / 1024**3
+                gpu_mem_reserved = torch.cuda.memory_reserved(0) / 1024**3
+                self.logger.info(f"GPU: {gpu_name}")
+                self.logger.info(f"GPU Memory: {gpu_mem_total:.2f}GB total, {gpu_mem_allocated:.2f}GB allocated, {gpu_mem_reserved:.2f}GB reserved")
+
+                # Set CUDA memory allocator config to reduce fragmentation
+                import os
+                if 'PYTORCH_CUDA_ALLOC_CONF' not in os.environ:
+                    os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
+                    self.logger.info("Set PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True for better memory management")
 
         self.logger.info(f"Loading RIFE model (weights from: {self.model_path})")
 
@@ -538,6 +553,31 @@ class RIFENative:
         except Exception:
             model_dev = torch.device('cpu')
 
+        # Check available GPU memory and adaptively downscale if needed
+        scale_factor = 1.0
+        if torch.cuda.is_available() and model_dev.type == 'cuda':
+            gpu_mem_total = torch.cuda.get_device_properties(0).total_memory
+            gpu_mem_allocated = torch.cuda.memory_allocated(0)
+            gpu_mem_reserved = torch.cuda.memory_reserved(0)
+            gpu_mem_free = gpu_mem_total - gpu_mem_allocated
+
+            # Calculate estimated memory needed for this frame pair
+            # Rough estimate: input frames + intermediate buffers ≈ 4x frame size
+            bytes_per_pixel = 4  # float32
+            frame_size_bytes = orig_h * orig_w * 3 * bytes_per_pixel
+            estimated_needed = frame_size_bytes * 8  # Conservative estimate for all buffers
+
+            # If less than 3GB free, or if we need more than 80% of free memory, downscale
+            if gpu_mem_free < 3 * 1024**3 or estimated_needed > gpu_mem_free * 0.8:
+                # Calculate downscale factor to fit in memory
+                if orig_h > 1080 or orig_w > 1920:
+                    scale_factor = 0.5  # Downscale to half resolution
+                    self.logger.warning(
+                        f"⚠️ Low GPU memory ({gpu_mem_free/1024**3:.2f}GB free), "
+                        f"downscaling {orig_w}x{orig_h} → {int(orig_w*scale_factor)}x{int(orig_h*scale_factor)}"
+                    )
+
+
         # --- FIX: ensure inputs are on the same device as the model parameters ---
         # Log device info for debugging (especially for RTX 5070)
         self.logger.debug(f"Input tensor devices - frame1: {frame1.device}, frame2: {frame2.device}")
@@ -575,6 +615,18 @@ class RIFENative:
                 pass
                 
             raise
+
+        # Apply adaptive downscaling if needed
+        if scale_factor < 1.0:
+            import torch.nn.functional as F
+            new_h = int(orig_h * scale_factor)
+            new_w = int(orig_w * scale_factor)
+            # Make dimensions even for better compatibility
+            new_h = new_h - (new_h % 2)
+            new_w = new_w - (new_w % 2)
+            frame1 = F.interpolate(frame1, size=(new_h, new_w), mode='bilinear', align_corners=False)
+            frame2 = F.interpolate(frame2, size=(new_h, new_w), mode='bilinear', align_corners=False)
+            self.logger.debug(f"Downscaled frames to {new_w}x{new_h}")
 
         # Pad to multiples of 64 (RIFE model requirement)
         frame1_padded, _, _ = self._pad_to_multiple(frame1, 64)
@@ -619,10 +671,19 @@ class RIFENative:
                     )
                     raise
 
-                # Crop back to original dimensions
-                mid = mid[:, :, :orig_h, :orig_w]
+                # Crop back to (possibly downscaled) dimensions
+                _, _, current_h, current_w = frame1.shape
+                mid = mid[:, :, :current_h, :current_w]
+
+                # Upscale back to original resolution if we downscaled
+                if scale_factor < 1.0:
+                    import torch.nn.functional as F
+                    mid = F.interpolate(mid, size=(orig_h, orig_w), mode='bilinear', align_corners=False)
 
                 mids.append(mid)
+
+                # Clean up intermediate tensors
+                del mid
 
         return mids
 
@@ -704,6 +765,13 @@ class RIFENative:
         self.logger.info(f"  Pairs to process: {total_pairs}")
         self.logger.info(f"  Mids per pair: {mids_per_pair}")
 
+        # Log initial GPU memory state
+        if torch.cuda.is_available():
+            gpu_mem_total = torch.cuda.get_device_properties(0).total_memory / 1024**3
+            gpu_mem_allocated = torch.cuda.memory_allocated(0) / 1024**3
+            gpu_mem_reserved = torch.cuda.memory_reserved(0) / 1024**3
+            self.logger.info(f"GPU Memory: {gpu_mem_allocated:.2f}GB allocated, {gpu_mem_reserved:.2f}GB reserved, {gpu_mem_total:.2f}GB total")
+
         output_frames = []
         start_time = time.time()
         frame_counter = 1  # Sequential frame counter for output
@@ -757,6 +825,19 @@ class RIFENative:
                         self.logger.debug(f"Frame {frame_counter}: Interpolated mid {mid_idx}/{len(mids)}")
                     frame_counter += 1
 
+                # MEMORY CLEANUP: Explicitly delete tensors and free GPU memory
+                del frame1, frame2, mids
+
+                # Clear CUDA cache every 10 pairs to prevent memory fragmentation
+                if torch.cuda.is_available() and (idx + 1) % 10 == 0:
+                    torch.cuda.empty_cache()
+
+                    # Log memory usage every 20 pairs
+                    if (idx + 1) % 20 == 0:
+                        gpu_mem_allocated = torch.cuda.memory_allocated(0) / 1024**3
+                        gpu_mem_reserved = torch.cuda.memory_reserved(0) / 1024**3
+                        self.logger.debug(f"GPU Memory after pair {idx+1}: {gpu_mem_allocated:.2f}GB allocated, {gpu_mem_reserved:.2f}GB reserved")
+
                 # Progress
                 if (idx + 1) % 10 == 0 or (idx + 1) == total_pairs:
                     elapsed = time.time() - start_time
@@ -775,6 +856,29 @@ class RIFENative:
 
             except Exception as e:
                 self.logger.error(f"Failed to process pair {idx+1}/{total_pairs}: {e}")
+
+                # If CUDA OOM, try to recover by clearing cache
+                if torch.cuda.is_available() and "out of memory" in str(e).lower():
+                    self.logger.warning("CUDA OOM detected, attempting recovery...")
+
+                    # Aggressive cleanup
+                    try:
+                        del frame1, frame2
+                    except:
+                        pass
+
+                    torch.cuda.empty_cache()
+                    torch.cuda.synchronize()
+
+                    gpu_mem_allocated = torch.cuda.memory_allocated(0) / 1024**3
+                    gpu_mem_reserved = torch.cuda.memory_reserved(0) / 1024**3
+                    self.logger.info(f"After cleanup: {gpu_mem_allocated:.2f}GB allocated, {gpu_mem_reserved:.2f}GB reserved")
+
+                    # Set environment variable for memory fragmentation (as suggested by PyTorch)
+                    import os
+                    os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
+                    self.logger.info("Set PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True")
+
                 raise
 
         # Copy/symlink last frame to output directory with sequential numbering
