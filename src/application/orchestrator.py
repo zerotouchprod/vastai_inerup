@@ -205,17 +205,22 @@ class VideoProcessingOrchestrator:
             processed_frame_count = len(frame_paths)
 
             # Calculate target FPS based on mode and available information
-            if getattr(job, 'target_fps', None):
-                # Explicit target FPS takes priority
-                target_fps = float(job.target_fps)
-                self._logger.info(f"Using explicit target FPS: {target_fps}")
-            elif job.mode == 'interp':
+            # CRITICAL: For interpolation, ALWAYS calculate FPS from interp_factor to preserve duration
+            if job.mode == 'interp':
                 # For interpolation: MULTIPLY the FPS by the interpolation factor
                 # More frames at higher FPS = same duration, smoother motion
-                # Example: 145→289 frames @ 48 fps (24*2) → stays 6s but smoother
+                # Example: 192 frames @ 24fps → 383 frames @ 48fps (24*2) → still 8s, just smoother
                 interp_factor = int(job.interp_factor) if hasattr(job, 'interp_factor') else 2
                 target_fps = original_fps * interp_factor
                 expected_duration = processed_frame_count / target_fps if target_fps > 0 else 0
+
+                # Warn if explicit target_fps was set (it will be ignored)
+                if getattr(job, 'target_fps', None):
+                    self._logger.warning(
+                        f"⚠️ Ignoring explicit target_fps={job.target_fps} for interpolation mode. "
+                        f"FPS must be calculated from interp_factor to preserve video duration. "
+                        f"Using calculated FPS: {target_fps:.2f}"
+                    )
 
                 self._logger.info(f"═══ INTERPOLATION FPS CALCULATION ═══")
                 self._logger.info(f"Input frames: {original_frame_count} @ {original_fps:.2f} fps = {original_duration:.2f}s")
@@ -241,6 +246,11 @@ class VideoProcessingOrchestrator:
                     )
 
                 self._logger.info(f"═══════════════════════════════════")
+
+            elif getattr(job, 'target_fps', None):
+                # Explicit target FPS (only for non-interpolation modes)
+                target_fps = float(job.target_fps)
+                self._logger.info(f"Using explicit target FPS: {target_fps}")
 
             elif job.mode == 'both' and original_duration and original_duration > 0:
                 # For 'both' mode, calculate FPS to maintain original duration
