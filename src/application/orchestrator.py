@@ -62,6 +62,7 @@ class VideoProcessingOrchestrator:
 
             # 2.1. Extract audio BEFORE frame extraction (NEW - v2.0.1)
             audio_path = None
+            audio_preserver = None  # Initialize outside try block
             from src.infrastructure.video.audio_handler import AudioPreserver
             from src.core.config import get_config
 
@@ -107,17 +108,64 @@ class VideoProcessingOrchestrator:
             # 3. Extract frames
             self._metrics.start_timer('extraction')
             video_info = self._extractor.get_video_info(input_file)
+
+            # Log video metadata before extraction
+            self._logger.info(f"═══ VIDEO METADATA ═══")
+            self._logger.info(f"Resolution: {video_info.width}x{video_info.height}")
+            self._logger.info(f"FPS: {video_info.fps}")
+            self._logger.info(f"Duration (metadata): {video_info.duration:.2f}s")
+            self._logger.info(f"Frame count (metadata): {video_info.frame_count}")
+            self._logger.info(f"Expected frames (duration × fps): {video_info.duration * video_info.fps:.0f}")
+            self._logger.info(f"═════════════════════")
+
             frames = self._extractor.extract_frames(video_info, workspace / "frames")
+
+            # Log actual extracted frame count
+            actual_extracted = len(frames)
+            self._logger.info(f"Actually extracted: {actual_extracted} frames")
+            if abs(actual_extracted - video_info.frame_count) > 2:
+                self._logger.warning(
+                    f"⚠️ Extracted frame count differs from metadata: "
+                    f"metadata={video_info.frame_count}, actual={actual_extracted} "
+                    f"(diff: {actual_extracted - video_info.frame_count})"
+                )
+
             self._metrics.stop_timer('extraction')
 
             # Compute target FPS to maintain original video duration
             original_fps = 24.0  # Default fallback
             original_duration = None
+            audio_duration = None
+            original_frame_count = len(frames)  # Initialize early
+
             try:
-                original_frame_count = len(frames)
                 original_fps = float(video_info.fps)
                 original_duration = original_frame_count / original_fps if original_fps > 0 else None
-            except Exception:
+
+                # Get audio duration if available (more accurate than frame count)
+                if config.PRESERVE_AUDIO and audio_path and audio_path.exists():
+                    # Reuse audio_preserver if it exists, otherwise create it
+                    if not audio_preserver:
+                        from src.infrastructure.video.audio_handler import AudioPreserver
+                        audio_preserver = AudioPreserver()
+                    audio_info = audio_preserver.get_audio_info(audio_path)
+                    if audio_info:
+                        audio_duration = float(audio_info.get('duration', 0))
+
+                # Log duration sources for debugging
+                self._logger.info(f"═══ ORIGINAL VIDEO DURATION ANALYSIS ═══")
+                self._logger.info(f"Frame-based duration: {original_duration:.2f}s ({original_frame_count} frames @ {original_fps} fps)")
+                if audio_duration:
+                    self._logger.info(f"Audio track duration: {audio_duration:.2f}s")
+                    if abs(audio_duration - original_duration) > 0.5:
+                        self._logger.warning(f"⚠️ Duration mismatch: frames={original_duration:.2f}s, audio={audio_duration:.2f}s (diff: {abs(audio_duration - original_duration):.2f}s)")
+                        # Use audio duration as ground truth (it's usually more accurate)
+                        self._logger.info(f"Using audio duration as ground truth: {audio_duration:.2f}s")
+                        original_duration = audio_duration
+                self._logger.info(f"═══════════════════════════════════════")
+
+            except Exception as e:
+                self._logger.warning(f"Error calculating original duration: {e}")
                 pass  # Use defaults
 
             # Calculate interp_factor if target_fps is provided (must happen before _process_frames)
@@ -223,6 +271,15 @@ class VideoProcessingOrchestrator:
                     self._logger.info("Step 6: Merging audio track back into video")
                     final_video = workspace / "final_with_audio.mp4"
 
+                    # Ensure audio_preserver exists
+                    if not audio_preserver:
+                        from src.infrastructure.video.audio_handler import AudioPreserver
+                        audio_preserver = AudioPreserver(
+                            audio_codec=config.AUDIO_CODEC,
+                            audio_bitrate=config.AUDIO_BITRATE,
+                            fallback_to_silent=config.FALLBACK_TO_SILENT
+                        )
+
                     audio_preserver.merge_audio_video(
                         video_path=output_video,
                         audio_path=audio_path,
@@ -246,7 +303,28 @@ class VideoProcessingOrchestrator:
             else:
                 self._logger.info("No audio to merge (video was silent)")
 
-            # 6. Upload
+            # 6. Final duration verification
+            try:
+                # Get final video duration to compare with original
+                final_video_info = self._extractor.get_video_info(output_video)
+                final_duration = final_video_info.duration if final_video_info else None
+
+                self._logger.info(f"═══ FINAL DURATION COMPARISON ═══")
+                self._logger.info(f"Original video duration: {original_duration:.2f}s (audio: {audio_duration:.2f}s)" if audio_duration else f"Original video duration: {original_duration:.2f}s")
+                if final_duration:
+                    self._logger.info(f"Final output duration: {final_duration:.2f}s")
+                    duration_diff = abs(final_duration - (audio_duration or original_duration))
+                    if duration_diff > 0.5:
+                        self._logger.warning(f"⚠️ Duration changed by {duration_diff:.2f}s!")
+                    else:
+                        self._logger.info(f"✅ Duration preserved (diff: {duration_diff:.2f}s)")
+                else:
+                    self._logger.warning("Could not get final video duration")
+                self._logger.info(f"════════════════════════════════════")
+            except Exception as e:
+                self._logger.warning(f"Could not verify final duration: {e}")
+
+            # 7. Upload
             self._metrics.start_timer('upload')
             upload_key = self._generate_upload_key(job)
             # Log the resolved upload key so CLI/remote logs show where the file will be uploaded
