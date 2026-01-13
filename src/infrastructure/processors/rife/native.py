@@ -844,6 +844,25 @@ class RIFENative:
             frame2_path = input_frames[idx + 1]
 
             try:
+                # PREVENTIVE CLEANUP: Check memory before loading frames
+                if torch.cuda.is_available():
+                    gpu_mem_total = torch.cuda.get_device_properties(0).total_memory
+                    gpu_mem_allocated = torch.cuda.memory_allocated(0)
+                    gpu_mem_free = gpu_mem_total - gpu_mem_allocated
+
+                    # If less than 1GB free, do preventive cleanup
+                    if gpu_mem_free < 1 * 1024**3:
+                        torch.cuda.empty_cache()
+                        torch.cuda.synchronize()
+
+                        gpu_mem_free_after = gpu_mem_total - torch.cuda.memory_allocated(0)
+                        if idx % 10 == 0:  # Log every 10 pairs
+                            self.logger.warning(
+                                f"⚠️ Preventive cleanup before pair {idx+1}: "
+                                f"freed {(gpu_mem_free_after - gpu_mem_free)/1024**3:.2f}GB, "
+                                f"now {gpu_mem_free_after/1024**3:.2f}GB free"
+                            )
+
                 # Load frames as tensors
                 frame1 = self._load_frame_as_tensor(frame1_path)
                 frame2 = self._load_frame_as_tensor(frame2_path)
@@ -886,15 +905,40 @@ class RIFENative:
                 # MEMORY CLEANUP: Explicitly delete tensors and free GPU memory
                 del frame1, frame2, mids
 
-                # Clear CUDA cache at adaptive intervals to prevent memory fragmentation
-                if torch.cuda.is_available() and (idx + 1) % cache_clear_interval == 0:
-                    torch.cuda.empty_cache()
+                # Check if we need aggressive cleanup (reserved but unused memory is high)
+                if torch.cuda.is_available():
+                    gpu_mem_allocated = torch.cuda.memory_allocated(0)
+                    gpu_mem_reserved = torch.cuda.memory_reserved(0)
+                    gpu_mem_free_actual = torch.cuda.get_device_properties(0).total_memory - gpu_mem_allocated
+                    reserved_unused = gpu_mem_reserved - gpu_mem_allocated
 
-                    # Log memory usage at double the cache clear interval
-                    if (idx + 1) % (cache_clear_interval * 2) == 0:
-                        gpu_mem_allocated = torch.cuda.memory_allocated(0) / 1024**3
-                        gpu_mem_reserved = torch.cuda.memory_reserved(0) / 1024**3
-                        self.logger.debug(f"GPU Memory after pair {idx+1}: {gpu_mem_allocated:.2f}GB allocated, {gpu_mem_reserved:.2f}GB reserved")
+                    # If reserved-but-unused > 2GB or free < 1GB, force aggressive cleanup
+                    needs_aggressive_cleanup = (reserved_unused > 2 * 1024**3) or (gpu_mem_free_actual < 1 * 1024**3)
+
+                    if needs_aggressive_cleanup:
+                        # AGGRESSIVE: Clear cache after EVERY pair
+                        torch.cuda.empty_cache()
+                        torch.cuda.synchronize()  # Wait for all operations to complete
+
+                        if (idx + 1) % 5 == 0:  # Log every 5 pairs
+                            gpu_mem_allocated_after = torch.cuda.memory_allocated(0) / 1024**3
+                            gpu_mem_reserved_after = torch.cuda.memory_reserved(0) / 1024**3
+                            freed = (gpu_mem_reserved - torch.cuda.memory_reserved(0)) / 1024**3
+                            self.logger.warning(
+                                f"⚠️ Aggressive cleanup after pair {idx+1}: "
+                                f"allocated={gpu_mem_allocated_after:.2f}GB, "
+                                f"reserved={gpu_mem_reserved_after:.2f}GB, "
+                                f"freed={freed:.2f}GB"
+                            )
+                    elif (idx + 1) % cache_clear_interval == 0:
+                        # NORMAL: Clear cache at adaptive intervals
+                        torch.cuda.empty_cache()
+
+                        # Log memory usage at double the cache clear interval
+                        if (idx + 1) % (cache_clear_interval * 2) == 0:
+                            gpu_mem_allocated_gb = gpu_mem_allocated / 1024**3
+                            gpu_mem_reserved_gb = gpu_mem_reserved / 1024**3
+                            self.logger.debug(f"GPU Memory after pair {idx+1}: {gpu_mem_allocated_gb:.2f}GB allocated, {gpu_mem_reserved_gb:.2f}GB reserved")
 
                 # Progress
                 if (idx + 1) % 10 == 0 or (idx + 1) == total_pairs:
@@ -917,25 +961,85 @@ class RIFENative:
 
                 # If CUDA OOM, try to recover by clearing cache
                 if torch.cuda.is_available() and "out of memory" in str(e).lower():
-                    self.logger.warning("CUDA OOM detected, attempting recovery...")
+                    self.logger.error("❌ CUDA OOM detected! Attempting aggressive recovery...")
 
-                    # Aggressive cleanup
+                    # Log current memory state
+                    gpu_mem_allocated_before = torch.cuda.memory_allocated(0) / 1024**3
+                    gpu_mem_reserved_before = torch.cuda.memory_reserved(0) / 1024**3
+                    gpu_mem_total = torch.cuda.get_device_properties(0).total_memory / 1024**3
+                    reserved_unused = gpu_mem_reserved_before - gpu_mem_allocated_before
+
+                    self.logger.error(
+                        f"Memory before cleanup: "
+                        f"total={gpu_mem_total:.2f}GB, "
+                        f"allocated={gpu_mem_allocated_before:.2f}GB, "
+                        f"reserved={gpu_mem_reserved_before:.2f}GB, "
+                        f"reserved-unused={reserved_unused:.2f}GB"
+                    )
+
+                    # ULTRA AGGRESSIVE cleanup
                     try:
-                        del frame1, frame2
-                    except:
-                        pass
+                        # Delete tensors
+                        try:
+                            del frame1, frame2
+                        except:
+                            pass
 
-                    torch.cuda.empty_cache()
-                    torch.cuda.synchronize()
+                        try:
+                            del mids
+                        except:
+                            pass
 
-                    gpu_mem_allocated = torch.cuda.memory_allocated(0) / 1024**3
-                    gpu_mem_reserved = torch.cuda.memory_reserved(0) / 1024**3
-                    self.logger.info(f"After cleanup: {gpu_mem_allocated:.2f}GB allocated, {gpu_mem_reserved:.2f}GB reserved")
+                        # Collect Python garbage
+                        import gc
+                        gc.collect()
+
+                        # Empty CUDA cache
+                        torch.cuda.empty_cache()
+
+                        # Synchronize all CUDA operations
+                        torch.cuda.synchronize()
+
+                        # Reset peak memory stats (helps with fragmentation)
+                        torch.cuda.reset_peak_memory_stats()
+
+                        # Try to defragment by allocating and freeing a small tensor
+                        try:
+                            dummy = torch.zeros(1, device='cuda')
+                            del dummy
+                            torch.cuda.empty_cache()
+                        except:
+                            pass
+
+                    except Exception as cleanup_error:
+                        self.logger.error(f"Cleanup failed: {cleanup_error}")
+
+                    # Log memory state after cleanup
+                    gpu_mem_allocated_after = torch.cuda.memory_allocated(0) / 1024**3
+                    gpu_mem_reserved_after = torch.cuda.memory_reserved(0) / 1024**3
+                    freed_allocated = gpu_mem_allocated_before - gpu_mem_allocated_after
+                    freed_reserved = gpu_mem_reserved_before - gpu_mem_reserved_after
+                    gpu_mem_free = gpu_mem_total - gpu_mem_allocated_after
+
+                    self.logger.info(
+                        f"Memory after cleanup: "
+                        f"allocated={gpu_mem_allocated_after:.2f}GB (freed {freed_allocated:.2f}GB), "
+                        f"reserved={gpu_mem_reserved_after:.2f}GB (freed {freed_reserved:.2f}GB), "
+                        f"free={gpu_mem_free:.2f}GB"
+                    )
 
                     # Set environment variable for memory fragmentation (as suggested by PyTorch)
                     import os
-                    os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
-                    self.logger.info("Set PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True")
+                    if 'PYTORCH_CUDA_ALLOC_CONF' not in os.environ:
+                        os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
+                        self.logger.info("Set PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True")
+
+                    # If still very low memory, suggest to user
+                    if gpu_mem_free < 2:
+                        self.logger.error(
+                            f"⚠️ Still only {gpu_mem_free:.2f}GB free after cleanup! "
+                            f"Consider processing at lower resolution or using a GPU with more VRAM."
+                        )
 
                 raise
 
