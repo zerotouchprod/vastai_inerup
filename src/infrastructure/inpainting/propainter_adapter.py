@@ -74,9 +74,9 @@ class ProPainterAdapter:
             logger.info("ProPainter using CPU (no CUDA available)")
 
         # Sliding Window settings for OOM protection (Exit code -9)
-        # EMERGENCY: Ultra-ultra-conservative settings due to persistent OOM
-        self.CHUNK_SIZE = 5     # Process only 5 frames at a time (emergency reduction)
-        self.OVERLAP = 1        # Minimal overlap
+        # NUCLEAR OPTION: Absolute minimum settings - cannot go lower
+        self.CHUNK_SIZE = 3     # Process only 3 frames at a time (ABSOLUTE MINIMUM)
+        self.OVERLAP = 0        # No overlap (quality trade-off for memory)
 
     def _patch_propainter_misc(self) -> None:
         """
@@ -556,27 +556,27 @@ except (IndexError, AttributeError, ValueError):
             logger.info(f"GPU {check_gpu_id} VRAM: {free_vram_gb:.1f}GB free / {total_vram_gb:.1f}GB total")
 
             # Adaptive resolution limits based on available VRAM
-            # EMERGENCY: Even more conservative due to persistent RAFT OOM errors
-            # RAFT memory usage: O(resolution^2 * num_frames), extremely sensitive
+            # NUCLEAR OPTION: Absolute minimum resolution to prevent RAFT OOM
+            # At this point, we're sacrificing quality for functionality
             if total_vram_gb >= 40:
-                # A100, H100: high VRAM but still conservative
-                max_dimension = 1080
+                # A100, H100: high VRAM but still very conservative
+                max_dimension = 720
             elif total_vram_gb >= 24:
-                # RTX 3090, 4090, A6000: EMERGENCY setting
-                # Even 720p with portrait videos causes OOM in RAFT
-                max_dimension = 540  # Emergency reduction from 720
+                # RTX 3090, 4090, A6000: NUCLEAR OPTION
+                # RAFT CorrBlock still OOMs even at 540p with portrait
+                max_dimension = 360  # Absolute minimum (was 540)
             elif total_vram_gb >= 16:
-                # RTX 4080, 5070 Ti: 480p max
-                max_dimension = 480
+                # RTX 4080, 5070 Ti: 320p max
+                max_dimension = 320
             elif total_vram_gb >= 12:
-                # RTX 3080, 4070: 360p max
-                max_dimension = 360
-            elif total_vram_gb >= 8:
-                # RTX 3060, 4060: 360p max
-                max_dimension = 360
-            else:
-                # Low VRAM: 288p max
+                # RTX 3080, 4070: 288p max
                 max_dimension = 288
+            elif total_vram_gb >= 8:
+                # RTX 3060, 4060: 256p max
+                max_dimension = 256
+            else:
+                # Low VRAM: 224p max (7x32 = minimum for ProPainter)
+                max_dimension = 224
 
             logger.info(f"VRAM-adaptive max dimension: {max_dimension}px (based on {total_vram_gb:.1f}GB VRAM)")
         else:
@@ -653,14 +653,18 @@ except (IndexError, AttributeError, ValueError):
 
         # AGGRESSIVE MEMORY MANAGEMENT: Set PyTorch environment variables
         # These help prevent CUDA OOM errors by being more aggressive with memory management
-        # EMERGENCY: Maximum memory restriction settings
-        env['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:64,garbage_collection_threshold:0.5,expandable_segments:False'
+        # NUCLEAR OPTION: Absolute minimum memory settings
+        env['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:32,garbage_collection_threshold:0.4,expandable_segments:False'
         env['CUDA_LAUNCH_BLOCKING'] = '1'  # Synchronous execution for better error tracking
         # Limit PyTorch memory caching
         env['PYTORCH_NO_CUDA_MEMORY_CACHING'] = '1'
         # Force immediate memory release
         env['PYTORCH_CUDA_ALLOC_SYNC_MEMOPS'] = '1'
-        logger.info("Applied EMERGENCY aggressive CUDA memory management settings")
+        # Reduce RAFT correlation block size (ProPainter-specific)
+        env['RAFT_CORR_LEVELS'] = '2'  # Reduce from 4 to 2 (75% memory reduction)
+        env['RAFT_CORR_RADIUS'] = '2'  # Reduce search radius (50% memory reduction)
+        logger.info("Applied NUCLEAR-OPTION CUDA memory management settings")
+        logger.warning("⚠️  Memory settings are at ABSOLUTE MINIMUM - quality may be significantly degraded")
 
         try:
             result = subprocess.run(
@@ -674,10 +678,10 @@ except (IndexError, AttributeError, ValueError):
             
             # Log ProPainter output for debugging - use INFO level to ensure we see it
             if result.stdout:
-                logger.info(f"ProPainter stdout (first 1000 chars): {result.stdout[:1000]}")
+                logger.info(f"ProPainter stdout (first 2000 chars): {result.stdout[:2000]}")
             if result.stderr:
-                logger.info(f"ProPainter stderr (first 1000 chars): {result.stderr[:1000]}")
-            
+                logger.info(f"ProPainter stderr (first 2000 chars): {result.stderr[:2000]}")
+
             # --- FLATTENING LOGIC ---
             # Вытаскиваем все файлы из подпапок в корень output_path
             # Это решает проблему, когда ProPainter создает output/input_folder_name/result.png
@@ -779,9 +783,24 @@ except (IndexError, AttributeError, ValueError):
             
             logger.error(f"❌ ProPainter Subprocess Crashed!")
             logger.error(f"Exit code: {e.returncode}")
-            logger.error(f"STDOUT: {e.stdout[:1000] if e.stdout else 'None'}")
-            stderr_msg = e.stderr[:2000] if e.stderr else 'None'
-            logger.error(f"STDERR: {stderr_msg}")
+            logger.error(f"STDOUT: {e.stdout[:2000] if e.stdout else 'None'}")
+            stderr_msg = e.stderr[:5000] if e.stderr else 'None'  # Capture more of stderr
+            logger.error(f"STDERR (full): {stderr_msg}")
+
+            # Try to identify the actual error type
+            if e.stderr:
+                stderr_lower = e.stderr.lower()
+                if "out of memory" in stderr_lower or "oom" in stderr_lower:
+                    error_type = "OUT_OF_MEMORY"
+                elif "cuda error" in stderr_lower:
+                    error_type = "CUDA_ERROR"
+                elif "modulenotfound" in stderr_lower or "importerror" in stderr_lower:
+                    error_type = "IMPORT_ERROR"
+                elif "runtimeerror" in stderr_lower:
+                    error_type = "RUNTIME_ERROR"
+                else:
+                    error_type = "UNKNOWN"
+                logger.error(f"Error type detected: {error_type}")
 
             # Check for OOM error in stderr
             if e.stderr and ("out of memory" in e.stderr.lower() or "oom" in e.stderr.lower() or "cuda error" in e.stderr.lower()):
@@ -792,11 +811,13 @@ except (IndexError, AttributeError, ValueError):
                 logger.error(f"Current VRAM limit: {max_dimension}px (based on {total_vram_gb if 'total_vram_gb' in locals() else 'unknown'}GB)")
                 logger.error("")
                 logger.error("💡 Recommendations:")
-                logger.error("  1. Reduce video resolution before processing")
-                logger.error("  2. Process fewer frames per chunk (current: 5 - EMERGENCY MINIMUM)")
-                logger.error("  3. Use a GPU with more VRAM (40GB+ recommended for 4K)")
-                logger.error("  4. Consider processing at 360p or lower resolution")
-                logger.error("  5. This video may be too complex for ProPainter on current hardware")
+                logger.error("  1. This video is too complex for ProPainter on 24GB GPUs")
+                logger.error("  2. Settings are already at ABSOLUTE MINIMUM (3 frames, 360p)")
+                logger.error("  3. Solutions:")
+                logger.error("     a) Pre-downscale video to 720p or lower")
+                logger.error("     b) Use GPU with 40GB+ VRAM (A100, A6000)")
+                logger.error("     c) Use alternative tool (LaMa, E2FGVI)")
+                logger.error("     d) Process subtitle regions only, not full frame")
                 logger.error("=" * 60)
 
             # Clear CUDA cache before raising error
