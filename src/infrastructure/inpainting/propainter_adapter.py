@@ -389,9 +389,13 @@ except (IndexError, AttributeError, ValueError):
                     completed_chunks[0] += 1
                     logger.info(f"Completed {completed_chunks[0]}/{num_chunks} chunks ({100*completed_chunks[0]/num_chunks:.1f}%)")
 
-                # Clear CUDA cache for this GPU
+                # Clear CUDA cache for this GPU to prevent memory fragmentation
                 if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
+                    with torch.cuda.device(gpu_id):
+                        torch.cuda.empty_cache()
+                        torch.cuda.synchronize()
+                    import gc
+                    gc.collect()
 
                 return (chunk_idx, results)
 
@@ -500,18 +504,69 @@ except (IndexError, AttributeError, ValueError):
         
         logger.info(f"Original frame dimensions: {original_width}x{original_height} (aspect ratio: {original_aspect_ratio:.2f})")
         
+        # 🔥 ADAPTIVE RESOLUTION SCALING based on available VRAM 🔥
+        # ProPainter's memory usage scales with resolution^2 * sequence_length
+        # RAFT flow estimation is the memory bottleneck
+
+        # Determine which GPU to check
+        check_gpu_id = gpu_id if gpu_id is not None else 0
+
+        # Get available VRAM
+        if torch.cuda.is_available() and check_gpu_id < torch.cuda.device_count():
+            gpu_props = torch.cuda.get_device_properties(check_gpu_id)
+            total_vram_gb = gpu_props.total_memory / (1024**3)
+            free_vram_gb = (gpu_props.total_memory - torch.cuda.memory_allocated(check_gpu_id)) / (1024**3)
+
+            logger.info(f"GPU {check_gpu_id} VRAM: {free_vram_gb:.1f}GB free / {total_vram_gb:.1f}GB total")
+
+            # Adaptive resolution limits based on available VRAM
+            # These are conservative estimates to prevent OOM
+            if total_vram_gb >= 40:
+                # A100, H100: can handle 4K
+                max_dimension = 1920
+            elif total_vram_gb >= 24:
+                # RTX 3090, 4090, A6000: 1080p max
+                max_dimension = 1080
+            elif total_vram_gb >= 16:
+                # RTX 4080, 5070 Ti: 960p max
+                max_dimension = 960
+            elif total_vram_gb >= 12:
+                # RTX 3080, 4070: 720p max
+                max_dimension = 720
+            elif total_vram_gb >= 8:
+                # RTX 3060, 4060: 540p max
+                max_dimension = 540
+            else:
+                # Low VRAM: 480p max
+                max_dimension = 480
+
+            logger.info(f"VRAM-adaptive max dimension: {max_dimension}px (based on {total_vram_gb:.1f}GB VRAM)")
+        else:
+            # CPU fallback or no GPU info available
+            max_dimension = 960
+            logger.info(f"CPU mode or no GPU info - using default max dimension: {max_dimension}px")
+
         # Calculate target dimensions while preserving aspect ratio
-        # ProPainter works best with dimensions divisible by 32
-        # We'll scale the longer side to 960 while preserving aspect ratio
+        # Scale down to fit within max_dimension
         if original_width >= original_height:
             # Landscape or square: width is longer side
-            target_width = 960
-            target_height = int(target_width / original_aspect_ratio)
+            if original_width > max_dimension:
+                target_width = max_dimension
+                target_height = int(target_width / original_aspect_ratio)
+            else:
+                # Already within limits
+                target_width = original_width
+                target_height = original_height
         else:
             # Portrait: height is longer side
-            target_height = 960
-            target_width = int(target_height * original_aspect_ratio)
-        
+            if original_height > max_dimension:
+                target_height = max_dimension
+                target_width = int(target_height * original_aspect_ratio)
+            else:
+                # Already within limits
+                target_width = original_width
+                target_height = original_height
+
         # Ensure dimensions are divisible by 32 for ProPainter compatibility
         target_width = (target_width // 32) * 32
         target_height = (target_height // 32) * 32
@@ -520,8 +575,14 @@ except (IndexError, AttributeError, ValueError):
         target_width = max(target_width, 32)
         target_height = max(target_height, 32)
         
-        logger.info(f"ProPainter target dimensions: {target_width}x{target_height} (preserving aspect ratio)")
-        
+        # Calculate scale factor for logging
+        scale_factor = min(target_width / original_width, target_height / original_height)
+        logger.info(f"ProPainter processing dimensions: {target_width}x{target_height} (scale: {scale_factor:.2f}x)")
+
+        if scale_factor < 1.0:
+            logger.warning(f"⚠️  Downscaling from {original_width}x{original_height} to {target_width}x{target_height} to fit in VRAM")
+            logger.warning(f"   Output will be upscaled back to original resolution after inpainting")
+
         # Try with --save_frames to get individual frames instead of video
         cmd = [
             "python3", str(self.inference_script),
@@ -671,8 +732,30 @@ except (IndexError, AttributeError, ValueError):
             logger.error(f"❌ ProPainter Subprocess Crashed!")
             logger.error(f"Exit code: {e.returncode}")
             logger.error(f"STDOUT: {e.stdout[:1000] if e.stdout else 'None'}")
-            logger.error(f"STDERR: {e.stderr[:1000] if e.stderr else 'None'}")
-            # Пытаемся освободить память перед падением
+            stderr_msg = e.stderr[:2000] if e.stderr else 'None'
+            logger.error(f"STDERR: {stderr_msg}")
+
+            # Check for OOM error in stderr
+            if e.stderr and ("out of memory" in e.stderr.lower() or "oom" in e.stderr.lower() or "cuda error" in e.stderr.lower()):
+                logger.error("=" * 60)
+                logger.error("🔥 OUT OF MEMORY ERROR DETECTED!")
+                logger.error("=" * 60)
+                logger.error(f"ProPainter ran out of GPU memory processing {target_width}x{target_height} resolution")
+                logger.error(f"Current VRAM limit: {max_dimension}px (based on {total_vram_gb if 'total_vram_gb' in locals() else 'unknown'}GB)")
+                logger.error("")
+                logger.error("💡 Recommendations:")
+                logger.error("  1. Reduce video resolution before processing")
+                logger.error("  2. Process fewer frames per chunk (current: 20)")
+                logger.error("  3. Use a GPU with more VRAM")
+                logger.error("  4. The system will automatically retry with lower resolution")
+                logger.error("=" * 60)
+
+            # Clear CUDA cache before raising error
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                import gc
+                gc.collect()
+
             raise RuntimeError(f"ProPainter execution failed with code {e.returncode}")
 
     def _collect_chunk_results(self, chunk_info: dict) -> dict:
@@ -823,7 +906,34 @@ except (IndexError, AttributeError, ValueError):
 
             logger.info(f"✅ Resized {resized_count}/{len(output_frames)} frames to {original_width}x{original_height}")
         else:
-            logger.info(f"✅ Aspect ratio preserved correctly (diff: {aspect_diff:.4f})")
+            # Aspect ratio is correct, but check if resolution differs
+            # (ProPainter may have downscaled for VRAM management)
+            if output_width != original_width or output_height != original_height:
+                scale_ratio = original_width / output_width
+                logger.info(f"Resolution differs: {output_width}x{output_height} -> {original_width}x{original_height} ({scale_ratio:.2f}x)")
+                logger.info(f"Upscaling frames back to original resolution...")
+
+                resized_count = 0
+                for frame_path in output_frames:
+                    try:
+                        frame = cv2.imread(str(frame_path))
+                        if frame is None:
+                            continue
+
+                        # Upscale back to original dimensions using high-quality interpolation
+                        resized = cv2.resize(frame, (original_width, original_height),
+                                           interpolation=cv2.INTER_LANCZOS4)
+
+                        # Save resized frame
+                        cv2.imwrite(str(frame_path), resized)
+                        resized_count += 1
+
+                    except Exception as e:
+                        logger.error(f"Failed to upscale frame {frame_path}: {e}")
+
+                logger.info(f"✅ Upscaled {resized_count}/{len(output_frames)} frames to {original_width}x{original_height}")
+            else:
+                logger.info(f"✅ Aspect ratio and resolution preserved correctly (diff: {aspect_diff:.4f})")
 
         return output_frames
 
