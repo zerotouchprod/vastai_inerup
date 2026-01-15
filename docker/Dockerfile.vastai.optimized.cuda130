@@ -150,7 +150,7 @@ RUN pip install --no-cache-dir imageio scipy scikit-image && \
     pip install --no-cache-dir spatial-correlation-sampler && \
     echo "✅ spatial-correlation-sampler installed successfully" && \
     # Download model weights
-    cd /opt/ProPainter/weights && \
+    cd /opt/ProPainter/weights && \k
     wget -q --show-progress https://github.com/sczhou/ProPainter/releases/download/v0.1.0/ProPainter.pth && \
     wget -q --show-progress https://github.com/sczhou/ProPainter/releases/download/v0.1.0/raft-things.pth && \
     wget -q --show-progress https://github.com/sczhou/ProPainter/releases/download/v0.1.0/recurrent_flow_completion.pth && \
