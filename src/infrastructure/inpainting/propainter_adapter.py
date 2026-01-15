@@ -78,6 +78,9 @@ class ProPainterAdapter:
         self.CHUNK_SIZE = 3     # Process only 3 frames at a time (ABSOLUTE MINIMUM)
         self.OVERLAP = 0        # No overlap (quality trade-off for memory)
 
+        # CRITICAL: Validate ProPainter RAFT is working before any processing
+        self._validate_propainter_raft()
+
     def _patch_propainter_misc(self) -> None:
         """
         Emergency patch for ProPainter's model/misc.py to fix PyTorch version parsing bug.
@@ -184,6 +187,97 @@ except (IndexError, AttributeError, ValueError):
         except Exception as e:
             logger.warning(f"Failed to patch ProPainter misc.py: {e}")
             logger.warning("ProPainter may fail on non-standard PyTorch versions")
+
+    def _validate_propainter_raft(self) -> None:
+        """
+        Validate that ProPainter RAFT can initialize correctly.
+        This catches spatial-correlation-sampler CUDA compatibility issues early.
+
+        Raises:
+            RuntimeError: If RAFT cannot be initialized (indicates CUDA/build mismatch)
+        """
+        if not self.inference_script.exists():
+            logger.warning("⚠️  Skipping RAFT validation - ProPainter not found")
+            return
+
+        logger.info("🔍 Validating ProPainter RAFT initialization...")
+
+        try:
+            import sys
+            import tempfile
+
+            # Create a minimal test script that tries to initialize RAFT
+            test_script = f"""
+import sys
+sys.path.insert(0, '{self.root}')
+import torch
+from model.modules.flow_comp_raft import RAFT
+
+# Try to create RAFT model (this will fail if spatial-correlation-sampler is broken)
+try:
+    raft = RAFT()
+    print("✅ RAFT initialized successfully")
+except Exception as e:
+    print(f"❌ RAFT initialization failed: {{e}}")
+    import traceback
+    traceback.print_exc()
+    sys.exit(1)
+"""
+
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
+                f.write(test_script)
+                test_file = f.name
+
+            try:
+                result = subprocess.run(
+                    ['python3', test_file],
+                    capture_output=True,
+                    text=True,
+                    timeout=30
+                )
+
+                if result.returncode != 0:
+                    logger.error("❌ ProPainter RAFT validation FAILED!")
+                    logger.error(f"STDOUT: {result.stdout}")
+                    logger.error(f"STDERR: {result.stderr}")
+                    logger.error("")
+                    logger.error("=" * 80)
+                    logger.error("CRITICAL ERROR: ProPainter RAFT cannot initialize!")
+                    logger.error("=" * 80)
+                    logger.error("")
+                    logger.error("This usually means:")
+                    logger.error("  1. spatial-correlation-sampler was built with wrong CUDA version")
+                    logger.error("  2. PyTorch CUDA version doesn't match runtime CUDA")
+                    logger.error("  3. Missing CUDA libraries at runtime")
+                    logger.error("")
+                    logger.error("Docker image needs to be rebuilt with matching CUDA versions!")
+                    logger.error("")
+                    logger.error("=" * 80)
+                    raise RuntimeError(
+                        "ProPainter RAFT validation failed - spatial-correlation-sampler CUDA mismatch. "
+                        "Docker image must be rebuilt with correct CUDA version."
+                    )
+                else:
+                    logger.info("✅ ProPainter RAFT validation passed")
+                    logger.info(f"   {result.stdout.strip()}")
+
+            finally:
+                # Clean up test file
+                try:
+                    os.unlink(test_file)
+                except:
+                    pass
+
+        except subprocess.TimeoutExpired:
+            logger.error("❌ RAFT validation timed out after 30 seconds")
+            raise RuntimeError("ProPainter RAFT validation timed out - possible CUDA deadlock")
+        except Exception as e:
+            if "spatial-correlation-sampler" in str(e) or "CUDA" in str(e):
+                logger.error(f"❌ RAFT validation failed with CUDA error: {e}")
+                raise RuntimeError(f"ProPainter RAFT CUDA validation failed: {e}")
+            else:
+                logger.warning(f"⚠️  RAFT validation encountered non-critical error: {e}")
+                # Don't fail on non-CUDA errors during validation
 
     def process(self, input_path, mask_dir: Path, output_path: Path) -> Path:
         """
