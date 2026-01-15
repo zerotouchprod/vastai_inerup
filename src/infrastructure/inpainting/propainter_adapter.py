@@ -561,7 +561,7 @@ except (IndexError, AttributeError, ValueError):
             if total_vram_gb >= 40:
                 # A100, H100: high VRAM but still very conservative
                 max_dimension = 720
-            elif total_vram_gb >= 24:
+            elif total_vram_gb >= 23:  # RTX 3090/4090 = 23.6GB (not 24!)
                 # RTX 3090, 4090, A6000: NUCLEAR OPTION
                 # RAFT CorrBlock still OOMs even at 540p with portrait
                 max_dimension = 360  # Absolute minimum (was 540)

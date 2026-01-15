@@ -5,25 +5,36 @@ import sys
 # ==========================================
 # VAST.AI MULTI-GPU FIX
 # ==========================================
-# Vast.ai sets CUDA_VISIBLE_DEVICES=0 by default, limiting to 1 GPU
-# Fix this automatically before any torch imports
-if os.environ.get('CUDA_VISIBLE_DEVICES') == '0':
-    # Check if nvidia-smi shows multiple GPUs
-    try:
-        import subprocess
-        result = subprocess.run(['nvidia-smi', '--list-gpus'],
-                              capture_output=True, text=True, timeout=5)
-        if result.returncode == 0:
-            gpu_count = len([line for line in result.stdout.strip().split('\n') if line])
-            if gpu_count > 1:
-                print(f"⚠️  Detected {gpu_count} GPUs but CUDA_VISIBLE_DEVICES=0")
+# Vast.ai may limit GPU visibility - fix this automatically before any torch imports
+try:
+    import subprocess
+    result = subprocess.run(['nvidia-smi', '--list-gpus'],
+                          capture_output=True, text=True, timeout=5)
+    if result.returncode == 0:
+        gpu_lines = [line for line in result.stdout.strip().split('\n') if line]
+        gpu_count = len(gpu_lines)
+
+        cuda_visible = os.environ.get('CUDA_VISIBLE_DEVICES', '')
+
+        # Check if we need to fix GPU visibility
+        if gpu_count > 1:
+            # Count how many GPUs are currently visible
+            if cuda_visible == '0' or cuda_visible == '':
+                print(f"⚠️  Detected {gpu_count} GPUs but CUDA_VISIBLE_DEVICES='{cuda_visible}'")
                 print(f"   Fixing to enable all {gpu_count} GPUs for parallel processing...")
                 os.environ['CUDA_VISIBLE_DEVICES'] = ','.join(str(i) for i in range(gpu_count))
                 print(f"   ✅ Set CUDA_VISIBLE_DEVICES={os.environ['CUDA_VISIBLE_DEVICES']}")
-    except Exception:
-        # If nvidia-smi fails, just set to 0,1 (common case for vast.ai 2x GPU instances)
+            elif ',' not in cuda_visible and cuda_visible.isdigit():
+                # Single GPU specified, but multiple available
+                print(f"⚠️  Detected {gpu_count} GPUs but CUDA_VISIBLE_DEVICES='{cuda_visible}' (single GPU)")
+                print(f"   Fixing to enable all {gpu_count} GPUs for parallel processing...")
+                os.environ['CUDA_VISIBLE_DEVICES'] = ','.join(str(i) for i in range(gpu_count))
+                print(f"   ✅ Set CUDA_VISIBLE_DEVICES={os.environ['CUDA_VISIBLE_DEVICES']}")
+except Exception as e:
+    # If nvidia-smi fails, try to enable multi-GPU anyway
+    if not os.environ.get('CUDA_VISIBLE_DEVICES'):
         os.environ['CUDA_VISIBLE_DEVICES'] = '0,1'
-        print("⚠️  CUDA_VISIBLE_DEVICES was '0', changed to '0,1' for multi-GPU support")
+        print(f"⚠️  Could not detect GPUs (error: {e}), defaulting to CUDA_VISIBLE_DEVICES=0,1")
 # ==========================================
 
 import argparse
