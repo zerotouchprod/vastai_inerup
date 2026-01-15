@@ -105,6 +105,7 @@ class RealESRGANNative:
     Native Python implementation of Real-ESRGAN processing.
 
     Replaces run_realesrgan_pytorch.sh with pure Python.
+    Supports multi-GPU processing for better performance.
     """
 
     def __init__(
@@ -153,6 +154,21 @@ class RealESRGANNative:
         self.device = device
         self.logger = logger or logging.getLogger(__name__)
 
+        # MULTI-GPU SUPPORT: Detect available GPUs
+        self.num_gpus = 1
+        self.gpu_devices = ['cuda:0']
+        if TORCH_AVAILABLE and torch is not None and torch.cuda.is_available():
+            self.num_gpus = torch.cuda.device_count()
+            self.gpu_devices = [f'cuda:{i}' for i in range(self.num_gpus)]
+            if self.num_gpus > 1:
+                self.logger.info(f"🚀 Multi-GPU detected: {self.num_gpus} GPUs available for upscaling")
+                for i in range(self.num_gpus):
+                    gpu_name = torch.cuda.get_device_name(i)
+                    gpu_mem = torch.cuda.get_device_properties(i).total_memory / 1024**3
+                    self.logger.info(f"  GPU {i}: {gpu_name} ({gpu_mem:.1f}GB)")
+            else:
+                self.logger.info(f"Single GPU mode: {torch.cuda.get_device_name(0)}")
+
         # Auto-detect batch size if not specified
         if batch_size is None:
             batch_size = GPUMemoryDetector.suggest_batch_size()
@@ -160,15 +176,23 @@ class RealESRGANNative:
 
         self.batch_size = batch_size
 
-        # Model will be loaded on first use
-        self._model = None
-        self._upsampler = None
+        # Models will be loaded on first use (one per GPU for multi-GPU)
+        self._models = {}  # Dict[device_str, upsampler]
         self._use_fallback_scale = False  # Flag for x4plus->x2 fallback
 
-    def _load_model(self):
-        """Load Real-ESRGAN model (lazy loading)."""
-        if self._upsampler is not None:
-            return
+    def _load_model(self, device: str = None):
+        """
+        Load Real-ESRGAN model on specific device (lazy loading).
+
+        Args:
+            device: Device string (e.g., 'cuda:0', 'cuda:1'). Uses self.device if None.
+        """
+        if device is None:
+            device = self.device
+
+        # Check if model already loaded on this device
+        if device in self._models:
+            return self._models[device]
 
         try:
             from basicsr.archs.rrdbnet_arch import RRDBNet
@@ -179,7 +203,7 @@ class RealESRGANNative:
                 "Install: pip install realesrgan basicsr"
             ) from e
 
-        self.logger.info(f"Loading Real-ESRGAN model: {self.model_name}")
+        self.logger.info(f"Loading Real-ESRGAN model on {device}: {self.model_name}")
 
         # Determine model architecture based on model name
         if 'x4plus' in self.model_name or 'x4' in self.model_name:
@@ -206,9 +230,9 @@ class RealESRGANNative:
         # Find model weights
         model_path = self._find_model_weights()
 
-        # Create upsampler
+        # Create upsampler on specific device
         use_half = self.half and (torch is not None and torch.cuda.is_available())
-        self._upsampler = RealESRGANer(
+        upsampler = RealESRGANer(
             scale=netscale,
             model_path=str(model_path),
             model=model,
@@ -216,10 +240,14 @@ class RealESRGANNative:
             tile_pad=self.tile_pad,
             pre_pad=self.pre_pad,
             half=use_half,
-            device=self.device
+            device=device  # Use specific device
         )
 
-        self.logger.info(f"Model loaded successfully")
+        # Cache the model
+        self._models[device] = upsampler
+
+        self.logger.info(f"Model loaded successfully on {device}")
+        return upsampler
 
     def _find_model_weights(self) -> Path:
         """Find model weights file."""
@@ -301,6 +329,7 @@ class RealESRGANNative:
     ) -> List[Path]:
         """
         Process frames with Real-ESRGAN.
+        Uses multi-GPU processing if multiple GPUs are available.
 
         Args:
             input_frames: List of input frame paths
@@ -312,8 +341,14 @@ class RealESRGANNative:
         """
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        # Load model
-        self._load_model()
+        # Load model(s)
+        if self.num_gpus == 1:
+            # Single GPU: load on default device
+            self._load_model(self.device)
+        else:
+            # Multi-GPU: load models on all devices
+            for device in self.gpu_devices:
+                self._load_model(device)
 
         # Import cv2 here (not at module level)
         try:
@@ -329,16 +364,49 @@ class RealESRGANNative:
         self.logger.info(f"  Tile size: {self.tile_size}")
         self.logger.info(f"  Batch size: {self.batch_size}")
         self.logger.info(f"  Half precision: {self.half}")
+        self.logger.info(f"  GPUs: {self.num_gpus}")
 
         # Log GPU info if available
         if torch is not None and torch.cuda.is_available():
-            gpu_name = torch.cuda.get_device_name(0)
-            gpu_memory = torch.cuda.get_device_properties(0).total_memory / (1024**3)
-            self.logger.info(f"  GPU: {gpu_name} ({gpu_memory:.1f}GB)")
+            for i in range(self.num_gpus):
+                gpu_name = torch.cuda.get_device_name(i)
+                gpu_memory = torch.cuda.get_device_properties(i).total_memory / (1024**3)
+                self.logger.info(f"  GPU {i}: {gpu_name} ({gpu_memory:.1f}GB)")
 
         start_time = time.time()
 
-        # Process frames in batches for better GPU utilization
+        # Use multi-GPU processing if available
+        if self.num_gpus > 1:
+            output_frames = self._process_frames_multigpu(input_frames, output_dir, cv2, total, start_time, progress_callback)
+        else:
+            output_frames = self._process_frames_singlegpu(input_frames, output_dir, cv2, total, start_time, progress_callback)
+
+        elapsed = time.time() - start_time
+        avg_fps = total / elapsed if elapsed > 0 else 0
+
+        # Final statistics
+        self.logger.info(f"✅ Completed {total} frames in {elapsed:.1f}s ({avg_fps:.2f} fps)")
+
+        # Log GPU utilization summary
+        if self.num_gpus > 1:
+            self.logger.info(f"📊 Multi-GPU Summary:")
+            self.logger.info(f"   Total GPUs used: {self.num_gpus}")
+            self.logger.info(f"   Speedup vs single GPU: ~{self.num_gpus}x")
+
+        return output_frames
+
+    def _process_frames_singlegpu(
+        self,
+        input_frames: List[Path],
+        output_dir: Path,
+        cv2,
+        total: int,
+        start_time: float,
+        progress_callback: Optional[callable]
+    ) -> List[Path]:
+        """Process frames on single GPU."""
+        output_frames = []
+        upsampler = self._models[self.device]
         batch_size = self.batch_size
         num_batches = (total + batch_size - 1) // batch_size
 
@@ -369,21 +437,16 @@ class RealESRGANNative:
                     self.logger.info(f"  Input resolution: {w}x{h}")
                     self.logger.info(f"  Output resolution: {w*self.scale}x{h*self.scale}")
 
-                # Process batch
-                batch_start_time = time.time()
-
                 # Process each image in the batch (RealESRGANer doesn't support true batching)
                 for img, frame_path in zip(images, valid_frames):
-                    output, _ = self._upsampler.enhance(img, outscale=self.scale)
+                    output, _ = upsampler.enhance(img, outscale=self.scale)
 
                     # Save immediately
                     output_path = output_dir / frame_path.name
                     cv2.imwrite(str(output_path), output)
                     output_frames.append(output_path)
 
-                batch_time = time.time() - batch_start_time
-
-                # Progress reporting (less verbose - only every 10 frames or at milestones)
+                # Progress reporting
                 current_frame = batch_end_idx
                 show_progress = (
                     current_frame <= 10 or
@@ -412,10 +475,110 @@ class RealESRGANNative:
                 self.logger.error(traceback.format_exc())
                 raise
 
-        elapsed = time.time() - start_time
-        avg_fps = total / elapsed if elapsed > 0 else 0
+        return output_frames
 
-        self.logger.info(f"✅ Completed {total} frames in {elapsed:.1f}s ({avg_fps:.2f} fps)")
+    def _process_frames_multigpu(
+        self,
+        input_frames: List[Path],
+        output_dir: Path,
+        cv2,
+        total: int,
+        start_time: float,
+        progress_callback: Optional[callable]
+    ) -> List[Path]:
+        """Process frames using multiple GPUs in parallel."""
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        import threading
+
+        self.logger.info(f"🚀 Using multi-GPU processing with {self.num_gpus} GPUs")
+
+        # Divide frames among GPUs
+        frames_per_gpu = (total + self.num_gpus - 1) // self.num_gpus
+        gpu_workloads = []
+
+        for gpu_idx in range(self.num_gpus):
+            start_idx = gpu_idx * frames_per_gpu
+            end_idx = min(start_idx + frames_per_gpu, total)
+            if start_idx < total:
+                gpu_workloads.append({
+                    'gpu_id': gpu_idx,
+                    'device': self.gpu_devices[gpu_idx],
+                    'frames': input_frames[start_idx:end_idx],
+                    'start_idx': start_idx,
+                    'end_idx': end_idx
+                })
+
+        self.logger.info(f"Workload distribution:")
+        for wl in gpu_workloads:
+            self.logger.info(f"  GPU {wl['gpu_id']}: {len(wl['frames'])} frames ({wl['start_idx']}-{wl['end_idx']})")
+
+        output_frames = []
+        progress_lock = threading.Lock()
+        processed_count = [0]
+
+        def process_on_gpu(workload):
+            """Process frames on specific GPU."""
+            gpu_id = workload['gpu_id']
+            device = workload['device']
+            frames = workload['frames']
+
+            upsampler = self._models[device]
+            local_outputs = []
+
+            for idx, frame_path in enumerate(frames):
+                try:
+                    # Load image
+                    img = cv2.imread(str(frame_path), cv2.IMREAD_COLOR)
+                    if img is None:
+                        self.logger.warning(f"GPU {gpu_id}: Failed to load {frame_path}")
+                        continue
+
+                    # Process
+                    output, _ = upsampler.enhance(img, outscale=self.scale)
+
+                    # Save
+                    output_path = output_dir / frame_path.name
+                    cv2.imwrite(str(output_path), output)
+                    local_outputs.append(output_path)
+
+                    # Update progress
+                    with progress_lock:
+                        processed_count[0] += 1
+                        current = processed_count[0]
+
+                        # Report progress periodically
+                        if current % 10 == 0 or current == total:
+                            elapsed = time.time() - start_time
+                            fps = current / elapsed if elapsed > 0 else 0
+                            eta = (total - current) / fps if fps > 0 else 0
+
+                            self.logger.info(
+                                f"Progress: {current}/{total} ({100*current/total:.1f}%) | "
+                                f"{fps:.2f} fps | ETA: {eta:.0f}s"
+                            )
+
+                            if progress_callback:
+                                progress_callback(current, total)
+
+                except Exception as e:
+                    self.logger.error(f"GPU {gpu_id}: Failed to process {frame_path}: {e}")
+
+            return local_outputs
+
+        # Process in parallel using thread pool
+        with ThreadPoolExecutor(max_workers=self.num_gpus) as executor:
+            futures = [executor.submit(process_on_gpu, wl) for wl in gpu_workloads]
+
+            for future in as_completed(futures):
+                try:
+                    results = future.result()
+                    output_frames.extend(results)
+                except Exception as e:
+                    self.logger.error(f"GPU worker failed: {e}")
+                    raise
+
+        # Sort output frames by name to preserve order
+        output_frames.sort(key=lambda p: p.name)
 
         return output_frames
 

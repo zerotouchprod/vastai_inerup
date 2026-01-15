@@ -354,6 +354,9 @@ class VideoProcessingOrchestrator:
 
             total_time = self._metrics.stop_timer('total_job')
 
+            # Log GPU utilization summary
+            self._log_gpu_utilization_summary(job)
+
             result = ProcessingResult(
                 success=True,
                 output_path=output_video,
@@ -661,6 +664,90 @@ class VideoProcessingOrchestrator:
             return f"watermark_removed/{base_name}-{timestamp}.mp4"
         else:
             return f"both/{base_name}-{timestamp}.mp4"
+
+    def _log_gpu_utilization_summary(self, job: 'Job'):
+        """Log summary of GPU utilization for this job."""
+        try:
+            import torch
+            if not torch.cuda.is_available():
+                return
+
+            num_gpus = torch.cuda.device_count()
+            if num_gpus == 0:
+                return
+
+            self._logger.info("=" * 60)
+            self._logger.info("📊 GPU UTILIZATION SUMMARY")
+            self._logger.info("=" * 60)
+
+            # Log available GPUs
+            self._logger.info(f"Available GPUs: {num_gpus}")
+            for i in range(num_gpus):
+                gpu_name = torch.cuda.get_device_name(i)
+                gpu_memory = torch.cuda.get_device_properties(i).total_memory / (1024**3)
+                self._logger.info(f"  GPU {i}: {gpu_name} ({gpu_memory:.1f}GB)")
+
+            # Check which processors support multi-GPU
+            multi_gpu_support = []
+
+            if job.mode == "upscale" and self._upscaler:
+                processor_name = type(self._upscaler).__name__
+                if hasattr(self._upscaler, '_processor'):
+                    # Wrapper - check inner processor
+                    inner = self._upscaler._processor
+                    if hasattr(inner, 'num_gpus'):
+                        used_gpus = getattr(inner, 'num_gpus', 1)
+                        multi_gpu_support.append(f"Upscaler ({processor_name}): {used_gpus}/{num_gpus} GPUs used")
+                    else:
+                        multi_gpu_support.append(f"Upscaler ({processor_name}): single GPU mode")
+                else:
+                    multi_gpu_support.append(f"Upscaler ({processor_name}): unknown GPU usage")
+
+            elif job.mode == "interp" and self._interpolator:
+                processor_name = type(self._interpolator).__name__
+                if hasattr(self._interpolator, '_processor'):
+                    inner = self._interpolator._processor
+                    if hasattr(inner, 'num_gpus'):
+                        used_gpus = getattr(inner, 'num_gpus', 1)
+                        multi_gpu_support.append(f"Interpolator ({processor_name}): {used_gpus}/{num_gpus} GPUs used")
+                    else:
+                        multi_gpu_support.append(f"Interpolator ({processor_name}): single GPU mode")
+                else:
+                    multi_gpu_support.append(f"Interpolator ({processor_name}): unknown GPU usage")
+
+            elif job.mode in ["remove-subtitles", "remove-watermark"]:
+                # ProPainter-based modes
+                processor_name = "ProPainter"
+                # ProPainter tracks GPU usage in adapter
+                from src.infrastructure.inpainting.propainter_adapter import ProPainterAdapter
+                adapter = ProPainterAdapter()
+                if hasattr(adapter, 'num_gpus'):
+                    used_gpus = getattr(adapter, 'num_gpus', 1)
+                    multi_gpu_support.append(f"{processor_name}: {used_gpus}/{num_gpus} GPUs used")
+                else:
+                    multi_gpu_support.append(f"{processor_name}: single GPU mode")
+
+            # Log utilization
+            if multi_gpu_support:
+                self._logger.info("\nProcessor GPU Utilization:")
+                for item in multi_gpu_support:
+                    self._logger.info(f"  {item}")
+
+            # Recommendation
+            if num_gpus > 1:
+                all_gpus_used = any(f"{num_gpus}/{num_gpus} GPUs used" in s for s in multi_gpu_support)
+                if all_gpus_used:
+                    self._logger.info(f"\n✅ All {num_gpus} GPUs were utilized")
+                    self._logger.info(f"   Expected speedup: ~{num_gpus}x vs single GPU")
+                else:
+                    self._logger.info(f"\n⚠️  Multi-GPU available but not fully utilized")
+                    self._logger.info(f"   Consider upgrading processors for better performance")
+
+            self._logger.info("=" * 60)
+
+        except Exception as e:
+            # Don't fail the job if GPU logging fails
+            self._logger.debug(f"Failed to log GPU utilization: {e}")
 
     def _test_subtitle_remover(self):
         """Test if subtitle remover is functional before extracting frames."""
