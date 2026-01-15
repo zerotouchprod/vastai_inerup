@@ -22,17 +22,50 @@ class ProPainterAdapter:
             self._patch_propainter_misc()
 
         # MULTI-GPU SUPPORT: Detect available GPUs
+        # CRITICAL FIX: Ensure CUDA_VISIBLE_DEVICES doesn't limit GPU visibility
+        import os as os_module
+        cuda_visible = os_module.environ.get('CUDA_VISIBLE_DEVICES', None)
+
+        if cuda_visible is not None and cuda_visible != '':
+            logger.warning(f"⚠️  CUDA_VISIBLE_DEVICES is set to: {cuda_visible}")
+            logger.warning(f"   This may limit GPU visibility. Clearing to detect all GPUs...")
+            # Save original value
+            original_cuda_visible = cuda_visible
+            # Clear it temporarily to detect all GPUs
+            del os_module.environ['CUDA_VISIBLE_DEVICES']
+            # Force CUDA reinitialization
+            if torch.cuda.is_available():
+                torch.cuda.init()
+            # Restore after detection
+            os_module.environ['CUDA_VISIBLE_DEVICES'] = original_cuda_visible
+
         if torch.cuda.is_available():
+            # Force CUDA initialization and device cache refresh
+            torch.cuda.init()
+
+            # Log environment variables that might affect GPU visibility
+            cuda_visible = os_module.environ.get('CUDA_VISIBLE_DEVICES', 'not set')
+            logger.info(f"CUDA_VISIBLE_DEVICES: {cuda_visible}")
+
             self.num_gpus = torch.cuda.device_count()
             self.devices = [f"cuda:{i}" for i in range(self.num_gpus)]
+
+            logger.info(f"🔍 GPU Detection: Found {self.num_gpus} CUDA device(s)")
+
             if self.num_gpus > 1:
                 logger.info(f"🚀 ProPainter Multi-GPU detected: {self.num_gpus} GPUs available")
+                total_vram_gb = 0
                 for i in range(self.num_gpus):
                     gpu_name = torch.cuda.get_device_name(i)
                     gpu_mem = torch.cuda.get_device_properties(i).total_memory / 1024**3
+                    total_vram_gb += gpu_mem
                     logger.info(f"  GPU {i}: {gpu_name} ({gpu_mem:.1f}GB)")
+                logger.info(f"  Total VRAM: {total_vram_gb:.1f}GB across {self.num_gpus} GPUs")
+                logger.info(f"  🎯 Multi-GPU parallel processing will be used for chunked videos")
             else:
                 logger.info(f"ProPainter using single GPU: {torch.cuda.get_device_name(0)}")
+                logger.warning(f"⚠️  Expected multiple GPUs but only detected 1")
+                logger.warning(f"   Run 'python diagnose_multigpu.py' to troubleshoot")
             self.device = "cuda:0"  # Default to first GPU
         else:
             self.num_gpus = 1

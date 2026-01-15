@@ -10,7 +10,7 @@ services:
     entrypoint: /bin/bash
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
-      - CUDA_VISIBLE_DEVICES=0
+      - CUDA_VISIBLE_DEVICES=all  # Changed from '0' to 'all' to enable multi-GPU support
       - DISABLE_MODEL_SOURCE_CHECK=True
       - PROPAINTER_ROOT=/opt/ProPainter
       - PYTHONPATH=/workspace/project/src:/opt/ProPainter
