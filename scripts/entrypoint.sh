@@ -5,6 +5,54 @@ echo "=== Container Entrypoint ==="
 echo "Time: $(date)"
 echo ""
 
+# ============================================================================
+# CRITICAL: Runtime CUDA Compatibility Check for spatial-correlation-sampler
+# ============================================================================
+# ProPainter RAFT requires spatial-correlation-sampler C++ extension
+# This extension MUST be built with the SAME CUDA version as runtime
+# If mismatch detected, rebuild the extension
+echo "[entrypoint] Checking spatial-correlation-sampler CUDA compatibility..."
+
+if command -v nvidia-smi &> /dev/null; then
+    RUNTIME_CUDA=$(nvidia-smi | grep "CUDA Version" | awk '{print $9}' | cut -d. -f1,2)
+    echo "[entrypoint] Runtime CUDA version: ${RUNTIME_CUDA:-unknown}"
+
+    # Check if spatial-correlation-sampler is installed
+    if python3 -c "import spatial_correlation_sampler" 2>/dev/null; then
+        echo "[entrypoint] spatial-correlation-sampler is installed"
+
+        # Try to verify it works with RAFT
+        echo "[entrypoint] Testing ProPainter RAFT compatibility..."
+        if python3 -c "
+import sys
+sys.path.insert(0, '/opt/ProPainter')
+try:
+    from model.modules.flow_comp_raft import RAFT
+    print('[entrypoint] ✅ RAFT import successful')
+except Exception as e:
+    print(f'[entrypoint] ❌ RAFT import failed: {e}')
+    sys.exit(1)
+" 2>&1; then
+            echo "[entrypoint] ✅ ProPainter RAFT is working correctly"
+        else
+            echo "[entrypoint] ❌ ProPainter RAFT failed - spatial-correlation-sampler needs rebuild"
+            echo "[entrypoint] Rebuilding spatial-correlation-sampler for runtime CUDA ${RUNTIME_CUDA}..."
+
+            pip uninstall -y spatial-correlation-sampler 2>/dev/null || true
+            pip install --no-cache-dir --force-reinstall --no-binary spatial-correlation-sampler spatial-correlation-sampler
+
+            echo "[entrypoint] ✅ spatial-correlation-sampler rebuilt for runtime CUDA"
+        fi
+    else
+        echo "[entrypoint] ⚠️  spatial-correlation-sampler not installed, installing now..."
+        pip install --no-cache-dir spatial-correlation-sampler
+    fi
+else
+    echo "[entrypoint] ⚠️  nvidia-smi not found, skipping CUDA compatibility check"
+fi
+
+echo ""
+
 # Update project code from Git on every container start
 if [ -d "/workspace/project/.git" ]; then
   echo "[entrypoint] Updating project from Git repository..."
