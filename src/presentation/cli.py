@@ -1,6 +1,31 @@
 """CLI interface for video processing pipeline."""
 import os
 import sys
+
+# ==========================================
+# VAST.AI MULTI-GPU FIX
+# ==========================================
+# Vast.ai sets CUDA_VISIBLE_DEVICES=0 by default, limiting to 1 GPU
+# Fix this automatically before any torch imports
+if os.environ.get('CUDA_VISIBLE_DEVICES') == '0':
+    # Check if nvidia-smi shows multiple GPUs
+    try:
+        import subprocess
+        result = subprocess.run(['nvidia-smi', '--list-gpus'],
+                              capture_output=True, text=True, timeout=5)
+        if result.returncode == 0:
+            gpu_count = len([line for line in result.stdout.strip().split('\n') if line])
+            if gpu_count > 1:
+                print(f"⚠️  Detected {gpu_count} GPUs but CUDA_VISIBLE_DEVICES=0")
+                print(f"   Fixing to enable all {gpu_count} GPUs for parallel processing...")
+                os.environ['CUDA_VISIBLE_DEVICES'] = ','.join(str(i) for i in range(gpu_count))
+                print(f"   ✅ Set CUDA_VISIBLE_DEVICES={os.environ['CUDA_VISIBLE_DEVICES']}")
+    except Exception:
+        # If nvidia-smi fails, just set to 0,1 (common case for vast.ai 2x GPU instances)
+        os.environ['CUDA_VISIBLE_DEVICES'] = '0,1'
+        print("⚠️  CUDA_VISIBLE_DEVICES was '0', changed to '0,1' for multi-GPU support")
+# ==========================================
+
 import argparse
 from pathlib import Path
 from datetime import datetime
