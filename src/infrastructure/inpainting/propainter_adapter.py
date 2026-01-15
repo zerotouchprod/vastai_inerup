@@ -74,9 +74,9 @@ class ProPainterAdapter:
             logger.info("ProPainter using CPU (no CUDA available)")
 
         # Sliding Window settings for OOM protection (Exit code -9)
-        # Ultra-conservative settings for high-resolution videos
-        self.CHUNK_SIZE = 10    # Process 10 frames at a time (reduced from 20 due to persistent OOM)
-        self.OVERLAP = 2        # Reduced overlap proportionally
+        # EMERGENCY: Ultra-ultra-conservative settings due to persistent OOM
+        self.CHUNK_SIZE = 5     # Process only 5 frames at a time (emergency reduction)
+        self.OVERLAP = 1        # Minimal overlap
 
     def _patch_propainter_misc(self) -> None:
         """
@@ -556,27 +556,27 @@ except (IndexError, AttributeError, ValueError):
             logger.info(f"GPU {check_gpu_id} VRAM: {free_vram_gb:.1f}GB free / {total_vram_gb:.1f}GB total")
 
             # Adaptive resolution limits based on available VRAM
-            # These are ULTRA-CONSERVATIVE estimates to prevent OOM in RAFT flow estimation
-            # RAFT memory usage: O(resolution^2 * num_frames), very sensitive to resolution
+            # EMERGENCY: Even more conservative due to persistent RAFT OOM errors
+            # RAFT memory usage: O(resolution^2 * num_frames), extremely sensitive
             if total_vram_gb >= 40:
-                # A100, H100: can handle high-res but still conservative
-                max_dimension = 1440
+                # A100, H100: high VRAM but still conservative
+                max_dimension = 1080
             elif total_vram_gb >= 24:
-                # RTX 3090, 4090, A6000: be very conservative
-                # Even 1080p can OOM with portrait videos due to RAFT
-                max_dimension = 720  # Reduced from 1080 to prevent OOM
+                # RTX 3090, 4090, A6000: EMERGENCY setting
+                # Even 720p with portrait videos causes OOM in RAFT
+                max_dimension = 540  # Emergency reduction from 720
             elif total_vram_gb >= 16:
-                # RTX 4080, 5070 Ti: 640p max
-                max_dimension = 640
-            elif total_vram_gb >= 12:
-                # RTX 3080, 4070: 540p max
-                max_dimension = 540
-            elif total_vram_gb >= 8:
-                # RTX 3060, 4060: 480p max
+                # RTX 4080, 5070 Ti: 480p max
                 max_dimension = 480
-            else:
-                # Low VRAM: 360p max
+            elif total_vram_gb >= 12:
+                # RTX 3080, 4070: 360p max
                 max_dimension = 360
+            elif total_vram_gb >= 8:
+                # RTX 3060, 4060: 360p max
+                max_dimension = 360
+            else:
+                # Low VRAM: 288p max
+                max_dimension = 288
 
             logger.info(f"VRAM-adaptive max dimension: {max_dimension}px (based on {total_vram_gb:.1f}GB VRAM)")
         else:
@@ -653,11 +653,14 @@ except (IndexError, AttributeError, ValueError):
 
         # AGGRESSIVE MEMORY MANAGEMENT: Set PyTorch environment variables
         # These help prevent CUDA OOM errors by being more aggressive with memory management
-        env['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:128,garbage_collection_threshold:0.6'
+        # EMERGENCY: Maximum memory restriction settings
+        env['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:64,garbage_collection_threshold:0.5,expandable_segments:False'
         env['CUDA_LAUNCH_BLOCKING'] = '1'  # Synchronous execution for better error tracking
         # Limit PyTorch memory caching
         env['PYTORCH_NO_CUDA_MEMORY_CACHING'] = '1'
-        logger.info("Applied aggressive CUDA memory management settings")
+        # Force immediate memory release
+        env['PYTORCH_CUDA_ALLOC_SYNC_MEMOPS'] = '1'
+        logger.info("Applied EMERGENCY aggressive CUDA memory management settings")
 
         try:
             result = subprocess.run(
@@ -790,12 +793,10 @@ except (IndexError, AttributeError, ValueError):
                 logger.error("")
                 logger.error("💡 Recommendations:")
                 logger.error("  1. Reduce video resolution before processing")
-                logger.error("  2. Process fewer frames per chunk (current: 10)")
+                logger.error("  2. Process fewer frames per chunk (current: 5 - EMERGENCY MINIMUM)")
                 logger.error("  3. Use a GPU with more VRAM (40GB+ recommended for 4K)")
-                logger.error("  4. Consider processing at 540p or lower resolution")
-                logger.error("=" * 60)
-                logger.error("  3. Use a GPU with more VRAM")
-                logger.error("  4. The system will automatically retry with lower resolution")
+                logger.error("  4. Consider processing at 360p or lower resolution")
+                logger.error("  5. This video may be too complex for ProPainter on current hardware")
                 logger.error("=" * 60)
 
             # Clear CUDA cache before raising error
