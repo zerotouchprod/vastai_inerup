@@ -1,7 +1,6 @@
 import os
 import shutil
 import subprocess
-import sys
 import torch
 from pathlib import Path
 from src.shared.logging import get_logger
@@ -42,8 +41,9 @@ class ProPainterAdapter:
             logger.info("ProPainter using CPU (no CUDA available)")
 
         # Sliding Window settings for OOM protection (Exit code -9)
-        self.CHUNK_SIZE = 20    # Process 20 frames at a time (reduced from 40 due to OOM)
-        self.OVERLAP = 5        # Reduced overlap proportionally
+        # Ultra-conservative settings for high-resolution videos
+        self.CHUNK_SIZE = 10    # Process 10 frames at a time (reduced from 20 due to persistent OOM)
+        self.OVERLAP = 2        # Reduced overlap proportionally
 
     def _patch_propainter_misc(self) -> None:
         """
@@ -512,6 +512,9 @@ except (IndexError, AttributeError, ValueError):
         check_gpu_id = gpu_id if gpu_id is not None else 0
 
         # Get available VRAM
+        total_vram_gb = 0  # Initialize with default value
+        max_dimension = 720  # Default conservative value
+
         if torch.cuda.is_available() and check_gpu_id < torch.cuda.device_count():
             gpu_props = torch.cuda.get_device_properties(check_gpu_id)
             total_vram_gb = gpu_props.total_memory / (1024**3)
@@ -520,30 +523,31 @@ except (IndexError, AttributeError, ValueError):
             logger.info(f"GPU {check_gpu_id} VRAM: {free_vram_gb:.1f}GB free / {total_vram_gb:.1f}GB total")
 
             # Adaptive resolution limits based on available VRAM
-            # These are conservative estimates to prevent OOM
+            # These are ULTRA-CONSERVATIVE estimates to prevent OOM in RAFT flow estimation
+            # RAFT memory usage: O(resolution^2 * num_frames), very sensitive to resolution
             if total_vram_gb >= 40:
-                # A100, H100: can handle 4K
-                max_dimension = 1920
+                # A100, H100: can handle high-res but still conservative
+                max_dimension = 1440
             elif total_vram_gb >= 24:
-                # RTX 3090, 4090, A6000: 1080p max
-                max_dimension = 1080
+                # RTX 3090, 4090, A6000: be very conservative
+                # Even 1080p can OOM with portrait videos due to RAFT
+                max_dimension = 720  # Reduced from 1080 to prevent OOM
             elif total_vram_gb >= 16:
-                # RTX 4080, 5070 Ti: 960p max
-                max_dimension = 960
+                # RTX 4080, 5070 Ti: 640p max
+                max_dimension = 640
             elif total_vram_gb >= 12:
-                # RTX 3080, 4070: 720p max
-                max_dimension = 720
-            elif total_vram_gb >= 8:
-                # RTX 3060, 4060: 540p max
+                # RTX 3080, 4070: 540p max
                 max_dimension = 540
-            else:
-                # Low VRAM: 480p max
+            elif total_vram_gb >= 8:
+                # RTX 3060, 4060: 480p max
                 max_dimension = 480
+            else:
+                # Low VRAM: 360p max
+                max_dimension = 360
 
             logger.info(f"VRAM-adaptive max dimension: {max_dimension}px (based on {total_vram_gb:.1f}GB VRAM)")
         else:
-            # CPU fallback or no GPU info available
-            max_dimension = 960
+            # CPU fallback or no GPU info available - already set above
             logger.info(f"CPU mode or no GPU info - using default max dimension: {max_dimension}px")
 
         # Calculate target dimensions while preserving aspect ratio
@@ -613,6 +617,14 @@ except (IndexError, AttributeError, ValueError):
         if gpu_id is not None:
             env['CUDA_VISIBLE_DEVICES'] = str(gpu_id)
             logger.info(f"Setting CUDA_VISIBLE_DEVICES={gpu_id} for this ProPainter process")
+
+        # AGGRESSIVE MEMORY MANAGEMENT: Set PyTorch environment variables
+        # These help prevent CUDA OOM errors by being more aggressive with memory management
+        env['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:128,garbage_collection_threshold:0.6'
+        env['CUDA_LAUNCH_BLOCKING'] = '1'  # Synchronous execution for better error tracking
+        # Limit PyTorch memory caching
+        env['PYTORCH_NO_CUDA_MEMORY_CACHING'] = '1'
+        logger.info("Applied aggressive CUDA memory management settings")
 
         try:
             result = subprocess.run(
@@ -745,7 +757,10 @@ except (IndexError, AttributeError, ValueError):
                 logger.error("")
                 logger.error("💡 Recommendations:")
                 logger.error("  1. Reduce video resolution before processing")
-                logger.error("  2. Process fewer frames per chunk (current: 20)")
+                logger.error("  2. Process fewer frames per chunk (current: 10)")
+                logger.error("  3. Use a GPU with more VRAM (40GB+ recommended for 4K)")
+                logger.error("  4. Consider processing at 540p or lower resolution")
+                logger.error("=" * 60)
                 logger.error("  3. Use a GPU with more VRAM")
                 logger.error("  4. The system will automatically retry with lower resolution")
                 logger.error("=" * 60)
@@ -939,9 +954,8 @@ except (IndexError, AttributeError, ValueError):
 
     def _extract_frames_from_video(self, video_path: Path, output_dir: Path) -> list[Path]:
         """Extract frames from video file using ffmpeg."""
-        import subprocess
-        import tempfile
-        
+        import subprocess as sp  # Local import to avoid duplication
+
         # Create a temporary directory for extracted frames
         frames_dir = output_dir / "extracted_frames"
         frames_dir.mkdir(exist_ok=True)
@@ -958,7 +972,7 @@ except (IndexError, AttributeError, ValueError):
         ]
         
         try:
-            result = subprocess.run(
+            result = sp.run(
                 cmd,
                 capture_output=True,
                 text=True,
