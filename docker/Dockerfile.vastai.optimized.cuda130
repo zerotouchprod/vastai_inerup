@@ -4,8 +4,8 @@
 # Supports RTX 30 series (Ampere), 40 series (Ada Lovelace), 50 series (Blackwell)
 # Also maintains backward compatibility with RTX 20 series (Turing)
 
-#FROM nvidia/cuda:12.9.0-cudnn-runtime-ubuntu22.04
-FROM nvidia/cuda:13.0.2-cudnn-runtime-ubuntu22.04
+#FROM nvidia/cuda:12.9.0-cudnn-devel-ubuntu22.04
+FROM nvidia/cuda:13.0.2-cudnn-devel-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -17,6 +17,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     python3-pip \
     python3-venv \
+    python3-dev \
+    build-essential \
+    gcc \
+    g++ \
+    make \
+    cmake \
+    ninja-build \
     ffmpeg \
     libglib2.0-0 \
     libsm6 \
@@ -136,15 +143,14 @@ RUN pip install --no-cache-dir imageio scipy scikit-image && \
     git clone https://github.com/sczhou/ProPainter.git /opt/ProPainter && \
     cd /opt/ProPainter && \
     pip install --no-cache-dir -r requirements.txt && \
-    # CRITICAL FIX: Rebuild RAFT extensions for CUDA 13.0 (fixes CorrBlock crash)
-    echo "Building RAFT C++ extensions for CUDA 13.0..." && \
-    cd /opt/ProPainter/RAFT && \
-    pip install --no-cache-dir -e . && \
-    # Install spatial-correlation-sampler with CUDA 13.0 support
+    # CRITICAL FIX: Install spatial-correlation-sampler with CUDA 13.0 support
+    # This is the main C++ extension that needs to be built for the correct CUDA version
+    echo "Building spatial-correlation-sampler C++ extensions for CUDA 13.0..." && \
     pip uninstall -y spatial-correlation-sampler 2>/dev/null || true && \
     pip install --no-cache-dir spatial-correlation-sampler && \
-    # Verify RAFT can import CorrBlock
-    python3 -c "import sys; sys.path.insert(0, '/opt/ProPainter'); from RAFT.raft import CorrBlock; print('✅ RAFT CorrBlock OK')" && \
+    # Verify RAFT can import (uses spatial-correlation-sampler under the hood)
+    echo "Verifying ProPainter RAFT..." && \
+    python3 -c "import sys; sys.path.insert(0, '/opt/ProPainter'); from model.modules.flow_comp_raft import FlowCompletionRAFT; print('✅ RAFT Flow Completion OK')" && \
     # Download model weights
     cd /opt/ProPainter/weights && \
     wget -q --show-progress https://github.com/sczhou/ProPainter/releases/download/v0.1.0/ProPainter.pth && \
