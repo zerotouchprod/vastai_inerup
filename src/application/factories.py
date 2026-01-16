@@ -108,12 +108,13 @@ class ProcessorFactory:
         Returns:
             Subtitle remover processor instance
 
-        Raises:
-            GPURequiredError: If GPU is not available (required for subtitle removal)
+        Note:
+            GPU is required for subtitle removal, but not explicitly checked here.
+            If GPU is missing, PaddleOCR/SAM2 will fail with clear error messages.
         """
-        # CRITICAL: Check GPU availability before creating any subtitle removal components
-        from src.infrastructure.utils.gpu_utils import require_gpu
-        require_gpu("subtitle removal")
+        # Note: GPU check removed - it was causing false negatives when torch
+        # imports before pure PyTorch correlation is installed. PaddleOCR/SAM2
+        # will validate GPU when they actually need it.
 
         # Determine backend (prefer parameter for backward compatibility)
         if backend == 'auto' and prefer != 'auto':
@@ -177,13 +178,11 @@ class ProcessorFactory:
         Returns:
             Watermark remover processor instance
 
-        Raises:
-            GPURequiredError: If GPU is not available (required for watermark removal)
+        Note:
+            GPU is required for watermark removal, but not explicitly checked here.
+            If GPU is missing, ProPainter/inpainting will fail with clear error messages.
         """
-        # CRITICAL: Check GPU availability before creating watermark removal components
-        from src.infrastructure.utils.gpu_utils import require_gpu
-        require_gpu("watermark removal")
-
+        # Note: GPU check removed - same reason as subtitle remover
         try:
             from src.infrastructure.processors.watermark.wrapper import WatermarkRemoverWrapper
 
