@@ -351,6 +351,77 @@ from .corr import CorrBlock, AlternateCorrBlock"""
             self._logger.error(f"❌ Failed to inject Pure PyTorch CorrBlock: {e}")
             self._logger.error("   ProPainter may fail if it tries to use spatial-correlation-sampler")
 
+    def _patch_propainter_transformer(self):
+        """
+        Patch ProPainter Transformer to prevent CUDA stride errors.
+
+        Problem: Transformer attention uses transpose() before matmul:
+            att = (q @ k.transpose(-2, -1))
+
+        On RTX 30/40/50 series, this creates misaligned strides → CUBLAS error
+
+        Solution: Add .contiguous() to force memory realignment:
+            att = (q @ k.transpose(-2, -1).contiguous())
+
+        This is the SAME fix we applied to RAFT correlation.
+
+        Design pattern: Runtime code patching (startup injection)
+        """
+        from pathlib import Path
+
+        try:
+            # Path to ProPainter transformer
+            transformer_path = Path("/opt/ProPainter/model/modules/sparse_transformer.py")
+
+            if not transformer_path.exists():
+                self._logger.warning(f"⚠️  ProPainter Transformer not found at {transformer_path}")
+                self._logger.warning("   Skipping transformer patch (may cause CUDA errors later)")
+                return
+
+            # Read current content
+            content = transformer_path.read_text()
+
+            # Track if we made any changes
+            patched = False
+
+            # Patch 1: Attention calculation (temporal)
+            old_1 = "att_t = (win_q_t @ win_k_t.transpose(-2, -1))"
+            new_1 = "att_t = (win_q_t @ win_k_t.transpose(-2, -1).contiguous())  # PATCHED: memory alignment"
+
+            if old_1 in content and new_1 not in content:
+                content = content.replace(old_1, new_1)
+                self._logger.info("✅ Patched Transformer Attention (temporal branch)")
+                patched = True
+
+            # Patch 2: Attention calculation (general)
+            old_2 = "att = (q @ k.transpose(-2, -1))"
+            new_2 = "att = (q @ k.transpose(-2, -1).contiguous())  # PATCHED: memory alignment"
+
+            if old_2 in content and new_2 not in content:
+                content = content.replace(old_2, new_2)
+                self._logger.info("✅ Patched Transformer Attention (general branch)")
+                patched = True
+
+            # Patch 3: Value aggregation
+            old_3 = "x = att_t @ win_v_t"
+            new_3 = "x = att_t @ win_v_t.contiguous()  # PATCHED: memory alignment"
+
+            if old_3 in content and new_3 not in content:
+                content = content.replace(old_3, new_3)
+                self._logger.info("✅ Patched Transformer Value Aggregation")
+                patched = True
+
+            # Write back if we made changes
+            if patched:
+                transformer_path.write_text(content)
+                self._logger.info("🚀 ProPainter Transformer hardened against CUDA stride errors")
+            else:
+                self._logger.info("✅ ProPainter Transformer already patched (skipping)")
+
+        except Exception as e:
+            self._logger.error(f"❌ Failed to patch ProPainter Transformer: {e}")
+            self._logger.error("   ProPainter may encounter CUDA errors in attention layers")
+
     def _validate_corrblock_injection(self) -> bool:
         """
         Validate that CorrBlock injection succeeded and ProPainter subprocess can use it.
@@ -515,6 +586,11 @@ except Exception as e:
                 # ProPainter's RAFT tries to import CorrBlock from spatial_correlation_sampler
                 # But we replaced it with Pure PyTorch version, so we need to inject it
                 self._inject_pure_pytorch_corrblock()
+
+                # 4.5. Patch ProPainter Transformer for CUDA stride safety (CRITICAL!)
+                # Transformer attention layers also use transpose() + matmul
+                # Same memory alignment issue as RAFT → same fix needed
+                self._patch_propainter_transformer()
 
                 # 5. Validate CorrBlock injection
                 self._validate_corrblock_injection()
