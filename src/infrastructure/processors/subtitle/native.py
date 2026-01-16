@@ -4,11 +4,18 @@ Orchestrates OCR detection, mask generation, temporal filtering, and inpainting.
 """
 
 import logging
-import warnings
+import gc
 from typing import Optional, List
 from pathlib import Path
 import numpy as np
 import cv2
+import psutil
+
+from src.core.config import AppConfig, get_config
+from src.infrastructure.detection.components import (
+    OcrEngine, MaskGenerator, Inpainter, TemporalFilter
+)
+from src.infrastructure.utils.gpu_utils import require_gpu
 
 # Remove global side effects - logging suppression is now handled by OcrEngine
 logger = logging.getLogger(__name__)
@@ -24,7 +31,7 @@ class SubtitleRemoverNative:
     3. Coordinating between OCR, mask generation, temporal filtering, and inpainting
     """
     
-    def __init__(self, config=None):
+    def __init__(self, config: Optional[AppConfig] = None):
         """
         Initialize subtitle remover with configuration.
         
@@ -32,18 +39,12 @@ class SubtitleRemoverNative:
             config: AppConfig instance. If None, loads default config.
         """
         # Load configuration
-        from src.core.config import get_config
-        self.config = config or get_config()
+        self.config: AppConfig = config or get_config()
         
         # CRITICAL: Subtitle removal requires GPU for OCR and inpainting
-        from src.infrastructure.utils.gpu_utils import require_gpu
         require_gpu("subtitle removal (native)")
         
         # Initialize components
-        from src.infrastructure.detection.components import (
-            OcrEngine, MaskGenerator, Inpainter, TemporalFilter
-        )
-        
         self.ocr = OcrEngine(self.config)
         self.mask_gen = MaskGenerator(self.config)
         self.inpainter = Inpainter(self.config)
@@ -66,11 +67,11 @@ class SubtitleRemoverNative:
         frames = sorted(list(input_dir.glob("*.png")) + list(input_dir.glob("*.jpg")))
         total = len(frames)
         
-        logger.info(f"Starting subtitle removal on {total} frames...")
+        if total == 0:
+            logger.warning(f"No frames found in {input_dir}")
+            return
         
-        # Memory monitoring
-        import psutil
-        import gc
+        logger.info(f"Starting subtitle removal on {total} frames...")
         
         # Process in smaller batches to reduce memory pressure
         batch_size = 4
@@ -84,11 +85,8 @@ class SubtitleRemoverNative:
         # First pass: detect text and create masks for all frames
         logger.info("First pass: Detecting text and creating masks...")
         
-        for batch_start in range(0, total, batch_size):
-            batch_end = min(batch_start + batch_size, total)
-            batch_frames = frames[batch_start:batch_end]
-            
-            logger.info(f"Processing batch {batch_start//batch_size + 1}/{(total + batch_size - 1)//batch_size} "
+        for batch_frames in self._chunk(frames, batch_size):
+            logger.info(f"Processing batch {processed // batch_size + 1}/{(total + batch_size - 1)//batch_size} "
                        f"({len(batch_frames)} frames)...")
             
             for frame_path in batch_frames:
