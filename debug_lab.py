@@ -68,4 +68,4 @@ def test_detection(image_path):
 
 
 if __name__ == "__main__":
-    test_detection("test_frame.jpg")
+    test_detection("tests/test_frame.jpg")

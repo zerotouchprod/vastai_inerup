@@ -249,8 +249,8 @@ git push origin main_rmsubs_roi_ar
 ## Support
 
 **Documentation:**
-- [PROPAINTER_FIX_SUMMARY.md](./PROPAINTER_FIX_SUMMARY.md)
-- [PROPAINTER_EARLY_VALIDATION.md](./PROPAINTER_EARLY_VALIDATION.md)
+- [PROPAINTER_FIX_SUMMARY.md](PROPAINTER_FIX_SUMMARY.md)
+- [PROPAINTER_EARLY_VALIDATION.md](PROPAINTER_EARLY_VALIDATION.md)
 
 **Troubleshooting:**
 1. Check logs: `docker logs <container_id> | grep spatial-correlation-sampler`
