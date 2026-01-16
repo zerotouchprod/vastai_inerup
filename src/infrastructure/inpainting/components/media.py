@@ -7,6 +7,7 @@ import shutil
 from typing import List, Tuple, Optional, Dict
 from pathlib import Path
 from src.core.config import AppConfig
+from src.shared.logging import get_logger
 
 
 class MediaProcessor:
@@ -122,12 +123,39 @@ class MediaProcessor:
         Returns:
             Path to merged output directory
         """
+        logger = get_logger(__name__)
         output_dir.mkdir(parents=True, exist_ok=True)
         
-        for frame_name, chunk_path in chunk_results.items():
+        copied_count = 0
+        skipped_count = 0
+        error_count = 0
+        
+        # Sort by frame name for consistent ordering
+        sorted_items = sorted(chunk_results.items(), key=lambda x: x[0])
+        
+        for frame_name, chunk_path in sorted_items:
             dest = output_dir / frame_name
-            if chunk_path.exists():
+            
+            if not chunk_path.exists():
+                logger.warning(f"Source file not found: {chunk_path}, skipping frame {frame_name}")
+                skipped_count += 1
+                continue
+            
+            try:
                 shutil.copy2(chunk_path, dest)
+                copied_count += 1
+                if copied_count % 50 == 0:  # Log progress every 50 frames
+                    logger.debug(f"Merged {copied_count} frames so far...")
+            except Exception as e:
+                logger.error(f"Failed to copy {chunk_path} to {dest}: {e}")
+                error_count += 1
+        
+        logger.info(f"Merged {copied_count} frames into {output_dir} (skipped: {skipped_count}, errors: {error_count})")
+        
+        # Verify we have expected number of frames
+        actual_frames = len(list(output_dir.glob("*.png"))) + len(list(output_dir.glob("*.jpg"))) + len(list(output_dir.glob("*.jpeg")))
+        if actual_frames != len(chunk_results) - skipped_count - error_count:
+            logger.warning(f"Frame count mismatch: expected {len(chunk_results) - skipped_count - error_count}, got {actual_frames}")
         
         return output_dir
     

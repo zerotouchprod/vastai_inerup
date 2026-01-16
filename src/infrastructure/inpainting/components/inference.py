@@ -168,22 +168,25 @@ class InferenceRunner:
             height: Target height for inference
             
         Returns:
-            Dictionary mapping frame names to processed frame paths
+            Dictionary mapping original frame names to processed frame paths
         """
         import time
         results = {}
         logger.info(f"Processing {len(chunks)} chunks")
+        
         for chunk in chunks:
             chunk_id = chunk['id']
             frames_dir = chunk['frames'][0].parent if chunk['frames'] else None
             masks_dir = chunk['masks'][0].parent if chunk['masks'] else None
             output_dir = chunk['output']
+            frame_indices = chunk.get('frame_indices', (0, 0))
+            start_idx, end_idx = frame_indices
             
             if not frames_dir or not masks_dir:
                 logger.warning(f"Chunk {chunk_id} missing frames or masks, skipping")
                 continue
             
-            logger.info(f"Processing chunk {chunk_id}: frames={frames_dir}, masks={masks_dir}, output={output_dir}")
+            logger.info(f"Processing chunk {chunk_id}: frames={frames_dir}, masks={masks_dir}, output={output_dir}, indices={start_idx}-{end_idx}")
             
             # Build and execute command
             cmd = self.build_command(frames_dir, masks_dir, output_dir, width, height)
@@ -202,9 +205,36 @@ class InferenceRunner:
             if not output_frames:
                 # Fallback: look for any image files
                 output_frames = sorted(output_dir.rglob("*.jpg")) + sorted(output_dir.rglob("*.jpeg"))
+            
             logger.info(f"Found {len(output_frames)} output frames in {output_dir}")
-            for frame_path in output_frames:
-                results[frame_path.name] = frame_path
+            
+            # Map output frames to original frame names
+            # ProPainter typically outputs frames in order: frame_00001.png, frame_00002.png, etc.
+            # We need to map them to original frame names based on chunk indices
+            sorted_output_frames = sorted(output_frames)
+            
+            # Get original frame names from the chunk
+            original_frames = sorted(chunk['frames']) if chunk['frames'] else []
+            
+            # If we have frame indices, we can map by position
+            if start_idx < end_idx and len(sorted_output_frames) == (end_idx - start_idx):
+                # Perfect match: output frames correspond exactly to chunk range
+                for i, frame_path in enumerate(sorted_output_frames):
+                    original_idx = start_idx + i
+                    # Try to get original frame name from the chunk frames list
+                    if i < len(original_frames):
+                        original_name = original_frames[i].name
+                    else:
+                        # Fallback: generate frame name based on index
+                        original_name = f"frame_{original_idx:08d}.png"
+                    
+                    results[original_name] = frame_path
+                    logger.debug(f"Mapped {frame_path.name} -> {original_name}")
+            else:
+                # Fallback: use frame_path.name as key (may cause overwrites)
+                logger.warning(f"Chunk {chunk_id}: Output frame count ({len(sorted_output_frames)}) doesn't match chunk size ({end_idx - start_idx}). Using fallback mapping.")
+                for frame_path in sorted_output_frames:
+                    results[frame_path.name] = frame_path
         
         logger.info(f"Total collected frames: {len(results)}")
         return results
