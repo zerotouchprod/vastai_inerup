@@ -7,6 +7,9 @@ import subprocess
 from typing import List, Optional, Dict
 from pathlib import Path
 from src.core.config import AppConfig
+from src.shared.logging import get_logger
+
+logger = get_logger(__name__)
 
 
 class InferenceRunner:
@@ -63,6 +66,7 @@ class InferenceRunner:
         # OPTIMIZED MEMORY MANAGEMENT settings
         env['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:128,garbage_collection_threshold:0.6,expandable_segments:True'
         
+        logger.info(f"Executing ProPainter command: {' '.join(command)}")
         try:
             result = subprocess.run(
                 command,
@@ -72,10 +76,31 @@ class InferenceRunner:
                 env=env,
                 check=True
             )
+            logger.info(f"ProPainter command succeeded with return code {result.returncode}")
+            if result.stdout:
+                # Log first few lines of stdout to see progress
+                lines = result.stdout.strip().split('\n')
+                for line in lines[:10]:  # log first 10 lines
+                    if line.strip():
+                        logger.info(f"ProPainter: {line[:200]}")
+                if len(lines) > 10:
+                    logger.info(f"... and {len(lines) - 10} more lines")
+            if result.stderr:
+                # Log stderr as warning
+                lines = result.stderr.strip().split('\n')
+                for line in lines[:5]:
+                    if line.strip():
+                        logger.warning(f"ProPainter stderr: {line[:200]}")
             return result
         except subprocess.CalledProcessError as e:
+            logger.error(f"ProPainter command failed with code {e.returncode}")
+            if e.stdout:
+                logger.debug(f"ProPainter stdout: {e.stdout[:500]}")
+            if e.stderr:
+                logger.error(f"ProPainter stderr: {e.stderr[:500]}")
             # If --save_frames fails, try without it
             if "--save_frames" in command:
+                logger.info("Retrying without --save_frames flag")
                 # Remove --save_frames and retry
                 new_command = [arg for arg in command if arg != "--save_frames"]
                 try:
@@ -87,6 +112,7 @@ class InferenceRunner:
                         env=env,
                         check=True
                     )
+                    logger.info(f"Retry succeeded with return code {result.returncode}")
                     return result
                 except subprocess.CalledProcessError as e2:
                     self.handle_inference_error(e2)
@@ -144,7 +170,9 @@ class InferenceRunner:
         Returns:
             Dictionary mapping frame names to processed frame paths
         """
+        import time
         results = {}
+        logger.info(f"Processing {len(chunks)} chunks")
         for chunk in chunks:
             chunk_id = chunk['id']
             frames_dir = chunk['frames'][0].parent if chunk['frames'] else None
@@ -152,19 +180,31 @@ class InferenceRunner:
             output_dir = chunk['output']
             
             if not frames_dir or not masks_dir:
+                logger.warning(f"Chunk {chunk_id} missing frames or masks, skipping")
                 continue
+            
+            logger.info(f"Processing chunk {chunk_id}: frames={frames_dir}, masks={masks_dir}, output={output_dir}")
             
             # Build and execute command
             cmd = self.build_command(frames_dir, masks_dir, output_dir, width, height)
             try:
+                start_time = time.time()
                 self.execute_command(cmd)
+                elapsed = time.time() - start_time
+                logger.info(f"Chunk {chunk_id} completed in {elapsed:.1f} seconds")
             except Exception as e:
                 # Log and continue? For now, raise
+                logger.error(f"Failed to process chunk {chunk_id}: {e}")
                 raise RuntimeError(f"Failed to process chunk {chunk_id}: {e}")
             
-            # Collect results
-            output_frames = sorted(output_dir.glob("*.png"))
+            # Collect results - search recursively for PNG files
+            output_frames = sorted(output_dir.rglob("*.png"))
+            if not output_frames:
+                # Fallback: look for any image files
+                output_frames = sorted(output_dir.rglob("*.jpg")) + sorted(output_dir.rglob("*.jpeg"))
+            logger.info(f"Found {len(output_frames)} output frames in {output_dir}")
             for frame_path in output_frames:
                 results[frame_path.name] = frame_path
         
+        logger.info(f"Total collected frames: {len(results)}")
         return results
