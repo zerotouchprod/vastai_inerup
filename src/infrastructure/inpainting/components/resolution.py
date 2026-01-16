@@ -16,84 +16,61 @@ class ResolutionCalculator:
         """
         Calculates safe resolution AND chunk size based on available VRAM.
         
-        Formula based on ProPainter benchmarks:
-        Memory ~= (Width * Height * ChunkSize^2) * Constant
+        🚨 FIX: Если система видит > 30GB (мульти-гпу), делим пополам для безопасности,
+        так как процесс использует только одну карту.
         
         Returns:
             (target_width, target_height, optimal_chunk_size)
         """
-        # 1. Base constraints
-        # RAFT requires decent VRAM. ProPainter overhead is ~2GB static + dynamic.
-        usable_vram = max(0, vram_gb - 2.0)  # Reserve 2.0GB for system/torch overhead
-        
-        # Pixels in millions
-        original_mp = (original_width * original_height) / 1_000_000
-        
-        # Heuristic constant derived from RTX 3090/4090 tests
-        # 1080p (2MP) * 5 frames needs ~6GB
-        # 1080p (2MP) * 10 frames needs ~14GB
-        # This is an approximation, we play it slightly safe.
-        
-        # Calculate max frames fits in memory for ORIGINAL resolution
-        # Memory ≈ MP * Frames * 0.5 (Empirical factor for FP32/TF32)
-        # Frames ≈ UsableVRAM / (MP * 0.5)
-        
-        if original_mp <= 0: original_mp = 0.1 # Safety div by zero
-        
-        max_safe_frames_at_native = int(usable_vram / (original_mp * 0.5))
-        
-        # Clamp limits
-        MIN_FRAMES = 4   # Minimum needed for temporal consistency
-        MAX_FRAMES = 15  # Diminishing returns after this, and high risk
-        
-        target_width = original_width
-        target_height = original_height
-        final_chunk = max_safe_frames_at_native
-        
-        logger.info(f"🧮 VRAM Analysis: {vram_gb:.1f}GB total, {usable_vram:.1f}GB usable.")
-        logger.info(f"   Native Res: {original_width}x{original_height} ({original_mp:.2f} MP).")
-        logger.info(f"   Theoretical max frames at native: {max_safe_frames_at_native}")
-
-        # --- NEW LOGIC: Force native resolution for 1080p (approx 2MP) ---
-        # 1080p is approximately 1920x1080 = 2.07 MP
-        is_1080p_like = original_mp <= 2.5  # Allow some margin (up to ~1600x1600)
-        
-        # Only downscale if VRAM is critically low (<8GB) AND not 1080p
-        vram_critically_low = vram_gb < 8.0
-        
-        # --- SCENARIO 1: Native resolution fits (with at least MIN_FRAMES) ---
-        if max_safe_frames_at_native >= MIN_FRAMES:
-            # Cap at global max
-            final_chunk = min(max_safe_frames_at_native, self.config.MAX_FRAMES_PER_CHUNK)
-            logger.info(f"✅ Keeping native resolution. Adjusted chunk size to {final_chunk}.")
+        # 🚨 FIX: Если система видит > 30GB (мульти-гпу), делим пополам для безопасности,
+        # так как процесс использует только одну карту.
+        if vram_gb > 30.0:
+            logger.warning(f"Detected dual-GPU VRAM sum ({vram_gb:.1f}GB). Using single-GPU estimate.")
+            vram_gb = vram_gb / 2  # Предполагаем 2 одинаковые карты
             
-        # --- SCENARIO 2: Native is too big (OOM risk) -> Downscale ---
+        # 1. Apply Hard Config Limits FIRST
+        # Если видео выше MAX_HEIGHT, сразу применяем лимит
+        limit_height = self.config.MAX_HEIGHT
+        
+        if original_height > limit_height:
+            scale = limit_height / original_height
+            calc_width = int(original_width * scale)
+            calc_height = limit_height
+            logger.info(f"📉 Applying Config Limit: {original_width}x{original_height} -> {calc_width}x{calc_height}")
         else:
-            # Check if we should force native resolution for 1080p
-            if is_1080p_like:
-                # Force native resolution for 1080p videos, reduce chunk size to 2-3 frames
-                # Even with critically low VRAM, we keep native resolution but reduce chunk size
-                final_chunk = max(2, min(3, max_safe_frames_at_native))
-                logger.warning(f"⚠️ 1080p video forced to native resolution with reduced chunk size: {final_chunk} frames")
-                logger.warning(f"   VRAM: {vram_gb:.1f}GB, Max frames at native: {max_safe_frames_at_native}")
-                
-                # Log warning if VRAM is critically low
-                if vram_critically_low:
-                    logger.warning(f"   ⚠️ VRAM is critically low (<8GB), but keeping native resolution for 1080p")
-            else:
-                logger.warning(f"⚠️ Native resolution too heavy for {vram_gb:.1f}GB VRAM (can only fit {max_safe_frames_at_native} frames).")
-                
-                # We fix chunk size to MIN_FRAMES and calculate max resolution
-                # MP = UsableVRAM / (Frames * 0.5)
-                target_mp = usable_vram / (MIN_FRAMES * 0.5)
-                
-                # Scale factor
-                scale = math.sqrt(target_mp / original_mp)
-                target_width = int(original_width * scale)
-                target_height = int(original_height * scale)
-                final_chunk = MIN_FRAMES
-                
-                logger.warning(f"   📉 Downscaling to {target_width}x{target_height} to keep {MIN_FRAMES} frames.")
+            calc_width = original_width
+            calc_height = original_height
+
+        # 2. Base constraints
+        # RAFT requires decent VRAM. ProPainter overhead is ~3GB static + dynamic.
+        usable_vram = max(0, vram_gb - 3.0)  # Reserve 3GB for system/torch overhead
+        
+        # Pixels in millions (using the LIMITED resolution)
+        mp = (calc_width * calc_height) / 1_000_000
+        if mp <= 0: mp = 0.1
+        
+        # Calculate max frames for the TARGET resolution
+        # FP16 factor approx 0.55 GB per MP per frame (AMP-friendly)
+        max_safe_frames = int(usable_vram / (mp * 0.55))
+        
+        MIN_FRAMES = 3  # Minimum needed for temporal consistency
+        
+        logger.info(f"🧮 Single-GPU VRAM: {usable_vram:.1f}GB usable. Target Res: {calc_width}x{calc_height}")
+        
+        # --- DECISION LOGIC ---
+        if max_safe_frames >= MIN_FRAMES:
+            final_chunk = min(max_safe_frames, self.config.MAX_FRAMES_PER_CHUNK)
+            target_width = calc_width
+            target_height = calc_height
+            logger.info(f"✅ Resolution fits! Chunk size: {final_chunk}")
+        else:
+            # Emergency Downscale (если даже ограниченное разрешение не влезает)
+            logger.warning(f"⚠️ {calc_height}p is still too heavy. Emergency downscale.")
+            target_mp = usable_vram / (MIN_FRAMES * 0.55)
+            scale = math.sqrt(target_mp / mp)
+            target_width = int(calc_width * scale)
+            target_height = int(calc_height * scale)
+            final_chunk = MIN_FRAMES
 
         # --- FINAL ADJUSTMENTS ---
         # 1. Ensure Divisible by 32 (Requirement for RAFT/ProPainter)
@@ -105,9 +82,8 @@ class ResolutionCalculator:
         target_height = max(target_height, 128)
         
         # 2. Apply MAX_HEIGHT constraint if AUTO_DOWNSCALE is enabled
-        # Skip MAX_HEIGHT constraint for 1080p videos to preserve quality
-        if (self.config.AUTO_DOWNSCALE and target_height > self.config.MAX_HEIGHT and 
-            not is_1080p_like):
+        # (Уже применено в начале, но проверяем на всякий случай)
+        if (self.config.AUTO_DOWNSCALE and target_height > self.config.MAX_HEIGHT):
             scale = self.config.MAX_HEIGHT / target_height
             target_width = int(target_width * scale)
             target_height = self.config.MAX_HEIGHT
@@ -116,7 +92,7 @@ class ResolutionCalculator:
             target_height = (target_height // 32) * 32
             target_width = max(target_width, 128)
             target_height = max(target_height, 128)
-            logger.info(f"📏 Applying MAX_HEIGHT constraint: downscaled to {target_width}x{target_height}")
+            logger.info(f"📏 Final MAX_HEIGHT constraint: downscaled to {target_width}x{target_height}")
         
         return target_width, target_height, final_chunk
 
