@@ -213,6 +213,29 @@ __all__ = ['CorrBlock', 'AlternateCorrBlock']
             self._logger.info(f"   Created: {corr_py_dest}")
             self._logger.info("   ProPainter subprocess will use Pure PyTorch correlation")
 
+            # CRITICAL FIX: Patch raft.py to ensure it imports our corr.py
+            # Problem: raft.py imports fail at runtime in subprocess
+            # Solution: Force explicit import from .corr instead of trying spatial_correlation_sampler
+            raft_py = propainter_raft / "raft.py"
+            if raft_py.exists():
+                raft_content = raft_py.read_text()
+
+                # Check if already patched
+                if "# PATCHED: Pure PyTorch import" not in raft_content:
+                    # Find the import line
+                    old_import = "from .corr import CorrBlock, AlternateCorrBlock"
+                    new_import = """# PATCHED: Pure PyTorch import (no spatial_correlation_sampler)
+from .corr import CorrBlock, AlternateCorrBlock"""
+
+                    if old_import in raft_content:
+                        raft_content = raft_content.replace(old_import, new_import)
+                        raft_py.write_text(raft_content)
+                        self._logger.info("✅ Patched raft.py import to use Pure PyTorch CorrBlock")
+                    else:
+                        self._logger.warning("⚠️  Could not find import line in raft.py to patch")
+                else:
+                    self._logger.info("✅ raft.py already patched for Pure PyTorch")
+
         except Exception as e:
             self._logger.error(f"❌ Failed to inject Pure PyTorch CorrBlock: {e}")
             self._logger.error("   ProPainter may fail if it tries to use spatial-correlation-sampler")
