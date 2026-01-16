@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="CopilotDiffPersistence">
+    <option name="pendingDiffs">
+      <map>
+        <entry key="$PROJECT_DIR$/scripts/update_corrpy.sh">
+          <value>
+            <PendingDiffInfo>
+              <option name="filePath" value="$PROJECT_DIR$/scripts/update_corrpy.sh" />
+              <option name="updatedContent" value="#!/bin/bash&#10;# Update corr.py on running instance with new version that has robust path finding&#10;&#10;echo &quot; Updating /opt/ProPainter/RAFT/corr.py with robust path finding...&quot;&#10;&#10;# Create updated corr.py&#10;cat &gt; /opt/ProPainter/RAFT/corr.py &lt;&lt; 'EOF'&#10;#!/usr/bin/env python3&#10;&quot;&quot;&quot;&#10;Pure PyTorch RAFT correlation module.&#10;Replaces spatial-correlation-sampler C++ extension.&#10;&quot;&quot;&quot;&#10;import sys&#10;from pathlib import Path&#10;&#10;# Find project root - try multiple possible locations&#10;project_root = None&#10;possible_roots = [&#10;    Path(&quot;/root/vastai_inerup&quot;),           # Vast.ai standard&#10;    Path(&quot;/workspace/project&quot;),            # Docker standard&#10;    Path.home() / &quot;vastai_inerup&quot;,         # User home&#10;]&#10;&#10;for root in possible_roots:&#10;    check_file = root / &quot;src&quot; / &quot;infrastructure&quot; / &quot;inpainting&quot; / &quot;pure_pytorch_correlation.py&quot;&#10;    if root.exists() and check_file.exists():&#10;        project_root = root&#10;        break&#10;&#10;if project_root is None:&#10;    raise ImportError(&#10;        &quot;Cannot find vastai_inerup project!\n&quot;&#10;        f&quot;Tried: {[str(p) for p in possible_roots]}\n&quot;&#10;        &quot;Ensure project at /root/vastai_inerup or /workspace/project&quot;&#10;    )&#10;&#10;if str(project_root) not in sys.path:&#10;    sys.path.insert(0, str(project_root))&#10;&#10;try:&#10;    from src.infrastructure.inpainting.pure_pytorch_correlation import CorrBlock&#10;    AlternateCorrBlock = CorrBlock  # Alias&#10;    __all__ = ['CorrBlock', 'AlternateCorrBlock']&#10;except ImportError as e:&#10;    raise ImportError(&#10;        f&quot;Failed to import Pure PyTorch CorrBlock from {project_root}:\n{e}&quot;&#10;    )&#10;EOF&#10;&#10;echo &quot;✅ Updated /opt/ProPainter/RAFT/corr.py&quot;&#10;&#10;# Test it works&#10;echo &quot;&quot;&#10;echo &quot; Testing import...&quot;&#10;python3 -c &quot;&#10;import sys&#10;sys.path.insert(0, '/opt/ProPainter')&#10;from RAFT.corr import CorrBlock, AlternateCorrBlock&#10;print('✅ Import successful!')&#10;print(f'   CorrBlock: {CorrBlock}')&#10;print(f'   AlternateCorrBlock: {AlternateCorrBlock}')&#10;&quot;&#10;&#10;if [ $? -eq 0 ]; then&#10;    echo &quot;&quot;&#10;    echo &quot; corr.py updated and tested successfully!&quot;&#10;    echo &quot;You can now re-run your pipeline.&quot;&#10;else&#10;    echo &quot;&quot;&#10;    echo &quot;❌ Test failed - check error above&quot;&#10;    exit 1&#10;fi&#10;" />
+            </PendingDiffInfo>
+          </value>
+        </entry>
+      </map>
+    </option>
+  </component>
+</project>
