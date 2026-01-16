@@ -2,7 +2,7 @@
 
 ## Summary of Fixes
 
-Today we fixed **3 critical issues** that were blocking subtitle removal:
+Today we fixed **4 critical issues** that were blocking subtitle removal:
 
 ### 1. ✅ spatial-correlation-sampler Eliminated
 **Problem**: 15+ minute downloads + compilation timeouts
@@ -19,6 +19,11 @@ Today we fixed **3 critical issues** that were blocking subtitle removal:
 **Fix**: Remove premature GPU check from factories
 **Result**: Subtitle remover creates successfully
 
+### 4. ✅ ProPainter CorrBlock Crash Fixed (NEW!)
+**Problem**: `File "/opt/ProPainter/RAFT/raft.py", line 109: corr_fn = CorrBlock`
+**Fix**: Inject Pure PyTorch CorrBlock + validation
+**Result**: ProPainter RAFT works with Pure PyTorch seamlessly!
+
 ## Current Status
 
 ### Working ✅
@@ -27,6 +32,8 @@ Today we fixed **3 critical issues** that were blocking subtitle removal:
 - No restart/rebuild cycles
 - Subtitle remover creation succeeds
 - GPU validation happens naturally
+- **CorrBlock injection validated before processing**
+- **Fail-fast error detection**
 
 ### Flow (Correct)
 ```
@@ -36,9 +43,11 @@ Install pure PyTorch (0 sec) ✅
   ↓
 Create orchestrator ✅
   ↓
-Create subtitle remover ✅
-  ↓
-PaddleOCR init (validates GPU) ✅
+Create subtitle remover:
+  - Init OCR/SAM2 ✅
+  - Inject CorrBlock ✅
+  - Validate injection ✅ (NEW - fail-fast!)
+  - Init ProPainter ✅
   ↓
 Process video ✅
 ```
@@ -133,7 +142,9 @@ Complete guides available:
 2. **PURE_PYTORCH_CORRELATION.md** - Pure PyTorch implementation guide
 3. **RAFT_INIT_FIX.md** - RAFT initialization fix
 4. **GPU_CHECK_RACE_CONDITION_FIX.md** - GPU check timing fix
-5. **PROBLEM_SOLVED_NO_MORE_SPATIAL_CORRELATION.md** - Overall solution
+5. **CORRBLOCK_INJECTION_ARCHITECTURE.md** - CorrBlock injection solution (NEW!)
+6. **CORRBLOCK_VALIDATION_COMPLETE.md** - Validation guide (NEW!)
+7. **PROBLEM_SOLVED_NO_MORE_SPATIAL_CORRELATION.md** - Overall solution
 
 ## Testing Checklist
 
