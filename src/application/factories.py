@@ -123,6 +123,9 @@ class CorrBlock:
     """
     
     def __init__(self, fmap1, fmap2, num_levels=4, radius=4, **kwargs):
+        import sys
+        print(f"[CorrBlock.__init__] Called with num_levels={num_levels}, radius={radius}, fmap1.shape={fmap1.shape}", file=sys.stderr, flush=True)
+        
         self.num_levels = num_levels
         self.radius = radius
         self.device = fmap1.device
@@ -154,9 +157,13 @@ class CorrBlock:
             if i < num_levels - 1:
                 fmap1 = F.avg_pool2d(fmap1, 2, stride=2)
                 fmap2 = F.avg_pool2d(fmap2, 2, stride=2)
+        
+        print(f"[CorrBlock.__init__] Completed successfully, pyramid has {len(self.corr_pyramid)} levels", file=sys.stderr, flush=True)
     
     def __call__(self, coords):
         """Sample correlation at flow coordinates."""
+        import sys
+        print(f"[CorrBlock.__call__] Called with coords.shape={coords.shape}", file=sys.stderr, flush=True)
         r = self.radius
         B, _, H, W = coords.shape
         
