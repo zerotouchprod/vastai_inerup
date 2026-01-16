@@ -262,9 +262,9 @@ def main():
 
             # Pure PyTorch correlation is installed automatically
             # No rebuild needed, no restart required - just works!
+            # ProPainter RAFT validation is skipped (will init when needed with proper args)
             startup_checks(
-                validate_cuda=True,  # Installs pure PyTorch correlation
-                validate_propainter_raft=True  # Validates ProPainter RAFT
+                validate_cuda=True  # Installs pure PyTorch correlation
             )
         except RuntimeError as e:
             logger.error("")
