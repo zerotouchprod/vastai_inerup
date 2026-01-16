@@ -35,6 +35,9 @@ class ProPainterAdapter:
         # InferenceRunner needs root path to find scripts
         self.inference_runner = InferenceRunner(self.config, self.root)
         
+        # Set logger for environment manager
+        self.env_manager.logger = logger
+        
         # Backward compatibility aliases
         self.resolution_calculator = self.res_calculator
         self.environment_manager = self.env_manager
@@ -47,6 +50,10 @@ class ProPainterAdapter:
             # Patch bugs and validate RAFT immediately
             self.env_manager.patch_propainter_misc(self.root)
             self.env_manager.validate_raft_availability()
+        
+        # 4. Setup AMP environment if enabled
+        if self.config.USE_AMP:
+            self.env_manager.setup_amp_environment()
         
         # Backward compatibility attributes
         self.CHUNK_SIZE = self.config.MAX_FRAMES_PER_CHUNK

@@ -220,3 +220,19 @@ except (IndexError, AttributeError, ValueError):
             return True
         # If not found, check if we can download
         return False
+    
+    def setup_amp_environment(self) -> None:
+        """
+        Setup AMP (Automatic Mixed Precision) environment.
+        
+        Enables TF32 for better performance on Ampere+ GPUs.
+        """
+        import torch
+        if torch.cuda.is_available():
+            # Enable TensorFloat32 for Ampere+ GPUs (RTX 30/40/50 series)
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
+            
+            # Log AMP settings
+            if self.logger:
+                self.logger.info(f"AMP environment: TF32 enabled (matmul.allow_tf32={torch.backends.cuda.matmul.allow_tf32})")

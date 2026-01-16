@@ -180,19 +180,28 @@ class CorrBlock(nn.Module):
         fmap2_c = fmap2.clone()
         
         try:
-            # Attempt 1: Batch Matrix Multiply (BMM)
-            # BMM is often more stable than matmul with broadcasting
+            # Attempt 1: Try efficient FP16/AMP first
             corr = torch.bmm(fmap1_t, fmap2_c)
             
-        except RuntimeError:
-            # Attempt 2: Iterative approach (Loop)
-            # If batch fails, compute each element separately
-            # This 100% avoids 'StridedBatched' kernel
-            res_list = []
-            for b in range(batch):
-                res = torch.matmul(fmap1_t[b], fmap2_c[b])
-                res_list.append(res)
-            corr = torch.stack(res_list)
+        except RuntimeError as e:
+            # If CUBLAS error occurs, fallback to FP32
+            error_str = str(e)
+            if "CUDA" in error_str or "CUBLAS" in error_str or "out of memory" in error_str.lower():
+                # Fallback to FP32 but keep on GPU
+                fmap1_t_fp32 = fmap1_t.float()
+                fmap2_c_fp32 = fmap2_c.float()
+                try:
+                    corr = torch.bmm(fmap1_t_fp32, fmap2_c_fp32)
+                except RuntimeError:
+                    # Ultimate fallback: iterative approach
+                    res_list = []
+                    for b in range(batch):
+                        res = torch.matmul(fmap1_t_fp32[b], fmap2_c_fp32[b])
+                        res_list.append(res)
+                    corr = torch.stack(res_list)
+            else:
+                # Re-raise other errors
+                raise e
         
         # Restore TF32 setting
         torch.backends.cuda.matmul.allow_tf32 = True
@@ -495,24 +504,24 @@ from .corr import CorrBlock, AlternateCorrBlock"""
                 self._logger.info("✅ safe_matmul already injected into Transformer")
                 return True
 
-            # Safe matmul function (from our stability module) - improved version
+            # Safe matmul function (AMP-friendly version)
             safe_matmul_code = '''
 import torch
 
-# === RESILIENT MATMUL: GPU -> CPU Fallback ===
+# === AMP-FRIENDLY MATMUL: Try FP16 first, fallback to FP32 ===
 def safe_matmul(a, b):
-    """Safe matrix multiplication with automatic CPU fallback"""
+    """Safe matrix multiplication with AMP support"""
+    # Try efficient FP16/AMP first (no .float() conversion)
     try:
-        # Attempt 1: Compute on GPU
         return a @ b
     except RuntimeError as e:
-        # If driver crashed (CUBLAS_STATUS_INVALID_VALUE)
-        # We DON'T crash. We compute on CPU.
+        # If CUBLAS error occurs, fallback to FP32 (still on GPU)
         error_str = str(e)
-        if "CUDA" in error_str or "CUBLAS" in error_str:
-            # print(f"⚠️  GPU Crashed. Fallback to CPU...")
-            # Move -> Compute -> Return to GPU
-            return (a.cpu().float() @ b.cpu().float()).to(a.device)
+        if "CUDA" in error_str or "CUBLAS" in error_str or "out of memory" in error_str.lower():
+            # Fallback to FP32 but keep on GPU
+            # Use .float() only for the operation, preserve original dtype
+            return (a.float() @ b.float()).type_as(a)
+        # For other errors, re-raise
         raise e
 # =============================================
 '''
