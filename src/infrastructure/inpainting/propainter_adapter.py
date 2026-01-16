@@ -617,27 +617,26 @@ except (IndexError, AttributeError, ValueError):
             logger.info(f"GPU {check_gpu_id} VRAM: {free_vram_gb:.1f}GB free / {total_vram_gb:.1f}GB total")
 
             # Adaptive resolution limits based on available VRAM
-            # NUCLEAR OPTION: Absolute minimum resolution to prevent RAFT OOM
-            # At this point, we're sacrificing quality for functionality
+            # Optimized for quality while preventing OOM
             if total_vram_gb >= 40:
-                # A100, H100: high VRAM but still very conservative
-                max_dimension = 720
+                # A100, H100: high VRAM - can handle high resolution
+                max_dimension = 1280
             elif total_vram_gb >= 23:  # RTX 3090/4090 = 23.6GB (not 24!)
-                # RTX 3090, 4090, A6000: NUCLEAR OPTION
-                # RAFT CorrBlock still OOMs even at 540p with portrait
-                max_dimension = 360  # Absolute minimum (was 540)
+                # RTX 3090, 4090, A6000: Can handle 1080p for most videos
+                # With our GPU stability fixes, we can be more aggressive
+                max_dimension = 960  # Increased from 360 to 960 for better quality
             elif total_vram_gb >= 16:
-                # RTX 4080, 5070 Ti: 320p max
-                max_dimension = 320
+                # RTX 4080, 5070 Ti: 720p max
+                max_dimension = 720
             elif total_vram_gb >= 12:
-                # RTX 3080, 4070: 288p max
-                max_dimension = 288
+                # RTX 3080, 4070: 540p max
+                max_dimension = 540
             elif total_vram_gb >= 8:
-                # RTX 3060, 4060: 256p max
-                max_dimension = 256
+                # RTX 3060, 4060: 480p max
+                max_dimension = 480
             else:
-                # Low VRAM: 224p max (7x32 = minimum for ProPainter)
-                max_dimension = 224
+                # Low VRAM: 360p max
+                max_dimension = 360
 
             logger.info(f"VRAM-adaptive max dimension: {max_dimension}px (based on {total_vram_gb:.1f}GB VRAM)")
         else:
@@ -712,20 +711,20 @@ except (IndexError, AttributeError, ValueError):
             env['CUDA_VISIBLE_DEVICES'] = str(gpu_id)
             logger.info(f"Setting CUDA_VISIBLE_DEVICES={gpu_id} for this ProPainter process")
 
-        # AGGRESSIVE MEMORY MANAGEMENT: Set PyTorch environment variables
-        # These help prevent CUDA OOM errors by being more aggressive with memory management
-        # NUCLEAR OPTION: Absolute minimum memory settings
-        env['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:32,garbage_collection_threshold:0.4,expandable_segments:False'
-        env['CUDA_LAUNCH_BLOCKING'] = '1'  # Synchronous execution for better error tracking
-        # Limit PyTorch memory caching
-        env['PYTORCH_NO_CUDA_MEMORY_CACHING'] = '1'
-        # Force immediate memory release
-        env['PYTORCH_CUDA_ALLOC_SYNC_MEMOPS'] = '1'
-        # Reduce RAFT correlation block size (ProPainter-specific)
-        env['RAFT_CORR_LEVELS'] = '2'  # Reduce from 4 to 2 (75% memory reduction)
-        env['RAFT_CORR_RADIUS'] = '2'  # Reduce search radius (50% memory reduction)
-        logger.info("Applied NUCLEAR-OPTION CUDA memory management settings")
-        logger.warning("⚠️  Memory settings are at ABSOLUTE MINIMUM - quality may be significantly degraded")
+        # OPTIMIZED MEMORY MANAGEMENT: Balance between performance and memory usage
+        # With our GPU stability fixes, we can be less aggressive
+        env['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:128,garbage_collection_threshold:0.6,expandable_segments:True'
+        # Disable synchronous execution for better performance (was causing slowdown)
+        # env['CUDA_LAUNCH_BLOCKING'] = '1'  # Commented out for better performance
+        # Allow PyTorch memory caching for better performance
+        # env['PYTORCH_NO_CUDA_MEMORY_CACHING'] = '1'  # Commented out
+        # Use default memory release settings
+        # env['PYTORCH_CUDA_ALLOC_SYNC_MEMOPS'] = '1'  # Commented out
+        # Use default RAFT correlation settings for better quality
+        # env['RAFT_CORR_LEVELS'] = '4'  # Use default (4 levels) for better flow estimation
+        # env['RAFT_CORR_RADIUS'] = '4'  # Use default (radius 4) for better flow estimation
+        logger.info("Applied OPTIMIZED CUDA memory management settings")
+        logger.info("✅ Memory settings balanced for quality and performance")
 
         try:
             result = subprocess.run(

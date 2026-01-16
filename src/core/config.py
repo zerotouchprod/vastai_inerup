@@ -16,7 +16,7 @@ class AppConfig(BaseSettings):
     
     # OCR settings
     OCR_LANG: str = "en"
-    MASK_DILATION: int = 30  # Increased to cover text shadows/artifacts (sledgehammer approach)
+    MASK_DILATION: int = 15  # 30 Increased to cover text shadows/artifacts (sledgehammer approach)
     USE_GPU: bool = True  # Disable GPU completely to save memory
     USE_GPU_FOR_OCR: bool = True
     CONFIDENCE_THRESHOLD: float = 0.1  # Lowered for aggressive detection
@@ -33,8 +33,8 @@ class AppConfig(BaseSettings):
     FORCE_CPU: bool = False  # Force CPU usage to avoid GPU memory issues
     
     # Downscaling settings
-    AUTO_DOWNSCALE: bool = True  # Automatically downscale high-resolution videos to prevent OOM
-    MAX_HEIGHT: int = 720  # Maximum frame height before downscaling (pixels)
+    AUTO_DOWNSCALE: bool = False  # Automatically downscale high-resolution videos to prevent OOM
+    MAX_HEIGHT: int = 2160  # Maximum frame height before downscaling (pixels)
     
     # ROI (Region of Interest) settings
     USE_ROI_OPTIMIZATION: bool = True  # Process only bottom region where subtitles appear
