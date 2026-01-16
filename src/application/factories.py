@@ -179,30 +179,35 @@ class CorrBlock:
 
     @staticmethod
     def corr(fmap1, fmap2):
-        """TITANIUM: Bulletproof correlation with GPU+CPU fallback"""
+        """TITANIUM v2: Synchronized + Float32 forced for bulletproof correlation"""
         batch, dim, ht, wd = fmap1.shape
         fmap1 = fmap1.view(batch, dim, ht*wd)
         fmap2 = fmap2.view(batch, dim, ht*wd)
         
         try:
-            # ATTEMPT 1: Fast GPU matmul with CRITICAL .contiguous()
-            # This is the ONLY way to avoid CUBLAS_STATUS_INVALID_VALUE
-            fmap1_t = fmap1.transpose(1, 2).contiguous()
-            fmap2_c = fmap2.contiguous()
+            # === PROTECTION AGAINST RTX 50-SERIES BUGS ===
+            # 1. Force float32 (FP16 often breaks cuBLAS on new cards)
+            fmap1_t = fmap1.transpose(1, 2).contiguous().float()
+            fmap2_c = fmap2.contiguous().float()
             
-            # Use matmul (more stable than einsum on some CUDA versions)
+            # 2. Matrix multiplication
             corr = torch.matmul(fmap1_t, fmap2_c)
             
+            # 3. SYNCHRONIZATION (Critical!)
+            # Force Python to wait for GPU to catch errors HERE, not later
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+            
         except RuntimeError as e:
-            # ATTEMPT 2: CPU Fallback (Last resort but ALWAYS works)
-            # If CUDA fails (INVALID_VALUE, OOM, etc.), compute on CPU
-            # ~10ms slower but prevents complete failure
+            # === CPU LIFESAVER ===
+            # If GPU still crashes, compute on CPU
             import sys
-            print(f"⚠️ GPU Correlation failed ({e}). Fallback to CPU execution.", file=sys.stderr)
+            print(f"⚠️ GPU Correlation CRASHED ({e}). Switching to CPU calculation...", file=sys.stderr)
             
             fmap1_cpu = fmap1.cpu().float()
             fmap2_cpu = fmap2.cpu().float()
             
+            # Compute on CPU (slow but reliable)
             corr_cpu = torch.matmul(fmap1_cpu.transpose(1, 2), fmap2_cpu)
             
             # Move result back to GPU
