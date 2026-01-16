@@ -59,6 +59,54 @@ class ProcessorFactory:
         else:
             self._logger.info("[SHELL] Using shell-wrapped processors (default)")
 
+    def _inject_pure_pytorch_corrblock(self):
+        """
+        Inject Pure PyTorch CorrBlock into ProPainter's RAFT module.
+
+        ProPainter's RAFT imports CorrBlock from spatial_correlation_sampler:
+            from .corr import CorrBlock
+
+        But we replaced spatial_correlation_sampler with Pure PyTorch version.
+        This method monkey-patches ProPainter's RAFT to use our implementation.
+
+        Architecture:
+        - ProPainter/RAFT expects: from .corr import CorrBlock
+        - We inject: sys.modules['/opt/ProPainter/RAFT/corr'].CorrBlock = our_CorrBlock
+        - RAFT imports our version seamlessly
+
+        Design pattern: Dependency injection via module monkey-patching
+        """
+        import sys
+        from pathlib import Path
+
+        try:
+            # 1. Install pure PyTorch correlation (if not already)
+            from src.infrastructure.inpainting.pure_pytorch_correlation import CorrBlock as PurePytorchCorrBlock
+
+            # 2. Add ProPainter to sys.path if needed
+            propainter_root = Path("/opt/ProPainter")
+            if str(propainter_root) not in sys.path:
+                sys.path.insert(0, str(propainter_root))
+
+            # 3. Create fake 'corr' module with our CorrBlock
+            class FakeCorrModule:
+                """Fake module that provides Pure PyTorch CorrBlock."""
+                CorrBlock = PurePytorchCorrBlock
+
+            # 4. Inject into ProPainter's RAFT namespace
+            # ProPainter does: from .corr import CorrBlock
+            # We make .corr point to our fake module
+            raft_module_name = 'RAFT.corr'
+            sys.modules[raft_module_name] = FakeCorrModule()
+
+            self._logger.info("✅ Injected Pure PyTorch CorrBlock into ProPainter RAFT")
+            self._logger.info("   ProPainter will use Pure PyTorch correlation (no C++ extension)")
+
+        except Exception as e:
+            self._logger.error(f"❌ Failed to inject Pure PyTorch CorrBlock: {e}")
+            self._logger.error("   ProPainter may fail if it tries to use spatial-correlation-sampler")
+            # Don't raise - let ProPainter try anyway, it will give clearer error
+
     def create_interpolator(self, prefer: str = 'auto') -> Optional[IProcessor]:
         """
         Create interpolator processor.
@@ -135,14 +183,19 @@ class ProcessorFactory:
                 # 3. Mask Service
                 mask_service = TextMaskService(ocr=ocr, sam2=sam2)
                 
-                # 4. Inpainter
+                # 4. Inject Pure PyTorch CorrBlock into ProPainter RAFT (CRITICAL!)
+                # ProPainter's RAFT tries to import CorrBlock from spatial_correlation_sampler
+                # But we replaced it with Pure PyTorch version, so we need to inject it
+                self._inject_pure_pytorch_corrblock()
+
+                # 5. Inpainter
                 inpainter = ProPainterAdapter()
                 
-                # 5. Debug mode detection
+                # 6. Debug mode detection
                 import os
                 debug_mode = os.getenv('DEBUG_SUBTITLE_REMOVAL', '0') == '1'
 
-                # 6. Главный сервис
+                # 7. Главный сервис
                 return SubtitleRemoverService(mask_service, inpainter, lang=lang, roi_factor=roi, debug=debug_mode)
             except Exception as e:
                 self._logger.warning(f"SAM2 pipeline failed to initialize: {e}")
