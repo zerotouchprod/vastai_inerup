@@ -77,7 +77,8 @@ def validate_cuda_dependencies(auto_rebuild: bool = None) -> bool:
         from src.infrastructure.inpainting.raft_wrapper import (
             check_spatial_correlation_sampler,
             rebuild_spatial_correlation_sampler,
-            SpatialCorrelationSamplerError
+            SpatialCorrelationSamplerError,
+            CUDAExtensionRebuiltError  # New exception type
         )
         
         # Check spatial-correlation-sampler
@@ -101,12 +102,14 @@ def validate_cuda_dependencies(auto_rebuild: bool = None) -> bool:
             logger.warning("Set AUTO_REBUILD_CUDA_EXTENSIONS=false to disable")
             logger.warning("")
             
-            if rebuild_spatial_correlation_sampler():
-                logger.info(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ spatial-correlation-sampler: REBUILT SUCCESSFULLY")
-                logger.info("=" * 80)
-                return True
-            else:
-                logger.error(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Rebuild failed")
+            # rebuild_spatial_correlation_sampler() will raise CUDAExtensionRebuiltError
+            # if successful - we don't catch it here, let it propagate to main()
+            rebuild_spatial_correlation_sampler()
+
+            # Should never reach here - rebuild either raises or returns False
+            logger.info(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ spatial-correlation-sampler: REBUILT SUCCESSFULLY")
+            logger.info("=" * 80)
+            return True
         else:
             logger.error(f"[{datetime.now().strftime('%H:%M:%S')}] Auto-rebuild is DISABLED (AUTO_REBUILD_CUDA_EXTENSIONS=false)")
 
@@ -142,6 +145,10 @@ def validate_cuda_dependencies(auto_rebuild: bool = None) -> bool:
             "Docker image must be rebuilt with correct CUDA version."
         )
         
+    except CUDAExtensionRebuiltError:
+        # Rebuild succeeded! Re-raise so main() can return exit code 42
+        raise
+
     except ImportError as e:
         logger.error(f"❌ Failed to import validation modules: {e}")
         logger.error("This indicates a code deployment issue")

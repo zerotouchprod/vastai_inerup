@@ -257,16 +257,33 @@ def main():
     # Fails fast with clear error messages if dependencies are broken
     # ========================================================================
     if not args.skip_cuda_check:
+        # Import exception types first, outside try block
+        from src.infrastructure.inpainting.raft_wrapper import CUDAExtensionRebuiltError
+
         try:
             from src.infrastructure.startup import startup_checks
 
             # This will raise RuntimeError if dependencies are broken
-            # Set AUTO_REBUILD_CUDA_EXTENSIONS=true env var to attempt auto-rebuild
+            # Or CUDAExtensionRebuiltError if rebuild succeeded (needs restart)
             startup_checks(
                 validate_cuda=True,  # Check spatial-correlation-sampler
                 validate_propainter_raft=True,  # Check ProPainter RAFT
                 auto_rebuild=None  # Read from env var AUTO_REBUILD_CUDA_EXTENSIONS
             )
+        except CUDAExtensionRebuiltError as e:
+            # CUDA extension was rebuilt successfully!
+            # Python process needs to restart to load new extension
+            logger.info("")
+            logger.info("=" * 80)
+            logger.info("CUDA EXTENSION REBUILT - RESTART REQUIRED")
+            logger.info("=" * 80)
+            logger.info(str(e))
+            logger.info("")
+            logger.info("Exiting with code 42 to signal restart needed.")
+            logger.info("If using auto_restart_wrapper.py, restart will happen automatically.")
+            logger.info("Otherwise, please run the command again manually.")
+            logger.info("=" * 80)
+            return 42  # Special exit code for rebuild success + restart needed
         except RuntimeError as e:
             logger.error("")
             logger.error("=" * 80)

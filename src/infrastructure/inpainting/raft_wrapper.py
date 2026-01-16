@@ -27,6 +27,18 @@ class SpatialCorrelationSamplerError(RuntimeError):
     pass
 
 
+class CUDAExtensionRebuiltError(RuntimeError):
+    """
+    Raised when CUDA extension was successfully rebuilt but Python process needs restart.
+
+    The calling code should catch this and exit with code 42 to signal that
+    the process should be restarted (by wrapper, supervisor, or manually).
+
+    Exit code 42 = "CUDA extension rebuilt, restart needed"
+    """
+    pass
+
+
 def check_spatial_correlation_sampler() -> Tuple[bool, Optional[str]]:
     """
     Check if spatial-correlation-sampler is working correctly.
@@ -121,23 +133,28 @@ def rebuild_spatial_correlation_sampler() -> bool:
         logger.info(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ Compilation successful")
         logger.info("")
 
-        # Step 3: Verify it works now
-        logger.info(f"[{datetime.now().strftime('%H:%M:%S')}] Step 3/3: Verifying rebuilt extension...")
-        is_working, error = check_spatial_correlation_sampler()
+        # Step 3: Note about Python process restart
+        # CRITICAL: Python has already loaded the old .so file into memory
+        # The new compiled extension won't be used until Python restarts
+        total_elapsed = time.time() - start_time
+        logger.info(f"[{datetime.now().strftime('%H:%M:%S')}] Step 3/3: Extension rebuilt successfully")
+        logger.info("")
+        logger.warning("=" * 80)
+        logger.warning(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ REBUILD COMPLETE in {total_elapsed:.1f} seconds")
+        logger.warning("=" * 80)
+        logger.warning("")
+        logger.warning("⚠️  IMPORTANT: Python process must RESTART to use new extension")
+        logger.warning("   The current Python process has old .so file in memory")
+        logger.warning("   Raising exception to trigger restart...")
+        logger.warning("")
 
-        if is_working:
-            total_elapsed = time.time() - start_time
-            logger.info(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ Verification passed: spatial-correlation-sampler is working")
-            logger.info("")
-            logger.warning("=" * 80)
-            logger.warning(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ REBUILD COMPLETE in {total_elapsed:.1f} seconds")
-            logger.warning("=" * 80)
-            logger.warning("")
-            return True
-        else:
-            logger.error(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Verification failed: {error}")
-            logger.error("Compilation succeeded but extension still doesn't work")
-            return False
+        # Raise special exception instead of sys.exit(42)
+        # This allows main() to catch it and return exit code 42 properly
+        raise CUDAExtensionRebuiltError(
+            "CUDA extension rebuilt successfully. "
+            "Python process must restart to load new extension. "
+            "Exit with code 42 to signal restart needed."
+        )
 
     except subprocess.TimeoutExpired:
         elapsed = time.time() - start_time
@@ -342,6 +359,7 @@ def validate_raft_availability() -> None:
 __all__ = [
     'ProPainterRAFTWrapper',
     'SpatialCorrelationSamplerError',
+    'CUDAExtensionRebuiltError',  # New exception for rebuild success + restart needed
     'get_raft_wrapper',
     'validate_raft_availability',
     'check_spatial_correlation_sampler',
