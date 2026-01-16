@@ -236,6 +236,47 @@ from .corr import CorrBlock, AlternateCorrBlock"""
                 else:
                     self._logger.info("✅ raft.py already patched for Pure PyTorch")
 
+                # CRITICAL DEBUG FIX: Add debug wrapper around CorrBlock instantiation
+                # This will show the FULL error message instead of truncated stderr
+                if "# DEBUG WRAPPER - Show full error" not in raft_content:
+                    raft_content = raft_py.read_text()  # Re-read after first patch
+
+                    # Find the CorrBlock instantiation
+                    old_corrblock = """        if self.args.alternate_corr:
+            corr_fn = AlternateCorrBlock(fmap1, fmap2, radius=self.args.corr_radius)
+        else:
+            corr_fn = CorrBlock(fmap1, fmap2, radius=self.args.corr_radius)"""
+
+                    new_corrblock = """        # DEBUG WRAPPER - Show full error
+        try:
+            if self.args.alternate_corr:
+                corr_fn = AlternateCorrBlock(fmap1, fmap2, radius=self.args.corr_radius)
+            else:
+                corr_fn = CorrBlock(fmap1, fmap2, radius=self.args.corr_radius)
+        except Exception as e:
+            import sys, traceback
+            print(f"\\n\\n{'='*80}", file=sys.stderr)
+            print(f"❌ FATAL: CorrBlock instantiation failed!", file=sys.stderr)
+            print(f"{'='*80}", file=sys.stderr)
+            print(f"Error type: {type(e).__name__}", file=sys.stderr)
+            print(f"Error message: {str(e)}", file=sys.stderr)
+            print(f"fmap1 shape: {fmap1.shape if hasattr(fmap1, 'shape') else 'N/A'}", file=sys.stderr)
+            print(f"fmap2 shape: {fmap2.shape if hasattr(fmap2, 'shape') else 'N/A'}", file=sys.stderr)
+            print(f"radius: {self.args.corr_radius}", file=sys.stderr)
+            print(f"\\nFull traceback:", file=sys.stderr)
+            traceback.print_exc()
+            print(f"{'='*80}", file=sys.stderr)
+            raise"""
+
+                    if old_corrblock in raft_content:
+                        raft_content = raft_content.replace(old_corrblock, new_corrblock)
+                        raft_py.write_text(raft_content)
+                        self._logger.info("✅ Added debug wrapper to CorrBlock instantiation in raft.py")
+                    else:
+                        self._logger.warning("⚠️  Could not find CorrBlock instantiation to add debug wrapper")
+                else:
+                    self._logger.info("✅ raft.py already has debug wrapper")
+
         except Exception as e:
             self._logger.error(f"❌ Failed to inject Pure PyTorch CorrBlock: {e}")
             self._logger.error("   ProPainter may fail if it tries to use spatial-correlation-sampler")

@@ -161,7 +161,38 @@ ls -lh /opt/ProPainter/RAFT/corr.py
 2. ❌ **Pure PyTorch with wrong algorithm** - Integer indexing vs bilinear
 3. ❌ **Correct algorithm with indexing='ij'** - PyTorch version incompatibility
 4. ❌ **Fixed indexing with *args, **kwargs** - Validation passed but runtime failed
-5. ✅ **Direct source patching** - THIS SHOULD WORK!
+5. ✅ **Direct source patching** - Patched import line (line 110 crash persists)
+6. ✅ **Debug wrapper** - Added try/except to show FULL error message
+
+## Latest Status
+
+**Current issue**: Error message truncated at line 110
+```
+File "/opt/ProPainter/RAFT/raft.py", line 110, in forward
+    corr_fn = CorrBlock
+```
+
+**We don't see the actual error!** Just where it crashed.
+
+**Solution applied**: Added debug wrapper around CorrBlock instantiation:
+```python
+try:
+    corr_fn = CorrBlock(fmap1, fmap2, radius=self.args.corr_radius)
+except Exception as e:
+    print(f"❌ FATAL: {type(e).__name__}: {str(e)}", file=sys.stderr)
+    print(f"fmap1 shape: {fmap1.shape}", file=sys.stderr)
+    print(f"radius: {self.args.corr_radius}", file=sys.stderr)
+    traceback.print_exc()
+    raise
+```
+
+**Next run will show**:
+- Exact error type (TypeError? AttributeError? RuntimeError?)
+- Error message (full, not truncated)
+- Context (fmap shapes, radius value)
+- Complete traceback
+
+**This will reveal the real problem!**
 
 ## Files Changed
 
