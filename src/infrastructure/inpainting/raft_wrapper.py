@@ -14,6 +14,7 @@ This module provides a safe wrapper around ProPainter's RAFT that:
 import os
 import sys
 import subprocess
+import shutil
 import logging
 from pathlib import Path
 from typing import Optional, Tuple
@@ -53,12 +54,15 @@ def rebuild_spatial_correlation_sampler() -> bool:
     """
     Rebuild spatial-correlation-sampler for current CUDA environment.
     
+    CRITICAL: This rebuilds the ACTUAL C++ extension that ProPainter uses,
+    not just the pip package wrapper.
+
     Returns:
         bool: True if rebuild succeeded
         
     Design pattern: Fail fast with clear error messages
     """
-    logger.warning("Attempting to rebuild spatial-correlation-sampler...")
+    logger.warning("Attempting to rebuild ProPainter RAFT correlation extension...")
     logger.warning("This is a LAST RESORT and indicates Docker image needs rebuild")
     
     try:
@@ -70,14 +74,14 @@ def rebuild_spatial_correlation_sampler() -> bool:
         cuda_version = torch.version.cuda
         logger.info(f"PyTorch CUDA version: {cuda_version}")
         
-        # Uninstall existing broken version
+        # Step 1: Try to rebuild spatial-correlation-sampler package first
+        logger.info("Step 1: Rebuilding spatial-correlation-sampler package...")
         subprocess.run(
             ["pip", "uninstall", "-y", "spatial-correlation-sampler"],
             capture_output=True,
             check=False
         )
         
-        # Reinstall from source
         result = subprocess.run(
             ["pip", "install", "--no-cache-dir", "--force-reinstall", 
              "--no-binary", "spatial-correlation-sampler", 
@@ -88,16 +92,61 @@ def rebuild_spatial_correlation_sampler() -> bool:
         )
         
         if result.returncode != 0:
-            logger.error(f"Rebuild failed: {result.stderr}")
+            logger.warning(f"spatial-correlation-sampler rebuild failed: {result.stderr}")
+            logger.warning("Will try ProPainter RAFT correlation extension directly...")
+        else:
+            logger.info("✅ spatial-correlation-sampler package rebuilt")
+
+        # Step 2: Rebuild ProPainter RAFT correlation extension
+        # This is the REAL fix for the CorrBlock error
+        propainter_root = Path(os.getenv("PROPAINTER_ROOT", "/opt/ProPainter"))
+        correlation_dir = propainter_root / "RAFT" / "core" / "correlation"
+
+        if not correlation_dir.exists():
+            logger.error(f"ProPainter RAFT correlation dir not found: {correlation_dir}")
             return False
-            
-        # Verify it works now
+
+        logger.info(f"Step 2: Rebuilding ProPainter RAFT correlation extension at {correlation_dir}")
+
+        # Clean previous build artifacts
+        logger.info("Cleaning previous build artifacts...")
+        for pattern in ["build", "dist", "*.egg-info", "*.so"]:
+            for path in correlation_dir.glob(pattern):
+                if path.is_dir():
+                    import shutil
+                    shutil.rmtree(path)
+                    logger.info(f"  Removed {path}")
+                elif path.is_file():
+                    path.unlink()
+                    logger.info(f"  Removed {path}")
+
+        # Rebuild extension
+        logger.info("Building C++ extension for current CUDA version...")
+        result = subprocess.run(
+            ["python3", "setup.py", "install"],
+            cwd=str(correlation_dir),
+            capture_output=True,
+            text=True,
+            timeout=180
+        )
+
+        if result.returncode != 0:
+            logger.error(f"RAFT correlation extension build failed!")
+            logger.error(f"STDOUT: {result.stdout[-500:]}")
+            logger.error(f"STDERR: {result.stderr[-500:]}")
+            return False
+
+        logger.info("✅ ProPainter RAFT correlation extension rebuilt successfully")
+        logger.info(f"Build output: {result.stdout[-200:]}")
+
+        # Step 3: Verify it works now
         is_working, error = check_spatial_correlation_sampler()
         if not is_working:
             logger.error(f"Rebuild completed but still broken: {error}")
+            logger.error("You may need to restart Python process for changes to take effect")
             return False
             
-        logger.info("✅ spatial-correlation-sampler rebuilt successfully")
+        logger.info("✅ All CUDA extensions rebuilt and verified")
         return True
         
     except subprocess.TimeoutExpired:
@@ -105,6 +154,8 @@ def rebuild_spatial_correlation_sampler() -> bool:
         return False
     except Exception as e:
         logger.error(f"Rebuild failed with exception: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return False
 
 
