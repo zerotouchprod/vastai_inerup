@@ -33,7 +33,8 @@ class CorrBlock:
     This implementation uses Pure PyTorch but produces identical results.
     """
 
-    def __init__(self, fmap1, fmap2, num_levels=4, radius=4, **kwargs):
+    def __init__(self, fmap1, fmap2, num_levels=4, radius=4, *args, **kwargs):
+        # Accept ANY arguments - be compatible with any calling convention
         self.num_levels = num_levels
         self.radius = radius
         self.corr_pyramid = []

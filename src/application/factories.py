@@ -92,25 +92,19 @@ class ProcessorFactory:
                 shutil.copy(corr_py_dest, propainter_raft / "corr.py.original")
                 self._logger.info(f"✅ Backed up original corr.py to corr.py.original")
 
-            # 4. ALWAYS overwrite to ensure latest version (e.g. with debug prints)
-            # Don't skip if file exists - we need to update it!
-            self._logger.info(f"📝 Preparing to inject corr.py:")
-            self._logger.info(f"   Source: {corr_py_source}")
-            self._logger.info(f"   Source exists: {corr_py_source.exists()}")
+            # 4. ALWAYS use inline version - most reliable!
+            # Source file on server may be outdated
+            self._logger.info(f"📝 Creating bulletproof inline corr.py:")
             self._logger.info(f"   Dest: {corr_py_dest}")
-            self._logger.info(f"   Dest exists: {corr_py_dest.exists()}")
 
-            # 5. Copy our Pure PyTorch corr.py
-            if not corr_py_source.exists():
-                self._logger.warning(f"⚠️  Source corr.py not found at {corr_py_source}")
-                self._logger.info(f"   Creating inline version instead...")
-                # Create it inline - CORRECT IMPLEMENTATION matching original API
-                corr_py_content = '''#!/usr/bin/env python3
+            # Create it inline - BULLETPROOF IMPLEMENTATION
+            corr_py_content = '''#!/usr/bin/env python3
 """
-Pure PyTorch RAFT correlation module - CORRECT IMPLEMENTATION
-==============================================================
+Pure PyTorch RAFT correlation module - BULLETPROOF
+===================================================
 
 This matches the ORIGINAL C++ API exactly but uses Pure PyTorch internally.
+Accepts ANY arguments for maximum compatibility.
 """
 import torch
 import torch.nn.functional as F
@@ -137,10 +131,11 @@ class CorrBlock:
     """
     Correlation Block - matches original C++ API exactly.
     
-    This implementation uses Pure PyTorch but produces identical results.
+    BULLETPROOF: Accepts *args, **kwargs for maximum compatibility.
     """
     
-    def __init__(self, fmap1, fmap2, num_levels=4, radius=4, **kwargs):
+    def __init__(self, fmap1, fmap2, num_levels=4, radius=4, *args, **kwargs):
+        # Accept ANY arguments - be compatible with any calling convention
         self.num_levels = num_levels
         self.radius = radius
         self.corr_pyramid = []
@@ -157,15 +152,7 @@ class CorrBlock:
             self.corr_pyramid.append(corr)
 
     def __call__(self, coords):
-        """
-        Sample correlation at coordinates.
-        
-        Args:
-            coords: Flow coordinates [B, 2, H, W]
-        
-        Returns:
-            Correlation features [B, num_levels*(2*r+1)^2, H, W]
-        """
+        """Sample correlation at coordinates."""
         r = self.radius
         coords = coords.permute(0, 2, 3, 1)
         batch, h1, w1, _ = coords.shape
@@ -205,12 +192,8 @@ AlternateCorrBlock = CorrBlock
 
 __all__ = ['CorrBlock', 'AlternateCorrBlock']
 '''
-                corr_py_dest.write_text(corr_py_content)
-                self._logger.info(f"   ✅ Created inline corr.py ({len(corr_py_content)} bytes)")
-            else:
-                self._logger.info(f"   Copying from source file...")
-                shutil.copy(corr_py_source, corr_py_dest)
-                self._logger.info(f"   ✅ Copied corr.py from {corr_py_source}")
+            corr_py_dest.write_text(corr_py_content)
+            self._logger.info(f"   ✅ Created inline corr.py ({len(corr_py_content)} bytes)")
 
             # Verify file was written
             if corr_py_dest.exists():
