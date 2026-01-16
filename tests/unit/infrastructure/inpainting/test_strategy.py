@@ -57,7 +57,12 @@ class TestSlidingWindowStrategy:
         assert chunk['id'] == 0
         assert chunk['frame_indices'] == (0, 10)
         
-        # Test with exactly chunk size
+        # Test with exactly chunk size: need to clear previous frames
+        # Remove previous files
+        for f in frames_dir.glob("*.png"):
+            f.unlink()
+        for f in mask_dir.glob("*.png"):
+            f.unlink()
         for i in range(15):
             (frames_dir / f"frame2_{i:08d}.png").touch()
             (mask_dir / f"frame2_{i:08d}.png").touch()

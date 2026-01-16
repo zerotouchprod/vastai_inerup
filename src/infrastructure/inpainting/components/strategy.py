@@ -33,6 +33,13 @@ class SlidingWindowStrategy:
         masks = sorted(mask_dir.glob("*.png"))
         total_frames = len(frames)
         
+        # Ensure overlap is valid
+        if self.overlap >= self.chunk_size:
+            self.overlap = max(0, self.chunk_size - 1)
+        step = self.chunk_size - self.overlap
+        if step <= 0:
+            step = 1  # safety
+        
         if total_frames <= self.chunk_size:
             # Single chunk covering all frames
             chunk_id = 0
@@ -46,7 +53,6 @@ class SlidingWindowStrategy:
                 'frame_indices': (0, total_frames)
             }]
         
-        step = self.chunk_size - self.overlap
         num_chunks = (total_frames - self.overlap + step - 1) // step  # ceil division
         
         chunks = []

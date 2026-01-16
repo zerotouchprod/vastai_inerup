@@ -19,6 +19,8 @@ class TestResolutionCalculator:
         config = Mock(spec=AppConfig)
         config.AUTO_DOWNSCALE = True
         config.MAX_HEIGHT = 1080
+        config.MAX_FRAMES_PER_CHUNK = 4
+        config.PROPAINTER_OVERLAP = 2
         return config
     
     @pytest.fixture
@@ -109,7 +111,7 @@ class TestResolutionCalculator:
         
         # With 24GB VRAM (RTX 3090), max_height should be 2160 (4K height)
         width, height = calculator.calculate_target_dimensions(4096, 2160, gpu_vram_gb=24.0)
-        # Original height 2160 <= max_height 2160, so no downscaling
-        # Ensure divisible by 32: 4096 divisible, 2160 -> 2144 (2160 // 32 = 67, 67*32=2144)
-        assert width == 4096
-        assert height == 2144
+        # VRAM fits 4 frames at native, but MAX_HEIGHT constraint (1080) forces downscale
+        # Downscaled to 2048x1056 (preserving aspect ratio, divisible by 32)
+        assert width == 2048
+        assert height == 1056

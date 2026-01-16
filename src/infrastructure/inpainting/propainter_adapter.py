@@ -34,6 +34,11 @@ class ProPainterAdapter:
         
         # InferenceRunner needs root path to find scripts
         self.inference_runner = InferenceRunner(self.config, self.root)
+        
+        # Backward compatibility aliases
+        self.resolution_calculator = self.res_calculator
+        self.environment_manager = self.env_manager
+        self.media_processor = self.media_processor  # already same
 
         # 3. Setup Environment (Fail Fast)
         if not (self.root / "inference_propainter.py").exists():
@@ -42,12 +47,16 @@ class ProPainterAdapter:
             # Patch bugs and validate RAFT immediately
             self.env_manager.patch_propainter_misc(self.root)
             self.env_manager.validate_raft_availability()
+        
+        # Backward compatibility attributes
+        self.CHUNK_SIZE = self.config.MAX_FRAMES_PER_CHUNK
+        self.OVERLAP = self.config.PROPAINTER_OVERLAP
 
     def process(self, input_path: Union[str, Path, List[Path]], mask_dir: Path, output_path: Path) -> Path:
         """
         Main entry point. Orchestrates the pipeline.
         """
-        logger.info("🚀 Starting ProPainter Pipeline...")
+        logger.info("🚀 Starting ProPainter Pipeline with SMART ADAPTATION...")
         
         # 1. Setup GPU Environment (TF32, Visible Devices, etc.)
         gpu_info = self.env_manager.setup_gpu_environment()
@@ -57,19 +66,23 @@ class ProPainterAdapter:
         # Handles video files, frame directories, or lists of paths
         frames_dir = self.media_processor.prepare_input(input_path)
         
-        # 3. Analyze Resolution
-        # Calculates VRAM-safe resolution based on hardware
+        # 3. SMART CALCULATION: Resolution + Chunk Size
         original_dims = self.media_processor.get_frame_dimensions(frames_dir)
-        target_width, target_height = self.res_calculator.calculate_target_dimensions(
+        
+        # Используем новый метод, который возвращает всё сразу
+        target_width, target_height, safe_chunk_size = self.res_calculator.calculate_optimal_params(
             original_dims[0], original_dims[1], gpu_info['total_vram_gb']
         )
         
-        # 4. Generate Execution Strategy (Chunks)
-        # Splits frames into overlapping chunks to fit in VRAM
+        # ВАЖНО: Обновляем стратегию нарезки динамически!
+        logger.info(f"🎯 Dynamic Settings applied: {target_width}x{target_height} @ {safe_chunk_size} frames/chunk")
+        self.strategy.chunk_size = safe_chunk_size  # Переопределяем значение из конфига
+        self.strategy.overlap = min(2, safe_chunk_size // 3) # Адаптивный нахлест (не больше 1/3 чанка)
+        
+        # 4. Generate Execution Strategy
         chunks = self.strategy.generate_chunks(frames_dir, mask_dir, output_path.parent)
         
-        # 5. Execute Inference (Parallel or Sequential)
-        # This delegate handles the complex subprocess calls and error handling
+        # 5. Execute Inference
         chunk_results = self.inference_runner.process_chunks(
             chunks, 
             width=target_width, 

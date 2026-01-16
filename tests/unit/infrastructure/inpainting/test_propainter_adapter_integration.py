@@ -59,7 +59,7 @@ class TestProPainterAdapterIntegration:
             # Verify components were initialized with config
             mock_rc.assert_called_once_with(mock_config)
             mock_sws.assert_called_once_with(mock_config)
-            mock_ir.assert_called_once_with(mock_config)
+            mock_ir.assert_called_once_with(mock_config, Path("/opt/ProPainter"))
             mock_em.assert_called_once_with(mock_config)
             mock_mp.assert_called_once_with(mock_config)
             
