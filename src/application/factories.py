@@ -503,14 +503,15 @@ import torch
 def safe_matmul(a, b):
     """Safe matrix multiplication with automatic CPU fallback"""
     try:
-        # Попытка 1: Считаем на видеокарте
+        # Attempt 1: Compute on GPU
         return a @ b
     except RuntimeError as e:
-        # Если драйвер крашнулся (CUBLAS_STATUS_INVALID_VALUE)
-        # Мы НЕ падаем. Мы считаем на процессоре.
-        if "CUDA" in str(e) or "CUBLAS" in str(e):
+        # If driver crashed (CUBLAS_STATUS_INVALID_VALUE)
+        # We DON'T crash. We compute on CPU.
+        error_str = str(e)
+        if "CUDA" in error_str or "CUBLAS" in error_str:
             # print(f"⚠️  GPU Crashed. Fallback to CPU...")
-            # Перенос -> Расчет -> Возврат на GPU
+            # Move -> Compute -> Return to GPU
             return (a.cpu().float() @ b.cpu().float()).to(a.device)
         raise e
 # =============================================
@@ -528,42 +529,83 @@ def safe_matmul(a, b):
 
             # Replace ALL dangerous @ operations with safe_matmul
             # We need to find various patterns including those with .float().clone() etc.
+            # IMPORTANT: Don't replace operations inside the safe_matmul function itself!
             
-            # List of patterns to search for (including variations with .float(), .clone(), .contiguous())
-            patterns_to_replace = [
-                # Pattern 1: win_q_t @ win_k_t.transpose(-2, -1) and variations
-                (r'win_q_t\s*(?:\.float\(\))?(?:\.clone\(\))?\s*@\s*win_k_t(?:\.float\(\))?(?:\.clone\(\))?\.transpose\(-2,\s*-1\)(?:\.clone\(\))?(?:\.contiguous\(\))?',
-                 'safe_matmul(win_q_t, win_k_t.transpose(-2, -1))'),
-                
-                # Pattern 2: win_q_s @ win_k_s.transpose(-2, -1) and variations
-                (r'win_q_s\s*(?:\.float\(\))?(?:\.clone\(\))?\s*@\s*win_k_s(?:\.float\(\))?(?:\.clone\(\))?\.transpose\(-2,\s*-1\)(?:\.clone\(\))?(?:\.contiguous\(\))?',
-                 'safe_matmul(win_q_s, win_k_s.transpose(-2, -1))'),
-                
-                # Pattern 3: att_t @ win_v_t and variations
-                (r'att_t\s*(?:\.float\(\))?\s*@\s*win_v_t(?:\.float\(\))?(?:\.clone\(\))?',
-                 'safe_matmul(att_t, win_v_t)'),
-                
-                # Pattern 4: att_s @ win_v_s and variations
-                (r'att_s\s*(?:\.float\(\))?\s*@\s*win_v_s(?:\.float\(\))?(?:\.clone\(\))?',
-                 'safe_matmul(att_s, win_v_s)'),
-                
-                # Pattern 5: Generic q @ k.transpose(-2, -1)
-                (r'(\w+)\s*(?:\.float\(\))?(?:\.clone\(\))?\s*@\s*(\w+)(?:\.float\(\))?(?:\.clone\(\))?\.transpose\(-2,\s*-1\)(?:\.clone\(\))?(?:\.contiguous\(\))?',
-                 r'safe_matmul(\1, \2.transpose(-2, -1))'),
-                
-                # Pattern 6: Generic att @ v
-                (r'(\w+)\s*(?:\.float\(\))?\s*@\s*(\w+)(?:\.float\(\))?(?:\.clone\(\))?',
-                 r'safe_matmul(\1, \2)'),
-            ]
-
+            # Initialize replacement count
             replacement_count = 0
-            for pattern, replacement in patterns_to_replace:
-                # Use re.sub with count=0 (replace all)
-                new_content, count = re.subn(pattern, replacement, content, flags=re.MULTILINE)
-                if count > 0:
-                    content = new_content
-                    replacement_count += count
-                    self._logger.debug(f"Replaced {count} occurrences of pattern: {pattern}")
+            
+            # First, split content to avoid replacing inside safe_matmul function
+            lines = content.split('\n')
+            in_safe_matmul = False
+            new_lines = []
+            
+            for line in lines:
+                # Check if we're entering or leaving safe_matmul function
+                if 'def safe_matmul' in line and 'RESILIENT MATMUL' not in line:
+                    in_safe_matmul = True
+                elif in_safe_matmul and line.strip() == '# =============================================':
+                    in_safe_matmul = False
+                
+                # Only replace @ operations outside safe_matmul function
+                if not in_safe_matmul and '@' in line:
+                    # Apply replacements to this line
+                    original_line = line
+                    
+                    # List of patterns to search for (including variations with .float(), .clone(), .contiguous())
+                    patterns_to_replace = [
+                        # Pattern 1: win_q_t @ win_k_t.transpose(-2, -1) and variations
+                        (r'win_q_t\s*(?:\.float\(\))?(?:\.clone\(\))?\s*@\s*win_k_t(?:\.float\(\))?(?:\.clone\(\))?\.transpose\(-2,\s*-1\)(?:\.clone\(\))?(?:\.contiguous\(\))?',
+                         'safe_matmul(win_q_t, win_k_t.transpose(-2, -1))'),
+                        
+                        # Pattern 2: win_q_s @ win_k_s.transpose(-2, -1) and variations
+                        (r'win_q_s\s*(?:\.float\(\))?(?:\.clone\(\))?\s*@\s*win_k_s(?:\.float\(\))?(?:\.clone\(\))?\.transpose\(-2,\s*-1\)(?:\.clone\(\))?(?:\.contiguous\(\))?',
+                         'safe_matmul(win_q_s, win_k_s.transpose(-2, -1))'),
+                        
+                        # Pattern 3: att_t @ win_v_t and variations
+                        (r'att_t\s*(?:\.float\(\))?\s*@\s*win_v_t(?:\.float\(\))?(?:\.clone\(\))?',
+                         'safe_matmul(att_t, win_v_t)'),
+                        
+                        # Pattern 4: att_s @ win_v_s and variations
+                        (r'att_s\s*(?:\.float\(\))?\s*@\s*win_v_s(?:\.float\(\))?(?:\.clone\(\))?',
+                         'safe_matmul(att_s, win_v_s)'),
+                        
+                        # Pattern 5: Generic q @ k.transpose(-2, -1)
+                        (r'(\w+)\s*(?:\.float\(\))?(?:\.clone\(\))?\s*@\s*(\w+)(?:\.float\(\))?(?:\.clone\(\))?\.transpose\(-2,\s*-1\)(?:\.clone\(\))?(?:\.contiguous\(\))?',
+                         r'safe_matmul(\1, \2.transpose(-2, -1))'),
+                        
+                        # Pattern 6: Generic att @ v
+                        (r'(\w+)\s*(?:\.float\(\))?\s*@\s*(\w+)(?:\.float\(\))?(?:\.clone\(\))?',
+                         r'safe_matmul(\1, \2)'),
+                    ]
+                    
+                    for pattern, replacement in patterns_to_replace:
+                        new_line, count = re.subn(pattern, replacement, line)
+                        if count > 0:
+                            line = new_line
+                            replacement_count += count
+                    
+                    # Also check for simple string replacements (fallback)
+                    if line == original_line:  # No regex replacements happened
+                        simple_replacements = [
+                            ("win_q_t @ win_k_t.transpose(-2, -1)", "safe_matmul(win_q_t, win_k_t.transpose(-2, -1))"),
+                            ("win_q_s @ win_k_s.transpose(-2, -1)", "safe_matmul(win_q_s, win_k_s.transpose(-2, -1))"),
+                            ("att_t @ win_v_t", "safe_matmul(att_t, win_v_t)"),
+                            ("att_s @ win_v_s", "safe_matmul(att_s, win_v_s)"),
+                            ("win_q_t.float().clone() @ win_k_t.float().transpose(-2, -1).clone()", 
+                             "safe_matmul(win_q_t, win_k_t.transpose(-2, -1))"),
+                            ("win_q_s.float().clone() @ win_k_s.float().transpose(-2, -1).clone()", 
+                             "safe_matmul(win_q_s, win_k_s.transpose(-2, -1))"),
+                            ("att_t.float() @ win_v_t.float()", "safe_matmul(att_t, win_v_t)"),
+                        ]
+                        
+                        for old, new in simple_replacements:
+                            if old in line:
+                                line = line.replace(old, new)
+                                replacement_count += 1
+                
+                new_lines.append(line)
+            
+            content = '\n'.join(new_lines)
 
             # If no patterns found with regex, try simple string replacement as fallback
             if replacement_count == 0:

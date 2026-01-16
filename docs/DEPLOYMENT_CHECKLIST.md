@@ -1,149 +1,276 @@
-# 🚀 Interpolation Duration Fix - Deployment Checklist
+# 🚢 Deployment Checklist - ProPainter GPU Stability Fix
 
-## ✅ Pre-Deployment Verification
+## Pre-Deployment Verification
 
-- [x] **Code Changes**: All modifications in `orchestrator.py` complete
-- [x] **Syntax Check**: No Python syntax errors (`py_compile` passed)
-- [x] **Logic Verification**: Duration calculation tested and verified
-- [x] **Unit Tests**: Created `test_duration_calculation.py` - PASSED ✅
-- [x] **Integration Tests**: Created `verify_duration_fix.py` - PASSED ✅
-- [x] **Documentation**: Created comprehensive docs (3 markdown files)
-
-## 📋 Changed Files Summary
-
-### Modified
-- `src/application/orchestrator.py` (duration calculation + logging)
-
-### Created (Documentation & Tests)
-- `INTERP_DURATION_FIX_2.md` - Detailed technical explanation
-- `INTERP_DURATION_BUG_RESOLVED.md` - Executive summary
-- `test_duration_calculation.py` - Unit test for math
-- `verify_duration_fix.py` - End-to-end verification
-- `DEPLOYMENT_CHECKLIST.md` - This file
-
-## 🧪 Testing Plan
-
-### 1. Local Testing (Before Commit)
+### 1. Environment Check ✅
 ```bash
-# Syntax check
-python3 -m py_compile src/application/orchestrator.py
+# Verify Python version
+python --version  # Should be 3.10+
 
-# Unit test
-python3 test_duration_calculation.py
+# Verify PyTorch installation
+python -c "import torch; print(torch.__version__)"  # Should be 2.11.0+
 
-# Integration verification
-python3 verify_duration_fix.py
+# Verify CUDA availability
+python -c "import torch; print(torch.cuda.is_available())"  # Should be True
+
+# Check GPU info
+nvidia-smi
 ```
 
-**Expected**: All pass ✅
-
-### 2. Staging Testing (After Deploy)
+### 2. Code Verification ✅
 ```bash
-# Test with known problematic video
-python3 pipeline_v2.py \
-  --mode interp \
-  --interp-factor 3 \
-  --input "https://videos.example.com/test-8sec.mp4" \
-  --job staging-duration-test
-  
-# Verify logs show:
-# ✅ Duration preserved (diff: < 0.1s)
+# Pull latest code
+git pull origin main
+
+# Verify key files exist
+ls -la src/infrastructure/gpu/stability.py
+ls -la COMPLETE_CONTEXT_FOR_AGENT.md
+ls -la FINAL_SOLUTION_SUMMARY.md
+
+# Check patch injection code
+grep "safe_matmul" src/application/factories.py
 ```
 
-### 3. Production Monitoring
-Check first 10 interpolation jobs after deployment:
-- [ ] Duration preserved within 0.1s tolerance
-- [ ] No new errors in logs
-- [ ] Audio sync maintained
-- [ ] Video plays smoothly (no freezing)
+### 3. Dependencies Check ✅
+```bash
+# Verify all packages installed
+pip list | grep torch
+pip list | grep opencv
+pip list | grep numpy
 
-## 🔍 What to Look For
-
-### Success Indicators ✅
-```
-[INFO] ═══ ORIGINAL VIDEO DURATION ANALYSIS ═══
-[INFO] Frame-based duration: 7.10s
-[INFO] Audio track duration: 7.10s
-[INFO] ✅ Durations match
-[INFO] ═══════════════════════════════════════
-
-[INFO] ═══ FINAL DURATION COMPARISON ═══
-[INFO] Original: 7.10s (audio: 7.10s)
-[INFO] Output: 7.09s
-[INFO] ✅ Duration preserved (diff: 0.01s)
-[INFO] ════════════════════════════════════
+# Check ProPainter installation
+ls -la /opt/ProPainter/inference_propainter.py
 ```
 
-### Failure Indicators ❌
+---
+
+## Deployment Steps
+
+### Step 1: Backup Current State
+```bash
+# Backup ProPainter files (in case rollback needed)
+cp /opt/ProPainter/RAFT/corr.py /opt/ProPainter/RAFT/corr.py.backup.$(date +%Y%m%d)
+cp /opt/ProPainter/model/modules/sparse_transformer.py /opt/ProPainter/model/modules/sparse_transformer.py.backup.$(date +%Y%m%d)
 ```
-[ERROR] object of type 'NoneType' has no len()
-[WARNING] ⚠️ Duration changed by 0.5s+
-[ERROR] Audio merge failed
+
+### Step 2: Deploy Code
+```bash
+# Pull latest code
+cd /apps/PycharmProjects/vastai_interup_ztp
+git pull origin main
+
+# Verify commit
+git log --oneline -5
 ```
 
-## 🚨 Rollback Plan
+### Step 3: Test Run
+```bash
+# Test with small video (3 seconds)
+python pipeline_v2.py \
+  --input https://example.com/test_video_3sec.mp4 \
+  --mode remove-subtitles \
+  --roi 0.05,0.4,0.9,0.3
 
-If issues are detected in production:
+# Check for success
+echo $?  # Should be 0
+```
 
-1. **Identify the issue** from logs
-2. **Revert commit**: 
+### Step 4: Verify Patches Applied
+```bash
+# Check safe_matmul injection
+grep "def safe_matmul" /opt/ProPainter/model/modules/sparse_transformer.py
+# Should output: def safe_matmul(tensor_a, tensor_b):
+
+# Check CorrBlock replacement
+head -20 /opt/ProPainter/RAFT/corr.py | grep "Pure PyTorch"
+# Should output comment with "Pure PyTorch"
+
+# Check global stability
+head -30 /opt/ProPainter/inference_propainter.py | grep "TF32"
+# Should output: torch.backends.cuda.matmul.allow_tf32 = False
+```
+
+### Step 5: Production Test
+```bash
+# Test with real video (full length)
+python pipeline_v2.py \
+  --input https://example.com/production_video.mp4 \
+  --mode remove-subtitles \
+  --roi 0.05,0.4,0.9,0.3
+
+# Monitor logs
+tail -f job.log | grep -i "error\|cpu fallback\|success"
+```
+
+---
+
+## Post-Deployment Verification
+
+### Success Criteria ✅
+
+1. **No CUBLAS Errors**
    ```bash
-   git revert HEAD
-   git push
+   grep -i "CUBLAS" job.log
+   # Should be empty or only in fallback messages
    ```
-3. **Notify team** of rollback
-4. **Debug offline** using staging environment
-5. **Create new fix** with additional tests
 
-## 📊 Success Metrics
+2. **CPU Fallback Working** (if needed)
+   ```bash
+   grep "CPU fallback" job.log | wc -l
+   # Should be < 1% of total operations
+   ```
 
-After 24 hours in production, verify:
-- [ ] **0 duration errors** (no complaints about short videos)
-- [ ] **< 0.1s avg duration diff** (check logs)
-- [ ] **No audio sync issues** reported
-- [ ] **No new exceptions** related to audio_preserver
+3. **Video Processing Complete**
+   ```bash
+   ls -la output/
+   # Should contain processed video
+   ```
 
-## 🎯 Sign-Off
+4. **Audio Preserved**
+   ```bash
+   ffprobe output/video.mp4 2>&1 | grep -i audio
+   # Should show audio stream
+   ```
 
-### Developer
-- [x] Code reviewed and tested
-- [x] Documentation complete
-- [x] Tests passing
-- **Name**: AI Assistant
-- **Date**: 2026-01-13
+5. **Performance Acceptable**
+   ```bash
+   # Processing time should be < 1.2x original
+   # (10% overhead is acceptable)
+   ```
 
-### QA (To be completed)
-- [ ] Staging tests passed
-- [ ] Edge cases verified
-- [ ] Performance acceptable
-- **Name**: _____________
-- **Date**: _____________
+---
 
-### DevOps (To be completed)
-- [ ] Deployed to staging
-- [ ] Deployed to production
+## Monitoring
+
+### Key Metrics to Track
+
+```bash
+# 1. Success rate
+grep "Processing complete" job.log | wc -l
+grep "ERROR" job.log | wc -l
+
+# 2. CPU fallback frequency
+grep "CPU fallback" job.log | wc -l
+
+# 3. Average processing time
+grep "Processing took" job.log | awk '{sum+=$NF; count++} END {print sum/count}'
+
+# 4. GPU utilization
+nvidia-smi dmon -s u -c 10
+```
+
+### Alert Conditions ⚠️
+
+- ❌ CUBLAS errors present → Patches not applied
+- ⚠️ CPU fallback >1% → GPU driver issues
+- ⚠️ Processing time >1.5x → Performance degradation
+- ❌ Success rate <95% → Investigation needed
+
+---
+
+## Rollback Procedure
+
+### If Deployment Fails
+
+```bash
+# 1. Stop processing
+killall python
+
+# 2. Restore backups
+cp /opt/ProPainter/RAFT/corr.py.backup.* /opt/ProPainter/RAFT/corr.py
+cp /opt/ProPainter/model/modules/sparse_transformer.py.backup.* /opt/ProPainter/model/modules/sparse_transformer.py
+
+# 3. Revert code
+git reset --hard HEAD~1
+
+# 4. Test original code
+python pipeline_v2.py --input test.mp4 --mode remove-subtitles
+```
+
+---
+
+## Troubleshooting
+
+### Issue 1: Patches Not Applied
+**Symptom**: Still getting CUBLAS errors
+
+**Solution**:
+```bash
+# Manual patch injection
+python scripts/inject_safe_matmul.py
+
+# Verify
+grep "def safe_matmul" /opt/ProPainter/model/modules/sparse_transformer.py
+```
+
+### Issue 2: Import Errors
+**Symptom**: `ModuleNotFoundError: No module named 'src.infrastructure.gpu'`
+
+**Solution**:
+```bash
+# Check PYTHONPATH
+echo $PYTHONPATH
+
+# Add to path if needed
+export PYTHONPATH=/apps/PycharmProjects/vastai_interup_ztp:$PYTHONPATH
+```
+
+### Issue 3: GPU Not Detected
+**Symptom**: ProPainter using CPU (slow)
+
+**Solution**:
+```bash
+# Check CUDA
+python -c "import torch; print(torch.cuda.is_available())"
+
+# Check GPU visibility
+nvidia-smi
+echo $CUDA_VISIBLE_DEVICES
+
+# Reset if needed
+unset CUDA_VISIBLE_DEVICES
+```
+
+---
+
+## Documentation
+
+### For Developers
+- `COMPLETE_CONTEXT_FOR_AGENT.md` - Full technical context
+- `SAFE_MATMUL_ARCHITECTURE.md` - Architecture decisions
+- `src/infrastructure/gpu/stability.py` - Implementation
+
+### For Users
+- `QUICK_REFERENCE.md` - Quick start guide
+- `FINAL_SOLUTION_SUMMARY.md` - Executive summary
+- `README.md` - Project overview
+
+---
+
+## Sign-Off
+
+### Deployment Approved By
+- [ ] Senior Developer
+- [ ] QA Lead
+- [ ] DevOps Engineer
+
+### Checklist Complete ✅
+- [ ] Pre-deployment verification passed
+- [ ] Code deployed successfully
+- [ ] Patches applied and verified
+- [ ] Test run completed
+- [ ] Production test passed
+- [ ] Post-deployment verification passed
 - [ ] Monitoring configured
-- **Name**: _____________
-- **Date**: _____________
+- [ ] Documentation updated
+
+### Deployment Date: ___________
+### Deployed By: ___________
+### Production URL: ___________
 
 ---
 
-## 📝 Notes
-
-### Known Limitations
-1. Assumes constant frame rate (CFR) videos
-2. Requires audio track for best accuracy (fallback to frame-based)
-3. Tolerance: 0.1s duration difference acceptable
-
-### Future Enhancements
-1. Support variable frame rate (VFR) videos
-2. Add frame-by-frame validation
-3. Auto-detect and fix corrupt video metadata
-4. Better handling of silent videos
-
----
-
-**Status**: ✅ Ready for Deployment
-**Risk Level**: Low (isolated changes, comprehensive testing)
-**Estimated Deployment Time**: 5 minutes
+**Status**: Ready for Production 🚀  
+**Risk Level**: Low (CPU fallback ensures 100% uptime)  
+**Rollback Time**: < 5 minutes
 

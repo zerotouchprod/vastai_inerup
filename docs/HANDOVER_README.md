@@ -8,7 +8,7 @@
 
 ## 📚 Структура документации
 
-### 1. [CONTEXT_FOR_HANDOVER.md](./CONTEXT_FOR_HANDOVER.md) - Главный документ
+### 1. [CONTEXT_FOR_HANDOVER.md](CONTEXT_FOR_HANDOVER.md) - Главный документ
 **Объём:** ~500 строк детального описания  
 **Язык:** Русский
 
@@ -30,7 +30,7 @@
 
 ---
 
-### 2. [QUICK_DEBUG_GUIDE.md](./QUICK_DEBUG_GUIDE.md) - Шпаргалка
+### 2. [QUICK_DEBUG_GUIDE.md](QUICK_DEBUG_GUIDE.md) - Шпаргалка
 **Объём:** Краткие команды и quick fixes  
 **Язык:** Русский
 
@@ -45,7 +45,7 @@
 
 ---
 
-### 3. [ARCHITECTURE_DIAGRAMS.md](./ARCHITECTURE_DIAGRAMS.md) - Визуализация
+### 3. [ARCHITECTURE_DIAGRAMS.md](../ARCHITECTURE_DIAGRAMS.md) - Визуализация
 **Объём:** ASCII диаграммы и схемы  
 **Язык:** Русский с английскими терминами
 
