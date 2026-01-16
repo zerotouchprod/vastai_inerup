@@ -107,6 +107,80 @@ class ProcessorFactory:
             self._logger.error("   ProPainter may fail if it tries to use spatial-correlation-sampler")
             # Don't raise - let ProPainter try anyway, it will give clearer error
 
+    def _validate_corrblock_injection(self) -> bool:
+        """
+        Validate that CorrBlock injection succeeded and ProPainter RAFT can use it.
+
+        This is a critical pre-flight check that prevents the error:
+            File "/opt/ProPainter/RAFT/raft.py", line 109, in forward
+                corr_fn = CorrBlock
+
+        Design pattern: Fail-fast validation
+
+        Returns:
+            bool: True if validation passed
+
+        Raises:
+            RuntimeError: If CorrBlock injection failed and ProPainter will crash
+        """
+        import sys
+        from pathlib import Path
+
+        try:
+            # Check 1: Verify injection happened
+            if 'RAFT.corr' not in sys.modules:
+                raise RuntimeError(
+                    "CorrBlock injection failed: 'RAFT.corr' module not found in sys.modules.\n"
+                    "ProPainter RAFT will crash with 'corr_fn = CorrBlock' error."
+                )
+
+            # Check 2: Verify module has CorrBlock
+            corr_module = sys.modules['RAFT.corr']
+            if not hasattr(corr_module, 'CorrBlock'):
+                raise RuntimeError(
+                    "CorrBlock injection incomplete: 'RAFT.corr' module exists but has no CorrBlock.\n"
+                    "ProPainter RAFT will crash with 'corr_fn = CorrBlock' error."
+                )
+
+            # Check 3: Try to import from ProPainter's perspective
+            propainter_root = Path("/opt/ProPainter")
+            if str(propainter_root) not in sys.path:
+                sys.path.insert(0, str(propainter_root))
+
+            # Simulate what ProPainter RAFT does
+            try:
+                # This is what RAFT/raft.py line 109 tries to do
+                from RAFT.corr import CorrBlock
+
+                # Verify it's our Pure PyTorch version
+                from src.infrastructure.inpainting.pure_pytorch_correlation import CorrBlock as OurCorrBlock
+                if CorrBlock is not OurCorrBlock:
+                    self._logger.warning(
+                        "⚠️  CorrBlock imported but it's not our Pure PyTorch version!\n"
+                        "   This may cause issues. Expected Pure PyTorch, got something else."
+                    )
+                else:
+                    self._logger.info("✅ CorrBlock validation passed: ProPainter will use Pure PyTorch")
+
+                return True
+
+            except ImportError as e:
+                raise RuntimeError(
+                    f"CorrBlock injection failed: Cannot import 'from RAFT.corr import CorrBlock'\n"
+                    f"Error: {e}\n"
+                    f"ProPainter RAFT will crash with 'corr_fn = CorrBlock' error."
+                )
+
+        except RuntimeError:
+            raise  # Re-raise validation errors
+        except Exception as e:
+            # Unexpected error during validation
+            self._logger.error(f"❌ Unexpected error during CorrBlock validation: {e}")
+            raise RuntimeError(
+                f"CorrBlock validation failed with unexpected error: {e}\n"
+                f"ProPainter may not work correctly."
+            )
+
     def create_interpolator(self, prefer: str = 'auto') -> Optional[IProcessor]:
         """
         Create interpolator processor.
@@ -188,14 +262,17 @@ class ProcessorFactory:
                 # But we replaced it with Pure PyTorch version, so we need to inject it
                 self._inject_pure_pytorch_corrblock()
 
-                # 5. Inpainter
+                # 5. Validate CorrBlock injection
+                self._validate_corrblock_injection()
+
+                # 6. Inpainter
                 inpainter = ProPainterAdapter()
                 
-                # 6. Debug mode detection
+                # 7. Debug mode detection
                 import os
                 debug_mode = os.getenv('DEBUG_SUBTITLE_REMOVAL', '0') == '1'
 
-                # 7. Главный сервис
+                # 8. Главный сервис
                 return SubtitleRemoverService(mask_service, inpainter, lang=lang, roi_factor=roi, debug=debug_mode)
             except Exception as e:
                 self._logger.warning(f"SAM2 pipeline failed to initialize: {e}")
