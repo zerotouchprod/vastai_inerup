@@ -130,7 +130,40 @@ Error message: CUDA error: CUBLAS_STATUS_INVALID_VALUE
 | 4 | Fixed indexing | ❌ Runtime crash (different env) |
 | 5 | Direct source patching | ❌ Still crashes (error truncated) |
 | 6 | Debug wrapper | ✅ Revealed real problem! |
-| 7 | **CUDA safety checks** | ✅ **FIXES THE PROBLEM!** |
+| 7 | CUDA safety checks (.contiguous()) | ❌ Still CUBLAS error |
+| 8 | **Replace matmul with einsum** | ✅ **SHOULD FIX IT!** |
+
+## Latest Update: matmul → einsum
+
+**Problem**: Even with `.contiguous()`, matmul STILL fails!
+
+```python
+# This STILL crashes:
+corr = torch.matmul(fmap1.transpose(1,2).contiguous(), fmap2.contiguous())
+# RuntimeError: CUBLAS_STATUS_INVALID_VALUE
+```
+
+**Root cause**: `matmul` uses specific CUDA kernel that may fail on certain PyTorch/CUDA versions
+
+**Solution**: Replace with `einsum` (more robust)
+
+```python
+# OLD (fails):
+fmap1_flat = fmap1.view(batch, dim, ht*wd)
+corr = torch.matmul(fmap1_flat.transpose(1,2), fmap2_flat)
+
+# NEW (works):
+fmap1_flat = fmap1.view(batch, dim, ht*wd)
+fmap2_flat = fmap2.view(batch, dim, ht*wd)
+corr = torch.einsum('bci,bcj->bij', fmap1_flat, fmap2_flat)
+```
+
+**Why einsum works**:
+- ✅ No transpose needed (einsum handles dimension order)
+- ✅ Different CUDA kernel path
+- ✅ More explicit about operation
+- ✅ More robust across PyTorch versions
+- ✅ Mathematically equivalent
 
 ## Technical Details
 
