@@ -838,15 +838,18 @@ except (IndexError, AttributeError, ValueError):
                 except subprocess.CalledProcessError as e2:
                     logger.error(f"❌ ProPainter Subprocess Crashed on retry too!")
                     logger.error(f"Exit code: {e2.returncode}")
-                    logger.error(f"STDOUT: {e2.stdout[:1000] if e2.stdout else 'None'}")
-                    logger.error(f"STDERR: {e2.stderr[:1000] if e2.stderr else 'None'}")
+                    logger.error(f"STDOUT: {e2.stdout[:2000] if e2.stdout else 'None'}")
+                    # CRITICAL: Show FULL stderr to see complete error
+                    stderr_full = e2.stderr if e2.stderr else 'None'
+                    logger.error(f"STDERR (FULL - {len(stderr_full)} chars): {stderr_full}")
                     raise RuntimeError(f"ProPainter execution failed with code {e2.returncode}")
             
             logger.error(f"❌ ProPainter Subprocess Crashed!")
             logger.error(f"Exit code: {e.returncode}")
             logger.error(f"STDOUT: {e.stdout[:2000] if e.stdout else 'None'}")
-            stderr_msg = e.stderr[:5000] if e.stderr else 'None'  # Capture more of stderr
-            logger.error(f"STDERR (full): {stderr_msg}")
+            # CRITICAL: Show FULL stderr to see complete error
+            stderr_full = e.stderr if e.stderr else 'None'
+            logger.error(f"STDERR (FULL - {len(stderr_full)} chars): {stderr_full}")
 
             # Try to identify the actual error type
             if e.stderr:
