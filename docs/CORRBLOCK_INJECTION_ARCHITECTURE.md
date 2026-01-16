@@ -83,11 +83,52 @@ def create_subtitle_remover(...):
     mask_service = TextMaskService(ocr, sam2)
     
     # 4. Inject CorrBlock (BEFORE ProPainter init!)
-    self._inject_pure_pytorch_corrblock()  # ← HERE
+    self._inject_pure_pytorch_corrblock()  # ← Injection
     
-    # 5. Initialize ProPainter (uses injected CorrBlock)
+    # 5. Validate injection (FAIL-FAST CHECK!)
+    self._validate_corrblock_injection()  # ← NEW: Validation
+    
+    # 6. Initialize ProPainter (uses injected CorrBlock)
     inpainter = ProPainterAdapter()  # ✅ Works!
 ```
+
+### Fail-Fast Validation (NEW!)
+
+**Problem**: What if injection fails? We'd waste time processing frames before crash.
+
+**Solution**: Validate BEFORE processing starts!
+
+```python
+def _validate_corrblock_injection(self) -> bool:
+    """
+    Validate that CorrBlock injection succeeded.
+    
+    Prevents: File "/opt/ProPainter/RAFT/raft.py", line 109
+              corr_fn = CorrBlock  # ← This crash
+    """
+    # Check 1: Module exists
+    if 'RAFT.corr' not in sys.modules:
+        raise RuntimeError("CorrBlock injection failed!")
+    
+    # Check 2: Has CorrBlock
+    if not hasattr(sys.modules['RAFT.corr'], 'CorrBlock'):
+        raise RuntimeError("CorrBlock injection incomplete!")
+    
+    # Check 3: Can import (simulate ProPainter)
+    from RAFT.corr import CorrBlock  # What ProPainter does
+    
+    # Check 4: Is our version
+    if CorrBlock is not OurCorrBlock:
+        logger.warning("CorrBlock is not Pure PyTorch version!")
+    
+    return True  # ✅ All checks passed
+```
+
+**Benefits**:
+- ✅ Fail fast (immediate error, not after 5 minutes)
+- ✅ Clear error message (exactly what's wrong)
+- ✅ No wasted processing time
+- ✅ Can retry/fix early
 
 ## Why This Is Architecturally Correct
 
@@ -188,20 +229,33 @@ except Exception as e:
     # Don't raise - let ProPainter give clearer error
 ```
 
-### 2. Already Injected
+### 2. Injection Failed (NEW!)
 ```python
-if 'RAFT.corr' in sys.modules:
-    # Already injected, skip
-    return
+try:
+    self._inject_pure_pytorch_corrblock()
+    self._validate_corrblock_injection()  # ← Catches failures
+except RuntimeError as e:
+    # Clear error message about what went wrong
+    raise ProcessorNotAvailableError(
+        f"CorrBlock injection failed: {e}\n"
+        f"ProPainter RAFT will not work."
+    )
 ```
 
-### 3. Import Errors
+### 3. Already Injected
+```python
+if 'RAFT.corr' in sys.modules:
+    # Already injected, validation will check it's correct
+    logger.debug("CorrBlock already injected")
+```
+
+### 4. Import Errors
 ```python
 try:
     from src.infrastructure.inpainting.pure_pytorch_correlation import CorrBlock
 except ImportError:
     logger.error("Pure PyTorch correlation not available")
-    return  # Let ProPainter fail with clear error
+    raise  # Critical error, can't proceed
 ```
 
 ## Testing
