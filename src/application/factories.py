@@ -179,29 +179,36 @@ class CorrBlock:
 
     @staticmethod
     def corr(fmap1, fmap2):
-        """Compute all-pairs correlation with CUDA safety checks"""
+        """Compute all-pairs correlation with ROBUST CUDA operations"""
         batch, dim, ht, wd = fmap1.shape
         
-        # CRITICAL FIX: Ensure both tensors are on same device and contiguous
-        # CUBLAS_STATUS_INVALID_VALUE happens when tensors have issues
+        # CRITICAL FIX: Use einsum instead of matmul
+        # einsum is more robust and handles memory layout better
         device = fmap1.device
+        
+        # Ensure contiguous and same device
         fmap1 = fmap1.contiguous().to(device)
         fmap2 = fmap2.contiguous().to(device)
         
-        # Check for NaN/Inf (would cause CUBLAS errors)
+        # Check for NaN/Inf
         if torch.isnan(fmap1).any() or torch.isinf(fmap1).any():
             fmap1 = torch.nan_to_num(fmap1, nan=0.0, posinf=1e6, neginf=-1e6)
         if torch.isnan(fmap2).any() or torch.isinf(fmap2).any():
             fmap2 = torch.nan_to_num(fmap2, nan=0.0, posinf=1e6, neginf=-1e6)
         
-        fmap1 = fmap1.view(batch, dim, ht*wd)
-        fmap2 = fmap2.view(batch, dim, ht*wd)
-
-        # Safe matmul with explicit memory layout
-        corr = torch.matmul(fmap1.transpose(1,2).contiguous(), fmap2.contiguous())
+        # Flatten spatial dimensions
+        fmap1_flat = fmap1.view(batch, dim, ht*wd)  # [B, C, H*W]
+        fmap2_flat = fmap2.view(batch, dim, ht*wd)  # [B, C, H*W]
+        
+        # Use einsum instead of matmul - more robust for CUDA
+        # 'bci,bcj->bij' means: batch, channel, i/j spatial positions
+        # This is equivalent to: fmap1.T @ fmap2 but more explicit
+        corr = torch.einsum('bci,bcj->bij', fmap1_flat, fmap2_flat)
+        
+        # Reshape to correlation volume
         corr = corr.view(batch, ht, wd, 1, ht, wd)
         
-        # Safe division
+        # Normalize
         norm_factor = torch.sqrt(torch.tensor(dim, dtype=torch.float32, device=device))
         return corr / norm_factor
 
