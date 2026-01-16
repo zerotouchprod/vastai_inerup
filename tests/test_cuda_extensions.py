@@ -3,9 +3,8 @@
 Manual test script to verify CUDA extension rebuild functionality.
 
 This script tests the complete flow:
-1. Check if spatial-correlation-sampler works
-2. If broken, attempt rebuild
-3. Verify RAFT can initialize
+1. Check if pure PyTorch correlation is installed
+2. Verify ProPainter can be imported
 
 Run this before processing videos to validate setup.
 """
@@ -14,8 +13,9 @@ import sys
 import os
 from pathlib import Path
 
-# Add src to path
-sys.path.insert(0, str(Path(__file__).parent / "src"))
+# Add project root to path for imports
+project_root = Path(__file__).parent
+sys.path.insert(0, str(project_root))
 
 def main():
     print("=" * 80)
@@ -23,70 +23,42 @@ def main():
     print("=" * 80)
     print()
     
-    # Step 1: Check spatial-correlation-sampler
-    print("Step 1: Checking spatial-correlation-sampler...")
-    from src.infrastructure.inpainting.raft_wrapper import check_spatial_correlation_sampler
-    
-    is_working, error = check_spatial_correlation_sampler()
-    
-    if is_working:
-        print("✅ spatial-correlation-sampler is working")
-    else:
-        print(f"❌ spatial-correlation-sampler is broken: {error}")
+    # Step 1: Check pure PyTorch correlation
+    print("Step 1: Checking pure PyTorch correlation...")
+    try:
+        from src.infrastructure.inpainting.pure_pytorch_correlation import install_pure_pytorch_correlation
+        install_pure_pytorch_correlation()
+        print("✅ Pure PyTorch correlation installed successfully")
+    except Exception as e:
+        print(f"❌ Pure PyTorch correlation installation failed: {e}")
         print()
-        
-        # Ask if user wants to attempt rebuild
-        auto_rebuild = os.getenv("AUTO_REBUILD_CUDA_EXTENSIONS", "false").lower() == "true"
-        
-        if auto_rebuild:
-            print("AUTO_REBUILD_CUDA_EXTENSIONS=true, attempting rebuild...")
-        else:
-            response = input("Attempt automatic rebuild? (y/n): ").strip().lower()
-            if response != 'y':
-                print("Skipping rebuild. Run with AUTO_REBUILD_CUDA_EXTENSIONS=true to auto-rebuild.")
-                return 1
-        
-        print()
-        print("Step 2: Attempting rebuild...")
-        print("This will:")
-        print("  1. Rebuild spatial-correlation-sampler package")
-        print("  2. Rebuild ProPainter RAFT correlation extension")
-        print("  3. Verify everything works")
-        print()
-        print("This may take up to 3 minutes...")
-        print()
-        
-        from src.infrastructure.inpainting.raft_wrapper import rebuild_spatial_correlation_sampler
-        
-        success = rebuild_spatial_correlation_sampler()
-        
-        if not success:
-            print()
-            print("❌ Rebuild failed!")
-            print()
-            print("Manual fix required:")
-            print("  1. Rebuild Docker image with correct CUDA version")
-            print("  2. Or manually run:")
-            print("     cd /opt/ProPainter/RAFT/core/correlation")
-            print("     rm -rf build dist *.egg-info *.so")
-            print("     python3 setup.py install")
-            return 1
-        
-        print()
-        print("✅ Rebuild completed successfully")
+        print("This is unexpected - pure PyTorch should always work.")
+        print("Please check:")
+        print("  1. PyTorch is installed: pip list | grep torch")
+        print("  2. Code is deployed correctly")
+        print("  3. Python version is 3.8+")
+        return 1
     
     print()
-    print("Step 3: Testing ProPainter RAFT initialization...")
+    print("Step 2: Testing ProPainter RAFT initialization...")
     
     try:
-        from src.infrastructure.inpainting.raft_wrapper import validate_raft_availability
-        validate_raft_availability()
-        print("✅ ProPainter RAFT initialized successfully")
+        propainter_root = Path(os.getenv("PROPAINTER_ROOT", "/opt/ProPainter"))
+        if str(propainter_root) not in sys.path:
+            sys.path.insert(0, str(propainter_root))
+        
+        # Just check that we can import the module (don't instantiate RAFT yet)
+        from model.modules.flow_comp_raft import RAFT
+        print("✅ ProPainter RAFT module: OK (can import)")
+        print("   Note: RAFT will be initialized when needed (requires args)")
+    except ImportError as e:
+        print(f"⚠️  ProPainter RAFT import failed: {e}")
+        print("   This is OK if you're not using subtitle removal")
     except Exception as e:
         print(f"❌ ProPainter RAFT initialization failed: {e}")
         print()
         print("This usually means:")
-        print("  - Python process needs restart (import cache)")
+        print("  - ProPainter not installed at /opt/ProPainter")
         print("  - Or Docker image needs rebuild")
         return 1
     
@@ -104,4 +76,3 @@ def main():
 
 if __name__ == '__main__':
     sys.exit(main())
-

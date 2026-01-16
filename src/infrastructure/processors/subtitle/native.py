@@ -51,20 +51,31 @@ class SubtitleRemoverNative:
     """
     Удаляет вшитые субтитры используя PaddleOCR для детекции 
     и OpenCV Telea/NS для инпейнтинга (закрашивания).
-    Работает на CPU, совместим с PyTorch Nightly билдами.
+    Работает на CPU, совместим с PyTorch Nightly билдах.
     """
 
-    def __init__(self, lang: str = 'en', mask_dilation: int = 8, confidence_threshold: float = 0.3, roi_str: Optional[str] = None, use_optical_flow: bool = False):
+    def __init__(self, lang: str = None, mask_dilation: int = None, confidence_threshold: float = None, roi_str: Optional[str] = None, use_optical_flow: bool = None):
         """
-        :param lang: Язык субтитров ('en', 'ru' и т.д.)
+        :param lang: Язык субтитров ('en', 'ru' и т.д.). Если None, используется значение из конфигурации.
         :param mask_dilation: На сколько пикселей расширять маску вокруг текста.
-                              Больше = лучше убирает края, но мылит фон.
+                              Больше = лучше убирает края, но мылит фон. Если None, используется значение из конфигурации.
         :param confidence_threshold: Порог уверенности для детекции текста (0.0-1.0).
-                                     Ниже = больше текста детектируется, но больше шума.
+                                     Ниже = больше текста детектируется, но больше шума. Если None, используется значение из конфигурации.
         :param roi_str: Region of Interest string (e.g., "bottom", "top", "full", or "x,y,w,h").
                        If provided, masks will be constrained to this region.
-        :param use_optical_flow: Enable optical flow for animated text (v2.1 experimental, default: False)
+        :param use_optical_flow: Enable optical flow for animated text (v2.1 experimental). Если None, используется значение из конфигурации.
         """
+        # Загружаем конфигурацию
+        from src.core.config import get_config
+        config = get_config()
+        
+        # Приоритет: Аргумент -> Конфигурация -> Значение по умолчанию
+        self.lang = lang or config.OCR_LANG
+        self.mask_dilation = mask_dilation if mask_dilation is not None else config.MASK_DILATION
+        self.confidence_threshold = confidence_threshold if confidence_threshold is not None else config.CONFIDENCE_THRESHOLD
+        self.roi_str = roi_str
+        self.use_optical_flow = use_optical_flow if use_optical_flow is not None else config.USE_OPTICAL_FLOW
+
         # CRITICAL: Subtitle removal requires GPU for OCR and inpainting
         # CPU processing would take hours instead of minutes
         from src.infrastructure.utils.gpu_utils import require_gpu
@@ -72,22 +83,13 @@ class SubtitleRemoverNative:
 
         if PaddleOCR is None:
             raise ImportError("PaddleOCR not installed. Cannot remove subtitles.")
-            
-        self.lang = lang
-        self.mask_dilation = mask_dilation
-        self.confidence_threshold = confidence_threshold
-        self.roi_str = roi_str
-        self.use_optical_flow = use_optical_flow
 
         # Initialize v2.1 animated detector if enabled
         self.animated_detector = None
-        if use_optical_flow:
+        if self.use_optical_flow:
             try:
                 from src.infrastructure.detection import AnimatedTextDetector
-                from src.core.config import get_config
-                config = get_config()
-
-                # Will be initialized lazily when needed (needs OCR first)
+                # Используем уже загруженный config
                 self._animated_detector_config = {
                     'keyframe_interval': config.OPTICAL_FLOW_KEYFRAME_INTERVAL,
                     'color_threshold': config.OPTICAL_FLOW_COLOR_THRESHOLD,
@@ -98,7 +100,7 @@ class SubtitleRemoverNative:
                 logger.warning(f"Failed to import AnimatedTextDetector: {e}. Falling back to v2.0 stable path.")
                 self.use_optical_flow = False
 
-        logger.info(f"Initializing SubtitleRemoverNative (lang={lang}, mask_dilation={mask_dilation}, confidence={confidence_threshold}, roi={roi_str}, optical_flow={use_optical_flow})...")
+        logger.info(f"Initializing SubtitleRemoverNative (lang={self.lang}, mask_dilation={self.mask_dilation}, confidence={self.confidence_threshold}, roi={self.roi_str}, optical_flow={self.use_optical_flow})...")
 
         # Initialize PaddleOCR with OPTIMIZED settings to reduce memory usage
         # Critical optimizations:
@@ -107,7 +109,7 @@ class SubtitleRemoverNative:
         # 3. Use CPU only (GPU models use more memory)
         # 4. Disable unnecessary features
         ocr_params = {
-            'lang': lang,
+            'lang': self.lang,
             'use_angle_cls': False,  # Disable angle classification (saves memory)
             'det_model_dir': None,   # Use default mobile model
             'rec_model_dir': None,   # Use default mobile model
@@ -124,7 +126,7 @@ class SubtitleRemoverNative:
             logger.info("PaddleOCR initialized with mobile models (optimized for memory)")
         except Exception as e:
             logger.warning(f"Failed to initialize with mobile models: {e}. Falling back to default.")
-            self.ocr = PaddleOCR(lang=lang)
+            self.ocr = PaddleOCR(lang=self.lang)
             logger.info("PaddleOCR initialized with default settings")
         finally:
             # Восстанавливаем исходный уровень логирования
