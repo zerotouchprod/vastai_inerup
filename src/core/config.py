@@ -35,11 +35,11 @@ class AppConfig(BaseSettings):
     
     # Downscaling settings
     AUTO_DOWNSCALE: bool = True  # Automatically downscale high-resolution videos to prevent OOM
-    MAX_HEIGHT: int = 1280  # Maximum frame height before downscaling (pixels)
+    MAX_HEIGHT: int = 1920  # Maximum frame height before downscaling (pixels) - increased for 1080p support
     
     # ROI (Region of Interest) settings
     USE_ROI_OPTIMIZATION: bool = True  # Process only bottom region where subtitles appear
-    ROI: str = "bottom"  # Region of Interest: "bottom", "top", "full", or "x,y,w,h" (0.0-1.0)
+    ROI: str = "0.05,0.70,0.90,0.25"  # Region of Interest: x,y,w,h (0.0-1.0) - bottom 25% of screen
     ROI_ZONE_HEIGHT_RATIO: float = 0.4  # Height of each zone for dynamic multi-zone ROI (top/middle/bottom)
     
     # Audio preservation settings (v2.0.1+)
@@ -54,6 +54,9 @@ class AppConfig(BaseSettings):
     OPTICAL_FLOW_MAX_DIMENSION: int = 1280  # Max resolution for flow computation (prevents OOM on 4K)
     OPTICAL_FLOW_COLOR_THRESHOLD: float = 50.0  # Threshold for karaoke color change detection
     OPTICAL_FLOW_MOTION_THRESHOLD: float = 5.0  # Threshold for moving text detection (pixels)
+
+    # AMP (Automatic Mixed Precision) settings for memory optimization
+    USE_AMP: bool = True  # Enable AMP to reduce VRAM usage by ~40% for 1080p processing
 
     model_config = SettingsConfigDict(
         env_file=".env",

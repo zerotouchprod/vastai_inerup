@@ -45,6 +45,12 @@ class InferenceRunner:
             "--height", str(target_height),
             "--save_frames"  # Try to get individual frames instead of video
         ]
+        
+        # Add AMP flag if enabled in config
+        if self.config.USE_AMP:
+            cmd.append("--amp")
+            logger.info("AMP (Automatic Mixed Precision) enabled for inference")
+        
         return cmd
     
     def execute_command(self, command: List[str], gpu_id: Optional[int] = None) -> subprocess.CompletedProcess:
@@ -65,6 +71,11 @@ class InferenceRunner:
         
         # OPTIMIZED MEMORY MANAGEMENT settings
         env['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:128,garbage_collection_threshold:0.6,expandable_segments:True'
+        
+        # Enable AMP via environment variable if not already set
+        if self.config.USE_AMP and 'PYTORCH_CUDA_ALLOC_CONF' in env:
+            # Add AMP hint to memory allocator
+            env['PYTORCH_CUDA_ALLOC_CONF'] += ',enable_amp:True'
         
         logger.info(f"Executing ProPainter command: {' '.join(command)}")
         try:

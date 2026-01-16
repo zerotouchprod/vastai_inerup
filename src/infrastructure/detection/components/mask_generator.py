@@ -7,6 +7,7 @@ import logging
 from typing import Optional, Tuple, List
 import numpy as np
 import cv2
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -243,6 +244,56 @@ class MaskGenerator:
             dilated_mask = cv2.GaussianBlur(dilated_mask, (5, 5), 0)
         
         return dilated_mask
+    
+    def save_debug_visualization(self, image: np.ndarray, roi_str: str, output_path: Path, 
+                                text_mask: Optional[np.ndarray] = None) -> None:
+        """
+        Save debug visualization showing ROI rectangle and detected text masks.
+        
+        Args:
+            image: Input BGR image
+            roi_str: ROI string (preset or coordinates)
+            output_path: Path to save debug image
+            text_mask: Optional binary mask of detected text (red overlay)
+        """
+        try:
+            from src.infrastructure.image_processing.geometry import resolve_roi
+        except ImportError:
+            logger.warning("Cannot import resolve_roi, skipping debug visualization")
+            return
+        
+        # Create a copy of the image for drawing
+        debug_img = image.copy()
+        
+        # Draw ROI rectangle (green)
+        h, w = image.shape[:2]
+        x, y, roi_w, roi_h = resolve_roi(roi_str, w, h)
+        cv2.rectangle(debug_img, (x, y), (x + roi_w, y + roi_h), (0, 255, 0), 2)
+        
+        # Add ROI label
+        label = f"ROI: {roi_str}"
+        cv2.putText(debug_img, label, (x + 5, y + 25), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+        
+        # Draw text mask overlay (red) if provided
+        if text_mask is not None and text_mask.any():
+            # Create red overlay for text regions
+            red_overlay = np.zeros_like(debug_img)
+            red_overlay[text_mask > 0] = (0, 0, 255)  # BGR: red
+            # Blend with original image
+            alpha = 0.5
+            debug_img = cv2.addWeighted(debug_img, 1.0, red_overlay, alpha, 0)
+            
+            # Add mask info
+            mask_coverage = np.sum(text_mask > 0) / (h * w) * 100
+            mask_label = f"Text coverage: {mask_coverage:.1f}%"
+            cv2.putText(debug_img, mask_label, (x + 5, y + 55), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+        
+        # Save the debug image
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        cv2.imwrite(str(output_path), debug_img)
+        logger.info(f"Saved debug visualization to {output_path}")
     
     def preprocess_for_ocr(self, image: np.ndarray) -> np.ndarray:
         """

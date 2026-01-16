@@ -54,6 +54,13 @@ class ResolutionCalculator:
         logger.info(f"   Native Res: {original_width}x{original_height} ({original_mp:.2f} MP).")
         logger.info(f"   Theoretical max frames at native: {max_safe_frames_at_native}")
 
+        # --- NEW LOGIC: Force native resolution for 1080p (approx 2MP) ---
+        # 1080p is approximately 1920x1080 = 2.07 MP
+        is_1080p_like = original_mp <= 2.5  # Allow some margin (up to ~1600x1600)
+        
+        # Only downscale if VRAM is critically low (<8GB) AND not 1080p
+        vram_critically_low = vram_gb < 8.0
+        
         # --- SCENARIO 1: Native resolution fits (with at least MIN_FRAMES) ---
         if max_safe_frames_at_native >= MIN_FRAMES:
             # Cap at global max
@@ -62,19 +69,31 @@ class ResolutionCalculator:
             
         # --- SCENARIO 2: Native is too big (OOM risk) -> Downscale ---
         else:
-            logger.warning(f"⚠️ Native resolution too heavy for {vram_gb:.1f}GB VRAM (can only fit {max_safe_frames_at_native} frames).")
-            
-            # We fix chunk size to MIN_FRAMES and calculate max resolution
-            # MP = UsableVRAM / (Frames * 0.5)
-            target_mp = usable_vram / (MIN_FRAMES * 0.5)
-            
-            # Scale factor
-            scale = math.sqrt(target_mp / original_mp)
-            target_width = int(original_width * scale)
-            target_height = int(original_height * scale)
-            final_chunk = MIN_FRAMES
-            
-            logger.warning(f"   📉 Downscaling to {target_width}x{target_height} to keep {MIN_FRAMES} frames.")
+            # Check if we should force native resolution for 1080p
+            if is_1080p_like:
+                # Force native resolution for 1080p videos, reduce chunk size to 2-3 frames
+                # Even with critically low VRAM, we keep native resolution but reduce chunk size
+                final_chunk = max(2, min(3, max_safe_frames_at_native))
+                logger.warning(f"⚠️ 1080p video forced to native resolution with reduced chunk size: {final_chunk} frames")
+                logger.warning(f"   VRAM: {vram_gb:.1f}GB, Max frames at native: {max_safe_frames_at_native}")
+                
+                # Log warning if VRAM is critically low
+                if vram_critically_low:
+                    logger.warning(f"   ⚠️ VRAM is critically low (<8GB), but keeping native resolution for 1080p")
+            else:
+                logger.warning(f"⚠️ Native resolution too heavy for {vram_gb:.1f}GB VRAM (can only fit {max_safe_frames_at_native} frames).")
+                
+                # We fix chunk size to MIN_FRAMES and calculate max resolution
+                # MP = UsableVRAM / (Frames * 0.5)
+                target_mp = usable_vram / (MIN_FRAMES * 0.5)
+                
+                # Scale factor
+                scale = math.sqrt(target_mp / original_mp)
+                target_width = int(original_width * scale)
+                target_height = int(original_height * scale)
+                final_chunk = MIN_FRAMES
+                
+                logger.warning(f"   📉 Downscaling to {target_width}x{target_height} to keep {MIN_FRAMES} frames.")
 
         # --- FINAL ADJUSTMENTS ---
         # 1. Ensure Divisible by 32 (Requirement for RAFT/ProPainter)
@@ -86,7 +105,9 @@ class ResolutionCalculator:
         target_height = max(target_height, 128)
         
         # 2. Apply MAX_HEIGHT constraint if AUTO_DOWNSCALE is enabled
-        if self.config.AUTO_DOWNSCALE and target_height > self.config.MAX_HEIGHT:
+        # Skip MAX_HEIGHT constraint for 1080p videos to preserve quality
+        if (self.config.AUTO_DOWNSCALE and target_height > self.config.MAX_HEIGHT and 
+            not is_1080p_like):
             scale = self.config.MAX_HEIGHT / target_height
             target_width = int(target_width * scale)
             target_height = self.config.MAX_HEIGHT
