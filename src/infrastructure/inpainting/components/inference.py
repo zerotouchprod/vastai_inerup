@@ -46,10 +46,11 @@ class InferenceRunner:
             "--save_frames"  # Try to get individual frames instead of video
         ]
         
-        # Add AMP flag if enabled in config
+        # Note: AMP requires modification of ProPainter script
+        # We cannot add --amp flag as ProPainter doesn't support it
         if self.config.USE_AMP:
-            cmd.append("--amp")
-            logger.info("AMP (Automatic Mixed Precision) enabled for inference")
+            logger.info("AMP (Automatic Mixed Precision) is enabled in config")
+            logger.info("Note: AMP requires ProPainter script modification to use torch.cuda.amp.autocast")
         
         return cmd
     
@@ -72,10 +73,10 @@ class InferenceRunner:
         # OPTIMIZED MEMORY MANAGEMENT settings
         env['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:128,garbage_collection_threshold:0.6,expandable_segments:True'
         
-        # Enable AMP via environment variable if not already set
-        if self.config.USE_AMP and 'PYTORCH_CUDA_ALLOC_CONF' in env:
-            # Add AMP hint to memory allocator
-            env['PYTORCH_CUDA_ALLOC_CONF'] += ',enable_amp:True'
+        # Note: AMP cannot be enabled via environment variable for ProPainter
+        # It requires modifying the inference script to use torch.cuda.amp.autocast
+        if self.config.USE_AMP:
+            logger.debug("AMP is configured but requires ProPainter script modification")
         
         logger.info(f"Executing ProPainter command: {' '.join(command)}")
         try:

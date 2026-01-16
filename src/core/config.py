@@ -56,7 +56,8 @@ class AppConfig(BaseSettings):
     OPTICAL_FLOW_MOTION_THRESHOLD: float = 5.0  # Threshold for moving text detection (pixels)
 
     # AMP (Automatic Mixed Precision) settings for memory optimization
-    USE_AMP: bool = True  # Enable AMP to reduce VRAM usage by ~40% for 1080p processing
+    # Note: AMP requires modification of ProPainter script to use torch.cuda.amp.autocast
+    USE_AMP: bool = False  # Disabled by default as it requires ProPainter modification
 
     model_config = SettingsConfigDict(
         env_file=".env",
