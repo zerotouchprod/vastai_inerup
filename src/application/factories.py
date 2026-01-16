@@ -491,73 +491,120 @@ from .corr import CorrBlock, AlternateCorrBlock"""
             content = transformer_path.read_text()
 
             # Check if already injected
-            if "def safe_matmul" in content:
+            if "def safe_matmul" in content and "RESILIENT MATMUL: GPU -> CPU Fallback" in content:
                 self._logger.info("✅ safe_matmul already injected into Transformer")
                 return True
 
-            # Safe matmul function (from our stability module)
+            # Safe matmul function (from our stability module) - improved version
             safe_matmul_code = '''
-def safe_matmul(tensor_a, tensor_b):
-    """Safe @ with CPU fallback on CUBLAS errors"""
+import torch
+
+# === RESILIENT MATMUL: GPU -> CPU Fallback ===
+def safe_matmul(a, b):
+    """Safe matrix multiplication with automatic CPU fallback"""
     try:
-        return tensor_a @ tensor_b
+        # Попытка 1: Считаем на видеокарте
+        return a @ b
     except RuntimeError as e:
+        # Если драйвер крашнулся (CUBLAS_STATUS_INVALID_VALUE)
+        # Мы НЕ падаем. Мы считаем на процессоре.
         if "CUDA" in str(e) or "CUBLAS" in str(e):
-            device = tensor_a.device
-            return (tensor_a.cpu().float() @ tensor_b.cpu().float()).to(device)
+            # print(f"⚠️  GPU Crashed. Fallback to CPU...")
+            # Перенос -> Расчет -> Возврат на GPU
+            return (a.cpu().float() @ b.cpu().float()).to(a.device)
         raise e
+# =============================================
 '''
 
-            # Find injection point (after last import)
-            last_import_pos = content.rfind("import ")
-            if last_import_pos == -1:
-                last_import_pos = 0
-            end_of_line = content.find("\n", last_import_pos)
-            if end_of_line == -1:
-                end_of_line = len(content)
+            # Find injection point (after imports)
+            import_end = content.find("import math")
+            if import_end == -1:
+                import_end = 0
+            insert_pos = content.find("\n", import_end) + 1
+            
+            # Inject safe_matmul definition
+            content = content[:insert_pos] + "\n" + safe_matmul_code + "\n" + content[insert_pos:]
+            self._logger.info("✅ Injected safe_matmul definition.")
 
-            injection_point = end_of_line + 1
-            content = (
-                content[:injection_point] +
-                "\n" + safe_matmul_code + "\n" +
-                content[injection_point:]
-            )
-
-            self._logger.info("✅ Injected safe_matmul function into Transformer")
-
-            # Replace dangerous @ operations with safe_matmul
-            replacements = [
-                # Attention: q @ k.T
-                (r'(\w+)\s*@\s*(\w+)\.transpose\s*\(\s*-2\s*,\s*-1\s*\)',
+            # Replace ALL dangerous @ operations with safe_matmul
+            # We need to find various patterns including those with .float().clone() etc.
+            
+            # List of patterns to search for (including variations with .float(), .clone(), .contiguous())
+            patterns_to_replace = [
+                # Pattern 1: win_q_t @ win_k_t.transpose(-2, -1) and variations
+                (r'win_q_t\s*(?:\.float\(\))?(?:\.clone\(\))?\s*@\s*win_k_t(?:\.float\(\))?(?:\.clone\(\))?\.transpose\(-2,\s*-1\)(?:\.clone\(\))?(?:\.contiguous\(\))?',
+                 'safe_matmul(win_q_t, win_k_t.transpose(-2, -1))'),
+                
+                # Pattern 2: win_q_s @ win_k_s.transpose(-2, -1) and variations
+                (r'win_q_s\s*(?:\.float\(\))?(?:\.clone\(\))?\s*@\s*win_k_s(?:\.float\(\))?(?:\.clone\(\))?\.transpose\(-2,\s*-1\)(?:\.clone\(\))?(?:\.contiguous\(\))?',
+                 'safe_matmul(win_q_s, win_k_s.transpose(-2, -1))'),
+                
+                # Pattern 3: att_t @ win_v_t and variations
+                (r'att_t\s*(?:\.float\(\))?\s*@\s*win_v_t(?:\.float\(\))?(?:\.clone\(\))?',
+                 'safe_matmul(att_t, win_v_t)'),
+                
+                # Pattern 4: att_s @ win_v_s and variations
+                (r'att_s\s*(?:\.float\(\))?\s*@\s*win_v_s(?:\.float\(\))?(?:\.clone\(\))?',
+                 'safe_matmul(att_s, win_v_s)'),
+                
+                # Pattern 5: Generic q @ k.transpose(-2, -1)
+                (r'(\w+)\s*(?:\.float\(\))?(?:\.clone\(\))?\s*@\s*(\w+)(?:\.float\(\))?(?:\.clone\(\))?\.transpose\(-2,\s*-1\)(?:\.clone\(\))?(?:\.contiguous\(\))?',
                  r'safe_matmul(\1, \2.transpose(-2, -1))'),
-
-                # Value aggregation: att @ v
-                (r'(att_[ts])\s*@\s*(\w+)',
+                
+                # Pattern 6: Generic att @ v
+                (r'(\w+)\s*(?:\.float\(\))?\s*@\s*(\w+)(?:\.float\(\))?(?:\.clone\(\))?',
                  r'safe_matmul(\1, \2)'),
             ]
 
             replacement_count = 0
-            for pattern, replacement in replacements:
-                new_content, count = re.subn(pattern, replacement, content)
+            for pattern, replacement in patterns_to_replace:
+                # Use re.sub with count=0 (replace all)
+                new_content, count = re.subn(pattern, replacement, content, flags=re.MULTILINE)
                 if count > 0:
                     content = new_content
                     replacement_count += count
+                    self._logger.debug(f"Replaced {count} occurrences of pattern: {pattern}")
 
-            # Backup
+            # If no patterns found with regex, try simple string replacement as fallback
+            if replacement_count == 0:
+                self._logger.warning("⚠️ No patterns found with regex, trying simple string replacement...")
+                
+                # Simple string replacements (less precise but works as fallback)
+                simple_replacements = [
+                    ("win_q_t @ win_k_t.transpose(-2, -1)", "safe_matmul(win_q_t, win_k_t.transpose(-2, -1))"),
+                    ("win_q_s @ win_k_s.transpose(-2, -1)", "safe_matmul(win_q_s, win_k_s.transpose(-2, -1))"),
+                    ("att_t @ win_v_t", "safe_matmul(att_t, win_v_t)"),
+                    ("att_s @ win_v_s", "safe_matmul(att_s, win_v_s)"),
+                    ("win_q_t.float().clone() @ win_k_t.float().transpose(-2, -1).clone()", 
+                     "safe_matmul(win_q_t, win_k_t.transpose(-2, -1))"),
+                    ("win_q_s.float().clone() @ win_k_s.float().transpose(-2, -1).clone()", 
+                     "safe_matmul(win_q_s, win_k_s.transpose(-2, -1))"),
+                    ("att_t.float() @ win_v_t.float()", "safe_matmul(att_t, win_v_t)"),
+                ]
+                
+                for old, new in simple_replacements:
+                    if old in content:
+                        content = content.replace(old, new)
+                        replacement_count += 1
+                        self._logger.debug(f"Replaced: {old} -> {new}")
+
+            # Backup original file
             backup_path = transformer_path.with_suffix('.py.before_safe_matmul')
             if not backup_path.exists():
                 backup_path.write_text(transformer_path.read_text())
 
-            # Write
+            # Write patched content
             transformer_path.write_text(content)
 
-            self._logger.info(f"✅ Replaced {replacement_count} @ operations with safe_matmul")
+            self._logger.info(f"✅ Replaced {replacement_count} dangerous @ operations with safe_matmul")
             self._logger.info("🛡️  Transformer is now RESILIENT (CPU fallback enabled)")
 
             return True
 
         except Exception as e:
             self._logger.error(f"❌ Failed to inject safe_matmul: {e}")
+            import traceback
+            self._logger.error(f"Traceback: {traceback.format_exc()}")
             return False
 
     def _validate_corrblock_injection(self) -> bool:
