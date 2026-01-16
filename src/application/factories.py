@@ -179,7 +179,12 @@ class CorrBlock:
 
     @staticmethod
     def corr(fmap1, fmap2):
-        """TITANIUM v2: Synchronized + Float32 forced for bulletproof correlation"""
+        """
+        TITANIUM v2: Synchronized + Float32 forced
+        
+        Fixes async CUDA errors by forcing synchronization INSIDE try-except.
+        Without sync, GPU crashes happen AFTER we exit try-except!
+        """
         batch, dim, ht, wd = fmap1.shape
         fmap1 = fmap1.view(batch, dim, ht*wd)
         fmap2 = fmap2.view(batch, dim, ht*wd)
@@ -194,20 +199,21 @@ class CorrBlock:
             corr = torch.matmul(fmap1_t, fmap2_c)
             
             # 3. SYNCHRONIZATION (Critical!)
-            # Force Python to wait for GPU to catch errors HERE, not later
+            # Force Python to WAIT for GPU operation to complete
+            # This catches async CUDA errors HERE instead of later crash
             if torch.cuda.is_available():
                 torch.cuda.synchronize()
             
         except RuntimeError as e:
             # === CPU LIFESAVER ===
-            # If GPU still crashes, compute on CPU
+            # If GPU crashes (even after sync), compute on CPU
             import sys
             print(f"⚠️ GPU Correlation CRASHED ({e}). Switching to CPU calculation...", file=sys.stderr)
             
             fmap1_cpu = fmap1.cpu().float()
             fmap2_cpu = fmap2.cpu().float()
             
-            # Compute on CPU (slow but reliable)
+            # Compute on CPU (slow but reliable, no cuBLAS)
             corr_cpu = torch.matmul(fmap1_cpu.transpose(1, 2), fmap2_cpu)
             
             # Move result back to GPU
