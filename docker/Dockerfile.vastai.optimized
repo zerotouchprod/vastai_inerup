@@ -119,18 +119,33 @@ COPY RIFEv4.26_0921/train_log/ /opt/rife_models/train_log/
 ENV CUDA_VISIBLE_DEVICES="0"
 ENV NVIDIA_VISIBLE_DEVICES="all"
 ENV NVIDIA_DRIVER_CAPABILITIES="compute,utility"
-
-# Fix CUDA architecture compatibility for all NVIDIA RTX 20-50 series
-# RTX 20 series (Turing): sm_75
-# RTX 30 series (Ampere): sm_80, sm_86, sm_87
-# RTX 40 series (Ada Lovelace): sm_89  
-# RTX 50 series (Blackwell): sm_120
-# Also include Hopper (H100) sm_90 for data center GPUs
-ENV TORCH_CUDA_ARCH_LIST="7.5;8.0;8.6;8.7;8.9;9.0;12.0"
 ENV CUDA_HOME="/usr/local/cuda"
 ENV LD_LIBRARY_PATH="/usr/local/cuda/lib64:${LD_LIBRARY_PATH}"
 
-# SAM 2 Installation with explicit CUDA architecture support for RTX 20-50 series
+# ============================================================================
+# CRITICAL: CUDA Architecture Compatibility for ALL Vast.ai GPUs
+# ============================================================================
+# This MUST be set BEFORE compiling any CUDA extensions (ProPainter, SAM2, etc.)
+# to create "fat" binaries that work on multiple GPU architectures.
+#
+# Supported architectures:
+#   7.5 = Turing (RTX 20 series: 2080/2080Ti, Tesla T4)
+#   8.0 = Ampere (A100, A30)
+#   8.6 = Ampere (RTX 30 series: 3090/3080, A10, A40)
+#   8.9 = Ada Lovelace (RTX 40 series: 4090/4080, L40/L40S)
+#   9.0 = Hopper (H100, H200)
+#   9.0+PTX = Forward compatibility for future architectures (RTX 50 series, etc.)
+#
+# PTX (Parallel Thread Execution) enables forward compatibility:
+# - Binary includes PTX intermediate representation
+# - JIT compiles to actual architecture at runtime
+# - Works on newer GPUs without rebuild (e.g., RTX 5090 Blackwell)
+#
+# Without PTX, extensions would need rebuild for each new GPU generation.
+# ============================================================================
+ENV TORCH_CUDA_ARCH_LIST="7.5;8.0;8.6;8.9;9.0;9.0+PTX"
+
+# SAM 2 Installation
 ENV FORCE_CUDA="1"
 ENV MAX_JOBS="4"
 RUN pip install --no-cache-dir --no-build-isolation git+https://github.com/facebookresearch/segment-anything-2.git
@@ -139,18 +154,25 @@ RUN pip install --no-cache-dir --no-build-isolation git+https://github.com/faceb
 RUN mkdir -p /opt/sam2_checkpoints && \
     wget -q https://dl.fbaipublicfiles.com/segment_anything_2/072824/sam2_hiera_small.pt -O /opt/sam2_checkpoints/sam2_hiera_small.pt
 
-# ProPainter Installation with CUDA 12.8 compatible extensions rebuild
+# ProPainter Installation with Multi-Architecture Support
+# TORCH_CUDA_ARCH_LIST set above ensures this builds "fat" binaries for all GPUs
 RUN pip install --no-cache-dir imageio scipy scikit-image && \
     pip install --no-cache-dir av torchvision && \
     git clone https://github.com/sczhou/ProPainter.git /opt/ProPainter && \
     cd /opt/ProPainter && \
     pip install --no-cache-dir -r requirements.txt && \
-    # CRITICAL FIX: Install spatial-correlation-sampler with CUDA 12.8 support
-    # This is the main C++ extension that needs to be built for the correct CUDA version
-    echo "Building spatial-correlation-sampler C++ extensions for CUDA 12.8..." && \
+    # Build spatial-correlation-sampler with multi-arch support
+    # The TORCH_CUDA_ARCH_LIST above forces compilation for all specified architectures
+    # This creates a single binary that works on RTX 20/30/40/50, A100, H100, etc.
+    echo "Building spatial-correlation-sampler for architectures: $TORCH_CUDA_ARCH_LIST" && \
     pip uninstall -y spatial-correlation-sampler 2>/dev/null || true && \
     pip install --no-cache-dir spatial-correlation-sampler && \
-    echo "✅ spatial-correlation-sampler installed successfully" && \
+    echo "✅ spatial-correlation-sampler installed with multi-arch support" && \
+    # Also build ProPainter's own RAFT correlation extension
+    echo "Building ProPainter RAFT correlation extension..." && \
+    cd /opt/ProPainter/RAFT/core/correlation && \
+    python3 setup.py install && \
+    echo "✅ ProPainter RAFT correlation extension installed" && \
     # Download model weights
     cd /opt/ProPainter/weights && \
     wget -q --show-progress https://github.com/sczhou/ProPainter/releases/download/v0.1.0/ProPainter.pth && \
