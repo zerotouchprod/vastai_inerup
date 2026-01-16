@@ -39,11 +39,11 @@ sys.exit(42)  # Special code: rebuild succeeded, restart needed
 После rebuild просто перезапустите команду:
 ```bash
 # First run - rebuild happens, exits with code 42
-python main.py --input video.mp4
+python pipeline_v2.py --input video.mp4
 # Exit code: 42
 
 # Second run - extension already rebuilt, works!
-python main.py --input video.mp4
+python pipeline_v2.py --input video.mp4
 # Exit code: 0 ✅
 ```
 
@@ -51,11 +51,11 @@ python main.py --input video.mp4
 
 Используйте wrapper script для автоматического перезапуска:
 ```bash
-python auto_restart_wrapper.py python main.py --input video.mp4
+python auto_restart_wrapper.py python pipeline_v2.py --input video.mp4
 ```
 
 Wrapper автоматически:
-1. Запускает main.py
+1. Запускает pipeline_v2.py
 2. Если exit code = 42 → перезапускает
 3. Если exit code = 0 → завершает успешно
 4. Макс 3 перезапуска (защита от loop)
@@ -67,7 +67,7 @@ Wrapper автоматически:
 ```
 [Container starts]
   ↓
-[Run: python auto_restart_wrapper.py python main.py]
+[Run: python auto_restart_wrapper.py python pipeline_v2.py]
   ↓
 [Check spatial-correlation-sampler]
   ↓
@@ -150,12 +150,12 @@ Update your command to use wrapper:
 
 **Before:**
 ```bash
-python main.py --input video.mp4
+python pipeline_v2.py --input video.mp4
 ```
 
 **After:**
 ```bash
-python auto_restart_wrapper.py python main.py --input video.mp4
+python auto_restart_wrapper.py python pipeline_v2.py --input video.mp4
 ```
 
 ### Or Handle Exit Code 42
@@ -164,7 +164,7 @@ In your deployment script:
 ```bash
 #!/bin/bash
 while true; do
-    python main.py "$@"
+    python pipeline_v2.py "$@"
     EXIT_CODE=$?
     
     if [ $EXIT_CODE -eq 42 ]; then
@@ -246,20 +246,20 @@ Python загружает C extensions в память процесса напр
 
 ### Option 1: Auto-Restart Wrapper (Easiest)
 ```bash
-python auto_restart_wrapper.py python main.py --input video.mp4
+python auto_restart_wrapper.py python pipeline_v2.py --input video.mp4
 ```
 
 ### Option 2: Manual Restart
 ```bash
 # First run
-python main.py --input video.mp4
+python pipeline_v2.py --input video.mp4
 # If exits with 42, run again:
-python main.py --input video.mp4
+python pipeline_v2.py --input video.mp4
 ```
 
 ### Option 3: Shell Loop
 ```bash
-while python main.py "$@"; [ $? -eq 42 ]; do
+while python pipeline_v2.py "$@"; [ $? -eq 42 ]; do
     echo "Restarting after CUDA rebuild..."
     sleep 2
 done
