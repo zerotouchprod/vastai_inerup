@@ -63,8 +63,10 @@ def validate_cuda_dependencies(auto_rebuild: bool = None) -> bool:
             main()
     """
     if auto_rebuild is None:
-        auto_rebuild = os.getenv("AUTO_REBUILD_CUDA_EXTENSIONS", "false").lower() == "true"
-    
+        # Default to TRUE for self-healing behavior on Vast.ai
+        # Set AUTO_REBUILD_CUDA_EXTENSIONS=false to disable
+        auto_rebuild = os.getenv("AUTO_REBUILD_CUDA_EXTENSIONS", "true").lower() == "true"
+
     logger.info("=" * 80)
     logger.info("STARTUP: Validating CUDA dependencies...")
     logger.info("=" * 80)
@@ -91,8 +93,9 @@ def validate_cuda_dependencies(auto_rebuild: bool = None) -> bool:
         
         # Attempt rebuild if enabled
         if auto_rebuild:
-            logger.warning("AUTO_REBUILD_CUDA_EXTENSIONS=true, attempting rebuild...")
-            logger.warning("This will take ~60 seconds...")
+            logger.warning("Attempting auto-rebuild (default behavior on Vast.ai)...")
+            logger.warning("This will take ~60-180 seconds...")
+            logger.warning("Set AUTO_REBUILD_CUDA_EXTENSIONS=false to disable")
             logger.warning("")
             
             if rebuild_spatial_correlation_sampler():
@@ -101,7 +104,9 @@ def validate_cuda_dependencies(auto_rebuild: bool = None) -> bool:
                 return True
             else:
                 logger.error("❌ Rebuild failed")
-        
+        else:
+            logger.error("Auto-rebuild is DISABLED (AUTO_REBUILD_CUDA_EXTENSIONS=false)")
+
         # Failed - provide clear instructions
         logger.error("")
         logger.error("=" * 80)
@@ -118,12 +123,11 @@ def validate_cuda_dependencies(auto_rebuild: bool = None) -> bool:
         logger.error("  1. REBUILD DOCKER IMAGE with correct CUDA version:")
         logger.error("     docker build -t your-image:latest .")
         logger.error("")
-        logger.error("  2. Enable auto-rebuild (NOT recommended for production):")
-        logger.error("     export AUTO_REBUILD_CUDA_EXTENSIONS=true")
-        logger.error("     (adds ~60 seconds to startup time)")
+        logger.error("  2. Wait for auto-rebuild to complete (default, ~60-180 sec)")
+        logger.error("     If you see this message, rebuild may have failed")
         logger.error("")
         logger.error("  3. Manual rebuild (for debugging):")
-        logger.error("     pip install --force-reinstall spatial-correlation-sampler")
+        logger.error("     pip install --force-reinstall --no-binary spatial-correlation-sampler spatial-correlation-sampler")
         logger.error("")
         logger.error("  4. Use different GPU instance with matching CUDA version")
         logger.error("")
