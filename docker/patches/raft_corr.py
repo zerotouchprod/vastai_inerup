@@ -86,14 +86,31 @@ class CorrBlock:
 
     @staticmethod
     def corr(fmap1, fmap2):
-        """Compute all-pairs correlation"""
+        """Compute all-pairs correlation with CUDA safety checks"""
         batch, dim, ht, wd = fmap1.shape
+
+        # CRITICAL FIX: Ensure both tensors are on same device and contiguous
+        # CUBLAS_STATUS_INVALID_VALUE happens when tensors have issues
+        device = fmap1.device
+        fmap1 = fmap1.contiguous().to(device)
+        fmap2 = fmap2.contiguous().to(device)
+
+        # Check for NaN/Inf (would cause CUBLAS errors)
+        if torch.isnan(fmap1).any() or torch.isinf(fmap1).any():
+            fmap1 = torch.nan_to_num(fmap1, nan=0.0, posinf=1e6, neginf=-1e6)
+        if torch.isnan(fmap2).any() or torch.isinf(fmap2).any():
+            fmap2 = torch.nan_to_num(fmap2, nan=0.0, posinf=1e6, neginf=-1e6)
+
         fmap1 = fmap1.view(batch, dim, ht*wd)
         fmap2 = fmap2.view(batch, dim, ht*wd)
 
-        corr = torch.matmul(fmap1.transpose(1,2), fmap2)
+        # Safe matmul with explicit memory layout
+        corr = torch.matmul(fmap1.transpose(1,2).contiguous(), fmap2.contiguous())
         corr = corr.view(batch, ht, wd, 1, ht, wd)
-        return corr / torch.sqrt(torch.tensor(dim).float())
+
+        # Safe division
+        norm_factor = torch.sqrt(torch.tensor(dim, dtype=torch.float32, device=device))
+        return corr / norm_factor
 
 
 # AlternateCorrBlock is just an alias
