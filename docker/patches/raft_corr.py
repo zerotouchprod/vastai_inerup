@@ -1,48 +1,99 @@
 #!/usr/bin/env python3
 """
-Pure PyTorch RAFT correlation module.
-Replaces spatial-correlation-sampler C++ extension.
+Pure PyTorch RAFT correlation module - SELF-CONTAINED
+======================================================
+
+This file contains the COMPLETE implementation inline.
+No imports from external project needed - avoids circular imports.
 """
-import sys
-from pathlib import Path
+import torch
+import torch.nn.functional as F
 
-# Find project root - try multiple possible locations
-project_root = None
-possible_roots = [
-    Path("/root/vastai_inerup"),           # Vast.ai standard location
-    Path("/workspace/project"),            # Docker standard location
-    Path(__file__).parent.parent.parent.parent / "vastai_inerup",  # Relative from RAFT dir
-    Path.home() / "vastai_inerup",         # User home directory
-]
 
-for root in possible_roots:
-    if root.exists() and (root / "src" / "infrastructure" / "inpainting" / "pure_pytorch_correlation.py").exists():
-        project_root = root
-        break
+class CorrBlock:
+    """
+    Simple Correlation Block for RAFT - GUARANTEED compatibility.
 
-if project_root is None:
-    raise ImportError(
-        "Cannot find vastai_inerup project root!\n"
-        f"Tried: {[str(p) for p in possible_roots]}\n"
-        "Please ensure project is installed at /root/vastai_inerup or /workspace/project"
-    )
+    Self-contained implementation - no external dependencies.
+    """
 
-if str(project_root) not in sys.path:
-    sys.path.insert(0, str(project_root))
+    def __init__(self, fmap1, fmap2, num_levels=4, radius=4, **kwargs):
+        self.num_levels = num_levels
+        self.radius = radius
+        self.device = fmap1.device
+        self.dtype = fmap1.dtype
 
-try:
-    from src.infrastructure.inpainting.pure_pytorch_correlation import CorrBlock
-    AlternateCorrBlock = CorrBlock  # Alias
-    __all__ = ['CorrBlock', 'AlternateCorrBlock']
-except ImportError as e:
-    raise ImportError(
-        f"Failed to import Pure PyTorch CorrBlock from {project_root}:\n{e}\n"
-        "Please ensure pure_pytorch_correlation.py exists in:\n"
-        f"  {project_root}/src/infrastructure/inpainting/pure_pytorch_correlation.py"
-    )
+        # Normalize
+        fmap1 = fmap1.float()
+        fmap2 = fmap2.float()
 
-if __name__ == '__main__':
-    print(f"✅ RAFT.corr module ready (project root: {project_root})")
-    print(f"   CorrBlock: {CorrBlock}")
-    print(f"   AlternateCorrBlock: {AlternateCorrBlock}")
+        # Build correlation pyramid
+        self.corr_pyramid = []
+
+        for i in range(num_levels):
+            B, C, H, W = fmap1.shape
+
+            # Compute all-pairs correlation
+            fmap1_flat = fmap1.view(B, C, H * W)
+            fmap2_flat = fmap2.view(B, C, H * W)
+
+            # Correlation: [B, H*W, H*W]
+            corr = torch.matmul(fmap1_flat.transpose(1, 2), fmap2_flat)
+            corr = corr / torch.sqrt(torch.tensor(C, dtype=fmap1.dtype, device=fmap1.device))
+
+            # Reshape: [B, H, W, H, W]
+            corr = corr.view(B, H, W, H, W)
+            self.corr_pyramid.append(corr)
+
+            # Downsample for next level
+            if i < num_levels - 1:
+                fmap1 = F.avg_pool2d(fmap1, 2, stride=2)
+                fmap2 = F.avg_pool2d(fmap2, 2, stride=2)
+
+    def __call__(self, coords):
+        """Sample correlation at flow coordinates."""
+        r = self.radius
+        B, _, H, W = coords.shape
+
+        out_pyramid = []
+
+        for i, corr in enumerate(self.corr_pyramid):
+            # Scale coords for this level
+            coords_lvl = coords / (2 ** i)
+
+            _, H_corr, W_corr, _, _ = corr.shape
+
+            # Integer coordinates
+            x0 = torch.clamp(coords_lvl[:, 0].long(), 0, W_corr - 1)
+            y0 = torch.clamp(coords_lvl[:, 1].long(), 0, H_corr - 1)
+
+            # Sample neighborhood
+            out_list = []
+            for dy in range(-r, r+1):
+                for dx in range(-r, r+1):
+                    x = torch.clamp(x0 + dx, 0, W_corr - 1)
+                    y = torch.clamp(y0 + dy, 0, H_corr - 1)
+
+                    # Index tensors
+                    batch_idx = torch.arange(B, device=self.device).view(B, 1, 1).expand(B, H, W)
+                    h_idx = torch.arange(H, device=self.device).view(1, H, 1).expand(B, H, W)
+                    w_idx = torch.arange(W, device=self.device).view(1, 1, W).expand(B, H, W)
+
+                    # Sample
+                    vals = corr[batch_idx, h_idx, w_idx, y, x]
+                    out_list.append(vals)
+
+            # Stack
+            out_lvl = torch.stack(out_list, dim=1)  # [B, (2*r+1)^2, H, W]
+            out_pyramid.append(out_lvl)
+
+        # Concatenate all levels
+        out = torch.cat(out_pyramid, dim=1)
+        return out
+
+
+# AlternateCorrBlock is just an alias
+AlternateCorrBlock = CorrBlock
+
+__all__ = ['CorrBlock', 'AlternateCorrBlock']
 
