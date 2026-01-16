@@ -41,7 +41,63 @@ Or use as decorator:
 import os
 import torch
 import functools
+import logging
 from typing import Callable, Any
+
+logger = logging.getLogger(__name__)
+
+
+def safe_matmul(tensor_a: torch.Tensor, tensor_b: torch.Tensor) -> torch.Tensor:
+    """
+    Safe matrix multiplication with automatic CPU fallback.
+
+    Pattern: Graceful Degradation
+    -----------------------------
+    1. Try GPU multiplication (fast)
+    2. If CUBLAS error → fallback to CPU (slow but stable)
+    3. Return result back to original device
+
+    This prevents CUBLAS_STATUS_INVALID_VALUE crashes on RTX 30/40/50 series.
+
+    Usage:
+    ------
+    Instead of: result = tensor_a @ tensor_b
+    Use:        result = safe_matmul(tensor_a, tensor_b)
+
+    Args:
+        tensor_a: First tensor [B, N, D] or [B, N, M]
+        tensor_b: Second tensor [B, D, M] or [B, M, K]
+
+    Returns:
+        Result tensor [B, N, M] or [B, N, K]
+
+    Example:
+    --------
+    >>> q = torch.randn(2, 256, 64, device='cuda')
+    >>> k = torch.randn(2, 256, 64, device='cuda')
+    >>> att = safe_matmul(q, k.transpose(-2, -1))  # No crash!
+    """
+    try:
+        # Attempt 1: Standard GPU multiplication
+        return tensor_a @ tensor_b
+
+    except RuntimeError as e:
+        error_msg = str(e)
+
+        # Attempt 2: CPU fallback (if CUDA/CUBLAS error)
+        if "CUDA" in error_msg or "CUBLAS" in error_msg or "cuBLAS" in error_msg:
+            logger.warning(
+                f"⚠️  GPU matmul failed ({error_msg[:50]}...). "
+                f"Falling back to CPU computation."
+            )
+
+            # Move to CPU, compute, return to original device
+            device = tensor_a.device
+            result_cpu = tensor_a.cpu().float() @ tensor_b.cpu().float()
+            return result_cpu.to(device)
+
+        # Not a CUDA error - re-raise
+        raise e
 
 
 def apply_global_stability_settings(verbose: bool = True) -> None:
