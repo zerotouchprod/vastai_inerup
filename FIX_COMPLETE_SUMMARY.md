@@ -105,20 +105,44 @@ Updated all error messages to explain:
 ### First Time on New Instance
 ```
 ============================================================
-STARTUP: Validating CUDA dependencies...
+[09:56:30] STARTUP: Validating CUDA dependencies...
 ============================================================
-❌ spatial-correlation-sampler: BROKEN
+[09:56:30] Checking spatial-correlation-sampler...
+[09:56:30] ❌ spatial-correlation-sampler: BROKEN
 Error: undefined symbol: _ZN3c104cuda29c10_cuda_check_implementation...
 
-Attempting auto-rebuild (default behavior on Vast.ai)...
+[09:56:30] Attempting auto-rebuild (default behavior on Vast.ai)...
 This will take ~60-180 seconds...
 Set AUTO_REBUILD_CUDA_EXTENSIONS=false to disable
 
-Rebuilding spatial-correlation-sampler from source...
-PyTorch CUDA version: 12.8
-[... compilation logs ...]
-✅ spatial-correlation-sampler rebuilt successfully
-✅ Verification passed: spatial-correlation-sampler is working
+================================================================================
+[09:56:30] 🔧 Starting CUDA extension rebuild...
+================================================================================
+This takes ~60-180 seconds depending on GPU architecture
+Please wait - the system is compiling C++ code...
+
+[09:56:30] 📋 PyTorch CUDA version: 12.8
+
+[09:56:30] Step 1/3: Uninstalling old version...
+[09:56:31] ✅ Old version uninstalled
+
+[09:56:31] Step 2/3: Compiling CUDA extension from source...
+⏳ This is the longest step - please be patient...
+💡 The system is downloading source code, compiling C++ with nvcc, and linking CUDA libraries
+
+[... real-time compilation output ...]
+
+[09:58:45] ⏱️  Compilation took 134.2 seconds
+[09:58:45] ✅ Compilation successful
+
+[09:58:45] Step 3/3: Verifying rebuilt extension...
+[09:58:46] ✅ Verification passed: spatial-correlation-sampler is working
+
+================================================================================
+[09:58:46] ✅ REBUILD COMPLETE in 136.5 seconds
+================================================================================
+
+[09:58:46] ✅ spatial-correlation-sampler: REBUILT SUCCESSFULLY
 ============================================================
 ✅ ALL STARTUP CHECKS PASSED
 ============================================================
@@ -127,9 +151,10 @@ PyTorch CUDA version: 12.8
 ### Subsequent Times
 ```
 ============================================================
-STARTUP: Validating CUDA dependencies...
+[10:15:42] STARTUP: Validating CUDA dependencies...
 ============================================================
-✅ spatial-correlation-sampler: OK
+[10:15:42] Checking spatial-correlation-sampler...
+[10:15:42] ✅ spatial-correlation-sampler: OK
 ============================================================
 ✅ ALL STARTUP CHECKS PASSED
 ============================================================
