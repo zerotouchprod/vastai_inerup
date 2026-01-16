@@ -154,23 +154,20 @@ RUN mkdir -p /opt/sam2_checkpoints && \
 
 # ProPainter Installation with Multi-Architecture Support (CUDA 13.0)
 # TORCH_CUDA_ARCH_LIST set above ensures this builds "fat" binaries for all GPUs
+# Note: spatial-correlation-sampler will be rebuilt at runtime by entrypoint.sh
+# to match the exact CUDA version on the Vast.ai instance
 RUN pip install --no-cache-dir imageio scipy scikit-image && \
     pip install --no-cache-dir av torchvision && \
     git clone https://github.com/sczhou/ProPainter.git /opt/ProPainter && \
     cd /opt/ProPainter && \
     pip install --no-cache-dir -r requirements.txt && \
-    # Build spatial-correlation-sampler with multi-arch support
+    # Pre-install spatial-correlation-sampler (will be rebuilt at runtime if needed)
     # The TORCH_CUDA_ARCH_LIST above forces compilation for all specified architectures
     # This creates a single binary that works on RTX 20/30/40/50, A100, H100, etc.
     echo "Building spatial-correlation-sampler for architectures: $TORCH_CUDA_ARCH_LIST" && \
     pip uninstall -y spatial-correlation-sampler 2>/dev/null || true && \
     pip install --no-cache-dir spatial-correlation-sampler && \
-    echo "✅ spatial-correlation-sampler installed with multi-arch support" && \
-    # Also build ProPainter's own RAFT correlation extension
-    echo "Building ProPainter RAFT correlation extension..." && \
-    cd /opt/ProPainter/RAFT/core/correlation && \
-    python3 setup.py install && \
-    echo "✅ ProPainter RAFT correlation extension installed" && \
+    echo "✅ spatial-correlation-sampler pre-installed (will be rebuilt at runtime if CUDA mismatch)" && \
     # Download model weights
     cd /opt/ProPainter/weights && \
     wget -q --show-progress https://github.com/sczhou/ProPainter/releases/download/v0.1.0/ProPainter.pth && \
