@@ -62,13 +62,15 @@ def validate_cuda_dependencies(auto_rebuild: bool = None) -> bool:
             # Rest of your application
             main()
     """
+    from datetime import datetime
+
     if auto_rebuild is None:
         # Default to TRUE for self-healing behavior on Vast.ai
         # Set AUTO_REBUILD_CUDA_EXTENSIONS=false to disable
         auto_rebuild = os.getenv("AUTO_REBUILD_CUDA_EXTENSIONS", "true").lower() == "true"
 
     logger.info("=" * 80)
-    logger.info("STARTUP: Validating CUDA dependencies...")
+    logger.info(f"[{datetime.now().strftime('%H:%M:%S')}] STARTUP: Validating CUDA dependencies...")
     logger.info("=" * 80)
     
     try:
@@ -79,33 +81,34 @@ def validate_cuda_dependencies(auto_rebuild: bool = None) -> bool:
         )
         
         # Check spatial-correlation-sampler
+        logger.info(f"[{datetime.now().strftime('%H:%M:%S')}] Checking spatial-correlation-sampler...")
         is_working, error = check_spatial_correlation_sampler()
         
         if is_working:
-            logger.info("✅ spatial-correlation-sampler: OK")
+            logger.info(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ spatial-correlation-sampler: OK")
             logger.info("=" * 80)
             return True
         
         # Not working - log error
-        logger.error("❌ spatial-correlation-sampler: BROKEN")
+        logger.error(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ spatial-correlation-sampler: BROKEN")
         logger.error(f"Error: {error}")
         logger.error("")
         
         # Attempt rebuild if enabled
         if auto_rebuild:
-            logger.warning("Attempting auto-rebuild (default behavior on Vast.ai)...")
+            logger.warning(f"[{datetime.now().strftime('%H:%M:%S')}] Attempting auto-rebuild (default behavior on Vast.ai)...")
             logger.warning("This will take ~60-180 seconds...")
             logger.warning("Set AUTO_REBUILD_CUDA_EXTENSIONS=false to disable")
             logger.warning("")
             
             if rebuild_spatial_correlation_sampler():
-                logger.info("✅ spatial-correlation-sampler: REBUILT SUCCESSFULLY")
+                logger.info(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ spatial-correlation-sampler: REBUILT SUCCESSFULLY")
                 logger.info("=" * 80)
                 return True
             else:
-                logger.error("❌ Rebuild failed")
+                logger.error(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Rebuild failed")
         else:
-            logger.error("Auto-rebuild is DISABLED (AUTO_REBUILD_CUDA_EXTENSIONS=false)")
+            logger.error(f"[{datetime.now().strftime('%H:%M:%S')}] Auto-rebuild is DISABLED (AUTO_REBUILD_CUDA_EXTENSIONS=false)")
 
         # Failed - provide clear instructions
         logger.error("")

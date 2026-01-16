@@ -62,60 +62,94 @@ def rebuild_spatial_correlation_sampler() -> bool:
         
     Design pattern: Fail fast with clear error messages
     """
-    logger.warning("Attempting to rebuild spatial-correlation-sampler CUDA extension...")
+    import time
+    from datetime import datetime
+
+    start_time = time.time()
+    logger.warning("=" * 80)
+    logger.warning(f"[{datetime.now().strftime('%H:%M:%S')}] 🔧 Starting CUDA extension rebuild...")
+    logger.warning("=" * 80)
     logger.warning("This takes ~60-180 seconds depending on GPU architecture")
+    logger.warning("Please wait - the system is compiling C++ code...")
+    logger.warning("")
 
     try:
         # Get CUDA version
         if not torch.cuda.is_available():
-            logger.error("CUDA not available - cannot rebuild extension")
+            logger.error(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ CUDA not available - cannot rebuild extension")
             return False
             
         cuda_version = torch.version.cuda
-        logger.info(f"PyTorch CUDA version: {cuda_version}")
-        
-        # Rebuild spatial-correlation-sampler with --no-binary to force compilation
-        logger.info("Rebuilding spatial-correlation-sampler from source...")
+        logger.info(f"[{datetime.now().strftime('%H:%M:%S')}] 📋 PyTorch CUDA version: {cuda_version}")
+        logger.info("")
 
-        # First uninstall existing version
-        subprocess.run(
+        # Step 1: Uninstall existing version
+        logger.info(f"[{datetime.now().strftime('%H:%M:%S')}] Step 1/3: Uninstalling old version...")
+        uninstall_result = subprocess.run(
             ["pip", "uninstall", "-y", "spatial-correlation-sampler"],
             capture_output=True,
             check=False
         )
-        
-        # Install from source with compilation
+        logger.info(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ Old version uninstalled")
+        logger.info("")
+
+        # Step 2: Rebuild from source with compilation
+        logger.info(f"[{datetime.now().strftime('%H:%M:%S')}] Step 2/3: Compiling CUDA extension from source...")
+        logger.info("⏳ This is the longest step - please be patient...")
+        logger.info("💡 The system is downloading source code, compiling C++ with nvcc, and linking CUDA libraries")
+        logger.info("")
+
+        compile_start = time.time()
         result = subprocess.run(
             ["pip", "install", "--no-cache-dir", "--force-reinstall", 
              "--no-binary", "spatial-correlation-sampler", 
-             "spatial-correlation-sampler"],
-            capture_output=True,
+             "spatial-correlation-sampler", "-v"],  # -v for verbose output
+            capture_output=False,  # Show output in real-time
             text=True,
             timeout=300  # 5 minutes max for compilation
         )
         
+        compile_elapsed = time.time() - compile_start
+        logger.info("")
+        logger.info(f"[{datetime.now().strftime('%H:%M:%S')}] ⏱️  Compilation took {compile_elapsed:.1f} seconds")
+
         if result.returncode != 0:
-            logger.error(f"❌ spatial-correlation-sampler rebuild failed!")
-            logger.error(f"STDOUT: {result.stdout}")
-            logger.error(f"STDERR: {result.stderr}")
+            logger.error(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ spatial-correlation-sampler rebuild failed!")
+            logger.error(f"Exit code: {result.returncode}")
             return False
 
-        logger.info("✅ spatial-correlation-sampler rebuilt successfully")
+        logger.info(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ Compilation successful")
+        logger.info("")
 
-        # Verify it works now
+        # Step 3: Verify it works now
+        logger.info(f"[{datetime.now().strftime('%H:%M:%S')}] Step 3/3: Verifying rebuilt extension...")
         is_working, error = check_spatial_correlation_sampler()
+
         if is_working:
-            logger.info("✅ Verification passed: spatial-correlation-sampler is working")
+            total_elapsed = time.time() - start_time
+            logger.info(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ Verification passed: spatial-correlation-sampler is working")
+            logger.info("")
+            logger.warning("=" * 80)
+            logger.warning(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ REBUILD COMPLETE in {total_elapsed:.1f} seconds")
+            logger.warning("=" * 80)
+            logger.warning("")
             return True
         else:
-            logger.error(f"❌ Verification failed: {error}")
+            logger.error(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Verification failed: {error}")
+            logger.error("Compilation succeeded but extension still doesn't work")
             return False
 
     except subprocess.TimeoutExpired:
-        logger.error("❌ Rebuild timeout - compilation took too long (>5 minutes)")
+        elapsed = time.time() - start_time
+        logger.error(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Rebuild timeout after {elapsed:.1f} seconds (max 300s)")
+        logger.error("Compilation took too long - this may indicate:")
+        logger.error("  - Insufficient CPU/RAM resources")
+        logger.error("  - Network issues downloading dependencies")
+        logger.error("  - Complex multi-architecture compilation")
         return False
     except Exception as e:
-        logger.error(f"❌ Unexpected error during rebuild: {e}")
+        elapsed = time.time() - start_time
+        logger.error(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Unexpected error after {elapsed:.1f} seconds: {e}")
         return False
 
 
