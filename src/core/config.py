@@ -27,7 +27,7 @@ class AppConfig(BaseSettings):
     
     # Processing settings - optimized for RTX 3080 Ti 12GB
     BATCH_SIZE: int = 1  # Process 4 frames at a time for better GPU utilization
-    MAX_FRAMES_PER_CHUNK: int = 6  # Larger chunks for better performance
+    MAX_FRAMES_PER_CHUNK: int = 4  # Larger chunks for better performance
     PROPAINTER_OVERLAP: int = 2  # Overlap between chunks for smooth transitions
     
     # Device settings
