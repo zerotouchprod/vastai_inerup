@@ -102,7 +102,7 @@ class ProcessorFactory:
             # 5. Copy our Pure PyTorch corr.py
             if not corr_py_source.exists():
                 self._logger.error(f"❌ Source corr.py not found at {corr_py_source}")
-                # Create it inline
+                # Create it inline with robust path finding
                 corr_py_content = '''#!/usr/bin/env python3
 """
 Pure PyTorch RAFT correlation module.
@@ -111,9 +111,28 @@ Replaces spatial-correlation-sampler C++ extension.
 import sys
 from pathlib import Path
 
-# Add project to path
-project_root = Path(__file__).parent.parent.parent.parent / "vastai_inerup"
-if project_root.exists():
+# Find project root - try multiple possible locations
+project_root = None
+possible_roots = [
+    Path("/root/vastai_inerup"),           # Vast.ai standard
+    Path("/workspace/project"),            # Docker standard
+    Path.home() / "vastai_inerup",         # User home
+]
+
+for root in possible_roots:
+    check_file = root / "src" / "infrastructure" / "inpainting" / "pure_pytorch_correlation.py"
+    if root.exists() and check_file.exists():
+        project_root = root
+        break
+
+if project_root is None:
+    raise ImportError(
+        "Cannot find vastai_inerup project!\\n"
+        f"Tried: {[str(p) for p in possible_roots]}\\n"
+        "Ensure project at /root/vastai_inerup or /workspace/project"
+    )
+
+if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
 try:
@@ -121,13 +140,9 @@ try:
     AlternateCorrBlock = CorrBlock  # Alias
     __all__ = ['CorrBlock', 'AlternateCorrBlock']
 except ImportError as e:
-    print(f"⚠️  Failed to import Pure PyTorch CorrBlock: {e}")
-    # Fallback: try to import from spatial_correlation_sampler
-    try:
-        from spatial_correlation_sampler import CorrBlock, AlternateCorrBlock
-    except ImportError:
-        print("❌ Neither Pure PyTorch nor spatial-correlation-sampler available!")
-        raise
+    raise ImportError(
+        f"Failed to import Pure PyTorch CorrBlock from {project_root}:\\n{e}"
+    )
 '''
                 corr_py_dest.write_text(corr_py_content)
             else:
