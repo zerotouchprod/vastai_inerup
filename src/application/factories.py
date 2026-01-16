@@ -94,10 +94,16 @@ class ProcessorFactory:
 
             # 4. ALWAYS overwrite to ensure latest version (e.g. with debug prints)
             # Don't skip if file exists - we need to update it!
+            self._logger.info(f"📝 Preparing to inject corr.py:")
+            self._logger.info(f"   Source: {corr_py_source}")
+            self._logger.info(f"   Source exists: {corr_py_source.exists()}")
+            self._logger.info(f"   Dest: {corr_py_dest}")
+            self._logger.info(f"   Dest exists: {corr_py_dest.exists()}")
 
             # 5. Copy our Pure PyTorch corr.py
             if not corr_py_source.exists():
-                self._logger.error(f"❌ Source corr.py not found at {corr_py_source}")
+                self._logger.warning(f"⚠️  Source corr.py not found at {corr_py_source}")
+                self._logger.info(f"   Creating inline version instead...")
                 # Create it inline - SELF-CONTAINED VERSION (no imports from project)
                 corr_py_content = '''#!/usr/bin/env python3
 """
@@ -206,8 +212,23 @@ AlternateCorrBlock = CorrBlock
 __all__ = ['CorrBlock', 'AlternateCorrBlock']
 '''
                 corr_py_dest.write_text(corr_py_content)
+                self._logger.info(f"   ✅ Created inline corr.py ({len(corr_py_content)} bytes)")
             else:
+                self._logger.info(f"   Copying from source file...")
                 shutil.copy(corr_py_source, corr_py_dest)
+                self._logger.info(f"   ✅ Copied corr.py from {corr_py_source}")
+
+            # Verify file was written
+            if corr_py_dest.exists():
+                size = corr_py_dest.stat().st_size
+                content_preview = corr_py_dest.read_text()[:200]
+                self._logger.info(f"   ✅ Verification: {corr_py_dest} exists ({size} bytes)")
+                if "[CorrBlock.__init__]" in corr_py_dest.read_text():
+                    self._logger.info(f"   ✅ Debug prints confirmed in file")
+                else:
+                    self._logger.warning(f"   ⚠️  Debug prints NOT found in file!")
+            else:
+                self._logger.error(f"   ❌ File not created: {corr_py_dest}")
 
             self._logger.info("✅ Injected Pure PyTorch CorrBlock into ProPainter RAFT (file-based)")
             self._logger.info(f"   Created: {corr_py_dest}")
