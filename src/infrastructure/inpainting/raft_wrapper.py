@@ -265,22 +265,22 @@ class ProPainterRAFTWrapper:
                 sys.path.insert(0, str(self.propainter_root))
             
             # Import RAFT (this will fail if spatial-correlation-sampler is broken)
-        from model.modules.flow_comp_raft import RAFT
+            from model.modules.flow_comp_raft import RAFT
 
-        # Create instance with dummy args (RAFT requires args parameter)
-        logger.info("Initializing ProPainter RAFT...")
+            # Create instance with dummy args (RAFT requires args parameter)
+            logger.info("Initializing ProPainter RAFT...")
 
-        # RAFT.__init__() requires args parameter
-        # Create dummy args with default values
-        import argparse
-        dummy_args = argparse.Namespace(
-            small=False,              # Use full model (not small)
-            mixed_precision=False,    # No mixed precision
-            alternate_corr=False      # Use standard correlation
-        )
+            # RAFT.__init__() requires args parameter
+            # Create dummy args with default values
+            import argparse
+            dummy_args = argparse.Namespace(
+                small=False,              # Use full model (not small)
+                mixed_precision=False,    # No mixed precision
+                alternate_corr=False      # Use standard correlation
+            )
 
-        self._raft = RAFT(dummy_args)  # Pass args to avoid TypeError
-        logger.info("✅ RAFT initialized successfully")
+            self._raft = RAFT(dummy_args)  # Pass args to avoid TypeError
+            logger.info("✅ RAFT initialized successfully")
 
         except ImportError as e:
             error = SpatialCorrelationSamplerError(
