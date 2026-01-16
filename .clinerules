@@ -1,0 +1,80 @@
+# 🛡️ VastAI Inerup Project Rules
+
+## 🐍 Python Coding Standards
+- **Typing:** Strict type hints are mandatory for all function arguments and return values. Use `typing.List`, `typing.Optional`, `typing.Union`, `typing.Dict`, etc. Avoid using bare `list`, `dict` in type annotations.
+- **Paths:** Always use `pathlib.Path` objects instead of string paths or `os.path` functions. Convert strings to Path early.
+- **Logging:** Never use `print()`. Use `src.shared.logging.get_logger(__name__)` for consistent logging across the project.
+- **Error Handling:** Catch specific exceptions. Wrap low-level subprocess errors in high-level semantic exceptions (e.g., `VideoProcessingError`). Always log exceptions with context.
+- **Dependencies:** Never import heavy libraries (`torch`, `cv2`, `paddleocr`) at the module level if they are optional or used only in specific methods. Use lazy imports or `try-except` blocks to prevent crashes on non-GPU environments.
+- **Configuration:** Always use `src.core.config.get_config()` to access configuration. Never hardcode constants.
+- **Naming:** Follow PEP8 naming conventions: `snake_case` for functions/variables, `CamelCase` for classes, `UPPER_CASE` for constants.
+- **Docstrings:** All public modules, classes, and functions must have Google-style docstrings with Args, Returns, Raises sections.
+
+## 🏛️ Architecture & Design Patterns
+**Style:** Clean Architecture / Hexagonal Architecture.
+
+1.  **Configuration:** `src.core.config.AppConfig` is the **Single Source of Truth**. Never hardcode parameters (resolutions, thresholds, paths) inside classes. Inject `config` via `__init__` or use `get_config()`.
+2.  **Layers:**
+    - `src/core/`: Domain entities, configuration, interfaces.
+    - `src/domain/`: Business logic interfaces (if any).
+    - `src/infrastructure/`: Implementations of external adapters (ProPainter, OCR, etc.).
+    - `src/services/`: High-level orchestration services.
+    - `src/shared/`: Cross-cutting utilities (logging, exceptions).
+3.  **Facade Pattern:** Use for complex external tools (e.g., `ProPainterAdapter`, `SubtitleRemoverNative`). The Facade must contain **NO logic** other than orchestration. Delegate actual work to specialized components in a `components/` sub-package (e.g., `ResolutionCalculator`, `InferenceRunner`, `EnvironmentManager`).
+4.  **Single Responsibility (SRP):** One class, one reason to change. Example: `EnvironmentManager` handles GPU detection; `MediaProcessor` handles FFMpeg. They should not be mixed.
+5.  **Dependency Injection:** Prefer passing dependencies (like `logger` or `config`) into constructors rather than creating them globally. Use composition over inheritance.
+6.  **Component Separation:** Each adapter in `src/infrastructure/` should have a `components/` directory for internal helpers that follow SRP.
+7.  **Backward Compatibility:** When refactoring, keep deprecated classes with `NotImplementedError` and clear message to use new classes.
+
+## 🧪 Testing Strategy (TDD)
+- **Framework:** `pytest` is the standard. Use `pytest.mark` for categorization.
+- **Isolation:** Unit tests must **NEVER** load real neural network models (ProPainter, RIFE, PaddleOCR) or use the GPU. Mock all external dependencies.
+- **Mocking:**
+    - Use `unittest.mock.patch` to mock `subprocess.run`, `cv2.imread/imwrite`, `torch.cuda`, and external libraries.
+    - Mock external libraries that might be missing (e.g., `paddleocr`).
+    - Use `pytest.fixture` for reusable test data and mocks.
+- **Speed:** The entire unit test suite must run in under 2 seconds. Keep tests fast by avoiding I/O and heavy computations.
+- **Coverage:** Focus on testing *logic* (if statements, math, orchestration flow), not the external libraries themselves. Aim for >80% coverage on critical paths.
+- **Test Structure:** Follow existing patterns in `tests/unit/`. Each test file should correspond to a production file. Use descriptive test method names.
+- **Parametrized Tests:** Use `@pytest.mark.parametrize` for testing multiple input/output combinations.
+
+## 🧠 Principles (The "Why")
+- **KISS (Keep It Simple, Stupid):** Do not over-engineer solutions. If a simple function works, don't make a class.
+- **YAGNI (You Aren't Gonna Need It):** Do not implement features "just in case". Implement when needed.
+- **DRY (Don't Repeat Yourself):** Extract common logic (like FFMpeg calls, GPU detection) into shared utilities in `src/shared/` or component classes.
+- **Resilience:** GPU code must assume hardware failure. Implement "Circuit Breakers" (e.g., fallback to CPU or skip frame) if `OutOfMemoryError` occurs. Always have a fallback path.
+- **Fail Fast:** Validate critical dependencies early (e.g., ProPainter scripts, RAFT models) and log warnings immediately.
+
+## 📂 File Structure Conventions
+- `src/core/`: Settings, Config, Domain Entities.
+- `src/infrastructure/`: Implementations of processors (Inpainting, Detection).
+- `src/infrastructure/*/components/`: Internal helpers for specific adapters (SRP).
+- `src/services/`: High-level business logic binding infrastructure to the app.
+- `src/shared/`: Logging, exceptions, utilities.
+- `tests/unit/`: Fast, mocked tests mirroring src structure.
+- `tests/integration/`: Integration tests (if needed, but avoid GPU).
+- `tests/fixtures/`: Test data and fixtures.
+
+## 🚀 Specific Workflows
+- **ProPainter/Inpainting:** Always use `ResolutionCalculator` to determine safe chunk sizes based on VRAM. Do not hardcode resolutions. Use dynamic adaptation.
+- **OCR:** Always suppress PaddleOCR logs to prevent console spam. Use `paddleocr.logging.disable()`.
+- **Subprocesses:** Always capture `stdout` and `stderr`. Log full stderr on failure. Use `subprocess.run` with `check=True` and proper error handling.
+- **GPU Management:** Use `EnvironmentManager` for GPU setup. Support multi-GPU via `CUDA_VISIBLE_DEVICES`. Always check available VRAM before allocating large tensors.
+- **Video Processing:** Use `MediaProcessor` for all FFmpeg operations. Preserve audio by default (`PRESERVE_AUDIO = True`).
+- **ROI Optimization:** Enable `USE_ROI_OPTIMIZATION` for subtitle detection to process only relevant frame regions.
+
+## 🔧 Development Practices
+- **Pre-commit:** Use `pytest` before committing. Ensure all tests pass.
+- **Code Reviews:** Check for adherence to these rules, especially SRP and proper mocking in tests.
+- **Documentation:** Update `ARCHITECTURE_DIAGRAMS.md` and `COMPLETE_ARCHITECTURE_DOCUMENTATION.md` when making architectural changes.
+- **Environment:** Use `.env` file for environment-specific overrides. Never commit `.env` to git.
+
+## 🚨 Safety & Performance
+- **Memory Safety:** Monitor VRAM usage with `torch.cuda.memory_allocated()`. Implement chunking for large videos.
+- **Performance:** Profile with `cProfile` or PyTorch profiler for bottlenecks. Optimize batch sizes and resolution dynamically.
+- **Fallbacks:** Always have CPU fallback for critical operations. Use `FORCE_CPU` config flag for debugging.
+- **Logging:** Use structured logging with context (module, operation, duration). Log at appropriate levels (INFO for operations, DEBUG for details, WARNING for fallbacks).
+
+---
+*Last Updated: 2026-01-16*
+*Based on project architecture as of commit 3a822ab87d3ea4c27866a645cae30ffa5d776412*
