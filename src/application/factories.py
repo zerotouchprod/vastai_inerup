@@ -87,17 +87,13 @@ class ProcessorFactory:
                 self._logger.error(f"❌ ProPainter RAFT not found at {propainter_raft}")
                 return
 
-            # 3. Backup original if exists
+            # 3. Backup original if exists (only once)
             if corr_py_dest.exists() and not (propainter_raft / "corr.py.original").exists():
                 shutil.copy(corr_py_dest, propainter_raft / "corr.py.original")
                 self._logger.info(f"✅ Backed up original corr.py to corr.py.original")
 
-            # 4. Check if already injected
-            if corr_py_dest.exists():
-                content = corr_py_dest.read_text()
-                if "Pure PyTorch CorrBlock" in content:
-                    self._logger.info("✅ Pure PyTorch corr.py already installed")
-                    return
+            # 4. ALWAYS overwrite to ensure latest version (e.g. with debug prints)
+            # Don't skip if file exists - we need to update it!
 
             # 5. Copy our Pure PyTorch corr.py
             if not corr_py_source.exists():
