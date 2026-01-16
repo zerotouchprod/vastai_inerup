@@ -73,10 +73,10 @@ class ProPainterAdapter:
             self.device = "cpu"
             logger.info("ProPainter using CPU (no CUDA available)")
 
-        # Sliding Window settings - optimized for RTX 3090/4090 with 24GB VRAM
-        # Balance between performance and memory usage
-        self.CHUNK_SIZE = 30    # Process 30 frames at a time (was 3, was 50)
-        self.OVERLAP = 3        # Small overlap for smooth transitions (was 0)
+        # Sliding Window settings - optimized for RTX 3080/4080 with 16GB VRAM
+        # Conservative settings to avoid OOM
+        self.CHUNK_SIZE = 15    # Process 15 frames at a time (was 3, was 50, was 30)
+        self.OVERLAP = 2        # Small overlap for smooth transitions (was 0)
 
         # CRITICAL: Validate ProPainter RAFT using proper wrapper
         # This uses dependency injection and proper Python patterns
@@ -639,11 +639,11 @@ except (IndexError, AttributeError, ValueError):
                     # RTX 4080, 5070 Ti: 1440p max
                     max_dimension = 2560  # 1440p
                 elif total_vram_gb >= 12:
-                    # RTX 3080, 4070: 1080p max
-                    max_dimension = 1920
+                    # RTX 3080, 4070: 720p max for stable operation
+                    max_dimension = 1280
                 elif total_vram_gb >= 8:
-                    # RTX 3060, 4060: 1080p max
-                    max_dimension = 1920
+                    # RTX 3060, 4060: 720p max
+                    max_dimension = 1280
                 else:
                     # Low VRAM: 720p max
                     max_dimension = 1280

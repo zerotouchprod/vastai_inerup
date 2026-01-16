@@ -26,15 +26,15 @@ class AppConfig(BaseSettings):
     MAX_CROP_AREA_RATIO: float = 0.4  # Maximum allowed crop area as ratio of total frame area (40%)
     
     # Processing settings - optimized for RTX 3080 Ti 12GB
-    BATCH_SIZE: int = 4  # Process 4 frames at a time for better GPU utilization
-    MAX_FRAMES_PER_CHUNK: int = 10  # Larger chunks for better performance
+    BATCH_SIZE: int = 1  # Process 4 frames at a time for better GPU utilization
+    MAX_FRAMES_PER_CHUNK: int = 8  # Larger chunks for better performance
     
     # Device settings
     FORCE_CPU: bool = False  # Force CPU usage to avoid GPU memory issues
     
     # Downscaling settings
     AUTO_DOWNSCALE: bool = True  # Automatically downscale high-resolution videos to prevent OOM
-    MAX_HEIGHT: int = 1280  # Maximum frame height before downscaling (pixels)
+    MAX_HEIGHT: int = 1920  # Maximum frame height before downscaling (pixels)
     
     # ROI (Region of Interest) settings
     USE_ROI_OPTIMIZATION: bool = True  # Process only bottom region where subtitles appear
