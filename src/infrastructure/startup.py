@@ -70,7 +70,8 @@ def validate_cuda_dependencies(auto_rebuild: bool = None) -> bool:
         auto_rebuild = os.getenv("AUTO_REBUILD_CUDA_EXTENSIONS", "true").lower() == "true"
 
     # Check if pure PyTorch correlation should be used (no C++ extension)
-    use_pure_pytorch = os.getenv("USE_PURE_PYTORCH_CORRELATION", "false").lower() == "true"
+    # DEFAULT: TRUE (recommended for production!)
+    use_pure_pytorch = os.getenv("USE_PURE_PYTORCH_CORRELATION", "true").lower() == "true"
 
     logger.info("=" * 80)
     logger.info(f"[{datetime.now().strftime('%H:%M:%S')}] STARTUP: Validating CUDA dependencies...")
