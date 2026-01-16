@@ -27,7 +27,7 @@ class AppConfig(BaseSettings):
     
     # Processing settings - optimized for RTX 3080 Ti 12GB
     BATCH_SIZE: int = 1  # Process 4 frames at a time for better GPU utilization
-    MAX_FRAMES_PER_CHUNK: int = 8  # Larger chunks for better performance
+    MAX_FRAMES_PER_CHUNK: int = 6  # Larger chunks for better performance
     PROPAINTER_OVERLAP: int = 2  # Overlap between chunks for smooth transitions
     
     # Device settings
@@ -35,7 +35,7 @@ class AppConfig(BaseSettings):
     
     # Downscaling settings
     AUTO_DOWNSCALE: bool = True  # Automatically downscale high-resolution videos to prevent OOM
-    MAX_HEIGHT: int = 1920  # Maximum frame height before downscaling (pixels)
+    MAX_HEIGHT: int = 1280  # Maximum frame height before downscaling (pixels)
     
     # ROI (Region of Interest) settings
     USE_ROI_OPTIMIZATION: bool = True  # Process only bottom region where subtitles appear
