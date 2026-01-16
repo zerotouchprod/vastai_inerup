@@ -74,9 +74,9 @@ class ProPainterAdapter:
             logger.info("ProPainter using CPU (no CUDA available)")
 
         # Sliding Window settings - optimized for RTX 3090/4090 with 24GB VRAM
-        # With GPU stability fixes, we can be much more aggressive
-        self.CHUNK_SIZE = 50    # Process 50 frames at a time (was 3)
-        self.OVERLAP = 5        # Small overlap for smooth transitions (was 0)
+        # Balance between performance and memory usage
+        self.CHUNK_SIZE = 30    # Process 30 frames at a time (was 3, was 50)
+        self.OVERLAP = 3        # Small overlap for smooth transitions (was 0)
 
         # CRITICAL: Validate ProPainter RAFT using proper wrapper
         # This uses dependency injection and proper Python patterns

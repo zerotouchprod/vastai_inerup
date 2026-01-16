@@ -22,19 +22,19 @@ class AppConfig(BaseSettings):
     CONFIDENCE_THRESHOLD: float = 0.1  # Lowered for aggressive detection
     
     # Dynamic cropping settings
-    PADDING_PX: int = 64  # Padding around subtitle bounding box for context
+    PADDING_PX: int = 32  # Padding around subtitle bounding box for context
     MAX_CROP_AREA_RATIO: float = 0.4  # Maximum allowed crop area as ratio of total frame area (40%)
     
     # Processing settings - optimized for RTX 3080 Ti 12GB
     BATCH_SIZE: int = 4  # Process 4 frames at a time for better GPU utilization
-    MAX_FRAMES_PER_CHUNK: int = 20  # Larger chunks for better performance
+    MAX_FRAMES_PER_CHUNK: int = 10  # Larger chunks for better performance
     
     # Device settings
     FORCE_CPU: bool = False  # Force CPU usage to avoid GPU memory issues
     
     # Downscaling settings
-    AUTO_DOWNSCALE: bool = False  # Automatically downscale high-resolution videos to prevent OOM
-    MAX_HEIGHT: int = 2160  # Maximum frame height before downscaling (pixels)
+    AUTO_DOWNSCALE: bool = True  # Automatically downscale high-resolution videos to prevent OOM
+    MAX_HEIGHT: int = 1280  # Maximum frame height before downscaling (pixels)
     
     # ROI (Region of Interest) settings
     USE_ROI_OPTIMIZATION: bool = True  # Process only bottom region where subtitles appear
