@@ -511,6 +511,16 @@ import torch
 # === AMP-FRIENDLY MATMUL: Try FP16 first, fallback to FP32 ===
 def safe_matmul(a, b):
     """Safe matrix multiplication with AMP support"""
+    # Ensure both tensors have the same dtype (handle mixed precision)
+    if a.dtype != b.dtype:
+        # Convert to common dtype (prefer FP16 for AMP)
+        if a.dtype == torch.float16 or b.dtype == torch.float16:
+            a = a.to(torch.float16)
+            b = b.to(torch.float16)
+        else:
+            a = a.to(torch.float32)
+            b = b.to(torch.float32)
+    
     # Try efficient FP16/AMP first (no .float() conversion)
     try:
         return a @ b
