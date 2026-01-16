@@ -103,10 +103,14 @@ class InferenceRunner:
             error: CalledProcessError from subprocess execution
         """
         # Log error details (in real implementation would use logger)
-        stderr_bytes = error.stderr if error.stderr else b""
-        stdout_bytes = error.stdout if error.stdout else b""
-        stderr = stderr_bytes.decode('utf-8', errors='ignore')
-        stdout = stdout_bytes.decode('utf-8', errors='ignore')
+        stderr = error.stderr if error.stderr else ""
+        stdout = error.stdout if error.stdout else ""
+        
+        # If stderr/stdout are bytes, decode them
+        if isinstance(stderr, bytes):
+            stderr = stderr.decode('utf-8', errors='ignore')
+        if isinstance(stdout, bytes):
+            stdout = stdout.decode('utf-8', errors='ignore')
         
         # Check for OOM errors
         if "out of memory" in stderr.lower() or "oom" in stderr.lower():
