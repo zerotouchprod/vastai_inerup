@@ -5,6 +5,7 @@ Orchestrates OCR detection, mask generation, temporal filtering, and inpainting.
 
 import logging
 import gc
+import shutil
 from typing import Optional, List
 from pathlib import Path
 import numpy as np
@@ -12,9 +13,10 @@ import cv2
 import psutil
 
 from src.core.config import AppConfig, get_config
-from src.infrastructure.detection.components import (
-    OcrEngine, MaskGenerator, Inpainter, TemporalFilter
-)
+from src.infrastructure.detection.components.ocr_engine import OcrEngine
+from src.infrastructure.detection.components.mask_generator import MaskGenerator
+from src.infrastructure.detection.components.inpainter import Inpainter
+from src.infrastructure.detection.components.temporal import TemporalFilter
 from src.infrastructure.utils.gpu_utils import require_gpu
 
 # Remove global side effects - logging suppression is now handled by OcrEngine
@@ -77,47 +79,45 @@ class SubtitleRemoverNative:
         batch_size = 4
         processed = 0
         
-        # Collect masks and images for temporal processing
+        # Collect masks and images for temporal processing (we need a buffer)
+        # Note: Ideally temporal filter should work on streams, but for simplicity 
+        # we often process in larger chunks or 2 passes. 
+        # Here we follow the logic: 1. Generate ALL masks, 2. Filter, 3. Inpaint
+        # This uses more RAM but guarantees temporal consistency.
+        
+        # If RAM is an issue, we should switch to a sliding window buffer approach.
+        # For now, let's keep the 2-pass approach but optimize data storage.
+        
         all_masks = []
         all_frame_paths = []
-        all_images = []
+        # We don't store full images in RAM for the whole video anymore to prevent OOM
         
-        # First pass: detect text and create masks for all frames
+        # First pass: detect text and create masks
         logger.info("First pass: Detecting text and creating masks...")
         
         for batch_frames in self._chunk(frames, batch_size):
             logger.info(f"Processing batch {processed // batch_size + 1}/{(total + batch_size - 1)//batch_size} "
-                       f"({len(batch_frames)} frames)...")
+                        f"({len(batch_frames)} frames)...")
             
             for frame_path in batch_frames:
                 try:
-                    # Load image
                     img = cv2.imread(str(frame_path))
                     if img is None:
                         logger.warning(f"Could not read image: {frame_path}")
-                        # Create empty mask
-                        h, w = 100, 100  # Default size
-                        if all_images:
-                            h, w = all_images[0].shape[:2]
-                        mask = np.zeros((h, w), dtype=np.uint8)
-                        all_masks.append(mask)
+                        # Append empty mask placeholder
+                        all_masks.append(None) 
                         all_frame_paths.append(frame_path)
-                        all_images.append(np.zeros((h, w, 3), dtype=np.uint8))
                         continue
                     
-                    # Store image for later processing
-                    all_images.append(img)
-                    all_frame_paths.append(frame_path)
-                    
-                    # Preprocess image for better OCR detection
+                    # Preprocess & Detect
                     preprocessed_img = self.mask_gen.preprocess_for_ocr(img)
-                    
-                    # Detect text with OCR engine
                     ocr_results = self.ocr.detect_text(preprocessed_img)
                     
-                    # Generate mask using mask generator
+                    # Generate mask
                     mask = self.mask_gen.generate_mask(img, ocr_results, self.config.ROI)
+                    
                     all_masks.append(mask)
+                    all_frame_paths.append(frame_path)
                     processed += 1
                     
                     # Show progress
@@ -128,64 +128,90 @@ class SubtitleRemoverNative:
                         
                 except Exception as e:
                     logger.error(f"Failed to process frame {frame_path} for mask detection: {e}")
-                    # Create empty mask
-                    h, w = 100, 100
-                    if all_images:
-                        h, w = all_images[0].shape[:2]
-                    mask = np.zeros((h, w), dtype=np.uint8)
-                    all_masks.append(mask)
+                    all_masks.append(None)
                     all_frame_paths.append(frame_path)
-                    if len(all_images) < len(all_masks):
-                        all_images.append(np.zeros((h, w, 3), dtype=np.uint8))
-                    processed += 1
             
-            # Force garbage collection between batches
+            # Force GC between batches
             gc.collect()
             
-            # Check memory usage between batches
+            # Check memory
             process = psutil.Process()
             memory_mb = process.memory_info().rss / 1024 / 1024
             logger.info(f"Batch completed. Memory usage: {memory_mb:.1f} MB")
-            
-            if memory_mb > 4000:  # 4GB threshold
+            if memory_mb > 4000:
                 logger.warning(f"High memory usage detected: {memory_mb:.1f} MB. Consider reducing batch size.")
-        
-        # Apply temporal filtering (includes smearing and validation)
+
+        # Fill None masks with zeros based on first valid mask
+        valid_shape = next((m.shape for m in all_masks if m is not None), (100, 100))
+        all_masks = [m if m is not None else np.zeros(valid_shape, dtype=np.uint8) for m in all_masks]
+
+        # Apply temporal filtering
         logger.info("Applying temporal filtering to masks...")
         filtered_masks = self.temporal.process_batch(all_masks)
         
-        # Second pass: apply inpainting with temporally filtered masks
+        # Release raw masks to free memory
+        del all_masks
+        gc.collect()
+        
+        # Second pass: Inpainting (Load image -> Inpaint -> Save -> Release)
         logger.info("Second pass: Applying inpainting...")
         processed = 0
         
-        for i, (frame_path, img, mask) in enumerate(zip(all_frame_paths, all_images, filtered_masks)):
+        for i, (frame_path, mask) in enumerate(zip(all_frame_paths, filtered_masks)):
             try:
                 output_path = output_dir / frame_path.name
                 
-                # Skip if no text detected (empty mask)
+                # Skip inpainting if mask is empty
                 if np.max(mask) == 0:
-                    cv2.imwrite(str(output_path), img)
+                    # Just copy original (faster than re-encoding)
+                    shutil.copy(frame_path, output_path)
                     processed += 1
                     continue
                 
-                # Inpaint using inpainter component
+                # Load image again (fresh from disk)
+                img = cv2.imread(str(frame_path))
+                if img is None: 
+                    logger.warning(f"Could not read image for inpainting: {frame_path}")
+                    shutil.copy(frame_path, output_path)
+                    continue
+
+                # Inpaint
                 result_img = self.inpainter.inpaint(img, mask)
                 
-                # Save result
+                # Save
                 cv2.imwrite(str(output_path), result_img)
                 processed += 1
                 
-                # Show progress
                 if processed % 5 == 0 or processed == total:
                     logger.info(f"Processed {processed}/{total} frames for inpainting...")
                     
             except Exception as e:
-                logger.error(f"Failed to process frame {frame_path} for inpainting: {e}")
-                # Save original as fallback
-                cv2.imwrite(str(output_dir / frame_path.name), img)
-                processed += 1
+                logger.error(f"Failed to inpaint frame {frame_path}: {e}")
+                # Fallback copy
+                shutil.copy(frame_path, output_path)
+
+        logger.info(f"Completed subtitle removal on {total} frames.")
+    
+    def process_single_frame(self, input_path: Path, output_path: Path) -> None:
+        """Process single frame for subtitle removal."""
+        img = cv2.imread(str(input_path))
+        if img is None:
+            raise ValueError(f"Could not read image: {input_path}")
         
-        logger.info(f"Completed subtitle removal on {total} frames with temporal filtering.")
+        # Pipeline
+        prep = self.mask_gen.preprocess_for_ocr(img)
+        res = self.ocr.detect_text(prep)
+        if not res:
+            cv2.imwrite(str(output_path), img)
+            return
+            
+        mask = self.mask_gen.generate_mask(img, res, self.config.ROI)
+        if np.max(mask) == 0:
+            cv2.imwrite(str(output_path), img)
+            return
+            
+        final = self.inpainter.inpaint(img, mask)
+        cv2.imwrite(str(output_path), final)
     
     def _chunk(self, items: List, size: int):
         """
@@ -200,44 +226,6 @@ class SubtitleRemoverNative:
         """
         for i in range(0, len(items), size):
             yield items[i:i + size]
-    
-    def process_single_frame(self, input_path: Path, output_path: Path) -> None:
-        """
-        Process single frame for subtitle removal.
-        
-        Args:
-            input_path: Path to input image
-            output_path: Path to output image
-        """
-        # Load image
-        img = cv2.imread(str(input_path))
-        if img is None:
-            raise ValueError(f"Could not read image: {input_path}")
-        
-        # Preprocess for OCR
-        preprocessed_img = self.mask_gen.preprocess_for_ocr(img)
-        
-        # Detect text
-        ocr_results = self.ocr.detect_text(preprocessed_img)
-        
-        # If no text detected, save original
-        if not ocr_results:
-            cv2.imwrite(str(output_path), img)
-            return
-        
-        # Generate mask
-        mask = self.mask_gen.generate_mask(img, ocr_results, self.config.ROI)
-        
-        # If empty mask, save original
-        if np.max(mask) == 0:
-            cv2.imwrite(str(output_path), img)
-            return
-        
-        # Inpaint
-        result_img = self.inpainter.inpaint(img, mask)
-        
-        # Save result
-        cv2.imwrite(str(output_path), result_img)
     
     def cleanup(self):
         """
