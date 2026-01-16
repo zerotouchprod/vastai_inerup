@@ -211,6 +211,7 @@ def create_orchestrator_from_config(config, allow_fallback: bool = False):
 
 def main():
     """Main CLI entry point."""
+    # Parse args first to check for verbose mode
     parser = argparse.ArgumentParser(description="Video processing pipeline")
     parser.add_argument('--config', type=Path, help='Config YAML file')
     parser.add_argument('--input', '-i', help='Input video URL')
@@ -237,15 +238,54 @@ def main():
     parser.add_argument('--allow-fallback', action='store_true', help='Allow ffmpeg fallback when RIFE is not available (default: disabled)')
     parser.add_argument('--verbose', '-v', action='store_true', help='Verbose')
     parser.add_argument('--job', '-j', help='Job id (override)')
+    parser.add_argument('--skip-cuda-check', action='store_true', help='Skip CUDA extension validation at startup (NOT recommended)')
 
     args = parser.parse_args()
 
-    # Setup logging
+    # Setup logging BEFORE startup checks so we can see validation logs
     import logging
     log_level = logging.DEBUG if args.verbose else logging.INFO
     setup_logger('pipeline', level=log_level)
 
     logger = get_logger(__name__)
+
+    # ========================================================================
+    # STARTUP VALIDATION: Senior Python approach
+    # ========================================================================
+    # Run validation BEFORE any processing, regardless of how container started
+    # This works for: Docker entrypoint, SSH, direct Python execution, etc.
+    # Fails fast with clear error messages if dependencies are broken
+    # ========================================================================
+    if not args.skip_cuda_check:
+        try:
+            from src.infrastructure.startup import startup_checks
+
+            # This will raise RuntimeError if dependencies are broken
+            # Set AUTO_REBUILD_CUDA_EXTENSIONS=true env var to attempt auto-rebuild
+            startup_checks(
+                validate_cuda=True,  # Check spatial-correlation-sampler
+                validate_propainter_raft=True,  # Check ProPainter RAFT
+                auto_rebuild=None  # Read from env var AUTO_REBUILD_CUDA_EXTENSIONS
+            )
+        except RuntimeError as e:
+            logger.error("")
+            logger.error("=" * 80)
+            logger.error("STARTUP VALIDATION FAILED")
+            logger.error("=" * 80)
+            logger.error(str(e))
+            logger.error("")
+            logger.error("Application cannot start with broken dependencies.")
+            logger.error("See error messages above for fix instructions.")
+            logger.error("=" * 80)
+            return 1
+        except Exception as e:
+            logger.error(f"Unexpected error during startup validation: {e}")
+            logger.error("Continuing anyway, but processing may fail...")
+    else:
+        logger.warning("⚠️  CUDA validation skipped (--skip-cuda-check)")
+        logger.warning("   Processing may fail if CUDA extensions are broken")
+
+    # Continue with normal application flow
     os.environ.setdefault('USE_NATIVE_PROCESSORS', '1')
     try:
         config_loader = ConfigLoader(config_path=args.config)
