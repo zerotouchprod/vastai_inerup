@@ -9,6 +9,26 @@ python pipeline_v2.py --input video.mp4
 
 Все! Больше ничего не нужно! 🎉
 
+### 🆕 Новая Опция: Pure PyTorch Correlation (Рекомендуется!)
+
+Избавьтесь от хрупкого C++ extension полностью:
+
+```bash
+# Enable pure PyTorch correlation (no C++ compilation needed!)
+export USE_PURE_PYTORCH_CORRELATION=true
+
+python pipeline_v2.py --input video.mp4
+```
+
+**Преимущества:**
+- ✅ Не нужна компиляция C++ (нет 60-180 sec rebuild)
+- ✅ Работает на ВСЕХ GPU (включая RTX 5080, будущие GPU)
+- ✅ Нет CUDA version mismatch проблем
+- ✅ ~10-20% медленнее, но 100% надежно
+- ✅ Быстрее overall (нет rebuild delay!)
+
+См. `PURE_PYTORCH_CORRELATION.md` для деталей.
+
 ## Что Происходит Автоматически
 
 1. **Первый запуск** → Detect CUDA mismatch

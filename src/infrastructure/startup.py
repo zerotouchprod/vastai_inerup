@@ -69,10 +69,27 @@ def validate_cuda_dependencies(auto_rebuild: bool = None) -> bool:
         # Set AUTO_REBUILD_CUDA_EXTENSIONS=false to disable
         auto_rebuild = os.getenv("AUTO_REBUILD_CUDA_EXTENSIONS", "true").lower() == "true"
 
+    # Check if pure PyTorch correlation should be used (no C++ extension)
+    use_pure_pytorch = os.getenv("USE_PURE_PYTORCH_CORRELATION", "false").lower() == "true"
+
     logger.info("=" * 80)
     logger.info(f"[{datetime.now().strftime('%H:%M:%S')}] STARTUP: Validating CUDA dependencies...")
     logger.info("=" * 80)
     
+    # Option 1: Use pure PyTorch correlation (no C++ extension needed)
+    if use_pure_pytorch:
+        logger.info(f"[{datetime.now().strftime('%H:%M:%S')}] Using pure PyTorch correlation (no C++ extension)")
+        try:
+            from src.infrastructure.inpainting.pure_pytorch_correlation import install_pure_pytorch_correlation
+            install_pure_pytorch_correlation()
+            logger.info(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ Pure PyTorch correlation installed")
+            logger.info("=" * 80)
+            return True
+        except Exception as e:
+            logger.error(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Failed to install pure PyTorch correlation: {e}")
+            logger.error("Falling back to spatial-correlation-sampler check...")
+
+    # Option 2: Check/rebuild spatial-correlation-sampler (legacy C++ extension)
     try:
         from src.infrastructure.inpainting.raft_wrapper import (
             check_spatial_correlation_sampler,
