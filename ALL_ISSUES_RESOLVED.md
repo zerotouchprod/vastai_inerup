@@ -2,7 +2,7 @@
 
 ## Summary of Fixes
 
-Today we fixed **4 critical issues** that were blocking subtitle removal:
+Today we fixed **5 critical issues** that were blocking subtitle removal:
 
 ### 1. ✅ spatial-correlation-sampler Eliminated
 **Problem**: 15+ minute downloads + compilation timeouts
@@ -19,10 +19,15 @@ Today we fixed **4 critical issues** that were blocking subtitle removal:
 **Fix**: Remove premature GPU check from factories
 **Result**: Subtitle remover creates successfully
 
-### 4. ✅ ProPainter CorrBlock Crash Fixed (NEW!)
+### 4. ✅ ProPainter CorrBlock Crash Fixed
 **Problem**: `File "/opt/ProPainter/RAFT/raft.py", line 109: corr_fn = CorrBlock`
-**Fix**: Inject Pure PyTorch CorrBlock + validation
-**Result**: ProPainter RAFT works with Pure PyTorch seamlessly!
+**Fix**: Inject Pure PyTorch CorrBlock into ProPainter RAFT
+**Result**: ProPainter RAFT works with Pure PyTorch
+
+### 5. ✅ Subprocess Import Fixed (NEW!)
+**Problem**: `cannot import name 'AlternateCorrBlock'` in ProPainter subprocess
+**Fix**: File-based injection (not sys.modules) - works for subprocess
+**Result**: ProPainter subprocess can import Pure PyTorch CorrBlock!
 
 ## Current Status
 

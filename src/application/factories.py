@@ -63,57 +63,94 @@ class ProcessorFactory:
         """
         Inject Pure PyTorch CorrBlock into ProPainter's RAFT module.
 
-        ProPainter's RAFT imports CorrBlock from spatial_correlation_sampler:
-            from .corr import CorrBlock
+        ProPainter's RAFT imports:
+            from .corr import CorrBlock, AlternateCorrBlock
 
-        But we replaced spatial_correlation_sampler with Pure PyTorch version.
-        This method monkey-patches ProPainter's RAFT to use our implementation.
+        We replace spatial_correlation_sampler with Pure PyTorch version.
 
-        Architecture:
-        - ProPainter/RAFT expects: from .corr import CorrBlock
-        - We inject: sys.modules['/opt/ProPainter/RAFT/corr'].CorrBlock = our_CorrBlock
-        - RAFT imports our version seamlessly
+        **CRITICAL**: ProPainter runs in subprocess, so sys.modules injection
+        doesn't work. We need to create actual file: /opt/ProPainter/RAFT/corr.py
 
-        Design pattern: Dependency injection via module monkey-patching
+        Design pattern: File-based dependency injection (works for subprocess)
         """
-        import sys
+        import shutil
         from pathlib import Path
 
         try:
-            # 1. Install pure PyTorch correlation (if not already)
-            from src.infrastructure.inpainting.pure_pytorch_correlation import CorrBlock as PurePytorchCorrBlock
+            # 1. Get paths
+            propainter_raft = Path("/opt/ProPainter/RAFT")
+            corr_py_dest = propainter_raft / "corr.py"
+            corr_py_source = Path(__file__).parent.parent.parent / "docker" / "patches" / "raft_corr.py"
 
-            # 2. Add ProPainter to sys.path if needed
-            propainter_root = Path("/opt/ProPainter")
-            if str(propainter_root) not in sys.path:
-                sys.path.insert(0, str(propainter_root))
+            # 2. Check if ProPainter exists
+            if not propainter_raft.exists():
+                self._logger.error(f"❌ ProPainter RAFT not found at {propainter_raft}")
+                return
 
-            # 3. Create fake 'corr' module with our CorrBlock
-            class FakeCorrModule:
-                """Fake module that provides Pure PyTorch CorrBlock."""
-                CorrBlock = PurePytorchCorrBlock
+            # 3. Backup original if exists
+            if corr_py_dest.exists() and not (propainter_raft / "corr.py.original").exists():
+                shutil.copy(corr_py_dest, propainter_raft / "corr.py.original")
+                self._logger.info(f"✅ Backed up original corr.py to corr.py.original")
 
-            # 4. Inject into ProPainter's RAFT namespace
-            # ProPainter does: from .corr import CorrBlock
-            # We make .corr point to our fake module
-            raft_module_name = 'RAFT.corr'
-            sys.modules[raft_module_name] = FakeCorrModule()
+            # 4. Check if already injected
+            if corr_py_dest.exists():
+                content = corr_py_dest.read_text()
+                if "Pure PyTorch CorrBlock" in content:
+                    self._logger.info("✅ Pure PyTorch corr.py already installed")
+                    return
 
-            self._logger.info("✅ Injected Pure PyTorch CorrBlock into ProPainter RAFT")
-            self._logger.info("   ProPainter will use Pure PyTorch correlation (no C++ extension)")
+            # 5. Copy our Pure PyTorch corr.py
+            if not corr_py_source.exists():
+                self._logger.error(f"❌ Source corr.py not found at {corr_py_source}")
+                # Create it inline
+                corr_py_content = '''#!/usr/bin/env python3
+"""
+Pure PyTorch RAFT correlation module.
+Replaces spatial-correlation-sampler C++ extension.
+"""
+import sys
+from pathlib import Path
+
+# Add project to path
+project_root = Path(__file__).parent.parent.parent.parent / "vastai_inerup"
+if project_root.exists():
+    sys.path.insert(0, str(project_root))
+
+try:
+    from src.infrastructure.inpainting.pure_pytorch_correlation import CorrBlock
+    AlternateCorrBlock = CorrBlock  # Alias
+    __all__ = ['CorrBlock', 'AlternateCorrBlock']
+except ImportError as e:
+    print(f"⚠️  Failed to import Pure PyTorch CorrBlock: {e}")
+    # Fallback: try to import from spatial_correlation_sampler
+    try:
+        from spatial_correlation_sampler import CorrBlock, AlternateCorrBlock
+    except ImportError:
+        print("❌ Neither Pure PyTorch nor spatial-correlation-sampler available!")
+        raise
+'''
+                corr_py_dest.write_text(corr_py_content)
+            else:
+                shutil.copy(corr_py_source, corr_py_dest)
+
+            self._logger.info("✅ Injected Pure PyTorch CorrBlock into ProPainter RAFT (file-based)")
+            self._logger.info(f"   Created: {corr_py_dest}")
+            self._logger.info("   ProPainter subprocess will use Pure PyTorch correlation")
 
         except Exception as e:
             self._logger.error(f"❌ Failed to inject Pure PyTorch CorrBlock: {e}")
             self._logger.error("   ProPainter may fail if it tries to use spatial-correlation-sampler")
-            # Don't raise - let ProPainter try anyway, it will give clearer error
 
     def _validate_corrblock_injection(self) -> bool:
         """
-        Validate that CorrBlock injection succeeded and ProPainter RAFT can use it.
+        Validate that CorrBlock injection succeeded and ProPainter subprocess can use it.
 
-        This is a critical pre-flight check that prevents the error:
+        This is a critical pre-flight check that prevents:
             File "/opt/ProPainter/RAFT/raft.py", line 109, in forward
                 corr_fn = CorrBlock
+
+        **CRITICAL**: Checks file-based injection (not sys.modules) since
+        ProPainter runs in subprocess.
 
         Design pattern: Fail-fast validation
 
@@ -123,54 +160,61 @@ class ProcessorFactory:
         Raises:
             RuntimeError: If CorrBlock injection failed and ProPainter will crash
         """
-        import sys
         from pathlib import Path
+        import subprocess
+        import sys
 
         try:
-            # Check 1: Verify injection happened
-            if 'RAFT.corr' not in sys.modules:
+            # Check 1: Verify corr.py file exists
+            corr_py_path = Path("/opt/ProPainter/RAFT/corr.py")
+            if not corr_py_path.exists():
                 raise RuntimeError(
-                    "CorrBlock injection failed: 'RAFT.corr' module not found in sys.modules.\n"
-                    "ProPainter RAFT will crash with 'corr_fn = CorrBlock' error."
+                    f"CorrBlock injection failed: {corr_py_path} does not exist.\n"
+                    f"ProPainter subprocess cannot import CorrBlock."
                 )
 
-            # Check 2: Verify module has CorrBlock
-            corr_module = sys.modules['RAFT.corr']
-            if not hasattr(corr_module, 'CorrBlock'):
-                raise RuntimeError(
-                    "CorrBlock injection incomplete: 'RAFT.corr' module exists but has no CorrBlock.\n"
-                    "ProPainter RAFT will crash with 'corr_fn = CorrBlock' error."
+            # Check 2: Verify it's our Pure PyTorch version
+            content = corr_py_path.read_text()
+            if "Pure PyTorch" not in content and "pure_pytorch_correlation" not in content:
+                self._logger.warning(
+                    f"⚠️  {corr_py_path} exists but may not be our Pure PyTorch version.\n"
+                    f"   This may cause issues with spatial-correlation-sampler."
                 )
 
-            # Check 3: Try to import from ProPainter's perspective
-            propainter_root = Path("/opt/ProPainter")
-            if str(propainter_root) not in sys.path:
-                sys.path.insert(0, str(propainter_root))
+            # Check 3: Test import in separate Python process (simulate ProPainter subprocess)
+            test_code = """
+import sys
+sys.path.insert(0, '/opt/ProPainter')
+sys.path.insert(0, '/root/vastai_inerup')  # For Pure PyTorch import
+try:
+    from RAFT.corr import CorrBlock, AlternateCorrBlock
+    print('SUCCESS')
+except Exception as e:
+    print(f'FAIL: {e}')
+"""
+            result = subprocess.run(
+                [sys.executable, '-c', test_code],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
 
-            # Simulate what ProPainter RAFT does
-            try:
-                # This is what RAFT/raft.py line 109 tries to do
-                from RAFT.corr import CorrBlock
-
-                # Verify it's our Pure PyTorch version
-                from src.infrastructure.inpainting.pure_pytorch_correlation import CorrBlock as OurCorrBlock
-                if CorrBlock is not OurCorrBlock:
-                    self._logger.warning(
-                        "⚠️  CorrBlock imported but it's not our Pure PyTorch version!\n"
-                        "   This may cause issues. Expected Pure PyTorch, got something else."
-                    )
-                else:
-                    self._logger.info("✅ CorrBlock validation passed: ProPainter will use Pure PyTorch")
-
-                return True
-
-            except ImportError as e:
+            if 'SUCCESS' not in result.stdout:
                 raise RuntimeError(
-                    f"CorrBlock injection failed: Cannot import 'from RAFT.corr import CorrBlock'\n"
-                    f"Error: {e}\n"
-                    f"ProPainter RAFT will crash with 'corr_fn = CorrBlock' error."
+                    f"CorrBlock injection validation failed in subprocess:\n"
+                    f"STDOUT: {result.stdout}\n"
+                    f"STDERR: {result.stderr}\n"
+                    f"ProPainter subprocess will not be able to import CorrBlock."
                 )
 
+            self._logger.info("✅ CorrBlock validation passed: ProPainter subprocess can import Pure PyTorch")
+            return True
+
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(
+                "CorrBlock validation timeout (5 seconds).\n"
+                "Import test hung - this indicates a serious problem."
+            )
         except RuntimeError:
             raise  # Re-raise validation errors
         except Exception as e:
