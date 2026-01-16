@@ -73,10 +73,10 @@ class ProPainterAdapter:
             self.device = "cpu"
             logger.info("ProPainter using CPU (no CUDA available)")
 
-        # Sliding Window settings for OOM protection (Exit code -9)
-        # NUCLEAR OPTION: Absolute minimum settings - cannot go lower
-        self.CHUNK_SIZE = 3     # Process only 3 frames at a time (ABSOLUTE MINIMUM)
-        self.OVERLAP = 0        # No overlap (quality trade-off for memory)
+        # Sliding Window settings - optimized for RTX 3090/4090 with 24GB VRAM
+        # With GPU stability fixes, we can be much more aggressive
+        self.CHUNK_SIZE = 50    # Process 50 frames at a time (was 3)
+        self.OVERLAP = 5        # Small overlap for smooth transitions (was 0)
 
         # CRITICAL: Validate ProPainter RAFT using proper wrapper
         # This uses dependency injection and proper Python patterns
@@ -616,29 +616,39 @@ except (IndexError, AttributeError, ValueError):
 
             logger.info(f"GPU {check_gpu_id} VRAM: {free_vram_gb:.1f}GB free / {total_vram_gb:.1f}GB total")
 
-            # Adaptive resolution limits based on available VRAM
-            # Optimized for quality while preventing OOM
-            if total_vram_gb >= 40:
-                # A100, H100: high VRAM - can handle high resolution
-                max_dimension = 1280
-            elif total_vram_gb >= 23:  # RTX 3090/4090 = 23.6GB (not 24!)
-                # RTX 3090, 4090, A6000: Can handle 1080p for most videos
-                # With our GPU stability fixes, we can be more aggressive
-                max_dimension = 960  # Increased from 360 to 960 for better quality
-            elif total_vram_gb >= 16:
-                # RTX 4080, 5070 Ti: 720p max
-                max_dimension = 720
-            elif total_vram_gb >= 12:
-                # RTX 3080, 4070: 540p max
-                max_dimension = 540
-            elif total_vram_gb >= 8:
-                # RTX 3060, 4060: 480p max
-                max_dimension = 480
+            # AGGRESSIVE RESOLUTION SETTINGS for RTX 3090/4090 with 24GB VRAM
+            # No downscaling for videos ≤1080p, use full resolution
+            # ProPainter can handle 1080p with 50 frames on 24GB VRAM
+            
+            # Check if video is already ≤1080p (no need to downscale)
+            max_original_dimension = max(original_width, original_height)
+            
+            if max_original_dimension <= 1080:
+                # Video is already 1080p or lower - use original resolution
+                max_dimension = max_original_dimension
+                logger.info(f"Video is ≤1080p ({max_original_dimension}px) - using original resolution (no downscale)")
             else:
-                # Low VRAM: 360p max
-                max_dimension = 360
+                # Video is >1080p, use aggressive but reasonable limits
+                if total_vram_gb >= 40:
+                    # A100, H100: 4K capable
+                    max_dimension = 3840  # 4K
+                elif total_vram_gb >= 23:  # RTX 3090/4090 = 23.6GB
+                    # RTX 3090, 4090: Can handle 4K easily with 24GB VRAM
+                    max_dimension = 3840  # 4K - NO DOWNSCALE for ≤4K videos
+                elif total_vram_gb >= 16:
+                    # RTX 4080, 5070 Ti: 1440p max
+                    max_dimension = 2560  # 1440p
+                elif total_vram_gb >= 12:
+                    # RTX 3080, 4070: 1080p max
+                    max_dimension = 1920
+                elif total_vram_gb >= 8:
+                    # RTX 3060, 4060: 1080p max
+                    max_dimension = 1920
+                else:
+                    # Low VRAM: 720p max
+                    max_dimension = 1280
 
-            logger.info(f"VRAM-adaptive max dimension: {max_dimension}px (based on {total_vram_gb:.1f}GB VRAM)")
+            logger.info(f"VRAM-adaptive max dimension: {max_dimension}px (based on {total_vram_gb:.1f}GB VRAM, original: {max_original_dimension}px)")
         else:
             # CPU fallback or no GPU info available - already set above
             logger.info(f"CPU mode or no GPU info - using default max dimension: {max_dimension}px")
