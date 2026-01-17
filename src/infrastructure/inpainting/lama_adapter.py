@@ -10,6 +10,10 @@ import gdown
 
 from src.shared.logging import get_logger
 from src.core.config import get_config
+from src.schemas.roi import InpaintROI, InpaintConfig
+from src.infrastructure.image_processing.geometry import (
+    get_roi_from_mask, crop_frame, paste_frame, dilate_mask
+)
 
 # Import components
 from src.infrastructure.inpainting.components.resolution import ResolutionCalculator
@@ -209,10 +213,65 @@ class LaMaAdapter:
         h, w = image.shape[:2]
         return image[pad_top:h-pad_bottom, pad_left:w-pad_right]
     
-    def _inpaint_batch(self, frames: List[np.ndarray], masks: List[np.ndarray]) -> List[np.ndarray]:
-        """Inpaint a batch of frames using LaMa model."""
+    def _inpaint_batch(
+        self, 
+        frames: List[np.ndarray], 
+        masks: List[np.ndarray],
+        use_roi: bool = False,
+        padding_px: int = 50
+    ) -> List[np.ndarray]:
+        """
+        Inpaint a batch of frames using LaMa model with optional ROI optimization.
+        
+        Args:
+            frames: List of BGR frames
+            masks: List of binary masks (0 or 255)
+            use_roi: Whether to use ROI optimization
+            padding_px: Padding for ROI calculation
+            
+        Returns:
+            List of inpainted BGR frames
+        """
         self._load_model()
         
+        if not frames or not masks:
+            return []
+        
+        # If ROI optimization is disabled, process full frames
+        if not use_roi:
+            return self._inpaint_batch_full(frames, masks)
+        
+        # Process with ROI optimization
+        inpainted_frames = []
+        
+        for frame, mask in zip(frames, masks):
+            # Calculate ROI from mask
+            roi_coords = get_roi_from_mask(mask, padding=padding_px, min_divisible=8, dilate_kernel=3)
+            y_min, y_max, x_min, x_max = roi_coords
+            
+            # Check if ROI is valid (non-empty)
+            if y_min >= y_max or x_min >= x_max:
+                # No mask detected, return original frame
+                inpainted_frames.append(frame.copy())
+                continue
+            
+            # Crop frame and mask using ROI
+            frame_crop = crop_frame(frame, roi_coords)
+            mask_crop = crop_frame(mask, roi_coords)
+            
+            # Process cropped region
+            inpainted_crop = self._inpaint_batch_full([frame_crop], [mask_crop])[0]
+            
+            # Paste back into original frame
+            inpainted_frame = paste_frame(frame, inpainted_crop, roi_coords)
+            inpainted_frames.append(inpainted_frame)
+        
+        return inpainted_frames
+    
+    def _inpaint_batch_full(self, frames: List[np.ndarray], masks: List[np.ndarray]) -> List[np.ndarray]:
+        """
+        Inpaint full frames without ROI optimization (original implementation).
+        """
         if not frames or not masks:
             return []
         
@@ -241,14 +300,17 @@ class LaMaAdapter:
             # Binarize mask strictly
             mask_padded = (mask_padded > 0.5).astype(np.float32)
             
+            # DEBUG: Check tensor ranges
+            if idx == 0:
+                logger.debug(f"🔍 DEBUG TENSORS PRE: Img range=[{frame_padded.min():.3f}, {frame_padded.max():.3f}], "
+                           f"Mask range=[{mask_padded.min():.3f}, {mask_padded.max():.3f}]")
+                # Ensure mask is binary (0 or 1)
+                unique_vals = np.unique(mask_padded)
+                logger.debug(f"🔍 DEBUG MASK VALUES: {unique_vals}")
+            
             # Convert to tensor (HWC -> CHW)
             frame_tensor = torch.from_numpy(frame_padded).permute(2, 0, 1)
             mask_tensor = torch.from_numpy(mask_padded).unsqueeze(0)  # Add channel dimension
-            
-            # Debug logging for first frame of first batch
-            if idx == 0 and len(frame_tensors) == 0:
-                logger.debug(f"🔍 DEBUG TENSORS: Img Max={frame_tensor.max()}, Mask Max={mask_tensor.max()}")
-                logger.debug(f"🔍 DEBUG TENSORS: Img dtype={frame_tensor.dtype}, Mask dtype={mask_tensor.dtype}")
             
             frame_tensors.append(frame_tensor)
             mask_tensors.append(mask_tensor)
@@ -258,9 +320,17 @@ class LaMaAdapter:
         frames_batch = torch.stack(frame_tensors).to(self.device)
         masks_batch = torch.stack(mask_tensors).to(self.device)
         
+        # DEBUG: Check tensor ranges before inference
+        logger.debug(f"🔍 DEBUG TENSORS BATCH: Img shape={frames_batch.shape}, "
+                   f"Img range=[{frames_batch.min():.3f}, {frames_batch.max():.3f}], "
+                   f"Mask range=[{masks_batch.min():.3f}, {masks_batch.max():.3f}]")
+        
         # Inpaint batch
         with torch.no_grad():
             inpainted_batch = self.model(frames_batch, masks_batch)
+        
+        # DEBUG: Check output ranges
+        logger.debug(f"🔍 DEBUG OUTPUT: Range=[{inpainted_batch.min():.3f}, {inpainted_batch.max():.3f}]")
         
         # Convert back to numpy and remove padding
         inpainted_frames = []
@@ -284,10 +354,72 @@ class LaMaAdapter:
         
         return inpainted_frames
     
-    def _inpaint_frame(self, frame: np.ndarray, mask: np.ndarray) -> np.ndarray:
-        """Inpaint a single frame using LaMa model (wrapper for batch processing)."""
+    def _inpaint_frame(
+        self, 
+        frame: np.ndarray, 
+        mask: np.ndarray,
+        use_roi: bool = False,
+        padding_px: int = 50
+    ) -> np.ndarray:
+        """
+        Inpaint a single frame using LaMa model with optional ROI optimization.
+        
+        Args:
+            frame: BGR frame
+            mask: Binary mask (0 or 255)
+            use_roi: Whether to use ROI optimization
+            padding_px: Padding for ROI calculation
+            
+        Returns:
+            Inpainted BGR frame
+        """
         # Use batch processing with single frame
-        return self._inpaint_batch([frame], [mask])[0]
+        return self._inpaint_batch([frame], [mask], use_roi=use_roi, padding_px=padding_px)[0]
+    
+    def process_with_roi(
+        self,
+        frame: np.ndarray,
+        mask: np.ndarray,
+        config: Optional[InpaintConfig] = None
+    ) -> np.ndarray:
+        """
+        Process single frame with ROI optimization and fallback mechanism.
+        
+        Args:
+            frame: Input BGR frame
+            mask: Binary mask (0 or 255)
+            config: Inpainting configuration
+            
+        Returns:
+            Inpainted frame
+        """
+        if config is None:
+            config = InpaintConfig()
+        
+        try:
+            # Try ROI optimization if enabled
+            if config.use_roi_optimization:
+                logger.debug("Using ROI optimization for LaMa inpainting")
+                result = self._inpaint_frame(
+                    frame, mask, 
+                    use_roi=True, 
+                    padding_px=config.padding_px
+                )
+            else:
+                logger.debug("Using full-frame LaMa inpainting")
+                result = self._inpaint_frame(frame, mask, use_roi=False)
+            
+            return result
+            
+        except RuntimeError as e:
+            if "out of memory" in str(e).lower() and config.fallback_to_cv2:
+                logger.warning(f"OOM detected in LaMa: {e}. Falling back to OpenCV Telea.")
+                # Fallback to OpenCV inpainting
+                mask_uint8 = (mask > 0).astype(np.uint8) * 255
+                return cv2.inpaint(frame, mask_uint8, 3, cv2.INPAINT_TELEA)
+            else:
+                # Re-raise if not OOM or fallback disabled
+                raise
 
     def process(self, input_path: Union[str, Path, List[Path]], mask_dir: Path, output_path: Path) -> Path:
         """

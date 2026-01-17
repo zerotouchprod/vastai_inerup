@@ -6,6 +6,8 @@ Includes bounding box calculations, grid alignment, and safe scaling.
 import torch
 import numpy as np
 import logging
+import cv2
+from typing import Tuple, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -417,3 +419,151 @@ def select_best_roi_zone(masks: torch.Tensor, roi_height: int, border_check_rows
             f"Falling back to split‑frame processing."
         )
         return 'split', 0, 0
+
+
+def dilate_mask(mask: np.ndarray, kernel_size: int = 3) -> np.ndarray:
+    """
+    Dilate binary mask to ensure coverage of subtitle edges.
+    
+    Args:
+        mask: Binary mask array of shape (H, W) with values 0 or 255
+        kernel_size: Size of dilation kernel (odd number)
+        
+    Returns:
+        Dilated mask
+    """
+    if kernel_size <= 0:
+        return mask
+    
+    kernel = np.ones((kernel_size, kernel_size), np.uint8)
+    return cv2.dilate(mask, kernel, iterations=1)
+
+
+def get_roi_from_mask(
+    mask: np.ndarray, 
+    padding: int = 50,
+    min_divisible: int = 8,
+    dilate_kernel: int = 3
+) -> Tuple[int, int, int, int]:
+    """
+    Calculate ROI bounding box from mask with padding and grid alignment.
+    
+    Args:
+        mask: Binary mask array of shape (H, W) with values 0 or 255
+        padding: Padding in pixels to add around bounding box
+        min_divisible: Ensure dimensions are divisible by this value
+        dilate_kernel: Kernel size for mask dilation (0 to disable)
+        
+    Returns:
+        Tuple of (y_min, y_max, x_min, x_max) coordinates
+    """
+    # Dilate mask to cover edges
+    if dilate_kernel > 0:
+        mask = dilate_mask(mask, dilate_kernel)
+    
+    # Find bounding box of non-zero pixels
+    nonzero = np.where(mask > 0)
+    if len(nonzero[0]) == 0:
+        # No mask, return empty ROI
+        return 0, 0, 0, 0
+    
+    y_min, y_max = np.min(nonzero[0]), np.max(nonzero[0])
+    x_min, x_max = np.min(nonzero[1]), np.max(nonzero[1])
+    
+    # Add padding
+    y_min = max(0, y_min - padding)
+    y_max = min(mask.shape[0], y_max + padding)
+    x_min = max(0, x_min - padding)
+    x_max = min(mask.shape[1], x_max + padding)
+    
+    # Ensure divisible by min_divisible
+    y_min = (y_min // min_divisible) * min_divisible
+    x_min = (x_min // min_divisible) * min_divisible
+    y_max = ((y_max + min_divisible - 1) // min_divisible) * min_divisible
+    x_max = ((x_max + min_divisible - 1) // min_divisible) * min_divisible
+    
+    # Clamp to image boundaries
+    y_max = min(y_max, mask.shape[0])
+    x_max = min(x_max, mask.shape[1])
+    
+    return int(y_min), int(y_max), int(x_min), int(x_max)
+
+
+def crop_frame(frame: np.ndarray, roi: Tuple[int, int, int, int]) -> np.ndarray:
+    """
+    Crop region from frame using ROI coordinates.
+    
+    Args:
+        frame: Frame array of shape (H, W, C) or (H, W)
+        roi: Tuple of (y_min, y_max, x_min, x_max)
+        
+    Returns:
+        Cropped region
+    """
+    y_min, y_max, x_min, x_max = roi
+    if y_min >= y_max or x_min >= x_max:
+        # Empty ROI
+        return np.array([])
+    
+    return frame[y_min:y_max, x_min:x_max]
+
+
+def paste_frame(
+    original: np.ndarray, 
+    crop: np.ndarray, 
+    roi: Tuple[int, int, int, int]
+) -> np.ndarray:
+    """
+    Paste cropped region back into original frame.
+    
+    Args:
+        original: Original frame array
+        crop: Cropped region to paste
+        roi: Tuple of (y_min, y_max, x_min, x_max) where crop should be placed
+        
+    Returns:
+        Frame with pasted region
+    """
+    y_min, y_max, x_min, x_max = roi
+    if crop.size == 0:
+        return original
+    
+    # Ensure crop dimensions match ROI
+    crop_h, crop_w = crop.shape[:2]
+    roi_h = y_max - y_min
+    roi_w = x_max - x_min
+    
+    if crop_h != roi_h or crop_w != roi_w:
+        # Resize crop to match ROI dimensions
+        crop = cv2.resize(crop, (roi_w, roi_h), interpolation=cv2.INTER_LINEAR)
+    
+    # Create copy to avoid modifying original
+    result = original.copy()
+    result[y_min:y_max, x_min:x_max] = crop
+    return result
+
+
+def calculate_roi_area_ratio(
+    roi: Tuple[int, int, int, int],
+    frame_height: int,
+    frame_width: int
+) -> float:
+    """
+    Calculate ratio of ROI area to total frame area.
+    
+    Args:
+        roi: Tuple of (y_min, y_max, x_min, x_max)
+        frame_height: Total frame height
+        frame_width: Total frame width
+        
+    Returns:
+        Ratio (0.0 to 1.0)
+    """
+    y_min, y_max, x_min, x_max = roi
+    roi_area = (y_max - y_min) * (x_max - x_min)
+    total_area = frame_height * frame_width
+    
+    if total_area == 0:
+        return 0.0
+    
+    return roi_area / total_area

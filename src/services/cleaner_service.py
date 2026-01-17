@@ -8,6 +8,8 @@ from src.shared.logging import get_logger
 
 from src.infrastructure.ocr.paddle_wrapper import PaddleWrapper
 from src.infrastructure.inpainting.propainter_adapter import ProPainterAdapter
+from src.infrastructure.inpainting.lama_adapter import LaMaAdapter
+from src.schemas.roi import InpaintConfig
 
 # Import tunable configuration constants
 from src.infrastructure.processors import subtitle_removal_config as SRC
@@ -343,8 +345,15 @@ class SubtitleRemoverService:
                 # 2. Генерация масок с учетом ROI
                 self._generate_roi_masks(frames_dir, mask_dir)
                 
-                # 3. Inpainting
-                result_path = self.inpainter.process(frames_dir, mask_dir, output_path)
+                # 3. Inpainting with OOM fallback
+                try:
+                    result_path = self.inpainter.process(frames_dir, mask_dir, output_path)
+                except RuntimeError as e:
+                    if "out of memory" in str(e).lower() or "OOM" in str(e).upper():
+                        logger.warning(f"OOM detected in inpainter: {e}. Attempting ROI fallback...")
+                        result_path = self._fallback_inpainting_with_roi(frames_dir, mask_dir, output_path)
+                    else:
+                        raise
             
             class SimpleResult:
                 def __init__(self, success=True, output_path=None):
@@ -361,6 +370,104 @@ class SubtitleRemoverService:
                     self.output_path = output_path
                     self.errors = [str(e)] if errors is None else errors
             return SimpleResult(success=False, output_path=None, errors=[str(e)])
+    
+    def _fallback_inpainting_with_roi(self, frames_dir: Path, mask_dir: Path, output_path: Path) -> Path:
+        """
+        Fallback inpainting using ROI optimization and LaMa with OpenCV fallback.
+        
+        Args:
+            frames_dir: Directory with input frames
+            mask_dir: Directory with mask frames
+            output_path: Output video path
+            
+        Returns:
+            Path to processed video
+        """
+        logger.info("🔄 Using ROI fallback inpainting (frame-by-frame with LaMa + OpenCV)...")
+        
+        # Initialize LaMa adapter for ROI optimization
+        lama_adapter = LaMaAdapter()
+        
+        # ROI configuration
+        roi_config = InpaintConfig(
+            method='lama',
+            padding_px=50,
+            use_roi_optimization=True,
+            fallback_to_cv2=True
+        )
+        
+        # Get frame and mask files
+        frame_files = sorted(frames_dir.glob("*.png"))
+        mask_files = sorted(mask_dir.glob("*.png"))
+        
+        if len(frame_files) != len(mask_files):
+            logger.error(f"Frame/Mask count mismatch: {len(frame_files)} != {len(mask_files)}")
+            raise RuntimeError("Frame and mask count mismatch")
+        
+        # Create output directory for processed frames
+        output_frames_dir = output_path.parent / "roi_fallback_frames"
+        output_frames_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Process each frame individually
+        processed_count = 0
+        total_frames = len(frame_files)
+        
+        for i, (frame_file, mask_file) in enumerate(zip(frame_files, mask_files)):
+            # Load frame and mask
+            frame = cv2.imread(str(frame_file))
+            mask = cv2.imread(str(mask_file), cv2.IMREAD_GRAYSCALE)
+            
+            if frame is None or mask is None:
+                logger.warning(f"Failed to load {frame_file} or {mask_file}, skipping")
+                continue
+            
+            try:
+                # Use LaMa with ROI optimization
+                inpainted = lama_adapter.process_with_roi(
+                    frame, mask, config=roi_config
+                )
+                
+                # Save result
+                output_file = output_frames_dir / frame_file.name
+                cv2.imwrite(str(output_file), inpainted)
+                processed_count += 1
+                
+            except Exception as e:
+                logger.error(f"Failed to process frame {frame_file.name}: {e}")
+                # Fallback to OpenCV inpainting
+                mask_uint8 = (mask > 0).astype(np.uint8) * 255
+                inpainted = cv2.inpaint(frame, mask_uint8, 3, cv2.INPAINT_TELEA)
+                output_file = output_frames_dir / frame_file.name
+                cv2.imwrite(str(output_file), inpainted)
+                processed_count += 1
+            
+            if (i + 1) % 10 == 0:
+                logger.info(f"Processed {i + 1}/{total_frames} frames with ROI fallback")
+        
+        logger.info(f"✅ ROI fallback completed: {processed_count}/{total_frames} frames processed")
+        
+        # Merge frames into video
+        from src.infrastructure.inpainting.components.media import MediaProcessor
+        from src.core.config import get_config
+        
+        config = get_config()
+        media_processor = MediaProcessor(config)
+        
+        # Get original dimensions
+        original_dims = media_processor.get_frame_dimensions(frames_dir)
+        
+        # Merge frames
+        final_output = media_processor.merge_chunks(
+            {f.name: f for f in output_frames_dir.iterdir()}, 
+            output_path
+        )
+        media_processor.restore_aspect_ratio(final_output, original_dims)
+        
+        # Cleanup
+        shutil.rmtree(output_frames_dir, ignore_errors=True)
+        
+        logger.info(f"✅ ROI fallback pipeline completed: {final_output}")
+        return final_output
 
     def _generate_roi_masks(self, frames_dir: Path, mask_dir: Path):
         """Generate binary masks with ROI filtering and detailed logging."""

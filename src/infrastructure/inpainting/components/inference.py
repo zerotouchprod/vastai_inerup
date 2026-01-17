@@ -4,6 +4,8 @@ Handles CLI command construction, subprocess execution, and error handling.
 """
 
 import subprocess
+import cv2
+import numpy as np
 from typing import List, Optional, Dict
 from pathlib import Path
 from src.core.config import AppConfig
@@ -170,6 +172,92 @@ class InferenceRunner:
         """
         self.gpu_info = gpu_info
     
+    def set_inpaint_config(self, inpaint_config):
+        """
+        Set inpainting configuration for wire optimizations.
+        
+        Args:
+            inpaint_config: InpaintConfig instance
+        """
+        self.inpaint_config = inpaint_config
+    
+    def _preprocess_masks(self, masks_dir: Path) -> None:
+        """
+        Apply wire optimizations to masks: binarization and dilation.
+        
+        Args:
+            masks_dir: Directory containing mask images
+        """
+        if not hasattr(self, 'inpaint_config') or not self.inpaint_config:
+            return
+        
+        config = self.inpaint_config
+        if not config.force_binary_mask and config.mask_dilation <= 0:
+            return
+        
+        logger.info(f"Applying wire optimizations to masks in {masks_dir}")
+        mask_files = sorted(masks_dir.glob("*.png"))
+        for mask_file in mask_files:
+            mask = cv2.imread(str(mask_file), cv2.IMREAD_GRAYSCALE)
+            if mask is None:
+                continue
+            
+            # Binarization with threshold 127
+            if config.force_binary_mask:
+                mask = (mask > 127).astype(np.uint8) * 255
+            
+            # Dilation
+            if config.mask_dilation > 0:
+                kernel = np.ones((config.mask_dilation, config.mask_dilation), np.uint8)
+                mask = cv2.dilate(mask, kernel, iterations=1)
+            
+            cv2.imwrite(str(mask_file), mask)
+    
+    def _postprocess_frames(self, frames_dir: Path, masks_dir: Path, output_dir: Path) -> None:
+        """
+        Apply wire optimizations to output frames: preserve background.
+        
+        Args:
+            frames_dir: Directory with original frames
+            masks_dir: Directory with processed masks (after preprocessing)
+            output_dir: Directory with ProPainter output frames
+        """
+        if not hasattr(self, 'inpaint_config') or not self.inpaint_config:
+            return
+        
+        config = self.inpaint_config
+        if not config.preserve_background:
+            return
+        
+        logger.info(f"Applying background preservation to frames in {output_dir}")
+        
+        # Get original frames, masks, and output frames
+        original_frames = sorted(frames_dir.glob("*.png"))
+        mask_files = sorted(masks_dir.glob("*.png"))
+        output_frames = sorted(output_dir.glob("*.png"))
+        
+        if len(original_frames) != len(output_frames) or len(original_frames) != len(mask_files):
+            logger.warning("Frame count mismatch, skipping background preservation")
+            return
+        
+        for orig_path, mask_path, out_path in zip(original_frames, mask_files, output_frames):
+            original = cv2.imread(str(orig_path))
+            mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+            inpainted = cv2.imread(str(out_path))
+            
+            if original is None or mask is None or inpainted is None:
+                continue
+            
+            # Normalize mask to 0-1
+            mask_norm = (mask > 127).astype(np.float32)
+            mask_3ch = np.stack([mask_norm] * 3, axis=2)
+            
+            # Blend: inpainted * mask + original * (1 - mask)
+            result = inpainted * mask_3ch + original * (1 - mask_3ch)
+            result = result.astype(np.uint8)
+            
+            cv2.imwrite(str(out_path), result)
+    
     def process_chunks(self, chunks: List[Dict], width: int, height: int) -> Dict[str, Path]:
         """
         Process all chunks sequentially.
@@ -200,6 +288,9 @@ class InferenceRunner:
             
             logger.info(f"Processing chunk {chunk_id}: frames={frames_dir}, masks={masks_dir}, output={output_dir}, indices={start_idx}-{end_idx}")
             
+            # Preprocess masks with wire optimizations
+            self._preprocess_masks(masks_dir)
+            
             # Build and execute command
             cmd = self.build_command(frames_dir, masks_dir, output_dir, width, height)
             try:
@@ -211,6 +302,9 @@ class InferenceRunner:
                 # Log and continue? For now, raise
                 logger.error(f"Failed to process chunk {chunk_id}: {e}")
                 raise RuntimeError(f"Failed to process chunk {chunk_id}: {e}")
+            
+            # Postprocess frames to preserve background
+            self._postprocess_frames(frames_dir, masks_dir, output_dir)
             
             # Collect results - search recursively for PNG files
             output_frames = sorted(output_dir.rglob("*.png"))

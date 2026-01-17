@@ -4,7 +4,8 @@ Uses Pydantic for strict validation of normalized coordinates (0.0-1.0).
 """
 
 from pydantic import BaseModel, Field, model_validator
-from typing import Optional
+from typing import Optional, Literal
+import numpy as np
 
 
 class RegionOfInterest(BaseModel):
@@ -124,3 +125,111 @@ class ROIResponse(BaseModel):
     cropped_size: tuple[int, int]
     roi_coordinates: tuple[int, int, int, int]  # left, top, right, bottom
     error_message: Optional[str] = None
+
+
+class InpaintROI(BaseModel):
+    """
+    Region of interest for inpainting with absolute pixel coordinates.
+    Used for smart ROI inpainting to reduce VRAM usage.
+    """
+    y_min: int
+    y_max: int
+    x_min: int
+    x_max: int
+    original_width: int
+    original_height: int
+    
+    @property
+    def width(self) -> int:
+        """Width of ROI region."""
+        return self.x_max - self.x_min
+    
+    @property
+    def height(self) -> int:
+        """Height of ROI region."""
+        return self.y_max - self.y_min
+    
+    @property
+    def area(self) -> int:
+        """Area of ROI region in pixels."""
+        return self.width * self.height
+    
+    def to_slice(self) -> tuple[slice, slice]:
+        """
+        Convert to numpy/pytorch slice format.
+        
+        Returns:
+            Tuple of (y_slice, x_slice)
+        """
+        return slice(self.y_min, self.y_max), slice(self.x_min, self.x_max)
+    
+    @classmethod
+    def from_mask(
+        cls, 
+        mask: np.ndarray, 
+        padding_px: int = 50,
+        min_divisible: int = 8
+    ) -> 'InpaintROI':
+        """
+        Create InpaintROI from binary mask.
+        
+        Args:
+            mask: Binary mask array of shape (H, W) with values 0 or 255
+            padding_px: Padding to add around mask bounding box
+            min_divisible: Ensure dimensions are divisible by this value
+        
+        Returns:
+            InpaintROI instance
+        """
+        # Find bounding box of non-zero pixels
+        nonzero = np.where(mask > 0)
+        if len(nonzero[0]) == 0:
+            # No mask, return empty ROI covering nothing
+            return cls(
+                y_min=0, y_max=0,
+                x_min=0, x_max=0,
+                original_width=mask.shape[1],
+                original_height=mask.shape[0]
+            )
+        
+        y_min, y_max = np.min(nonzero[0]), np.max(nonzero[0])
+        x_min, x_max = np.min(nonzero[1]), np.max(nonzero[1])
+        
+        # Add padding
+        y_min = max(0, y_min - padding_px)
+        y_max = min(mask.shape[0], y_max + padding_px)
+        x_min = max(0, x_min - padding_px)
+        x_max = min(mask.shape[1], x_max + padding_px)
+        
+        # Ensure divisible by min_divisible
+        y_min = (y_min // min_divisible) * min_divisible
+        x_min = (x_min // min_divisible) * min_divisible
+        y_max = ((y_max + min_divisible - 1) // min_divisible) * min_divisible
+        x_max = ((x_max + min_divisible - 1) // min_divisible) * min_divisible
+        
+        # Clamp to image boundaries
+        y_max = min(y_max, mask.shape[0])
+        x_max = min(x_max, mask.shape[1])
+        
+        return cls(
+            y_min=int(y_min), y_max=int(y_max),
+            x_min=int(x_min), x_max=int(x_max),
+            original_width=mask.shape[1],
+            original_height=mask.shape[0]
+        )
+
+
+class InpaintConfig(BaseModel):
+    """
+    Configuration for inpainting methods and ROI optimization.
+    """
+    method: Literal['propainter', 'lama', 'cv2_telea'] = 'propainter'
+    padding_px: int = 50  # Отступ вокруг маски для контекста
+    use_roi_optimization: bool = True
+    min_divisible: int = 8  # Ensure ROI dimensions are divisible by this
+    fallback_to_cv2: bool = True  # Fallback to OpenCV if OOM occurs
+    # Оптимизации из форка gnimuyeh/ProPainter-Wire
+    preserve_background: bool = True  # Сохранять оригинальные пиксели вне маски
+    force_binary_mask: bool = True    # Бинаризация маски с порогом 127
+    mask_dilation: int = 5            # Дилатация маски (пиксели)
+    use_half_precision: bool = True   # Использовать FP16 если возможно
