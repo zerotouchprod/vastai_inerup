@@ -121,28 +121,6 @@ ENV NVIDIA_VISIBLE_DEVICES="all"
 ENV NVIDIA_DRIVER_CAPABILITIES="compute,utility"
 ENV CUDA_HOME="/usr/local/cuda"
 ENV LD_LIBRARY_PATH="/usr/local/cuda/lib64:${LD_LIBRARY_PATH}"
-
-# ============================================================================
-# CRITICAL: CUDA Architecture Compatibility for ALL Vast.ai GPUs
-# ============================================================================
-# This MUST be set BEFORE compiling any CUDA extensions (ProPainter, SAM2, etc.)
-# to create "fat" binaries that work on multiple GPU architectures.
-#
-# Supported architectures:
-#   7.5 = Turing (RTX 20 series: 2080/2080Ti, Tesla T4)
-#   8.0 = Ampere (A100, A30)
-#   8.6 = Ampere (RTX 30 series: 3090/3080, A10, A40)
-#   8.9 = Ada Lovelace (RTX 40 series: 4090/4080, L40/L40S)
-#   9.0 = Hopper (H100, H200)
-#   9.0+PTX = Forward compatibility for future architectures (RTX 50 series, etc.)
-#
-# PTX (Parallel Thread Execution) enables forward compatibility:
-# - Binary includes PTX intermediate representation
-# - JIT compiles to actual architecture at runtime
-# - Works on newer GPUs without rebuild (e.g., RTX 5090 Blackwell)
-#
-# Without PTX, extensions would need rebuild for each new GPU generation.
-# ============================================================================
 ENV TORCH_CUDA_ARCH_LIST="7.5;8.0;8.6;8.9;9.0;9.0+PTX"
 
 # SAM 2 Installation
@@ -181,8 +159,21 @@ RUN pip install --no-cache-dir imageio scipy scikit-image && \
 ENV PROPAINTER_ROOT="/opt/ProPainter"
 
 # ============================================================================
-# NEW LAYER: Lightweight Inpainting dependencies (LaMa & STTN)
-# This preserves cache for previous heavy layers (PyTorch, CUDA, ProPainter)
+# NEW: Install ProPainter-Wire (Fork by gnimuyeh)
+# Contains fixes for High-Res OOM, color shifting, and mask binarization.
+# ============================================================================
+RUN git clone https://github.com/gnimuyeh/ProPainter-Wire.git /opt/ProPainter-Wire && \
+    cd /opt/ProPainter-Wire && \
+    # Install dependencies specific to this fork
+    pip install --no-cache-dir -r requirements.txt && \
+    # Ensure weights folder exists
+    mkdir -p weights && \
+    # COPY weights from the standard ProPainter installation (save bandwidth/time)
+    cp /opt/ProPainter/weights/*.pth /opt/ProPainter-Wire/weights/ && \
+    echo "✅ ProPainter-Wire installed and weights copied."
+
+# ============================================================================
+# Lightweight Inpainting dependencies (LaMa & STTN)
 # ============================================================================
 RUN pip install --no-cache-dir \
     hydra-core \
