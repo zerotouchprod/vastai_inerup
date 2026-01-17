@@ -53,14 +53,18 @@ class InferenceRunner:
         ]
         
         # Add FP16 flag if configured and not forcing FP32 fallback
-        if self.config.USE_AMP and not self.config.get("FORCE_FP32", False):
+        # Use getattr with default value since FORCE_FP32 might not be in config
+        force_fp32 = getattr(self.config, "FORCE_FP32", False)
+        if self.config.USE_AMP and not force_fp32:
             cmd.append("--fp16")
             logger.info("Using FP16 precision (AMP enabled)")
         else:
             logger.info("Using FP32 precision (AMP disabled or FORCE_FP32=True)")
         
         # Add save_masked_in flag for debugging if configured
-        if self.config.get("SAVE_MASKED_PREVIEW", False):
+        # Use getattr with default value since SAVE_MASKED_PREVIEW might not be in config
+        save_masked_preview = getattr(self.config, "SAVE_MASKED_PREVIEW", False)
+        if save_masked_preview:
             cmd.append("--save_masked_in")
         
         return cmd

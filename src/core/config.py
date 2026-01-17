@@ -23,6 +23,7 @@ class AppConfig(BaseSettings):
     INPAINTING_ENGINE: InpaintingEngine = InpaintingEngine.PROPAINTER
     
     # ProPainter settings
+    # https://github.com/gnimuyeh/ProPainter-Wire
     PROPAINTER_ROOT: Path = Path("/opt/ProPainter-Wire")
     
     # LaMa settings
@@ -80,6 +81,12 @@ class AppConfig(BaseSettings):
     # AMP (Automatic Mixed Precision) settings for memory optimization
     # Note: AMP requires modification of ProPainter script to use torch.cuda.amp.autocast
     USE_AMP: bool = False  # Disabled by default as it requires ProPainter modification
+    
+    # Force FP32 precision (disable AMP even if USE_AMP=True)
+    FORCE_FP32: bool = False
+    
+    # Debug settings
+    SAVE_MASKED_PREVIEW: bool = False  # Save masked input frames for debugging
 
     model_config = SettingsConfigDict(
         env_file=".env",
