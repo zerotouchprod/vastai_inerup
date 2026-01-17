@@ -359,7 +359,16 @@ class LaMaAdapter:
         if not chunk_results:
             raise RuntimeError("No chunks were processed successfully")
         
-        final_output = self.media_processor.merge_chunks(chunk_results, output_path)
+        # Convert list of chunk output directories to dictionary of frame files
+        chunk_files_dict = {}
+        for chunk_dir in chunk_results:
+            # Each chunk directory contains frame_*.png files
+            frame_files = sorted(chunk_dir.glob("frame_*.png"))
+            for frame_file in frame_files:
+                # Use filename as key to ensure uniqueness
+                chunk_files_dict[frame_file.name] = frame_file
+        
+        final_output = self.media_processor.merge_chunks(chunk_files_dict, output_path)
         self.media_processor.restore_aspect_ratio(final_output, original_dims)
         
         # Cleanup
