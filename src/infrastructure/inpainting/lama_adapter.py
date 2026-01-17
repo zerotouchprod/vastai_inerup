@@ -298,8 +298,8 @@ class LaMaAdapter:
             logger.info(f"🔧 Processing chunk {chunk_idx + 1}/{len(chunks)}")
             
             # Load frames and masks for this chunk
-            frame_files = sorted(list(chunk['frames_dir'].glob("*.png")))
-            mask_files = sorted(list(chunk['masks_dir'].glob("*.png")))
+            frame_files = sorted(chunk['frames'])
+            mask_files = sorted(chunk['masks'])
             
             if len(frame_files) != len(mask_files):
                 logger.error(f"Frame/Mask count mismatch: {len(frame_files)} != {len(mask_files)}")
@@ -346,7 +346,7 @@ class LaMaAdapter:
                 inpainted_frames = self._apply_temporal_smoothing(inpainted_frames)
             
             # Save inpainted frames
-            chunk_output_dir = chunk['output_dir']
+            chunk_output_dir = chunk['output']
             chunk_output_dir.mkdir(parents=True, exist_ok=True)
             
             for i, frame in enumerate(inpainted_frames):
