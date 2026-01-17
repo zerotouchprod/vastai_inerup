@@ -222,11 +222,14 @@ class LaMaAdapter:
         paddings = []
         
         for frame, mask in zip(frames, masks):
+            # Convert BGR to RGB (LaMa expects RGB)
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            
             # Pad to be divisible by 8
-            frame_padded, padding = self._pad_to_divisible_by_8(frame)
+            frame_padded, padding = self._pad_to_divisible_by_8(frame_rgb)
             mask_padded, _ = self._pad_to_divisible_by_8(mask)
             
-            # Convert to tensor
+            # Convert to tensor and normalize to [0, 1]
             frame_tensor = torch.from_numpy(frame_padded).permute(2, 0, 1).float() / 255.0
             mask_tensor = torch.from_numpy(mask_padded).unsqueeze(0).float() / 255.0
             
@@ -248,8 +251,15 @@ class LaMaAdapter:
         # Convert back to numpy and remove padding
         inpainted_frames = []
         for i in range(len(frames)):
-            inpainted = inpainted_batch[i].permute(1, 2, 0).cpu().numpy()
-            inpainted = np.clip(inpainted * 255, 0, 255).astype(np.uint8)
+            # Clamp to [0, 1] and convert to uint8
+            inpainted = torch.clamp(inpainted_batch[i], 0, 1)
+            inpainted = inpainted.permute(1, 2, 0).cpu().numpy()
+            inpainted = (inpainted * 255).astype(np.uint8)
+            
+            # Convert RGB back to BGR for OpenCV
+            inpainted = cv2.cvtColor(inpainted, cv2.COLOR_RGB2BGR)
+            
+            # Remove padding
             inpainted = self._unpad(inpainted, paddings[i])
             inpainted_frames.append(inpainted)
         
@@ -305,10 +315,17 @@ class LaMaAdapter:
                 logger.error(f"Frame/Mask count mismatch: {len(frame_files)} != {len(mask_files)}")
                 continue
             
+            # Create output directory for this chunk
+            chunk_output_dir = chunk['output']
+            chunk_output_dir.mkdir(parents=True, exist_ok=True)
+            
             # Process frames in batches
+            # We'll accumulate inpainted frames and their original filenames
             inpainted_frames = []
+            original_frame_files = []
             batch_frames = []
             batch_masks = []
+            batch_frame_files = []
             
             for i, (frame_file, mask_file) in enumerate(zip(frame_files, mask_files)):
                 frame = cv2.imread(str(frame_file))
@@ -325,33 +342,39 @@ class LaMaAdapter:
                 
                 batch_frames.append(frame)
                 batch_masks.append(mask)
+                batch_frame_files.append(frame_file)
                 
                 # Process batch when full or at the end
                 if len(batch_frames) >= self.batch_size or i == len(frame_files) - 1:
                     if batch_frames:
                         # Inpaint batch
                         batch_inpainted = self._inpaint_batch(batch_frames, batch_masks)
+                        
+                        # Accumulate results
                         inpainted_frames.extend(batch_inpainted)
+                        original_frame_files.extend(batch_frame_files)
                         
                         # Clear batch
                         batch_frames = []
                         batch_masks = []
+                        batch_frame_files = []
                     
                     if (i + 1) % 10 == 0:
                         logger.info(f"  Processed {i + 1}/{len(frame_files)} frames")
             
-            # Apply temporal smoothing
+            # Verify we processed all frames
+            if len(inpainted_frames) != len(frame_files):
+                logger.warning(f"Processed {len(inpainted_frames)} frames but expected {len(frame_files)}")
+            
+            # Apply temporal smoothing if enabled
             if self.config.LAMA_TEMPORAL_SMOOTHING and len(inpainted_frames) >= 3:
                 logger.info("🔄 Applying temporal smoothing...")
                 inpainted_frames = self._apply_temporal_smoothing(inpainted_frames)
             
-            # Save inpainted frames
-            chunk_output_dir = chunk['output']
-            chunk_output_dir.mkdir(parents=True, exist_ok=True)
-            
-            for i, frame in enumerate(inpainted_frames):
-                output_file = chunk_output_dir / f"frame_{i:06d}.png"
-                cv2.imwrite(str(output_file), frame)
+            # Save inpainted frames with original filenames
+            for frame_file_orig, inpainted_frame in zip(original_frame_files, inpainted_frames):
+                output_file = chunk_output_dir / frame_file_orig.name
+                cv2.imwrite(str(output_file), inpainted_frame)
             
             chunk_results.append(chunk_output_dir)
         
