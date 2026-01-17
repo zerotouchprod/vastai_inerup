@@ -167,7 +167,7 @@ RUN cd /opt/lama_models && \
 # ============================================================================
 ENV PROPAINTER_ROOT="/opt/ProPainter-Wire"
 
-ARG CACHEBUST=5
+ARG CACHEBUST=8
 
 RUN git clone https://github.com/zerotouchprod/ProPainter-Wire.git /opt/ProPainter-Wire && \
     cd /opt/ProPainter-Wire && \
