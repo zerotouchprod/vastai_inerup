@@ -132,29 +132,6 @@ RUN mkdir -p /opt/sam2_checkpoints && \
     wget -q https://dl.fbaipublicfiles.com/segment_anything_2/072824/sam2_hiera_small.pt -O /opt/sam2_checkpoints/sam2_hiera_small.pt
 
 # ============================================================================
-# ProPainter-Wire Installation (Fork by zerotouchprod)
-# Optimized for RTX 30/40/50 series with FP16 and Auto-Padding
-# Replaces the original ProPainter completely
-# ============================================================================
-ENV PROPAINTER_ROOT="/opt/ProPainter-Wire"
-
-RUN git clone https://github.com/zerotouchprod/ProPainter-Wire.git /opt/ProPainter-Wire && \
-    cd /opt/ProPainter-Wire && \
-    # Install dependencies specific to this fork
-    pip install --no-cache-dir -r requirements.txt && \
-    # Ensure weights folder exists
-    mkdir -p weights && \
-    cd weights && \
-    # Download weights directly (no need to clone original repo)
-    wget -q --show-progress https://github.com/sczhou/ProPainter/releases/download/v0.1.0/ProPainter.pth && \
-    wget -q --show-progress https://github.com/sczhou/ProPainter/releases/download/v0.1.0/raft-things.pth && \
-    wget -q --show-progress https://github.com/sczhou/ProPainter/releases/download/v0.1.0/recurrent_flow_completion.pth && \
-    cd .. && \
-    # Create symlink for backward compatibility (so imports from /opt/ProPainter still work)
-    ln -sfn /opt/ProPainter-Wire /opt/ProPainter && \
-    echo "✅ ProPainter-Wire installed successfully with weights."
-
-# ============================================================================
 # Lightweight Inpainting dependencies (LaMa & STTN)
 # ============================================================================
 RUN pip install --no-cache-dir \
@@ -178,6 +155,29 @@ RUN mkdir -p /opt/lama_models /opt/sttn_models
 RUN cd /opt/lama_models && \
     wget -q --show-progress https://github.com/Sanster/models/releases/download/add_big_lama/big-lama.pt && \
     echo "✅ LaMa weights downloaded to /opt/lama_models/big-lama.pt"
+
+# ============================================================================
+# ProPainter-Wire Installation (Fork by zerotouchprod)
+# Optimized for RTX 30/40/50 series with FP16 and Auto-Padding
+# Replaces the original ProPainter completely
+# ============================================================================
+ENV PROPAINTER_ROOT="/opt/ProPainter-Wire"
+
+RUN git clone https://github.com/zerotouchprod/ProPainter-Wire.git /opt/ProPainter-Wire && \
+    cd /opt/ProPainter-Wire && \
+    # Install dependencies specific to this fork
+    pip install --no-cache-dir -r requirements.txt && \
+    # Ensure weights folder exists
+    mkdir -p weights && \
+    cd weights && \
+    # Download weights directly (no need to clone original repo)
+    wget -q --show-progress https://github.com/sczhou/ProPainter/releases/download/v0.1.0/ProPainter.pth && \
+    wget -q --show-progress https://github.com/sczhou/ProPainter/releases/download/v0.1.0/raft-things.pth && \
+    wget -q --show-progress https://github.com/sczhou/ProPainter/releases/download/v0.1.0/recurrent_flow_completion.pth && \
+    cd .. && \
+    # Create symlink for backward compatibility (so imports from /opt/ProPainter still work)
+    ln -sfn /opt/ProPainter-Wire /opt/ProPainter && \
+    echo "✅ ProPainter-Wire installed successfully with weights."
 
 # Final PYTHONPATH setup
 ENV PYTHONPATH="/workspace/project:/workspace/project/external/Real-ESRGAN:/workspace/project/external/RIFE:${PYTHONPATH}"
