@@ -286,7 +286,7 @@ class TestLaMaAdapter:
              patch('src.infrastructure.inpainting.lama_adapter.EnvironmentManager') as mock_em, \
              patch('src.infrastructure.inpainting.lama_adapter.MediaProcessor') as mock_mp, \
              patch('src.infrastructure.inpainting.lama_adapter.cv2') as mock_cv2, \
-             patch('src.infrastructure.inpainting.lama_adapter.LaMaAdapter._inpaint_frame') as mock_inpaint:
+             patch('src.infrastructure.inpainting.lama_adapter.LaMaAdapter._inpaint_batch') as mock_inpaint_batch:
             
             # Mock component instances
             mock_rc_instance = Mock()
@@ -296,9 +296,9 @@ class TestLaMaAdapter:
             mock_sws_instance = Mock()
             mock_sws_instance.generate_chunks.return_value = [
                 {
-                    'frames_dir': Path('/tmp/frames1'),
-                    'masks_dir': Path('/tmp/masks1'),
-                    'output_dir': Path('/tmp/output1')
+                    'frames': [Path('/tmp/frames1/frame1.png'), Path('/tmp/frames1/frame2.png')],
+                    'masks': [Path('/tmp/masks1/mask1.png'), Path('/tmp/masks1/mask2.png')],
+                    'output': Path('/tmp/output1')
                 }
             ]
             mock_sws.return_value = mock_sws_instance
@@ -316,14 +316,19 @@ class TestLaMaAdapter:
             mock_mp.return_value = mock_mp_instance
             
             # Mock CV2
-            mock_cv2.imread.side_effect = [
-                np.ones((480, 640, 3), dtype=np.uint8) * 255,  # frame
-                np.zeros((480, 640), dtype=np.uint8),  # mask
-            ]
+            def mock_imread(path, flags=None):
+                if 'mask' in str(path):
+                    return np.zeros((480, 640), dtype=np.uint8)
+                else:
+                    return np.ones((480, 640, 3), dtype=np.uint8) * 255
+            mock_cv2.imread.side_effect = mock_imread
             mock_cv2.IMREAD_GRAYSCALE = 0
             
             # Mock inpainting result
-            mock_inpaint.return_value = np.ones((480, 640, 3), dtype=np.uint8) * 128
+            mock_inpaint_batch.return_value = [
+                np.ones((480, 640, 3), dtype=np.uint8) * 128,
+                np.ones((480, 640, 3), dtype=np.uint8) * 128
+            ]
             
             # Create adapter and call process
             adapter = LaMaAdapter()
