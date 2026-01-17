@@ -12,6 +12,8 @@ from src.shared.logging import get_logger
 from src.infrastructure.ocr.paddle_wrapper import PaddleWrapper
 from src.infrastructure.segmentation.sam2_adapter import Sam2Adapter
 from src.infrastructure.inpainting.propainter_adapter import ProPainterAdapter
+from src.infrastructure.inpainting.lama_adapter import LaMaAdapter
+from src.infrastructure.inpainting.sttn_adapter import STTNAdapter
 from src.services.masking.service import TextMaskService
 from src.services.cleaner_service import SubtitleRemoverService
 
@@ -856,8 +858,8 @@ except Exception as e:
                 # 7. Validate CorrBlock injection
                 self._validate_corrblock_injection()
 
-                # 8. Inpainter
-                inpainter = ProPainterAdapter()
+                # 8. Inpainter (select based on config)
+                inpainter = self._create_inpainter()
                 
                 # 9. Debug mode detection
                 debug_mode = os.getenv('DEBUG_SUBTITLE_REMOVAL', '0') == '1'
@@ -880,6 +882,31 @@ except Exception as e:
                 raise ProcessorNotAvailableError("Subtitle remover not available (requires ProPainter installation in /opt/ProPainter)")
         
         raise ProcessorNotAvailableError(f"Unknown backend: {backend}")
+
+    def _create_inpainter(self):
+        """
+        Create inpainter adapter based on configuration.
+        
+        Returns:
+            Inpainter adapter instance (ProPainterAdapter, LaMaAdapter, or STTNAdapter)
+        """
+        from src.core.config import get_config
+        config = get_config()
+        
+        engine = config.INPAINTING_ENGINE
+        
+        if engine == "propainter":
+            self._logger.info("🔧 Using ProPainter inpainting engine")
+            return ProPainterAdapter()
+        elif engine == "lama":
+            self._logger.info("🔧 Using LaMa inpainting engine (lightweight)")
+            return LaMaAdapter()
+        elif engine == "sttn":
+            self._logger.info("🔧 Using STTN inpainting engine (video-consistent)")
+            return STTNAdapter()
+        else:
+            self._logger.warning(f"Unknown inpainting engine: {engine}, falling back to ProPainter")
+            return ProPainterAdapter()
 
     def create_watermark_remover(self,
                                  roi: str = 'top-right',

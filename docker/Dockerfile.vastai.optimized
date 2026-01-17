@@ -179,6 +179,20 @@ RUN pip install --no-cache-dir imageio scipy scikit-image && \
     rm -rf /root/.cache/pip /tmp/*
 
 ENV PROPAINTER_ROOT="/opt/ProPainter"
+
+# ============================================================================
+# NEW LAYER: Lightweight Inpainting dependencies (LaMa & STTN)
+# This preserves cache for previous heavy layers (PyTorch, CUDA, ProPainter)
+# ============================================================================
+RUN pip install --no-cache-dir \
+    hydra-core \
+    pytorch-lightning \
+    kornia \
+    && rm -rf /root/.cache/pip /tmp/*
+
+# Create directories for LaMa and STTN models
+RUN mkdir -p /opt/lama_models /opt/sttn_models
+
 ENV PYTHONPATH="/workspace/project:/workspace/project/external/Real-ESRGAN:/workspace/project/external/RIFE:${PYTHONPATH}"
 
 # Copy entrypoint

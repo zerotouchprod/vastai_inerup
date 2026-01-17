@@ -3,16 +3,38 @@ Configuration module for subtitle removal application.
 Uses Pydantic BaseSettings for environment variable support.
 """
 
+from enum import Enum
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pathlib import Path
 from typing import Optional
 
 
+class InpaintingEngine(str, Enum):
+    """Available inpainting engines."""
+    PROPAINTER = "propainter"
+    LAMA = "lama"
+    STTN = "sttn"
+
+
 class AppConfig(BaseSettings):
     """Application configuration."""
     
+    # Inpainting engine selection
+    INPAINTING_ENGINE: InpaintingEngine = InpaintingEngine.PROPAINTER
+    
     # ProPainter settings
     PROPAINTER_ROOT: Path = Path("/opt/ProPainter")
+    
+    # LaMa settings
+    LAMA_MODEL_PATH: Path = Path("/opt/lama_models/big-lama.pt")
+    LAMA_TEMPORAL_SMOOTHING: bool = True
+    LAMA_SMOOTHING_WINDOW: int = 3
+    LAMA_SMOOTHING_WEIGHTS: str = "0.2,0.6,0.2"  # Weights for sliding window blending
+    
+    # STTN settings
+    STTN_MODEL_PATH: Path = Path("/opt/sttn_models/sttn.pth")
+    STTN_CHUNK_SIZE: int = 20  # Larger chunks for better temporal consistency
+    STTN_OVERLAP: int = 2
     
     # OCR settings
     OCR_LANG: str = "en"
