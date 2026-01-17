@@ -18,7 +18,9 @@ class TestInferenceRunner:
     def config(self):
         """Create a mock AppConfig."""
         config = Mock(spec=AppConfig)
-        config.PROPAINTER_ROOT = Path("/opt/ProPainter")
+        config.PROPAINTER_ROOT = Path("/opt/ProPainter-Wire")
+        config.USE_AMP = False
+        config.get = Mock(return_value=False)  # Mock get method for FORCE_FP32 and SAVE_MASKED_PREVIEW
         return config
     
     @pytest.fixture
@@ -54,7 +56,14 @@ class TestInferenceRunner:
         assert cmd[cmd.index("--width") + 1] == str(target_width)
         assert "--height" in cmd
         assert cmd[cmd.index("--height") + 1] == str(target_height)
-        assert "--save_frames" in cmd
+        # New flags for ProPainter-Wire
+        assert "--subvideo_length" in cmd
+        assert "--mask_dilation" in cmd
+        assert "--ref_stride" in cmd
+        assert "--neighbor_length" in cmd
+        assert "--raft_iter" in cmd
+        # No --save_frames flag anymore
+        assert "--save_frames" not in cmd
     
     @patch('subprocess.run')
     def test_execute_command_success(self, mock_subprocess, runner):
@@ -138,7 +147,11 @@ class TestInferenceRunner:
             "--output", "{output_path}",
             "--width", "{width}",
             "--height", "{height}",
-            "--save_frames"
+            "--subvideo_length", "{subvideo_length}",
+            "--mask_dilation", "{mask_dilation}",
+            "--ref_stride", "{ref_stride}",
+            "--neighbor_length", "{neighbor_length}",
+            "--raft_iter", "{raft_iter}",
         ]
         
         # This test documents the expected format
@@ -147,6 +160,8 @@ class TestInferenceRunner:
         assert "--mask" in expected_command_template
         assert "--width" in expected_command_template
         assert "--height" in expected_command_template
+        assert "--subvideo_length" in expected_command_template
+        assert "--raft_iter" in expected_command_template
     
     @pytest.mark.parametrize("gpu_id,expected_env_var", [
         (0, "0"),

@@ -25,7 +25,7 @@ class InferenceRunner:
     def build_command(self, video_path: Path, mask_path: Path, output_path: Path,
                      target_width: int, target_height: int, gpu_id: Optional[int] = None) -> List[str]:
         """
-        Build CLI command for ProPainter inference.
+        Build CLI command for ProPainter-Wire inference.
         
         Args:
             video_path: Path to video or frames directory
@@ -45,20 +45,29 @@ class InferenceRunner:
             "--output", str(output_path),
             "--width", str(target_width),
             "--height", str(target_height),
-            "--save_frames"  # Try to get individual frames instead of video
+            "--subvideo_length", "80",  # Safe default for memory management
+            "--mask_dilation", "4",     # Default dilation for better inpainting
+            "--ref_stride", "10",       # Default reference stride
+            "--neighbor_length", "10",  # Default neighbor length
+            "--raft_iter", "20",        # Default RAFT iterations
         ]
         
-        # Note: AMP requires modification of ProPainter script
-        # We cannot add --amp flag as ProPainter doesn't support it
-        if self.config.USE_AMP:
-            logger.info("AMP (Automatic Mixed Precision) is enabled in config")
-            logger.info("Note: AMP requires ProPainter script modification to use torch.cuda.amp.autocast")
+        # Add FP16 flag if configured and not forcing FP32 fallback
+        if self.config.USE_AMP and not self.config.get("FORCE_FP32", False):
+            cmd.append("--fp16")
+            logger.info("Using FP16 precision (AMP enabled)")
+        else:
+            logger.info("Using FP32 precision (AMP disabled or FORCE_FP32=True)")
+        
+        # Add save_masked_in flag for debugging if configured
+        if self.config.get("SAVE_MASKED_PREVIEW", False):
+            cmd.append("--save_masked_in")
         
         return cmd
     
     def execute_command(self, command: List[str], gpu_id: Optional[int] = None) -> subprocess.CompletedProcess:
         """
-        Execute ProPainter command.
+        Execute ProPainter-Wire command.
         
         Args:
             command: Command to execute
@@ -80,7 +89,7 @@ class InferenceRunner:
         if self.config.USE_AMP:
             logger.debug("AMP is configured but requires ProPainter script modification")
         
-        logger.info(f"Executing ProPainter command: {' '.join(command)}")
+        logger.info(f"Executing ProPainter-Wire command: {' '.join(command)}")
         try:
             result = subprocess.run(
                 command,
@@ -90,13 +99,13 @@ class InferenceRunner:
                 env=env,
                 check=True
             )
-            logger.info(f"ProPainter command succeeded with return code {result.returncode}")
+            logger.info(f"ProPainter-Wire command succeeded with return code {result.returncode}")
             if result.stdout:
                 # Log first few lines of stdout to see progress
                 lines = result.stdout.strip().split('\n')
                 for line in lines[:10]:  # log first 10 lines
                     if line.strip():
-                        logger.info(f"ProPainter: {line[:200]}")
+                        logger.info(f"ProPainter-Wire: {line[:200]}")
                 if len(lines) > 10:
                     logger.info(f"... and {len(lines) - 10} more lines")
             if result.stderr:
@@ -104,32 +113,40 @@ class InferenceRunner:
                 lines = result.stderr.strip().split('\n')
                 for line in lines[:5]:
                     if line.strip():
-                        logger.warning(f"ProPainter stderr: {line[:200]}")
+                        logger.warning(f"ProPainter-Wire stderr: {line[:200]}")
             return result
         except subprocess.CalledProcessError as e:
-            logger.error(f"ProPainter command failed with code {e.returncode}")
+            logger.error(f"ProPainter-Wire command failed with code {e.returncode}")
             if e.stdout:
-                logger.debug(f"ProPainter stdout: {e.stdout[:500]}")
+                logger.debug(f"ProPainter-Wire stdout: {e.stdout[:500]}")
             if e.stderr:
-                logger.error(f"ProPainter stderr: {e.stderr[:500]}")
-            # If --save_frames fails, try without it
-            if "--save_frames" in command:
-                logger.info("Retrying without --save_frames flag")
-                # Remove --save_frames and retry
-                new_command = [arg for arg in command if arg != "--save_frames"]
-                try:
-                    result = subprocess.run(
-                        new_command,
-                        capture_output=True,
-                        text=True,
-                        cwd=str(self.propainter_root),
-                        env=env,
-                        check=True
-                    )
-                    logger.info(f"Retry succeeded with return code {result.returncode}")
-                    return result
-                except subprocess.CalledProcessError as e2:
-                    self.handle_inference_error(e2)
+                logger.error(f"ProPainter-Wire stderr: {e.stderr[:500]}")
+            
+            # Check for CUDA CUBLAS error - try fallback to FP32
+            stderr_lower = e.stderr.lower() if e.stderr else ""
+            if "cublas_status_invalid_value" in stderr_lower or "cuda error" in stderr_lower:
+                logger.warning("CUDA CUBLAS error detected, attempting fallback to FP32")
+                # Remove --fp16 flag if present and retry
+                if "--fp16" in command:
+                    new_command = [arg for arg in command if arg != "--fp16"]
+                    logger.info("Retrying without --fp16 flag (FP32 fallback)")
+                    try:
+                        result = subprocess.run(
+                            new_command,
+                            capture_output=True,
+                            text=True,
+                            cwd=str(self.propainter_root),
+                            env=env,
+                            check=True
+                        )
+                        logger.info(f"FP32 fallback succeeded with return code {result.returncode}")
+                        return result
+                    except subprocess.CalledProcessError as e2:
+                        self.handle_inference_error(e2)
+                        raise
+                else:
+                    # Already FP32, cannot fallback further
+                    self.handle_inference_error(e)
                     raise
             else:
                 self.handle_inference_error(e)
@@ -271,6 +288,7 @@ class InferenceRunner:
             Dictionary mapping original frame names to processed frame paths
         """
         import time
+        import subprocess
         results = {}
         logger.info(f"Processing {len(chunks)} chunks")
         
@@ -306,8 +324,43 @@ class InferenceRunner:
             # Postprocess frames to preserve background
             self._postprocess_frames(frames_dir, masks_dir, output_dir)
             
-            # Collect results - search recursively for PNG files
-            output_frames = sorted(output_dir.rglob("*.png"))
+            # ProPainter-Wire outputs video file, extract frames from it
+            # Look for video file with pattern *_result.mov
+            video_files = list(output_dir.glob("*_result.mov"))
+            if not video_files:
+                # Fallback: any .mov file
+                video_files = list(output_dir.glob("*.mov"))
+            if not video_files:
+                # Fallback: any video file
+                video_files = list(output_dir.glob("*.mp4")) + list(output_dir.glob("*.avi"))
+            
+            if video_files:
+                video_path = video_files[0]
+                logger.info(f"Found output video: {video_path}")
+                # Extract frames from video to PNG
+                frames_output_dir = output_dir / "extracted_frames"
+                frames_output_dir.mkdir(exist_ok=True)
+                
+                # Use ffmpeg to extract frames
+                frame_pattern = frames_output_dir / "frame_%08d.png"
+                extract_cmd = [
+                    "ffmpeg", "-i", str(video_path),
+                    "-vsync", "0",
+                    "-q:v", "2",
+                    str(frame_pattern)
+                ]
+                try:
+                    subprocess.run(extract_cmd, check=True, capture_output=True)
+                    logger.info(f"Extracted frames from {video_path} to {frames_output_dir}")
+                except subprocess.CalledProcessError as e:
+                    logger.error(f"Failed to extract frames from video: {e.stderr}")
+                    # Continue with fallback search for PNG files
+                # Use extracted frames as output
+                output_frames = sorted(frames_output_dir.glob("*.png"))
+            else:
+                # Fallback: search for PNG files directly (if script was modified to save frames)
+                output_frames = sorted(output_dir.rglob("*.png"))
+            
             if not output_frames:
                 # Fallback: look for any image files
                 output_frames = sorted(output_dir.rglob("*.jpg")) + sorted(output_dir.rglob("*.jpeg"))
@@ -315,8 +368,6 @@ class InferenceRunner:
             logger.info(f"Found {len(output_frames)} output frames in {output_dir}")
             
             # Map output frames to original frame names
-            # ProPainter typically outputs frames in order: frame_00001.png, frame_00002.png, etc.
-            # We need to map them to original frame names based on chunk indices
             sorted_output_frames = sorted(output_frames)
             
             # Get original frame names from the chunk

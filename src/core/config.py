@@ -23,7 +23,7 @@ class AppConfig(BaseSettings):
     INPAINTING_ENGINE: InpaintingEngine = InpaintingEngine.PROPAINTER
     
     # ProPainter settings
-    PROPAINTER_ROOT: Path = Path("/opt/ProPainter")
+    PROPAINTER_ROOT: Path = Path("/opt/ProPainter-Wire")
     
     # LaMa settings
     LAMA_MODEL_PATH: Path = Path("/opt/lama_models/big-lama.pt")
