@@ -56,12 +56,17 @@ class TestInferenceRunner:
         assert cmd[cmd.index("--width") + 1] == str(target_width)
         assert "--height" in cmd
         assert cmd[cmd.index("--height") + 1] == str(target_height)
-        # New flags for ProPainter-Wire
+        # New flags for ProPainter-Wire with updated defaults
         assert "--subvideo_length" in cmd
+        assert cmd[cmd.index("--subvideo_length") + 1] == "40"
         assert "--mask_dilation" in cmd
+        assert cmd[cmd.index("--mask_dilation") + 1] == "4"
         assert "--ref_stride" in cmd
+        assert cmd[cmd.index("--ref_stride") + 1] == "10"
         assert "--neighbor_length" in cmd
+        assert cmd[cmd.index("--neighbor_length") + 1] == "10"
         assert "--raft_iter" in cmd
+        assert cmd[cmd.index("--raft_iter") + 1] == "10"
         # No --save_frames flag anymore
         assert "--save_frames" not in cmd
     

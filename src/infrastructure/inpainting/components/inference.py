@@ -45,11 +45,11 @@ class InferenceRunner:
             "--output", str(output_path),
             "--width", str(target_width),
             "--height", str(target_height),
-            "--subvideo_length", "80",  # Safe default for memory management
+            "--subvideo_length", "40",  # Reduced from 80 to prevent OOM/CUBLAS errors
             "--mask_dilation", "4",     # Default dilation for better inpainting
             "--ref_stride", "10",       # Default reference stride
             "--neighbor_length", "10",  # Default neighbor length
-            "--raft_iter", "20",        # Default RAFT iterations
+            "--raft_iter", "10",        # Reduced from 20 to lower computation
         ]
         
         # Add FP16 flag if configured and not forcing FP32 fallback
