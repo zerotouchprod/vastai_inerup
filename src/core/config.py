@@ -20,7 +20,7 @@ class AppConfig(BaseSettings):
     """Application configuration."""
     
     # Inpainting engine selection
-    INPAINTING_ENGINE: InpaintingEngine = InpaintingEngine.LAMA
+    INPAINTING_ENGINE: InpaintingEngine = InpaintingEngine.PROPAINTER
     
     # ProPainter settings
     PROPAINTER_ROOT: Path = Path("/opt/ProPainter")
