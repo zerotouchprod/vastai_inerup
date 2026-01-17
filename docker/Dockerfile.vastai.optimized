@@ -191,10 +191,11 @@ RUN pip install --no-cache-dir \
     webdataset \
     && rm -rf /root/.cache/pip /tmp/*
 
-# Install LaMa implementation (simple-lama-inpainting)
-RUN pip install --no-cache-dir git+https://github.com/advimman/lama.git && \
-    mkdir -p /opt/lama && \
-    echo "LaMa installed for lightweight inpainting"
+# Install LaMa implementation from official repository
+RUN git clone https://github.com/saic-mdal/lama.git /opt/lama && \
+    cd /opt/lama && \
+    pip install --no-cache-dir -e . && \
+    echo "✅ LaMa installed from official repository"
 
 # Create directories for LaMa and STTN models
 RUN mkdir -p /opt/lama_models /opt/sttn_models
