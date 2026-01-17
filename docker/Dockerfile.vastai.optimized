@@ -156,7 +156,7 @@ RUN pip install --no-cache-dir imageio scipy scikit-image && \
     # Cleanup
     rm -rf /root/.cache/pip /tmp/*
 
-ENV PROPAINTER_ROOT="/opt/ProPainter"
+ENV PROPAINTER_ROOT="/opt/ProPainter-Wire"
 
 # ============================================================================
 # NEW: Install ProPainter-Wire (Fork by gnimuyeh)
