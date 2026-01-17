@@ -5,7 +5,6 @@
 # Also maintains backward compatibility with RTX 20 series (Turing)
 
 FROM nvidia/cuda:12.9.0-cudnn-devel-ubuntu22.04
-#FROM nvidia/cuda:13.0.2-cudnn-devel-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -132,47 +131,28 @@ RUN pip install --no-cache-dir --no-build-isolation git+https://github.com/faceb
 RUN mkdir -p /opt/sam2_checkpoints && \
     wget -q https://dl.fbaipublicfiles.com/segment_anything_2/072824/sam2_hiera_small.pt -O /opt/sam2_checkpoints/sam2_hiera_small.pt
 
-# ProPainter Installation with Multi-Architecture Support
-# TORCH_CUDA_ARCH_LIST set above ensures this builds "fat" binaries for all GPUs
-# Note: spatial-correlation-sampler will be rebuilt at runtime by entrypoint.sh
-# to match the exact CUDA version on the Vast.ai instance
-RUN pip install --no-cache-dir imageio scipy scikit-image && \
-    pip install --no-cache-dir av torchvision && \
-    git clone https://github.com/sczhou/ProPainter.git /opt/ProPainter && \
-    cd /opt/ProPainter && \
-    pip install --no-cache-dir -r requirements.txt && \
-    # Pre-install spatial-correlation-sampler (will be rebuilt at runtime if needed)
-    # The TORCH_CUDA_ARCH_LIST above forces compilation for all specified architectures
-    # This creates a single binary that works on RTX 20/30/40/50, A100, H100, etc.
-    echo "Building spatial-correlation-sampler for architectures: $TORCH_CUDA_ARCH_LIST" && \
-    pip uninstall -y spatial-correlation-sampler 2>/dev/null || true && \
-    pip install --no-cache-dir spatial-correlation-sampler && \
-    echo "✅ spatial-correlation-sampler pre-installed (will be rebuilt at runtime if CUDA mismatch)" && \
-    # Download model weights
-    cd /opt/ProPainter/weights && \
-    wget -q --show-progress https://github.com/sczhou/ProPainter/releases/download/v0.1.0/ProPainter.pth && \
-    wget -q --show-progress https://github.com/sczhou/ProPainter/releases/download/v0.1.0/raft-things.pth && \
-    wget -q --show-progress https://github.com/sczhou/ProPainter/releases/download/v0.1.0/recurrent_flow_completion.pth && \
-    # Cleanup
-    rm -rf /root/.cache/pip /tmp/*
-
+# ============================================================================
+# ProPainter-Wire Installation (Fork by zerotouchprod)
+# Optimized for RTX 30/40/50 series with FP16 and Auto-Padding
+# Replaces the original ProPainter completely
+# ============================================================================
 ENV PROPAINTER_ROOT="/opt/ProPainter-Wire"
 
-# ============================================================================
-# NEW: Install ProPainter-Wire (Fork by gnimuyeh)
-# Contains fixes for High-Res OOM, color shifting, and mask binarization.
-# ============================================================================
 RUN git clone https://github.com/zerotouchprod/ProPainter-Wire.git /opt/ProPainter-Wire && \
     cd /opt/ProPainter-Wire && \
     # Install dependencies specific to this fork
     pip install --no-cache-dir -r requirements.txt && \
     # Ensure weights folder exists
     mkdir -p weights && \
-    # COPY weights from the standard ProPainter installation (save bandwidth/time)
-    cp /opt/ProPainter/weights/*.pth /opt/ProPainter-Wire/weights/ && \
-    echo "✅ ProPainter-Wire installed and weights copied." && \
-    # Create symlink for backward compatibility (so imports from /opt/ProPainter work)
-    ln -sfn /opt/ProPainter-Wire /opt/ProPainter
+    cd weights && \
+    # Download weights directly (no need to clone original repo)
+    wget -q --show-progress https://github.com/sczhou/ProPainter/releases/download/v0.1.0/ProPainter.pth && \
+    wget -q --show-progress https://github.com/sczhou/ProPainter/releases/download/v0.1.0/raft-things.pth && \
+    wget -q --show-progress https://github.com/sczhou/ProPainter/releases/download/v0.1.0/recurrent_flow_completion.pth && \
+    cd .. && \
+    # Create symlink for backward compatibility (so imports from /opt/ProPainter still work)
+    ln -sfn /opt/ProPainter-Wire /opt/ProPainter && \
+    echo "✅ ProPainter-Wire installed successfully with weights."
 
 # ============================================================================
 # Lightweight Inpainting dependencies (LaMa & STTN)
@@ -184,22 +164,22 @@ RUN pip install --no-cache-dir \
     webdataset \
     && rm -rf /root/.cache/pip /tmp/*
 
-# STEP 30: Установка LaMa (без pip install -e .)
+# Install LaMa
 RUN git clone https://github.com/saic-mdal/lama.git /opt/lama && \
     echo "✅ LaMa cloned successfully"
 
-# ВАЖНО: Добавляем папку LaMa в PYTHONPATH
-# Теперь любой скрипт сможет сделать "import saicinpainting"
+# Add LaMa to PYTHONPATH
 ENV PYTHONPATH="/opt/lama:${PYTHONPATH}"
 
 # Create directories for LaMa and STTN models
 RUN mkdir -p /opt/lama_models /opt/sttn_models
 
-# Download LaMa weights (big-lama.pt) during build to avoid runtime download
+# Download LaMa weights
 RUN cd /opt/lama_models && \
     wget -q --show-progress https://github.com/Sanster/models/releases/download/add_big_lama/big-lama.pt && \
     echo "✅ LaMa weights downloaded to /opt/lama_models/big-lama.pt"
 
+# Final PYTHONPATH setup
 ENV PYTHONPATH="/workspace/project:/workspace/project/external/Real-ESRGAN:/workspace/project/external/RIFE:${PYTHONPATH}"
 
 # Copy entrypoint
