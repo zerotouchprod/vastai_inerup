@@ -45,5 +45,5 @@ opencv-python-headless>=4.8.0
 
 easyocr>=1.7.1
 albumentations
-einops
-easydict
+einops>=0.6.0
+easydict>=1.9
