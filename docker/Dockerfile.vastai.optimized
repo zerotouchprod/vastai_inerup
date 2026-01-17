@@ -139,6 +139,8 @@ RUN pip install --no-cache-dir \
     pytorch-lightning \
     kornia \
     webdataset \
+    einops \
+    easydict \
     && rm -rf /root/.cache/pip /tmp/*
 
 # Install LaMa
