@@ -25,7 +25,7 @@ def read_video(path: str, gray: bool = False) -> Tuple[np.ndarray, float]:
         # Пытаемся импортировать из ProPainter
         import sys
         import os
-        PROPAINTER_ROOT = os.getenv("PROPAINTER_ROOT", "/opt/ProPainter")
+        PROPAINTER_ROOT = os.getenv("PROPAINTER_ROOT", "/opt/ProPainter-Wire")
         if PROPAINTER_ROOT not in sys.path:
             sys.path.append(PROPAINTER_ROOT)
         

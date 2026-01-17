@@ -112,7 +112,7 @@ def validate_propainter() -> bool:
         import sys
         from pathlib import Path
 
-        propainter_root = Path(os.getenv("PROPAINTER_ROOT", "/opt/ProPainter"))
+        propainter_root = Path(os.getenv("PROPAINTER_ROOT", "/opt/ProPainter-Wire"))
 
         if not propainter_root.exists():
             logger.warning(f"⚠️  ProPainter not found at {propainter_root}")
@@ -194,4 +194,3 @@ __all__ = [
     'validate_propainter',
     'startup_checks',
 ]
-
