@@ -24,7 +24,49 @@ class AppConfig(BaseSettings):
     
     # ProPainter settings
     # https://github.com/gnimuyeh/ProPainter-Wire
+    # Priority: 
+    # 1. ENV variable PROPAINTER_ROOT
+    # 2. Local folder in project root (for dev)
+    # 3. System folder /opt/ProPainter-Wire (for docker)
+    # 4. Legacy fallback /opt/ProPainter
     PROPAINTER_ROOT: Path = Path("/opt/ProPainter-Wire")
+    
+    @property
+    def INFERENCE_SCRIPT(self) -> Optional[Path]:
+        """Get path to inference_core.py script."""
+        import os
+        possible_paths = [
+            os.getenv("PROPAINTER_ROOT"),
+            os.path.join(os.getcwd(), "ProPainter-Wire"),
+            "/opt/ProPainter-Wire",
+            "/opt/ProPainter"  # Legacy fallback
+        ]
+        
+        for path in possible_paths:
+            if path and os.path.exists(path):
+                propainter_dir = Path(path)
+                inference_script = propainter_dir / "inference_core.py"
+                if inference_script.exists():
+                    return inference_script
+        
+        return None
+    
+    @property
+    def PROPAINTER_DIR(self) -> Optional[Path]:
+        """Get ProPainter directory path."""
+        import os
+        possible_paths = [
+            os.getenv("PROPAINTER_ROOT"),
+            os.path.join(os.getcwd(), "ProPainter-Wire"),
+            "/opt/ProPainter-Wire",
+            "/opt/ProPainter"  # Legacy fallback
+        ]
+        
+        for path in possible_paths:
+            if path and os.path.exists(path):
+                return Path(path)
+        
+        return None
     
     # LaMa settings
     LAMA_MODEL_PATH: Path = Path("/opt/lama_models/big-lama.pt")

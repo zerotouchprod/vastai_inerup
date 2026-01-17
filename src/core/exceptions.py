@@ -36,3 +36,8 @@ class ConfigurationError(SubtitleRemovalError):
 class ProcessingError(SubtitleRemovalError):
     """Error during processing."""
     pass
+
+
+class ProcessorNotAvailableError(SubtitleRemovalError):
+    """Processor/engine not available."""
+    pass

@@ -7,6 +7,7 @@ from typing import List, Union, Optional
 
 from src.shared.logging import get_logger
 from src.core.config import get_config
+from src.core.exceptions import ProcessorNotAvailableError
 from src.schemas.roi import InpaintConfig
 from src.infrastructure.image_processing.geometry import (
     get_roi_from_mask, crop_frame, paste_frame, dilate_mask
@@ -30,7 +31,10 @@ class ProPainterAdapter:
     def __init__(self, propainter_root: str = None):
         # 1. Config & Paths
         self.config = get_config()
-        self.root = Path(propainter_root or self.config.PROPAINTER_ROOT)
+        # Use provided root, or computed PROPAINTER_DIR, or default PROPAINTER_ROOT
+        propainter_dir = self.config.PROPAINTER_DIR
+        default_root = propainter_dir if propainter_dir is not None else self.config.PROPAINTER_ROOT
+        self.root = Path(propainter_root or default_root)
         
         # 2. ROI configuration (must be before component initialization)
         self.roi_config = InpaintConfig(
@@ -63,12 +67,19 @@ class ProPainterAdapter:
         self.media_processor = self.media_processor  # already same
 
         # 4. Setup Environment (Fail Fast)
-        if not (self.root / "inference_propainter.py").exists():
-            logger.warning(f"⚠️ ProPainter not found at {self.root}")
-        else:
-            # Patch bugs and validate RAFT immediately
-            self.env_manager.patch_propainter_misc(self.root)
-            self.env_manager.validate_raft_availability()
+        # Check if inference script exists
+        inference_script = self.config.INFERENCE_SCRIPT
+        if inference_script is None or not inference_script.exists():
+            raise ProcessorNotAvailableError(
+                f"ProPainter inference script not found. "
+                f"Checked paths: {self.config.PROPAINTER_DIR}, inference_core.py"
+            )
+        
+        logger.info(f"✅ ProPainter found at {self.root}, using script: {inference_script}")
+        
+        # Patch bugs and validate RAFT immediately
+        self.env_manager.patch_propainter_misc(self.root)
+        self.env_manager.validate_raft_availability()
         
         # 5. Setup AMP environment if enabled
         if self.config.USE_AMP:

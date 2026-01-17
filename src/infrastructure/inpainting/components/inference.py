@@ -20,7 +20,21 @@ class InferenceRunner:
     def __init__(self, config: AppConfig, propainter_root: Path):
         self.config = config
         self.propainter_root = propainter_root
-        self.inference_script = propainter_root / "inference_propainter.py"
+        # Try to use inference_core.py first, fallback to inference_propainter.py for backward compatibility
+        inference_core = propainter_root / "inference_core.py"
+        inference_propainter = propainter_root / "inference_propainter.py"
+        
+        if inference_core.exists():
+            self.inference_script = inference_core
+            self.use_core_script = True
+        elif inference_propainter.exists():
+            self.inference_script = inference_propainter
+            self.use_core_script = False
+        else:
+            raise FileNotFoundError(
+                f"No inference script found in {propainter_root}. "
+                f"Expected inference_core.py or inference_propainter.py"
+            )
     
     def build_command(self, video_path: Path, mask_path: Path, output_path: Path,
                      target_width: int, target_height: int, gpu_id: Optional[int] = None) -> List[str]:
@@ -31,41 +45,56 @@ class InferenceRunner:
             video_path: Path to video or frames directory
             mask_path: Path to masks directory
             output_path: Path to output directory
-            target_width: Target frame width
-            target_height: Target frame height
+            target_width: Target frame width (ignored for inference_core.py)
+            target_height: Target frame height (ignored for inference_core.py)
             gpu_id: GPU ID to use (for multi-GPU)
             
         Returns:
             List of command arguments
         """
-        cmd = [
-            "python3", str(self.inference_script),
-            "--video", str(video_path),
-            "--mask", str(mask_path),
-            "--output", str(output_path),
-            "--width", str(target_width),
-            "--height", str(target_height),
-            "--subvideo_length", "40",  # Reduced from 80 to prevent OOM/CUBLAS errors
-            "--mask_dilation", "4",     # Default dilation for better inpainting
-            "--ref_stride", "10",       # Default reference stride
-            "--neighbor_length", "10",  # Default neighbor length
-            "--raft_iter", "10",        # Reduced from 20 to lower computation
-        ]
-        
-        # Add FP16 flag if configured and not forcing FP32 fallback
-        # Use getattr with default value since FORCE_FP32 might not be in config
-        force_fp32 = getattr(self.config, "FORCE_FP32", False)
-        if self.config.USE_AMP and not force_fp32:
-            cmd.append("--fp16")
-            logger.info("Using FP16 precision (AMP enabled)")
+        if self.use_core_script:
+            # inference_core.py has simplified signature
+            cmd = [
+                "python3", str(self.inference_script),
+                "--video", str(video_path),
+                "--mask", str(mask_path),
+                "--output", str(output_path),
+                "--model_path", str(self.propainter_root / "weights" / "ProPainter.pth"),
+            ]
+            
+            # inference_core.py doesn't support --fp16 flag, it auto-detects
+            # It also doesn't support --save_masked_in
+            logger.info("Using inference_core.py (simplified signature)")
         else:
-            logger.info("Using FP32 precision (AMP disabled or FORCE_FP32=True)")
-        
-        # Add save_masked_in flag for debugging if configured
-        # Use getattr with default value since SAVE_MASKED_PREVIEW might not be in config
-        save_masked_preview = getattr(self.config, "SAVE_MASKED_PREVIEW", False)
-        if save_masked_preview:
-            cmd.append("--save_masked_in")
+            # Legacy inference_propainter.py with full parameter set
+            cmd = [
+                "python3", str(self.inference_script),
+                "--video", str(video_path),
+                "--mask", str(mask_path),
+                "--output", str(output_path),
+                "--width", str(target_width),
+                "--height", str(target_height),
+                "--subvideo_length", "40",  # Reduced from 80 to prevent OOM/CUBLAS errors
+                "--mask_dilation", "4",     # Default dilation for better inpainting
+                "--ref_stride", "10",       # Default reference stride
+                "--neighbor_length", "10",  # Default neighbor length
+                "--raft_iter", "10",        # Reduced from 20 to lower computation
+            ]
+            
+            # Add FP16 flag if configured and not forcing FP32 fallback
+            # Use getattr with default value since FORCE_FP32 might not be in config
+            force_fp32 = getattr(self.config, "FORCE_FP32", False)
+            if self.config.USE_AMP and not force_fp32:
+                cmd.append("--fp16")
+                logger.info("Using FP16 precision (AMP enabled)")
+            else:
+                logger.info("Using FP32 precision (AMP disabled or FORCE_FP32=True)")
+            
+            # Add save_masked_in flag for debugging if configured
+            # Use getattr with default value since SAVE_MASKED_PREVIEW might not be in config
+            save_masked_preview = getattr(self.config, "SAVE_MASKED_PREVIEW", False)
+            if save_masked_preview:
+                cmd.append("--save_masked_in")
         
         return cmd
     
