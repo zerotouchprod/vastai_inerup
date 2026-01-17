@@ -188,10 +188,21 @@ RUN pip install --no-cache-dir \
     hydra-core \
     pytorch-lightning \
     kornia \
+    webdataset \
     && rm -rf /root/.cache/pip /tmp/*
+
+# Install LaMa implementation (simple-lama-inpainting)
+RUN pip install --no-cache-dir git+https://github.com/advimman/lama.git && \
+    mkdir -p /opt/lama && \
+    echo "LaMa installed for lightweight inpainting"
 
 # Create directories for LaMa and STTN models
 RUN mkdir -p /opt/lama_models /opt/sttn_models
+
+# Download LaMa weights (big-lama.pt) during build to avoid runtime download
+RUN cd /opt/lama_models && \
+    wget -q --show-progress https://github.com/Sanster/models/releases/download/add_big_lama/big-lama.pt && \
+    echo "✅ LaMa weights downloaded to /opt/lama_models/big-lama.pt"
 
 ENV PYTHONPATH="/workspace/project:/workspace/project/external/Real-ESRGAN:/workspace/project/external/RIFE:${PYTHONPATH}"
 

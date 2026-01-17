@@ -30,6 +30,22 @@ class TestLaMaAdapter:
         config.PROPAINTER_OVERLAP = 2
         return config
     
+    @pytest.fixture
+    def adapter(self, mock_config):
+        """Create a LaMaAdapter instance with mocked dependencies."""
+        with patch('src.infrastructure.inpainting.lama_adapter.get_config', return_value=mock_config), \
+             patch('src.infrastructure.inpainting.lama_adapter.Path.exists', return_value=True), \
+             patch('src.infrastructure.inpainting.lama_adapter.ResolutionCalculator'), \
+             patch('src.infrastructure.inpainting.lama_adapter.SlidingWindowStrategy'), \
+             patch('src.infrastructure.inpainting.lama_adapter.EnvironmentManager'), \
+             patch('src.infrastructure.inpainting.lama_adapter.MediaProcessor'):
+            
+            adapter = LaMaAdapter()
+            adapter.model = Mock()
+            adapter.device = 'cpu'
+            adapter.batch_size = 4
+            return adapter
+    
     @patch('src.infrastructure.inpainting.lama_adapter.get_config')
     @patch('src.infrastructure.inpainting.lama_adapter.Path.exists')
     def test_adapter_initialization(self, mock_exists, mock_get_config, mock_config):
@@ -92,35 +108,26 @@ class TestLaMaAdapter:
             
             adapter = LaMaAdapter()
             
-            # Verify gdown.download was called to download weights
+            # Verify gdown.download was called to download weights (primary URL)
+            # Note: The adapter tries primary URL first, then fallback
             mock_gdown_download.assert_called_once_with(
-                "https://drive.google.com/uc?id=1t5K7U8lHx2-MsLGhMEdU-qV7gvMfU9bF",
+                "https://github.com/Sanster/models/releases/download/add_big_lama/big-lama.pt",
                 str(mock_config.LAMA_MODEL_PATH),
                 quiet=False
             )
     
-    def test_parse_smoothing_weights(self, mock_config):
-        """Test parsing of smoothing weights from config string."""
-        with patch('src.infrastructure.inpainting.lama_adapter.get_config', return_value=mock_config), \
-             patch('src.infrastructure.inpainting.lama_adapter.Path.exists', return_value=True), \
-             patch('src.infrastructure.inpainting.lama_adapter.ResolutionCalculator'), \
-             patch('src.infrastructure.inpainting.lama_adapter.SlidingWindowStrategy'), \
-             patch('src.infrastructure.inpainting.lama_adapter.EnvironmentManager'), \
-             patch('src.infrastructure.inpainting.lama_adapter.MediaProcessor'):
-            
-            adapter = LaMaAdapter()
-            
-            # Test default weights
-            weights = adapter._parse_smoothing_weights()
-            assert len(weights) == 3
-            assert pytest.approx(sum(weights), 0.001) == 1.0
-            assert weights[0] == pytest.approx(0.2, 0.001)
-            assert weights[1] == pytest.approx(0.6, 0.001)
-            assert weights[2] == pytest.approx(0.2, 0.001)
+    def test_get_smoothing_weights(self, adapter):
+        """Test getting smoothing weights."""
+        weights = adapter._get_smoothing_weights()
+        assert len(weights) == 3
+        assert weights == [0.2, 0.6, 0.2]
+        assert pytest.approx(sum(weights), 0.001) == 1.0
     
     @patch('src.infrastructure.inpainting.lama_adapter.get_config')
     @patch('src.infrastructure.inpainting.lama_adapter.Path.exists')
-    def test_load_model_dummy_fallback(self, mock_exists, mock_get_config, mock_config):
+    @patch('sys.path')
+    @patch('builtins.__import__')
+    def test_load_model_dummy_fallback(self, mock_import, mock_sys_path, mock_exists, mock_get_config, mock_config):
         """Test that dummy model is loaded when LaMa model is not available."""
         mock_exists.return_value = True
         mock_get_config.return_value = mock_config
@@ -134,7 +141,14 @@ class TestLaMaAdapter:
             # Mock torch.cuda.is_available
             mock_torch.cuda.is_available.return_value = True
             mock_torch.device.return_value = 'cuda'
-            mock_torch.load.side_effect = ImportError("LaMa model not found")
+            
+            # Mock torch.cuda.get_device_properties to return a mock with total_memory attribute
+            mock_device_properties = Mock()
+            mock_device_properties.total_memory = 8 * 1024**3  # 8 GB in bytes
+            mock_torch.cuda.get_device_properties.return_value = mock_device_properties
+            
+            # Simulate ImportError when trying to import LaMa
+            mock_import.side_effect = ImportError("No module named 'lama'")
             
             adapter = LaMaAdapter()
             adapter._load_model()
@@ -143,117 +157,122 @@ class TestLaMaAdapter:
             assert adapter.model is not None
             assert adapter.device == 'cuda'
             assert hasattr(adapter.model, 'forward')
+            # Verify batch size was adjusted based on VRAM
+            assert adapter.batch_size == 6  # 8 GB VRAM -> batch size 6
     
-    def test_apply_temporal_smoothing(self, mock_config):
+    def test_apply_temporal_smoothing(self, adapter):
         """Test temporal smoothing functionality."""
-        with patch('src.infrastructure.inpainting.lama_adapter.get_config', return_value=mock_config), \
-             patch('src.infrastructure.inpainting.lama_adapter.Path.exists', return_value=True), \
-             patch('src.infrastructure.inpainting.lama_adapter.ResolutionCalculator'), \
-             patch('src.infrastructure.inpainting.lama_adapter.SlidingWindowStrategy'), \
-             patch('src.infrastructure.inpainting.lama_adapter.EnvironmentManager'), \
-             patch('src.infrastructure.inpainting.lama_adapter.MediaProcessor'):
-            
-            adapter = LaMaAdapter()
-            
-            # Create test frames
-            frames = [
-                np.ones((100, 100, 3), dtype=np.uint8) * 100,
-                np.ones((100, 100, 3), dtype=np.uint8) * 150,
-                np.ones((100, 100, 3), dtype=np.uint8) * 200,
-            ]
-            
-            # Apply smoothing
-            smoothed = adapter._apply_temporal_smoothing(frames, [])
-            
-            # Verify output
-            assert len(smoothed) == len(frames)
-            assert smoothed[0].shape == frames[0].shape
-            assert smoothed[0].dtype == np.uint8
-            
-            # Middle frame should be weighted average
-            # 0.2*100 + 0.6*150 + 0.2*200 = 20 + 90 + 40 = 150
-            assert np.mean(smoothed[1]) == pytest.approx(150, 1.0)
-    
-    @patch('src.infrastructure.inpainting.lama_adapter.get_config')
-    @patch('src.infrastructure.inpainting.lama_adapter.Path.exists')
-    def test_inpaint_frame(self, mock_exists, mock_get_config, mock_config):
-        """Test single frame inpainting."""
-        mock_exists.return_value = True
-        mock_get_config.return_value = mock_config
+        # Create test frames
+        frames = [
+            np.ones((100, 100, 3), dtype=np.uint8) * 100,
+            np.ones((100, 100, 3), dtype=np.uint8) * 150,
+            np.ones((100, 100, 3), dtype=np.uint8) * 200,
+        ]
         
-        with patch('src.infrastructure.inpainting.lama_adapter.ResolutionCalculator'), \
-             patch('src.infrastructure.inpainting.lama_adapter.SlidingWindowStrategy'), \
-             patch('src.infrastructure.inpainting.lama_adapter.EnvironmentManager'), \
-             patch('src.infrastructure.inpainting.lama_adapter.MediaProcessor'), \
-             patch('src.infrastructure.inpainting.lama_adapter.torch') as mock_torch:
+        # Apply smoothing
+        smoothed = adapter._apply_temporal_smoothing(frames)
+        
+        # Verify output
+        assert len(smoothed) == len(frames)
+        assert smoothed[0].shape == frames[0].shape
+        assert smoothed[0].dtype == np.uint8
+        
+        # Middle frame should be weighted average
+        # 0.2*100 + 0.6*150 + 0.2*200 = 20 + 90 + 40 = 150
+        assert np.mean(smoothed[1]) == pytest.approx(150, 1.0)
+        
+        # Test with disabled smoothing
+        adapter.config.LAMA_TEMPORAL_SMOOTHING = False
+        unsmoothed = adapter._apply_temporal_smoothing(frames)
+        assert unsmoothed == frames
+        
+        # Test with less than 3 frames
+        adapter.config.LAMA_TEMPORAL_SMOOTHING = True
+        short_frames = frames[:2]
+        result = adapter._apply_temporal_smoothing(short_frames)
+        assert result == short_frames
+    
+    def test_pad_to_divisible_by_8(self, adapter):
+        """Test padding to be divisible by 8."""
+        # Test image that's already divisible by 8
+        image_64 = np.ones((64, 64, 3), dtype=np.uint8) * 255
+        padded, padding = adapter._pad_to_divisible_by_8(image_64)
+        assert padded.shape == image_64.shape
+        assert padding == (0, 0, 0, 0)
+        
+        # Test image that needs padding (63x63)
+        image_63 = np.ones((63, 63, 3), dtype=np.uint8) * 255
+        padded, padding = adapter._pad_to_divisible_by_8(image_63)
+        assert padded.shape == (64, 64, 3)  # Padded to 64x64
+        assert padding == (0, 1, 0, 1) or padding == (1, 0, 1, 0)  # Symmetric padding
+        
+        # Test grayscale mask
+        mask_63 = np.ones((63, 63), dtype=np.uint8) * 255
+        padded_mask, _ = adapter._pad_to_divisible_by_8(mask_63)
+        assert padded_mask.shape == (64, 64)
+    
+    def test_unpad(self, adapter):
+        """Test removing padding from image."""
+        # Create a test image
+        image = np.ones((64, 64, 3), dtype=np.uint8) * 255
+        
+        # Test with no padding
+        unpadded = adapter._unpad(image, (0, 0, 0, 0))
+        assert unpadded.shape == image.shape
+        np.testing.assert_array_equal(unpadded, image)
+        
+        # Test with padding
+        padded = np.pad(image, ((1, 2), (3, 4), (0, 0)), mode='constant')
+        unpadded = adapter._unpad(padded, (1, 2, 3, 4))
+        assert unpadded.shape == image.shape
+        np.testing.assert_array_equal(unpadded, image)
+    
+    def test_inpaint_batch(self, adapter):
+        """Test batch inpainting."""
+        # Create test frames and masks
+        frames = [
+            np.ones((64, 64, 3), dtype=np.uint8) * 255,
+            np.ones((64, 64, 3), dtype=np.uint8) * 128,
+        ]
+        masks = [
+            np.zeros((64, 64), dtype=np.uint8),
+            np.ones((64, 64), dtype=np.uint8) * 255,
+        ]
+        
+        # Mock model forward
+        mock_output = torch.ones((2, 3, 64, 64)) * 0.5
+        adapter.model.return_value = mock_output
+        
+        # Test inpainting
+        result = adapter._inpaint_batch(frames, masks)
+        
+        # Verify output
+        assert len(result) == len(frames)
+        assert result[0].shape == frames[0].shape
+        assert result[0].dtype == np.uint8
+        
+        # Verify model was called
+        adapter.model.assert_called_once()
+        
+        # Test with empty batch
+        empty_result = adapter._inpaint_batch([], [])
+        assert empty_result == []
+    
+    def test_inpaint_frame(self, adapter):
+        """Test single frame inpainting."""
+        frame = np.ones((64, 64, 3), dtype=np.uint8) * 255
+        mask = np.zeros((64, 64), dtype=np.uint8)
+        
+        # Mock _inpaint_batch
+        with patch.object(adapter, '_inpaint_batch') as mock_inpaint_batch:
+            mock_inpaint_batch.return_value = [np.ones((64, 64, 3), dtype=np.uint8) * 128]
             
-            # Mock model
-            mock_model = Mock()
-            mock_model.eval.return_value = None
-            mock_model.to.return_value = mock_model
-            
-            # Mock torch operations
-            mock_torch.cuda.is_available.return_value = False  # Force CPU
-            mock_torch.device.return_value = 'cpu'
-            
-            # Create mock tensors
-            mock_frame_tensor = Mock()
-            mock_mask_tensor = Mock()
-            mock_output_tensor = Mock()
-            
-            # Setup chain of calls
-            mock_frame_tensor.permute.return_value = mock_frame_tensor
-            mock_frame_tensor.float.return_value = mock_frame_tensor
-            mock_frame_tensor.unsqueeze.return_value = mock_frame_tensor
-            mock_frame_tensor.to.return_value = mock_frame_tensor
-            mock_frame_tensor.__truediv__ = Mock(return_value=mock_frame_tensor)
-            
-            mock_mask_tensor.unsqueeze.return_value = mock_mask_tensor
-            mock_mask_tensor.float.return_value = mock_mask_tensor
-            mock_mask_tensor.to.return_value = mock_mask_tensor
-            mock_mask_tensor.__gt__ = Mock(return_value=mock_mask_tensor)
-            mock_mask_tensor.__truediv__ = Mock(return_value=mock_mask_tensor)
-            
-            mock_output_tensor.squeeze.return_value = mock_output_tensor
-            mock_output_tensor.permute.return_value = mock_output_tensor
-            mock_output_tensor.cpu.return_value = mock_output_tensor
-            mock_output_tensor.numpy.return_value = np.ones((100, 100, 3), dtype=np.uint8) * 128
-            
-            mock_model.return_value = mock_output_tensor
-            
-            # Mock torch.from_numpy to return our mock tensors
-            def from_numpy_side_effect(arr):
-                if arr.ndim == 3:  # frame
-                    return mock_frame_tensor
-                else:  # mask
-                    return mock_mask_tensor
-            
-            mock_torch.from_numpy.side_effect = from_numpy_side_effect
-            
-            # Mock torch.no_grad() to return a context manager
-            mock_no_grad_context = Mock()
-            mock_no_grad_context.__enter__ = Mock()
-            mock_no_grad_context.__exit__ = Mock()
-            mock_torch.no_grad.return_value = mock_no_grad_context
-            
-            adapter = LaMaAdapter()
-            adapter.model = mock_model
-            adapter.device = 'cpu'  # Use CPU to avoid CUDA issues
-            
-            # Create test frame and mask
-            frame = np.ones((100, 100, 3), dtype=np.uint8) * 255
-            mask = np.zeros((100, 100), dtype=np.uint8)
-            mask[50:70, 50:70] = 255  # Small mask in center
-            
-            # Test inpainting
             result = adapter._inpaint_frame(frame, mask)
             
-            # Verify output shape and type
+            # Verify _inpaint_batch was called with single frame
+            mock_inpaint_batch.assert_called_once_with([frame], [mask])
             assert result.shape == frame.shape
             assert result.dtype == np.uint8
-            
-            # Verify model was called
-            assert mock_model.called
     
     @patch('src.infrastructure.inpainting.lama_adapter.get_config')
     @patch('src.infrastructure.inpainting.lama_adapter.Path.exists')
