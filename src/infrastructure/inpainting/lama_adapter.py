@@ -83,16 +83,33 @@ class LaMaAdapter:
         self.device = torch.device('cuda' if torch.cuda.is_available() and not self.config.FORCE_CPU else 'cpu')
         
         try:
-            # Try to import LaMa from simple-lama-inpainting
-            import sys
-            sys.path.insert(0, '/opt/lama')  # Add LaMa installation path
+            # Try to import LaMa from saicinpainting (official repository)
+            # The repository is cloned to /opt/lama and added to PYTHONPATH
+            from saicinpainting.training.trainers import load_checkpoint
+            from omegaconf import OmegaConf
+            import yaml
             
-            # Try to load the actual LaMa model
-            from lama import LaMa
-            self.model = LaMa(device=self.device)
+            # Load config
+            config_path = '/opt/lama/configs/prediction/default.yaml'
+            if not os.path.exists(config_path):
+                # Fallback to default config
+                config = OmegaConf.create({
+                    'model': {
+                        'name': 'lama',
+                        'params': {}
+                    }
+                })
+            else:
+                with open(config_path, 'r') as f:
+                    config = OmegaConf.create(yaml.safe_load(f))
+            
+            # Load model checkpoint
+            self.model = load_checkpoint(config, self.model_path, strict=False, map_location=self.device)
+            self.model.eval()
+            self.model.to(self.device)
             logger.info(f"✅ LaMa model loaded on {self.device}")
-        except ImportError:
-            logger.warning("LaMa model not available, using lightweight implementation")
+        except ImportError as e:
+            logger.warning(f"LaMa model not available ({e}), using lightweight implementation")
             # Create a lightweight UNet-like model for testing
             class LightweightLaMa(torch.nn.Module):
                 def __init__(self):

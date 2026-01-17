@@ -189,11 +189,13 @@ RUN pip install --no-cache-dir \
     webdataset \
     && rm -rf /root/.cache/pip /tmp/*
 
-# Install LaMa implementation from official repository
+# STEP 30: Установка LaMa (без pip install -e .)
 RUN git clone https://github.com/saic-mdal/lama.git /opt/lama && \
-    cd /opt/lama && \
-    pip install --no-cache-dir -e . && \
-    echo "✅ LaMa installed from official repository"
+    echo "✅ LaMa cloned successfully"
+
+# ВАЖНО: Добавляем папку LaMa в PYTHONPATH
+# Теперь любой скрипт сможет сделать "import saicinpainting"
+ENV PYTHONPATH="/opt/lama:${PYTHONPATH}"
 
 # Create directories for LaMa and STTN models
 RUN mkdir -p /opt/lama_models /opt/sttn_models
