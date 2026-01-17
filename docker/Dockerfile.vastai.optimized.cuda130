@@ -1,10 +1,9 @@
-# Dockerfile.vastai.optimized
+# Dockerfile.vastai.optimized.cuda130
 # Optimized Dockerfile for Vast.ai with full NVIDIA RTX 30-50 series support
-# This version uses CUDA 12.9.0 with PyTorch nightly for CUDA 12.6 compatibility
+# This version uses CUDA 13.0.2 with PyTorch nightly for CUDA 13.0 compatibility
 # Supports RTX 30 series (Ampere), 40 series (Ada Lovelace), 50 series (Blackwell)
 # Also maintains backward compatibility with RTX 20 series (Turing)
 
-#FROM nvidia/cuda:12.9.0-cudnn-devel-ubuntu22.04
 FROM nvidia/cuda:13.0.2-cudnn-devel-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -46,21 +45,23 @@ ENV PATH="/opt/venv/bin:$PATH"
 # Upgrade pip
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 
-# Install PyTorch Nightly with CUDA 12.6 (compatible with CUDA 12.9.0 runtime)
-# PyTorch nightly includes support for Blackwell sm_120 architecture (RTX 50 series)
-# Clean up space before installation to avoid "No space left on device"
+# Install PyTorch with CUDA 13.0 (supports RTX 20-50 series including Blackwell sm_120)
+# RTX 5080/5090 (Blackwell, CC 12.0) requires PyTorch built with sm_120 support
+# PyTorch started supporting sm_120 in nightly builds around late 2024
+# Using CUDA 13.0 wheels which are compatible with CUDA 13.0.2 runtime
+# See: https://pytorch.org/get-started/locally/
 RUN echo "Checking disk space before PyTorch installation..." && \
     df -h && \
     rm -rf /root/.cache/pip && \
     pip uninstall -y torch torchvision torchaudio 2>/dev/null || true && \
-    echo "Installing PyTorch Nightly with CUDA 12.6 (compatible with CUDA 12.9.0) for RTX 30-50 series compatibility..." && \
-    pip install --no-cache-dir --pre -q \
+    echo "Installing PyTorch with CUDA 13.0 for RTX 20-50 series (including Blackwell sm_120)..." && \
+    pip install --no-cache-dir --pre \
         torch \
         torchvision \
         torchaudio \
         --index-url https://download.pytorch.org/whl/nightly/cu130 && \
     echo "PyTorch installation complete" && \
-    python3 -c "import torch; print(f'PyTorch version: {torch.__version__}'); print(f'CUDA version: {torch.version.cuda if hasattr(torch.version, \"cuda\") else \"N/A\"}'); print(f'CUDA available at build time: {torch.cuda.is_available()}')" && \
+    python3 -c "import torch; print(f'PyTorch version: {torch.__version__}'); print(f'CUDA version: {torch.version.cuda if hasattr(torch.version, \"cuda\") else \"N/A\"}'); print(f'CUDA available: {torch.cuda.is_available()}'); print(f'Supported CCs: {[int(x.split(\"_\")[1])/10 for x in torch.cuda.get_arch_list()] if hasattr(torch.cuda, \"get_arch_list\") and torch.cuda.is_available() else \"Checking at runtime...\"}')" && \
     rm -rf /root/.cache/pip && \
     echo "Disk space after installation:" && \
     df -h
@@ -119,28 +120,6 @@ ENV NVIDIA_VISIBLE_DEVICES="all"
 ENV NVIDIA_DRIVER_CAPABILITIES="compute,utility"
 ENV CUDA_HOME="/usr/local/cuda"
 ENV LD_LIBRARY_PATH="/usr/local/cuda/lib64:${LD_LIBRARY_PATH}"
-
-# ============================================================================
-# CRITICAL: CUDA Architecture Compatibility for ALL Vast.ai GPUs
-# ============================================================================
-# This MUST be set BEFORE compiling any CUDA extensions (ProPainter, SAM2, etc.)
-# to create "fat" binaries that work on multiple GPU architectures.
-#
-# Supported architectures:
-#   7.5 = Turing (RTX 20 series: 2080/2080Ti, Tesla T4)
-#   8.0 = Ampere (A100, A30)
-#   8.6 = Ampere (RTX 30 series: 3090/3080, A10, A40)
-#   8.9 = Ada Lovelace (RTX 40 series: 4090/4080, L40/L40S)
-#   9.0 = Hopper (H100, H200)
-#   9.0+PTX = Forward compatibility for future architectures (RTX 50 series, etc.)
-#
-# PTX (Parallel Thread Execution) enables forward compatibility:
-# - Binary includes PTX intermediate representation
-# - JIT compiles to actual architecture at runtime
-# - Works on newer GPUs without rebuild (e.g., RTX 5090 Blackwell)
-#
-# Without PTX, extensions would need rebuild for each new GPU generation.
-# ============================================================================
 ENV TORCH_CUDA_ARCH_LIST="7.5;8.0;8.6;8.9;9.0;9.0+PTX"
 
 # SAM 2 Installation
@@ -152,59 +131,61 @@ RUN pip install --no-cache-dir --no-build-isolation git+https://github.com/faceb
 RUN mkdir -p /opt/sam2_checkpoints && \
     wget -q https://dl.fbaipublicfiles.com/segment_anything_2/072824/sam2_hiera_small.pt -O /opt/sam2_checkpoints/sam2_hiera_small.pt
 
-# ProPainter Installation with Multi-Architecture Support (CUDA 13.0)
-# TORCH_CUDA_ARCH_LIST set above ensures this builds "fat" binaries for all GPUs
-# Note: spatial-correlation-sampler will be rebuilt at runtime by entrypoint.sh
-# to match the exact CUDA version on the Vast.ai instance
-RUN pip install --no-cache-dir imageio scipy scikit-image && \
-    pip install --no-cache-dir av torchvision && \
-    git clone https://github.com/sczhou/ProPainter.git /opt/ProPainter && \
-    cd /opt/ProPainter && \
-    pip install --no-cache-dir -r requirements.txt && \
-    # Pre-install spatial-correlation-sampler (will be rebuilt at runtime if needed)
-    # The TORCH_CUDA_ARCH_LIST above forces compilation for all specified architectures
-    # This creates a single binary that works on RTX 20/30/40/50, A100, H100, etc.
-    echo "Building spatial-correlation-sampler for architectures: $TORCH_CUDA_ARCH_LIST" && \
-    pip uninstall -y spatial-correlation-sampler 2>/dev/null || true && \
-    pip install --no-cache-dir spatial-correlation-sampler && \
-    echo "✅ spatial-correlation-sampler pre-installed (will be rebuilt at runtime if CUDA mismatch)" && \
-    # Download model weights
-    cd /opt/ProPainter/weights && \
-    wget -q --show-progress https://github.com/sczhou/ProPainter/releases/download/v0.1.0/ProPainter.pth && \
-    wget -q --show-progress https://github.com/sczhou/ProPainter/releases/download/v0.1.0/raft-things.pth && \
-    wget -q --show-progress https://github.com/sczhou/ProPainter/releases/download/v0.1.0/recurrent_flow_completion.pth && \
-    # Cleanup
-    rm -rf /root/.cache/pip /tmp/*
-
-ENV PROPAINTER_ROOT="/opt/ProPainter"
+ARG CACHEBUST=1
 
 # ============================================================================
-# NEW LAYER: Lightweight Inpainting dependencies (LaMa & STTN)
-# This preserves cache for previous heavy layers (PyTorch, CUDA, ProPainter)
+# Lightweight Inpainting dependencies (LaMa & STTN)
 # ============================================================================
 RUN pip install --no-cache-dir \
     hydra-core \
     pytorch-lightning \
     kornia \
     webdataset \
+    einops \
+    easydict \
     && rm -rf /root/.cache/pip /tmp/*
 
-# STEP 30: Установка LaMa (без pip install -e .)
+# Install LaMa
 RUN git clone https://github.com/saic-mdal/lama.git /opt/lama && \
     echo "✅ LaMa cloned successfully"
 
-# ВАЖНО: Добавляем папку LaMa в PYTHONPATH
-# Теперь любой скрипт сможет сделать "import saicinpainting"
+# Add LaMa to PYTHONPATH
 ENV PYTHONPATH="/opt/lama:${PYTHONPATH}"
 
 # Create directories for LaMa and STTN models
 RUN mkdir -p /opt/lama_models /opt/sttn_models
 
-# Download LaMa weights (big-lama.pt) during build to avoid runtime download
+# Download LaMa weights
 RUN cd /opt/lama_models && \
     wget -q --show-progress https://github.com/Sanster/models/releases/download/add_big_lama/big-lama.pt && \
     echo "✅ LaMa weights downloaded to /opt/lama_models/big-lama.pt"
 
+# ============================================================================
+# ProPainter-Wire Installation (Fork by zerotouchprod)
+# Optimized for RTX 30/40/50 series with FP16 and Auto-Padding
+# Replaces the original ProPainter completely
+# ============================================================================
+ENV PROPAINTER_ROOT="/opt/ProPainter-Wire"
+
+ARG CACHEBUST=5
+
+RUN git clone https://github.com/zerotouchprod/ProPainter-Wire.git /opt/ProPainter-Wire && \
+    cd /opt/ProPainter-Wire && \
+    # Install dependencies specific to this fork
+    pip install --no-cache-dir -r requirements.txt && \
+    # Ensure weights folder exists
+    mkdir -p weights && \
+    cd weights && \
+    # Download weights directly (no need to clone original repo)
+    wget -q --show-progress https://github.com/sczhou/ProPainter/releases/download/v0.1.0/ProPainter.pth && \
+    wget -q --show-progress https://github.com/sczhou/ProPainter/releases/download/v0.1.0/raft-things.pth && \
+    wget -q --show-progress https://github.com/sczhou/ProPainter/releases/download/v0.1.0/recurrent_flow_completion.pth && \
+    cd .. && \
+    # Create symlink for backward compatibility (so imports from /opt/ProPainter still work)
+    ln -sfn /opt/ProPainter-Wire /opt/ProPainter && \
+    echo "✅ ProPainter-Wire installed successfully with weights."
+
+# Final PYTHONPATH setup
 ENV PYTHONPATH="/workspace/project:/workspace/project/external/Real-ESRGAN:/workspace/project/external/RIFE:${PYTHONPATH}"
 
 # Copy entrypoint
