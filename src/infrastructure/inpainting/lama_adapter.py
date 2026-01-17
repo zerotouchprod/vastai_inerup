@@ -221,20 +221,34 @@ class LaMaAdapter:
         mask_tensors = []
         paddings = []
         
-        for frame, mask in zip(frames, masks):
+        for idx, (frame, mask) in enumerate(zip(frames, masks)):
             # Convert BGR to RGB (LaMa expects RGB)
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            
+            # Ensure mask is single-channel (H, W)
+            if len(mask.shape) == 3:
+                mask = mask[:, :, 0]  # Take first channel
             
             # Pad to be divisible by 8
             frame_padded, padding = self._pad_to_divisible_by_8(frame_rgb)
             mask_padded, _ = self._pad_to_divisible_by_8(mask)
             
-            # Convert to tensor and normalize to [0, 1]
-            frame_tensor = torch.from_numpy(frame_padded).permute(2, 0, 1).float() / 255.0
-            mask_tensor = torch.from_numpy(mask_padded).unsqueeze(0).float() / 255.0
+            # Convert to float32 and normalize to [0, 1]
+            # Strict type casting to avoid saturation
+            frame_padded = frame_padded.astype(np.float32) / 255.0
+            mask_padded = mask_padded.astype(np.float32) / 255.0
             
-            # Ensure mask is binary
-            mask_tensor = (mask_tensor > 0.5).float()
+            # Binarize mask strictly
+            mask_padded = (mask_padded > 0.5).astype(np.float32)
+            
+            # Convert to tensor (HWC -> CHW)
+            frame_tensor = torch.from_numpy(frame_padded).permute(2, 0, 1)
+            mask_tensor = torch.from_numpy(mask_padded).unsqueeze(0)  # Add channel dimension
+            
+            # Debug logging for first frame of first batch
+            if idx == 0 and len(frame_tensors) == 0:
+                logger.debug(f"🔍 DEBUG TENSORS: Img Max={frame_tensor.max()}, Mask Max={mask_tensor.max()}")
+                logger.debug(f"🔍 DEBUG TENSORS: Img dtype={frame_tensor.dtype}, Mask dtype={mask_tensor.dtype}")
             
             frame_tensors.append(frame_tensor)
             mask_tensors.append(mask_tensor)
@@ -254,6 +268,11 @@ class LaMaAdapter:
             # Clamp to [0, 1] and convert to uint8
             inpainted = torch.clamp(inpainted_batch[i], 0, 1)
             inpainted = inpainted.permute(1, 2, 0).cpu().numpy()
+            
+            # Clip to avoid artifacts (values <0 or >1 become strange colors)
+            inpainted = np.clip(inpainted, 0, 1)
+            
+            # Scale back to 255 and convert to uint8
             inpainted = (inpainted * 255).astype(np.uint8)
             
             # Convert RGB back to BGR for OpenCV
