@@ -20,7 +20,7 @@ class AppConfig(BaseSettings):
     """Application configuration."""
     
     # Inpainting engine selection
-    INPAINTING_ENGINE: InpaintingEngine = InpaintingEngine.PROPAINTER
+    INPAINTING_ENGINE: InpaintingEngine = InpaintingEngine.LAMA
     
     # ProPainter settings
     # https://github.com/gnimuyeh/ProPainter-Wire

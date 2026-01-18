@@ -1,217 +1,175 @@
+"""
+LaMaAdapter - Facade for LaMa inpainting using external inference script.
+Uses /opt/LaMa-Wire/inference_lama.py for actual inference.
+Optimized for RTX 2060 Mobile (6GB VRAM) with FP16 and resize to 1280px.
+"""
+import subprocess
 import os
-import shutil
-import numpy as np
 from pathlib import Path
-from typing import List, Union, Tuple, Optional
-import torch
-import torch.nn.functional as F
+from typing import Union, List, Optional
 import cv2
-import gdown
+import numpy as np
 
 from src.shared.logging import get_logger
 from src.core.config import get_config
-from src.schemas.roi import InpaintROI, InpaintConfig
-from src.infrastructure.image_processing.geometry import (
-    get_roi_from_mask, crop_frame, paste_frame, dilate_mask
-)
-
-# Import components
-from src.infrastructure.inpainting.components.resolution import ResolutionCalculator
-from src.infrastructure.inpainting.components.strategy import SlidingWindowStrategy
-from src.infrastructure.inpainting.components.environment import EnvironmentManager
-from src.infrastructure.inpainting.components.media import MediaProcessor
+from src.core.exceptions import ProcessorNotAvailableError
+from src.schemas.roi import InpaintConfig
 
 logger = get_logger(__name__)
 
 
 class LaMaAdapter:
     """
-    Facade for LaMa inpainting inference pipeline.
-    Uses lightweight LaMa model for fast inpainting with temporal smoothing.
-    
-    Features:
-    - Automatic weights download (big-lama.pt)
-    - Batch processing (4-8 frames depending on VRAM)
-    - Input resolution divisible by 8 (padding if necessary)
-    - Temporal smoothing to reduce flickering
+    Adapter for LaMa inpainting that calls external inference script.
+    Follows the same interface as ProPainterAdapter for compatibility.
     """
     
-    def __init__(self, model_path: str = None):
-        # 1. Config & Paths
+    def __init__(self):
         self.config = get_config()
-        self.model_path = Path(model_path or self.config.LAMA_MODEL_PATH)
+        # Use local script within project
+        self.script_path = Path(__file__).parent.parent.parent.parent / "scripts" / "inference_lama.py"
+        self.model_path = Path("/opt/lama_models/big-lama.pt")
         
-        # 2. Initialize Components
-        self.env_manager = EnvironmentManager(self.config)
-        self.media_processor = MediaProcessor(self.config)
-        self.res_calculator = ResolutionCalculator(self.config)
-        self.strategy = SlidingWindowStrategy(self.config)
+        # Ensure script exists
+        if not self.script_path.exists():
+            logger.error(f"❌ LaMa script not found at {self.script_path}")
+            logger.info("Please ensure scripts/inference_lama.py exists in the project")
+            raise FileNotFoundError(f"LaMa script not found at {self.script_path}")
         
-        # 3. Model initialization (lazy loading)
-        self.model = None
-        self.device = None
-        self.batch_size = 4  # Default batch size, will be adjusted based on VRAM
+        logger.info(f"✅ LaMaAdapter initialized (script: {self.script_path}, model: {self.model_path})")
+    
+    
+    def process(
+        self, 
+        frames_dir: Union[str, Path], 
+        mask_dir: Union[str, Path], 
+        output_dir: Union[str, Path]
+    ) -> str:
+        """
+        Runs LaMa inference on the given directories.
         
-        # 4. Setup environment
-        self.env_manager.setup_gpu_environment()
+        Args:
+            frames_dir: Directory containing input frames
+            mask_dir: Directory containing mask frames
+            output_dir: Directory to save inpainted frames
+            
+        Returns:
+            Path to output directory
+            
+        Raises:
+            ProcessorNotAvailableError: If LaMa script fails
+            RuntimeError: If subprocess fails
+        """
+        frames_dir = Path(frames_dir)
+        mask_dir = Path(mask_dir)
+        output_dir = Path(output_dir)
         
-        # 5. Download weights if missing
-        self._ensure_weights()
+        logger.info(f"🚀 Starting LaMa Adapter on {frames_dir}")
         
-        logger.info(f"✅ LaMaAdapter initialized (model: {self.model_path})")
-
-    def _ensure_weights(self):
-        """Download LaMa weights if missing."""
-        if not self.model_path.exists():
-            logger.warning(f"⚠️ LaMa weights not found at {self.model_path}")
-            logger.info("📥 Downloading big-lama.pt...")
-            self.model_path.parent.mkdir(parents=True, exist_ok=True)
-            # big-lama.pt from official repository
-            url = "https://github.com/Sanster/models/releases/download/add_big_lama/big-lama.pt"
-            gdown.download(url, str(self.model_path), quiet=False)
-            logger.info(f"✅ Downloaded LaMa weights to {self.model_path}")
-
-    def _get_smoothing_weights(self) -> List[float]:
-        """Get smoothing weights for temporal smoothing."""
-        # Fixed weights as per requirements: 0.2 * Frame_{t-1} + 0.6 * Frame_{t} + 0.2 * Frame_{t+1}
-        return [0.2, 0.6, 0.2]
-
-    def _load_model(self):
-        """Lazy load LaMa model."""
-        if self.model is not None:
-            return
+        # Ensure output directory exists
+        output_dir.mkdir(parents=True, exist_ok=True)
         
-        logger.info(f"🔄 Loading LaMa model from {self.model_path}")
+        # Build command
+        cmd = [
+            "python3", str(self.script_path),
+            "--input_dir", str(frames_dir),
+            "--mask_dir", str(mask_dir),
+            "--output_dir", str(output_dir),
+            "--model_path", str(self.model_path)
+        ]
         
-        # Determine device
-        self.device = torch.device('cuda' if torch.cuda.is_available() and not self.config.FORCE_CPU else 'cpu')
+        logger.debug(f"LaMa command: {' '.join(cmd)}")
         
         try:
-            # Try to import LaMa from saicinpainting (official repository)
-            # The repository is cloned to /opt/lama and added to PYTHONPATH
-            from saicinpainting.training.trainers import load_checkpoint
-            from omegaconf import OmegaConf
-            import yaml
-            
-            # Load config
-            config_path = '/opt/lama/configs/prediction/default.yaml'
-            if not os.path.exists(config_path):
-                # Fallback to default config
-                config = OmegaConf.create({
-                    'model': {
-                        'name': 'lama',
-                        'params': {}
-                    }
-                })
-            else:
-                with open(config_path, 'r') as f:
-                    config = OmegaConf.create(yaml.safe_load(f))
-            
-            # Load model checkpoint
-            self.model = load_checkpoint(config, self.model_path, strict=False, map_location=self.device)
-            self.model.eval()
-            self.model.to(self.device)
-            logger.info(f"✅ LaMa model loaded on {self.device}")
-        except ImportError as e:
-            logger.warning(f"LaMa model not available ({e}), using lightweight implementation")
-            # Create a lightweight UNet-like model for testing
-            class LightweightLaMa(torch.nn.Module):
-                def __init__(self):
-                    super().__init__()
-                    # Simple convolutional layers for inpainting
-                    self.conv1 = torch.nn.Conv2d(4, 64, kernel_size=3, padding=1)
-                    self.conv2 = torch.nn.Conv2d(64, 64, kernel_size=3, padding=1)
-                    self.conv3 = torch.nn.Conv2d(64, 3, kernel_size=3, padding=1)
-                    self.relu = torch.nn.ReLU()
-                    self.sigmoid = torch.nn.Sigmoid()
-                
-                def forward(self, img, mask):
-                    # Concatenate image and mask
-                    x = torch.cat([img, mask], dim=1)
-                    x = self.relu(self.conv1(x))
-                    x = self.relu(self.conv2(x))
-                    x = self.sigmoid(self.conv3(x))
-                    # Blend inpainted region with original
-                    return img * (1 - mask) + x * mask
-            
-            self.model = LightweightLaMa().to(self.device)
-            self.model.eval()
-            logger.info(f"✅ Lightweight LaMa model created on {self.device}")
-        
-        # Adjust batch size based on available VRAM
-        if torch.cuda.is_available():
-            total_vram = torch.cuda.get_device_properties(0).total_memory / 1e9  # GB
-            if total_vram >= 16:
-                self.batch_size = 8
-            elif total_vram >= 8:
-                self.batch_size = 6
-            else:
-                self.batch_size = 4
-            logger.info(f"📊 Adjusted batch size to {self.batch_size} based on {total_vram:.1f}GB VRAM")
-
-    def _apply_temporal_smoothing(self, frames: List[np.ndarray]) -> List[np.ndarray]:
-        """
-        Apply temporal smoothing to reduce flickering.
-        Formula: Frame_{t} = 0.2 * Frame_{t-1} + 0.6 * Frame_{t} + 0.2 * Frame_{t+1}
-        """
-        if not self.config.LAMA_TEMPORAL_SMOOTHING or len(frames) < 3:
-            return frames
-        
-        weights = self._get_smoothing_weights()
-        smoothed_frames = []
-        
-        # Handle first frame (no previous frame)
-        first_frame = frames[0].astype(np.float32) * 0.8 + frames[1].astype(np.float32) * 0.2
-        smoothed_frames.append(first_frame.astype(np.uint8))
-        
-        # Handle middle frames
-        for i in range(1, len(frames) - 1):
-            smoothed = (
-                frames[i-1].astype(np.float32) * weights[0] +
-                frames[i].astype(np.float32) * weights[1] +
-                frames[i+1].astype(np.float32) * weights[2]
+            # Run inference from project root
+            project_root = Path(__file__).parent.parent.parent.parent
+            result = subprocess.run(
+                cmd, 
+                check=True, 
+                stdout=subprocess.PIPE, 
+                stderr=subprocess.PIPE, 
+                text=True,
+                cwd=str(project_root)  # Run from project root
             )
-            smoothed_frames.append(smoothed.astype(np.uint8))
-        
-        # Handle last frame (no next frame)
-        last_frame = frames[-2].astype(np.float32) * 0.2 + frames[-1].astype(np.float32) * 0.8
-        smoothed_frames.append(last_frame.astype(np.uint8))
-        
-        return smoothed_frames
-
-    def _pad_to_divisible_by_8(self, image: np.ndarray) -> Tuple[np.ndarray, Tuple[int, int, int, int]]:
-        """Pad image to be divisible by 8. Returns padded image and padding values (top, bottom, left, right)."""
-        h, w = image.shape[:2]
-        
-        # Calculate padding
-        pad_h = (8 - h % 8) % 8
-        pad_w = (8 - w % 8) % 8
-        
-        if pad_h == 0 and pad_w == 0:
-            return image, (0, 0, 0, 0)
-        
-        # Pad symmetrically
-        pad_top = pad_h // 2
-        pad_bottom = pad_h - pad_top
-        pad_left = pad_w // 2
-        pad_right = pad_w - pad_left
-        
-        # Apply padding
-        if len(image.shape) == 3:  # Color image
-            padded = np.pad(image, ((pad_top, pad_bottom), (pad_left, pad_right), (0, 0)), mode='reflect')
-        else:  # Grayscale mask
-            padded = np.pad(image, ((pad_top, pad_bottom), (pad_left, pad_right)), mode='constant', constant_values=0)
-        
-        return padded, (pad_top, pad_bottom, pad_left, pad_right)
+            
+            # Log output
+            if result.stdout:
+                logger.info(f"LaMa stdout: {result.stdout[:500]}...")
+            if result.stderr:
+                logger.debug(f"LaMa stderr: {result.stderr[:500]}...")
+            
+            logger.info("✅ LaMa processing finished successfully")
+            return str(output_dir)
+            
+        except subprocess.CalledProcessError as e:
+            logger.error(f"❌ LaMa failed with exit code {e.returncode}")
+            logger.error(f"Stderr: {e.stderr[:1000]}")
+            raise ProcessorNotAvailableError(
+                f"LaMa execution failed: {e.stderr[:500]}"
+            )
+        except FileNotFoundError as e:
+            logger.error(f"❌ LaMa script not found: {e}")
+            raise ProcessorNotAvailableError(
+                f"LaMa script not found at {self.script_path}"
+            )
     
-    def _unpad(self, image: np.ndarray, padding: Tuple[int, int, int, int]) -> np.ndarray:
-        """Remove padding from image."""
-        pad_top, pad_bottom, pad_left, pad_right = padding
-        if pad_top == 0 and pad_bottom == 0 and pad_left == 0 and pad_right == 0:
-            return image
+    def process_with_roi(
+        self,
+        frame: np.ndarray,
+        mask: np.ndarray,
+        config: Optional[InpaintConfig] = None
+    ) -> np.ndarray:
+        """
+        Process single frame with ROI optimization.
+        This is a simplified version that creates temporary directories
+        and calls the main process method.
         
-        h, w = image.shape[:2]
-        return image[pad_top:h-pad_bottom, pad_left:w-pad_right]
+        Note: For production use, batch processing is recommended.
+        """
+        if config is None:
+            config = InpaintConfig()
+        
+        import tempfile
+        from pathlib import Path
+        
+        # Create temporary directories
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            frames_dir = tmp_path / "frames"
+            masks_dir = tmp_path / "masks"
+            output_dir = tmp_path / "output"
+            
+            frames_dir.mkdir()
+            masks_dir.mkdir()
+            output_dir.mkdir()
+            
+            # Save frame and mask
+            frame_path = frames_dir / "frame_001.png"
+            mask_path = masks_dir / "frame_001.png"
+            
+            cv2.imwrite(str(frame_path), frame)
+            cv2.imwrite(str(mask_path), mask)
+            
+            # Process using main method
+            try:
+                self.process(frames_dir, masks_dir, output_dir)
+                
+                # Load result
+                result_path = output_dir / "frame_001.png"
+                if result_path.exists():
+                    result = cv2.imread(str(result_path))
+                    return result
+                else:
+                    raise RuntimeError("LaMa did not produce output")
+                    
+            except Exception as e:
+                logger.error(f"LaMa ROI processing failed: {e}")
+                if config.fallback_to_cv2:
+                    logger.warning("Falling back to OpenCV Telea inpainting")
+                    mask_uint8 = (mask > 0).astype(np.uint8) * 255
+                    return cv2.inpaint(frame, mask_uint8, 3, cv2.INPAINT_TELEA)
+                else:
+                    raise
     
     def _inpaint_batch(
         self, 
@@ -221,335 +179,44 @@ class LaMaAdapter:
         padding_px: int = 50
     ) -> List[np.ndarray]:
         """
-        Inpaint a batch of frames using LaMa model with optional ROI optimization.
-        
-        Args:
-            frames: List of BGR frames
-            masks: List of binary masks (0 or 255)
-            use_roi: Whether to use ROI optimization
-            padding_px: Padding for ROI calculation
-            
-        Returns:
-            List of inpainted BGR frames
+        Inpaint a batch of frames using LaMa.
+        Creates temporary directories and calls process().
         """
-        self._load_model()
+        import tempfile
+        from pathlib import Path
         
-        if not frames or not masks:
-            return []
-        
-        # If ROI optimization is disabled, process full frames
-        if not use_roi:
-            return self._inpaint_batch_full(frames, masks)
-        
-        # Process with ROI optimization
-        inpainted_frames = []
-        
-        for frame, mask in zip(frames, masks):
-            # Calculate ROI from mask
-            roi_coords = get_roi_from_mask(mask, padding=padding_px, min_divisible=8, dilate_kernel=3)
-            y_min, y_max, x_min, x_max = roi_coords
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            frames_dir = tmp_path / "frames"
+            masks_dir = tmp_path / "masks"
+            output_dir = tmp_path / "output"
             
-            # Check if ROI is valid (non-empty)
-            if y_min >= y_max or x_min >= x_max:
-                # No mask detected, return original frame
-                inpainted_frames.append(frame.copy())
-                continue
+            frames_dir.mkdir()
+            masks_dir.mkdir()
+            output_dir.mkdir()
             
-            # Crop frame and mask using ROI
-            frame_crop = crop_frame(frame, roi_coords)
-            mask_crop = crop_frame(mask, roi_coords)
+            # Save all frames and masks
+            for i, (frame, mask) in enumerate(zip(frames, masks)):
+                frame_path = frames_dir / f"frame_{i:04d}.png"
+                mask_path = masks_dir / f"frame_{i:04d}.png"
+                cv2.imwrite(str(frame_path), frame)
+                cv2.imwrite(str(mask_path), mask)
             
-            # Process cropped region
-            inpainted_crop = self._inpaint_batch_full([frame_crop], [mask_crop])[0]
+            # Process batch
+            self.process(frames_dir, masks_dir, output_dir)
             
-            # Paste back into original frame
-            inpainted_frame = paste_frame(frame, inpainted_crop, roi_coords)
-            inpainted_frames.append(inpainted_frame)
-        
-        return inpainted_frames
-    
-    def _inpaint_batch_full(self, frames: List[np.ndarray], masks: List[np.ndarray]) -> List[np.ndarray]:
-        """
-        Inpaint full frames without ROI optimization (original implementation).
-        """
-        if not frames or not masks:
-            return []
-        
-        # Prepare batch tensors
-        frame_tensors = []
-        mask_tensors = []
-        paddings = []
-        
-        for idx, (frame, mask) in enumerate(zip(frames, masks)):
-            # Convert BGR to RGB (LaMa expects RGB)
-            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            # Load results
+            results = []
+            for i in range(len(frames)):
+                result_path = output_dir / f"frame_{i:04d}.png"
+                if result_path.exists():
+                    result = cv2.imread(str(result_path))
+                    results.append(result)
+                else:
+                    # Fallback to original frame
+                    results.append(frames[i].copy())
             
-            # Ensure mask is single-channel (H, W)
-            if len(mask.shape) == 3:
-                mask = mask[:, :, 0]  # Take first channel
-            
-            # Pad to be divisible by 8
-            frame_padded, padding = self._pad_to_divisible_by_8(frame_rgb)
-            mask_padded, _ = self._pad_to_divisible_by_8(mask)
-            
-            # Convert to float32 and normalize to [0, 1]
-            # Strict type casting to avoid saturation
-            frame_padded = frame_padded.astype(np.float32) / 255.0
-            mask_padded = mask_padded.astype(np.float32) / 255.0
-            
-            # Binarize mask strictly
-            mask_padded = (mask_padded > 0.5).astype(np.float32)
-            
-            # DEBUG: Check tensor ranges
-            if idx == 0:
-                logger.debug(f"🔍 DEBUG TENSORS PRE: Img range=[{frame_padded.min():.3f}, {frame_padded.max():.3f}], "
-                           f"Mask range=[{mask_padded.min():.3f}, {mask_padded.max():.3f}]")
-                # Ensure mask is binary (0 or 1)
-                unique_vals = np.unique(mask_padded)
-                logger.debug(f"🔍 DEBUG MASK VALUES: {unique_vals}")
-            
-            # Convert to tensor (HWC -> CHW)
-            frame_tensor = torch.from_numpy(frame_padded).permute(2, 0, 1)
-            mask_tensor = torch.from_numpy(mask_padded).unsqueeze(0)  # Add channel dimension
-            
-            frame_tensors.append(frame_tensor)
-            mask_tensors.append(mask_tensor)
-            paddings.append(padding)
-        
-        # Stack into batch
-        frames_batch = torch.stack(frame_tensors).to(self.device)
-        masks_batch = torch.stack(mask_tensors).to(self.device)
-        
-        # DEBUG: Check tensor ranges before inference
-        logger.debug(f"🔍 DEBUG TENSORS BATCH: Img shape={frames_batch.shape}, "
-                   f"Img range=[{frames_batch.min():.3f}, {frames_batch.max():.3f}], "
-                   f"Mask range=[{masks_batch.min():.3f}, {masks_batch.max():.3f}]")
-        
-        # Inpaint batch
-        with torch.no_grad():
-            inpainted_batch = self.model(frames_batch, masks_batch)
-        
-        # DEBUG: Check output ranges
-        logger.debug(f"🔍 DEBUG OUTPUT: Range=[{inpainted_batch.min():.3f}, {inpainted_batch.max():.3f}]")
-        
-        # Convert back to numpy and remove padding
-        inpainted_frames = []
-        for i in range(len(frames)):
-            # Clamp to [0, 1] and convert to uint8
-            inpainted = torch.clamp(inpainted_batch[i], 0, 1)
-            inpainted = inpainted.permute(1, 2, 0).cpu().numpy()
-            
-            # Clip to avoid artifacts (values <0 or >1 become strange colors)
-            inpainted = np.clip(inpainted, 0, 1)
-            
-            # Scale back to 255 and convert to uint8
-            inpainted = (inpainted * 255).astype(np.uint8)
-            
-            # Convert RGB back to BGR for OpenCV
-            inpainted = cv2.cvtColor(inpainted, cv2.COLOR_RGB2BGR)
-            
-            # Remove padding
-            inpainted = self._unpad(inpainted, paddings[i])
-            inpainted_frames.append(inpainted)
-        
-        return inpainted_frames
-    
-    def _inpaint_frame(
-        self, 
-        frame: np.ndarray, 
-        mask: np.ndarray,
-        use_roi: bool = False,
-        padding_px: int = 50
-    ) -> np.ndarray:
-        """
-        Inpaint a single frame using LaMa model with optional ROI optimization.
-        
-        Args:
-            frame: BGR frame
-            mask: Binary mask (0 or 255)
-            use_roi: Whether to use ROI optimization
-            padding_px: Padding for ROI calculation
-            
-        Returns:
-            Inpainted BGR frame
-        """
-        # Use batch processing with single frame
-        return self._inpaint_batch([frame], [mask], use_roi=use_roi, padding_px=padding_px)[0]
-    
-    def process_with_roi(
-        self,
-        frame: np.ndarray,
-        mask: np.ndarray,
-        config: Optional[InpaintConfig] = None
-    ) -> np.ndarray:
-        """
-        Process single frame with ROI optimization and fallback mechanism.
-        
-        Args:
-            frame: Input BGR frame
-            mask: Binary mask (0 or 255)
-            config: Inpainting configuration
-            
-        Returns:
-            Inpainted frame
-        """
-        if config is None:
-            config = InpaintConfig()
-        
-        try:
-            # Try ROI optimization if enabled
-            if config.use_roi_optimization:
-                logger.debug("Using ROI optimization for LaMa inpainting")
-                result = self._inpaint_frame(
-                    frame, mask, 
-                    use_roi=True, 
-                    padding_px=config.padding_px
-                )
-            else:
-                logger.debug("Using full-frame LaMa inpainting")
-                result = self._inpaint_frame(frame, mask, use_roi=False)
-            
-            return result
-            
-        except RuntimeError as e:
-            if "out of memory" in str(e).lower() and config.fallback_to_cv2:
-                logger.warning(f"OOM detected in LaMa: {e}. Falling back to OpenCV Telea.")
-                # Fallback to OpenCV inpainting
-                mask_uint8 = (mask > 0).astype(np.uint8) * 255
-                return cv2.inpaint(frame, mask_uint8, 3, cv2.INPAINT_TELEA)
-            else:
-                # Re-raise if not OOM or fallback disabled
-                raise
-
-    def process(self, input_path: Union[str, Path, List[Path]], mask_dir: Path, output_path: Path) -> Path:
-        """
-        Main entry point. Orchestrates the LaMa inpainting pipeline.
-        """
-        logger.info("🚀 Starting LaMa Inpainting Pipeline...")
-        
-        # 1. Setup GPU Environment
-        gpu_info = self.env_manager.setup_gpu_environment()
-        
-        # 2. Prepare Input Media (Video -> Frames)
-        frames_dir = self.media_processor.prepare_input(input_path)
-        
-        # 3. Calculate Optimal Resolution (LaMa is lightweight, can handle higher res)
-        original_dims = self.media_processor.get_frame_dimensions(frames_dir)
-        
-        # LaMa can handle higher resolution than ProPainter
-        # Use 2x more VRAM for calculation since LaMa is lighter
-        vram_with_buffer = gpu_info['total_vram_gb'] * 1.5
-        target_width, target_height, safe_chunk_size = self.res_calculator.calculate_optimal_params(
-            original_dims[0], original_dims[1], vram_with_buffer
-        )
-        
-        # Increase chunk size for LaMa (it's more memory efficient)
-        safe_chunk_size = min(safe_chunk_size * 2, 50)  # Cap at 50 frames
-        
-        logger.info(f"🎯 LaMa Settings: {target_width}x{target_height} @ {safe_chunk_size} frames/chunk")
-        self.strategy.chunk_size = safe_chunk_size
-        self.strategy.overlap = min(2, safe_chunk_size // 4)
-        
-        # 4. Generate Execution Strategy
-        chunks = self.strategy.generate_chunks(frames_dir, mask_dir, output_path.parent)
-        
-        # 5. Process each chunk
-        chunk_results = []
-        for chunk_idx, chunk in enumerate(chunks):
-            logger.info(f"🔧 Processing chunk {chunk_idx + 1}/{len(chunks)}")
-            
-            # Load frames and masks for this chunk
-            frame_files = sorted(chunk['frames'])
-            mask_files = sorted(chunk['masks'])
-            
-            if len(frame_files) != len(mask_files):
-                logger.error(f"Frame/Mask count mismatch: {len(frame_files)} != {len(mask_files)}")
-                continue
-            
-            # Create output directory for this chunk
-            chunk_output_dir = chunk['output']
-            chunk_output_dir.mkdir(parents=True, exist_ok=True)
-            
-            # Process frames in batches
-            # We'll accumulate inpainted frames and their original filenames
-            inpainted_frames = []
-            original_frame_files = []
-            batch_frames = []
-            batch_masks = []
-            batch_frame_files = []
-            
-            for i, (frame_file, mask_file) in enumerate(zip(frame_files, mask_files)):
-                frame = cv2.imread(str(frame_file))
-                mask = cv2.imread(str(mask_file), cv2.IMREAD_GRAYSCALE)
-                
-                if frame is None or mask is None:
-                    logger.error(f"Failed to load {frame_file} or {mask_file}")
-                    continue
-                
-                # Resize to target dimensions if needed
-                if frame.shape[:2] != (target_height, target_width):
-                    frame = cv2.resize(frame, (target_width, target_height))
-                    mask = cv2.resize(mask, (target_width, target_height))
-                
-                batch_frames.append(frame)
-                batch_masks.append(mask)
-                batch_frame_files.append(frame_file)
-                
-                # Process batch when full or at the end
-                if len(batch_frames) >= self.batch_size or i == len(frame_files) - 1:
-                    if batch_frames:
-                        # Inpaint batch
-                        batch_inpainted = self._inpaint_batch(batch_frames, batch_masks)
-                        
-                        # Accumulate results
-                        inpainted_frames.extend(batch_inpainted)
-                        original_frame_files.extend(batch_frame_files)
-                        
-                        # Clear batch
-                        batch_frames = []
-                        batch_masks = []
-                        batch_frame_files = []
-                    
-                    if (i + 1) % 10 == 0:
-                        logger.info(f"  Processed {i + 1}/{len(frame_files)} frames")
-            
-            # Verify we processed all frames
-            if len(inpainted_frames) != len(frame_files):
-                logger.warning(f"Processed {len(inpainted_frames)} frames but expected {len(frame_files)}")
-            
-            # Apply temporal smoothing if enabled
-            if self.config.LAMA_TEMPORAL_SMOOTHING and len(inpainted_frames) >= 3:
-                logger.info("🔄 Applying temporal smoothing...")
-                inpainted_frames = self._apply_temporal_smoothing(inpainted_frames)
-            
-            # Save inpainted frames with original filenames
-            for frame_file_orig, inpainted_frame in zip(original_frame_files, inpainted_frames):
-                output_file = chunk_output_dir / frame_file_orig.name
-                cv2.imwrite(str(output_file), inpainted_frame)
-            
-            chunk_results.append(chunk_output_dir)
-        
-        # 6. Merge chunks and restore original resolution
-        if not chunk_results:
-            raise RuntimeError("No chunks were processed successfully")
-        
-        # Convert list of chunk output directories to dictionary of frame files
-        chunk_files_dict = {}
-        for chunk_dir in chunk_results:
-            # Each chunk directory contains frame_*.png files
-            frame_files = sorted(chunk_dir.glob("frame_*.png"))
-            for frame_file in frame_files:
-                # Use filename as key to ensure uniqueness
-                chunk_files_dict[frame_file.name] = frame_file
-        
-        final_output = self.media_processor.merge_chunks(chunk_files_dict, output_path)
-        self.media_processor.restore_aspect_ratio(final_output, original_dims)
-        
-        # Cleanup
-        self.media_processor.cleanup(frames_dir)
-        
-        logger.info(f"✅ LaMa pipeline completed: {final_output}")
-        return final_output
+            return results
 
 
 # Backward compatibility

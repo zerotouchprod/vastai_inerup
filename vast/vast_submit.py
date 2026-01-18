@@ -746,7 +746,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             try:
                 import subprocess, json
                 script_dir = os.path.dirname(__file__)
-                presign = os.path.join(script_dir, 'b2_presign.py')
+                presign = os.path.join(script_dir, '../b2_presign.py')
                 out = subprocess.check_output([sys.executable, presign, '--bucket', args.b2_bucket, '--key', args.b2_key, '--endpoint', args.b2_endpoint or os.environ.get('B2_ENDPOINT', ''), '--expires', str(args.b2_expires)], universal_newlines=True)
                 get_url = json.loads(out).get('get_url')
                 if not get_url:

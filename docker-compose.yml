@@ -19,6 +19,8 @@ services:
       - LD_LIBRARY_PATH=/opt/venv/lib/python3.10/site-packages/nvidia/cudnn/lib:/opt/venv/lib/python3.10/site-packages/nvidia/cublas/lib:$LD_LIBRARY_PATH
     volumes:
       - .:/workspace/project
+      - ./results:/workspace/results
+      - ./models:/opt/lama_models
     working_dir: /workspace/project
     #command: -c "python docker/check_gpu.py && echo 'GPU check completed. Ready for processing.' && bash"
     command: -c "tail -f /dev/null"

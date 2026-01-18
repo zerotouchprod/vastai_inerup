@@ -35,7 +35,7 @@ if _env.exists():
                     os.environ[k]=v
 
 # import vast_submit
-import vast_submit
+from vast import vast_submit
 
 # Public (short) URLs for runner and input — we rely on these being public in the bucket
 RUNNER_URL = os.environ.get('RUNNER_PUBLIC') or 'https://noxfvr-videos.s3.us-west-004.backblazeb2.com/scripts/remote_runner.sh'
@@ -110,7 +110,6 @@ offer_id = str(chosen.get('id') or chosen.get('offer_id') or chosen.get('offer')
 
 # Build args_str: download runner and input (public), run runner to produce /workspace/output/output_upscaled.mp4,
 # then run small Python uploader that uses boto3 and env creds to upload file to B2 bucket under OUT_KEY_PREFIX
-import datetime
 ts = int(time.time())
 out_key = f"{OUT_KEY_PREFIX}/qad_upscaled_{ts}.mp4"
 
@@ -171,7 +170,7 @@ print('Env keys to pass: B2_BUCKET=', env.get('B2_BUCKET') is not None)
 
 print('Calling create_instance...')
 try:
-    resp = vast_submit.create_instance(offer_id, os.environ.get('VAST_IMAGE',''), args_str, env=env, start=True)
+    resp = vast_submit.create_instance(offer_id, os.environ.get('VAST_IMAGE', ''), args_str, env=env, start=True)
     print('Create response:', json.dumps(resp, indent=2))
 except Exception as e:
     print('Create failed:', e)

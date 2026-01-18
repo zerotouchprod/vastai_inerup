@@ -53,7 +53,7 @@ if _env_path.exists():
 
 
 try:
-    import vast_submit
+    from vast import vast_submit
     import upload_b2
     import b2_presign
 except ImportError as e:
