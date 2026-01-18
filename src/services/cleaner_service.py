@@ -10,9 +10,7 @@ from src.infrastructure.ocr.paddle_wrapper import PaddleWrapper
 from src.infrastructure.inpainting.propainter_adapter import ProPainterAdapter
 from src.infrastructure.inpainting.lama_adapter import LaMaAdapter
 from src.schemas.roi import InpaintConfig
-
-# Import tunable configuration constants
-from src.infrastructure.processors import subtitle_removal_config as SRC
+from src.core.config import get_config
 
 logger = get_logger(__name__)
 
@@ -198,35 +196,39 @@ class SubtitleRemoverService:
         """
         try:
             import torch
+            config = get_config()
+            
             if not torch.cuda.is_available():
-                logger.info(f"No CUDA available, using conservative kernel size ({SRC.KERNEL_SIZE_LOW_VRAM}x{SRC.KERNEL_SIZE_LOW_VRAM})")
-                return SRC.KERNEL_SIZE_LOW_VRAM
+                logger.info(f"No CUDA available, using conservative kernel size ({config.KERNEL_SIZE_LOW_VRAM}x{config.KERNEL_SIZE_LOW_VRAM})")
+                return config.KERNEL_SIZE_LOW_VRAM
 
             # Get total VRAM in GB
             vram_bytes = torch.cuda.get_device_properties(0).total_memory
             vram_gb = vram_bytes / (1024 ** 3)
 
             # Use config helper function (supports FORCE_KERNEL_SIZE env var)
-            kernel_size = SRC.get_kernel_size_for_vram(vram_gb)
+            kernel_size = config.get_kernel_size_for_vram(vram_gb)
 
             logger.info(f"Detected {vram_gb:.1f}GB VRAM → using {kernel_size}x{kernel_size} kernel")
             return kernel_size
 
         except Exception as e:
-            logger.warning(f"Failed to detect VRAM: {e}, using default {SRC.KERNEL_SIZE_LOW_VRAM}x{SRC.KERNEL_SIZE_LOW_VRAM} kernel")
-            return SRC.KERNEL_SIZE_LOW_VRAM
+            config = get_config()
+            logger.warning(f"Failed to detect VRAM: {e}, using default {config.KERNEL_SIZE_LOW_VRAM}x{config.KERNEL_SIZE_LOW_VRAM} kernel")
+            return config.KERNEL_SIZE_LOW_VRAM
 
     def _enhance_image_for_ocr(self, img: np.ndarray) -> np.ndarray:
         """
         CLAHE enhancement: pulls out hidden text by enhancing local contrast.
-        Parameters controlled by SRC.CLAHE_CLIP_LIMIT and SRC.CLAHE_TILE_GRID_SIZE
+        Parameters controlled by config.CLAHE_CLIP_LIMIT and config.CLAHE_TILE_GRID_SIZE
         """
         try:
+            config = get_config()
             lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
             l, a, b = cv2.split(lab)
             clahe = cv2.createCLAHE(
-                clipLimit=SRC.CLAHE_CLIP_LIMIT,
-                tileGridSize=SRC.CLAHE_TILE_GRID_SIZE
+                clipLimit=config.CLAHE_CLIP_LIMIT,
+                tileGridSize=config.CLAHE_TILE_GRID_SIZE
             )
             cl = clahe.apply(l)
             limg = cv2.merge((cl, a, b))
@@ -271,13 +273,14 @@ class SubtitleRemoverService:
     def _merge_detections(self, bboxes1: list, bboxes2: list) -> list:
         """
         Merge detections from two OCR passes, removing duplicates by IoU.
-        Uses SRC.OCR_DUPLICATE_IOU_THRESHOLD to determine duplicates.
+        Uses config.OCR_DUPLICATE_IOU_THRESHOLD to determine duplicates.
         """
         if not bboxes1:
             return bboxes2 or []
         if not bboxes2:
             return bboxes1
 
+        config = get_config()
         merged = list(bboxes1)
 
         for bbox2 in bboxes2:
@@ -304,7 +307,7 @@ class SubtitleRemoverService:
                     iou = inter_area / (area1 + area2 - inter_area + 1e-6)
 
                     # Use configurable IoU threshold
-                    if iou > SRC.OCR_DUPLICATE_IOU_THRESHOLD:
+                    if iou > config.OCR_DUPLICATE_IOU_THRESHOLD:
                         is_duplicate = True
                         break
 
@@ -489,13 +492,14 @@ class SubtitleRemoverService:
             'confidence_sum': 0.0
         }
 
+        config = get_config()
         total_frames = len(frames)
         # Use configurable progress logging interval
-        log_interval = max(1, total_frames // (100 // SRC.PROGRESS_LOG_PERCENTAGE))
+        log_interval = max(1, total_frames // (100 // config.PROGRESS_LOG_PERCENTAGE))
 
         # Use configurable OCR threshold from config
-        logger.info(f"Using OCR confidence threshold: {SRC.OCR_CONFIDENCE_THRESHOLD}")
-        if SRC.OCR_DUAL_PASS_ENABLED:
+        logger.info(f"Using OCR confidence threshold: {config.OCR_CONFIDENCE_THRESHOLD}")
+        if config.OCR_DUAL_PASS_ENABLED:
             logger.info("Dual-pass OCR enabled (enhanced + original)")
 
         for idx, frame_path in enumerate(frames):
@@ -510,15 +514,15 @@ class SubtitleRemoverService:
             enhanced_img = self._enhance_image_for_ocr(img)
             
             # Б. Агрессивная детекция: запускаем OCR на ОБОИХ изображениях и объединяем
-            # Контролируется константой SRC.OCR_DUAL_PASS_ENABLED
-            if SRC.OCR_DUAL_PASS_ENABLED:
-                bboxes_enhanced = self.ocr.detect(enhanced_img, confidence_threshold=SRC.OCR_CONFIDENCE_THRESHOLD)
-                bboxes_original = self.ocr.detect(img, confidence_threshold=SRC.OCR_CONFIDENCE_THRESHOLD)
+            # Контролируется константой config.OCR_DUAL_PASS_ENABLED
+            if config.OCR_DUAL_PASS_ENABLED:
+                bboxes_enhanced = self.ocr.detect(enhanced_img, confidence_threshold=config.OCR_CONFIDENCE_THRESHOLD)
+                bboxes_original = self.ocr.detect(img, confidence_threshold=config.OCR_CONFIDENCE_THRESHOLD)
                 # Объединяем результаты (убираем дубликаты по IoU)
                 bboxes = self._merge_detections(bboxes_enhanced, bboxes_original)
             else:
                 # Single pass: только на улучшенном изображении
-                bboxes = self.ocr.detect(enhanced_img, confidence_threshold=SRC.OCR_CONFIDENCE_THRESHOLD)
+                bboxes = self.ocr.detect(enhanced_img, confidence_threshold=config.OCR_CONFIDENCE_THRESHOLD)
 
             if not bboxes:
                 cv2.imwrite(str(mask_dir / f"{frame_path.stem}.png"), mask)
@@ -561,7 +565,7 @@ class SubtitleRemoverService:
             # Debug log for frames with filtered boxes
             if filtered_count > 0 and logger.isEnabledFor(10):  # DEBUG level
                 # Use configurable max examples count
-                for fb in filtered_boxes[:SRC.DEBUG_MAX_FILTERED_EXAMPLES]:
+                for fb in filtered_boxes[:config.DEBUG_MAX_FILTERED_EXAMPLES]:
                     logger.debug(f"[Frame {idx}] Filtered: '{fb['text']}' "
                                f"center=({fb['center_x']:.0f},{fb['center_y']:.0f}) "
                                f"roi_limit={fb['roi_limit']:.0f}")
@@ -578,10 +582,10 @@ class SubtitleRemoverService:
                 x_max, y_max = points.max(axis=0)
 
                 # Use configurable expansion values
-                x_min = max(0, x_min - SRC.BBOX_EXPAND_HORIZONTAL)
-                x_max = min(w, x_max + SRC.BBOX_EXPAND_HORIZONTAL)
-                y_min = max(0, y_min - SRC.BBOX_EXPAND_VERTICAL)
-                y_max = min(h, y_max + SRC.BBOX_EXPAND_VERTICAL)
+                x_min = max(0, x_min - config.BBOX_EXPAND_HORIZONTAL)
+                x_max = min(w, x_max + config.BBOX_EXPAND_HORIZONTAL)
+                y_min = max(0, y_min - config.BBOX_EXPAND_VERTICAL)
+                y_max = min(h, y_max + config.BBOX_EXPAND_VERTICAL)
 
                 expanded_points = np.array([[x_min, y_min], [x_max, y_min],
                                           [x_max, y_max], [x_min, y_max]], dtype=np.int32)
@@ -592,13 +596,13 @@ class SubtitleRemoverService:
             kernel = np.ones((self._kernel_size, self._kernel_size), np.uint8)
 
             # Dilation: захватываем свечение
-            mask = cv2.dilate(mask, kernel, iterations=SRC.DILATION_ITERATIONS_INITIAL)
+            mask = cv2.dilate(mask, kernel, iterations=config.DILATION_ITERATIONS_INITIAL)
 
             # Morphological closing: заполняем пробелы между буквами
-            mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=SRC.MORPHOLOGICAL_CLOSING_ITERATIONS)
+            mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=config.MORPHOLOGICAL_CLOSING_ITERATIONS)
 
             # Final dilation pass
-            mask = cv2.dilate(mask, kernel, iterations=SRC.DILATION_ITERATIONS_FINAL)
+            mask = cv2.dilate(mask, kernel, iterations=config.DILATION_ITERATIONS_FINAL)
 
             cv2.imwrite(str(mask_dir / f"{frame_path.stem}.png"), mask)
             
@@ -608,7 +612,7 @@ class SubtitleRemoverService:
                 logger.info(f"Mask generation progress: {progress:.0f}% ({idx + 1}/{total_frames})")
 
             # GPU memory cleanup (configurable interval)
-            if (idx + 1) % SRC.GPU_CLEANUP_INTERVAL == 0:
+            if (idx + 1) % config.GPU_CLEANUP_INTERVAL == 0:
                 try:
                     import torch
                     if torch.cuda.is_available():
