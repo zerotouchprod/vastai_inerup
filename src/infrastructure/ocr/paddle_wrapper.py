@@ -11,6 +11,8 @@ try:
 except ImportError:
     easyocr = None
 
+from src.core.config import get_config
+
 logger = logging.getLogger(__name__)
 
 class PaddleWrapper:
@@ -43,18 +45,25 @@ class PaddleWrapper:
             
         logger.info(f"Initializing EasyOCR (langs={langs_list}, gpu={use_gpu})...")
         
-        # Параметры детектора для чувствительности к слабым пикселям
-        # По умолчанию агрессивные настройки для обнаружения прозрачного/светящегося текста
+        # Получаем конфигурацию
+        config = get_config()
+        
+        # Параметры детектора из конфига (агрессивные настройки для мелкого текста)
         default_detector_params = {
-            'text_threshold': 0.1,        # Default 0.7. Lower -> more sensitive
-            'low_text': 0.05,             # Default 0.4. Lower -> detect faint text
-            'link_threshold': 0.4,        # Default 0.4. Keep same
-            'canvas_size': 960,           # Default 2560. Smaller for speed
-            'mag_ratio': 1.0,             # Default 1.0
-            'threshold': 0.1,             # Default 0.2. Lower -> more sensitive
-            'bbox_min_score': 0.2,        # Default 0.2. Lower -> keep more boxes
-            'bbox_min_size': 3,           # Default 3. Minimum box size
-            'max_candidates': 0,          # Default 0 (unlimited)
+            'text_threshold': config.OCR_TEXT_THRESHOLD,        # Default 0.05
+            'low_text': config.OCR_LOW_TEXT,                    # Default 0.05
+            'link_threshold': config.OCR_LINK_THRESHOLD,        # Default 0.2
+            'canvas_size': config.OCR_CANVAS_SIZE,              # Default 2560 (сохраняем мелкие детали)
+            'mag_ratio': config.OCR_MAG_RATIO,                  # Default 1.5 (зум для мелкого текста)
+            'threshold': config.OCR_THRESHOLD,                  # Default 0.1
+            'bbox_min_score': config.OCR_BBOX_MIN_SCORE,        # Default 0.2
+            'bbox_min_size': config.OCR_BBOX_MIN_SIZE,          # Default 3
+            'max_candidates': config.OCR_MAX_CANDIDATES,        # Default 0 (unlimited)
+            'slope_ths': config.OCR_SLOPE_THS,                  # Default 0.1
+            'ycenter_ths': config.OCR_YCENTER_THS,              # Default 0.5
+            'height_ths': config.OCR_HEIGHT_THS,                # Default 0.5
+            'width_ths': config.OCR_WIDTH_THS,                  # Default 0.5
+            'add_margin': config.OCR_ADD_MARGIN,                # Default 0.1
         }
         
         if detector_params:

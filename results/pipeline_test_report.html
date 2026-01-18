@@ -1,0 +1,40 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+    <title>LaMa Inpainting on Video Frame</title>
+    <style>
+        body { font-family: sans-serif; margin: 20px; }
+        .container { display: flex; flex-wrap: wrap; gap: 20px; }
+        .card { border: 1px solid #ccc; border-radius: 10px; padding: 15px; max-width: 100%; }
+        img { max-width: 100%; height: auto; border: 1px solid #ddd; }
+        .caption { font-style: italic; color: #555; }
+        .info { background: #f0f8ff; padding: 10px; border-radius: 5px; }
+    </style>
+</head>
+<body>
+    <h1>🎬 LaMa Inpainting Pipeline Test</h1>
+    <div class="info">
+        <p><strong>Video:</strong> mahoragatestcapsLOW3s.mp4 (3 seconds)</p>
+        <p><strong>Engine:</strong> LaMaAdapter (big-lama.pt)</p>
+        <p><strong>Mask:</strong> Bottom 30% rectangle (simulated subtitle region)</p>
+        <p><strong>Result:</strong> Successful inpainting, bottom region filled with context</p>
+    </div>
+    <div class="container">
+        <div class="card">
+            <h2>🔄 Comparison</h2>
+            <img src="comparison_first_frame.png" alt="Original vs Inpainted">
+            <p class="caption">Left: Original frame | Right: After LaMa inpainting</p>
+        </div>
+        <div class="card">
+            <h2>📊 Details</h2>
+            <p><strong>Original dimensions:</strong> 1080x1920</p>
+            <p><strong>Processing time:</strong> ~14 seconds (including model loading)</p>
+            <p><strong>GPU used:</strong> RTX 2060 Mobile (6GB VRAM)</p>
+            <p><strong>Model:</strong> big-lama.pt (FP16 enabled)</p>
+            <p><strong>Adapter:</strong> src.infrastructure.inpainting.lama_adapter.LaMaAdapter</p>
+        </div>
+    </div>
+    <p><strong>✅ Conclusion:</strong> LaMaAdapter successfully integrated into vastai_inerup and works on real video frames.</p>
+</body>
+</html>

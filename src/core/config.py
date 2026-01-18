@@ -86,6 +86,22 @@ class AppConfig(BaseSettings):
     USE_GPU_FOR_OCR: bool = True
     CONFIDENCE_THRESHOLD: float = 0.1  # Lowered for aggressive detection
     
+    # OCR detector parameters (EasyOCR)
+    OCR_TEXT_THRESHOLD: float = 0.05  # Default 0.7. Lower -> more sensitive to faint text
+    OCR_LOW_TEXT: float = 0.05        # Default 0.4. Lower -> detect faint characters
+    OCR_LINK_THRESHOLD: float = 0.2   # Default 0.4. Lower -> merge characters into words
+    OCR_CANVAS_SIZE: int = 2560       # Default 2560. Larger -> preserve small text details
+    OCR_MAG_RATIO: float = 1.5        # Default 1.0. Zoom image before detection (helps small text)
+    OCR_THRESHOLD: float = 0.1        # Default 0.2. Lower -> more sensitive binarization
+    OCR_BBOX_MIN_SCORE: float = 0.2   # Default 0.2. Lower -> keep more candidate boxes
+    OCR_BBOX_MIN_SIZE: int = 3        # Default 3. Minimum box size in pixels
+    OCR_MAX_CANDIDATES: int = 0       # Default 0 (unlimited)
+    OCR_SLOPE_THS: float = 0.1        # Default 0.1. Slope threshold for text orientation
+    OCR_YCENTER_THS: float = 0.5      # Default 0.5. Y-center threshold
+    OCR_HEIGHT_THS: float = 0.5       # Default 0.5. Height threshold
+    OCR_WIDTH_THS: float = 0.5        # Default 0.5. Width threshold
+    OCR_ADD_MARGIN: float = 0.1       # Default 0.1. Add margin around text
+    
     # Dynamic cropping settings
     PADDING_PX: int = 32  # Padding around subtitle bounding box for context
     MAX_CROP_AREA_RATIO: float = 0.4  # Maximum allowed crop area as ratio of total frame area (40%)
