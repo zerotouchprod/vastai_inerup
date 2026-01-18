@@ -132,7 +132,7 @@ class AppConfig(BaseSettings):
     # Higher = more conservative (misses some subtle text)
     # Default: 0.05 (very aggressive, catches short words like "на", "и", "в")
     # Recommended range: 0.01 (ultra-aggressive) to 0.15 (conservative)
-    OCR_CONFIDENCE_THRESHOLD: float = 0.05
+    OCR_CONFIDENCE_THRESHOLD: float = 0.12
     
     # Run OCR on both enhanced and original images (True = better detection, 2x slower)
     # When True: runs CLAHE enhancement + original, merges results
@@ -255,20 +255,20 @@ class AppConfig(BaseSettings):
     # Legacy OCR parameters - kept for compatibility with existing .env files
     OCR_TEXT_THRESHOLD: float = 0.15
     OCR_LOW_TEXT: float = 0.15
-    OCR_LINK_THRESHOLD: float = 0.15
+    OCR_LINK_THRESHOLD: float = 0.25
     OCR_MAG_RATIO: float = 1.3
     OCR_CANVAS_SIZE: int = 2240
     MASK_DILATION: int = 8
     CONFIDENCE_THRESHOLD: float = 0.12
     OCR_THRESHOLD: float = 0.15
-    OCR_BBOX_MIN_SCORE: float = 0.25
-    OCR_BBOX_MIN_SIZE: int = 5
+    OCR_BBOX_MIN_SCORE: float = 0.2
+    OCR_BBOX_MIN_SIZE: int = 4
     OCR_MAX_CANDIDATES: int = 1000
     OCR_SLOPE_THS: float = 0.15
     OCR_YCENTER_THS: float = 0.6
     OCR_HEIGHT_THS: float = 0.6
     OCR_WIDTH_THS: float = 0.6
-    OCR_ADD_MARGIN: float = 0.05
+    OCR_ADD_MARGIN: float = 0.08
 
     # Dynamic cropping settings
     PADDING_PX: int = 32  # Padding around subtitle bounding box for context
