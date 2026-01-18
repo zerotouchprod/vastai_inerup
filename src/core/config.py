@@ -80,28 +80,65 @@ class AppConfig(BaseSettings):
     STTN_OVERLAP: int = 2
     
     # OCR settings
+    #MASK_DILATION: int = 7  # 15,  30 Increased to cover text shadows/artifacts (sledgehammer approach)
+    #CONFIDENCE_THRESHOLD: float = 0.1  # Lowered for aggressive detection
     OCR_LANG: str = "en"
-    MASK_DILATION: int = 15  # 30 Increased to cover text shadows/artifacts (sledgehammer approach)
     USE_GPU: bool = True  # Disable GPU completely to save memory
     USE_GPU_FOR_OCR: bool = True
-    CONFIDENCE_THRESHOLD: float = 0.1  # Lowered for aggressive detection
-    
+
+    # Default settings
     # OCR detector parameters (EasyOCR)
-    OCR_TEXT_THRESHOLD: float = 0.05  # Default 0.7. Lower -> more sensitive to faint text
-    OCR_LOW_TEXT: float = 0.05        # Default 0.4. Lower -> detect faint characters
-    OCR_LINK_THRESHOLD: float = 0.2   # Default 0.4. Lower -> merge characters into words
-    OCR_CANVAS_SIZE: int = 2560       # Default 2560. Larger -> preserve small text details
-    OCR_MAG_RATIO: float = 1.5        # Default 1.0. Zoom image before detection (helps small text)
-    OCR_THRESHOLD: float = 0.1        # Default 0.2. Lower -> more sensitive binarization
-    OCR_BBOX_MIN_SCORE: float = 0.2   # Default 0.2. Lower -> keep more candidate boxes
-    OCR_BBOX_MIN_SIZE: int = 3        # Default 3. Minimum box size in pixels
-    OCR_MAX_CANDIDATES: int = 0       # Default 0 (unlimited)
-    OCR_SLOPE_THS: float = 0.1        # Default 0.1. Slope threshold for text orientation
-    OCR_YCENTER_THS: float = 0.5      # Default 0.5. Y-center threshold
-    OCR_HEIGHT_THS: float = 0.5       # Default 0.5. Height threshold
-    OCR_WIDTH_THS: float = 0.5        # Default 0.5. Width threshold
-    OCR_ADD_MARGIN: float = 0.1       # Default 0.1. Add margin around text
-    
+    # OCR_TEXT_THRESHOLD: float = 0.05  # Default 0.7. Lower -> more sensitive to faint text
+    # OCR_LOW_TEXT: float = 0.05        # Default 0.4. Lower -> detect faint characters
+    # OCR_LINK_THRESHOLD: float = 0.2   # Default 0.4. Lower -> merge characters into words
+    # OCR_CANVAS_SIZE: int = 2560       # Default 2560. Larger -> preserve small text details
+    # OCR_MAG_RATIO: float = 1.5        # Default 1.0. Zoom image before detection (helps small text)
+    # OCR_THRESHOLD: float = 0.1        # Default 0.2. Lower -> more sensitive binarization
+    # OCR_BBOX_MIN_SCORE: float = 0.2   # Default 0.2. Lower -> keep more candidate boxes
+    # OCR_BBOX_MIN_SIZE: int = 3        # Default 3. Minimum box size in pixels
+    # OCR_MAX_CANDIDATES: int = 0       # Default 0 (unlimited)
+    # OCR_SLOPE_THS: float = 0.1        # Default 0.1. Slope threshold for text orientation
+    # OCR_YCENTER_THS: float = 0.5      # Default 0.5. Y-center threshold
+    # OCR_HEIGHT_THS: float = 0.5       # Default 0.5. Height threshold
+    # OCR_WIDTH_THS: float = 0.5        # Default 0.5. Width threshold
+    # OCR_ADD_MARGIN: float = 0.1       # Default 0.1. Add margin around text
+
+    # Профиль "Агрессивный для свечения" - игнорирование полупрозрачных краёв
+    MASK_DILATION = 5
+    CONFIDENCE_THRESHOLD = 0.3
+    OCR_TEXT_THRESHOLD = 0.3
+    OCR_LOW_TEXT = 0.3
+    OCR_LINK_THRESHOLD = 0.4
+    OCR_MAG_RATIO = 1.0
+    OCR_CANVAS_SIZE = 1280
+    OCR_THRESHOLD = 0.2
+    OCR_BBOX_MIN_SCORE = 0.3
+    OCR_BBOX_MIN_SIZE = 8
+    OCR_MAX_CANDIDATES = 500
+    OCR_SLOPE_THS = 0.2
+    OCR_YCENTER_THS = 0.7
+    OCR_HEIGHT_THS = 0.7
+    OCR_WIDTH_THS = 0.7
+    OCR_ADD_MARGIN = 0.05
+
+    # # Профиль "Точный" - минимизация лишней области, точные границы текста
+    # OCR_TEXT_THRESHOLD = 0.2
+    # OCR_LOW_TEXT = 0.2
+    # OCR_LINK_THRESHOLD = 0.3
+    # OCR_MAG_RATIO = 1.2
+    # OCR_CANVAS_SIZE = 1920
+    # MASK_DILATION = 8
+    # CONFIDENCE_THRESHOLD = 0.2
+    # OCR_THRESHOLD = 0.15
+    # OCR_BBOX_MIN_SCORE = 0.25
+    # OCR_BBOX_MIN_SIZE = 5
+    # OCR_MAX_CANDIDATES = 1000
+    # OCR_SLOPE_THS = 0.15
+    # OCR_YCENTER_THS = 0.6
+    # OCR_HEIGHT_THS = 0.6
+    # OCR_WIDTH_THS = 0.6
+    # OCR_ADD_MARGIN = 0.05
+
     # Dynamic cropping settings
     PADDING_PX: int = 32  # Padding around subtitle bounding box for context
     MAX_CROP_AREA_RATIO: float = 0.4  # Maximum allowed crop area as ratio of total frame area (40%)

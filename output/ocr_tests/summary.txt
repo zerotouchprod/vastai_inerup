@@ -1,0 +1,23 @@
+OCR Profiles Test Summary
+==================================================
+
+Profile: precision
+  Detections: 1
+  Coverage: 6.18%
+  Mask pixels: 34578/559872
+  Texts: ШАКЯ
+  Confidences: ['0.56']
+
+Profile: balanced
+  Detections: 1
+  Coverage: 6.18%
+  Mask pixels: 34578/559872
+  Texts: ШАКЯ
+  Confidences: ['0.56']
+
+Profile: glow
+  Detections: 1
+  Coverage: 6.18%
+  Mask pixels: 34578/559872
+  Texts: ШАКЯ
+  Confidences: ['0.56']
