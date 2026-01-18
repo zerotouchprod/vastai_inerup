@@ -76,6 +76,7 @@ class LaMaAdapter:
             "--mask_dir", str(mask_dir),
             "--output_dir", str(output_dir),
             "--model_path", str(self.model_path)
+            # FP16 flag removed - script uses FP32 by default
         ]
         
         logger.debug(f"LaMa command: {' '.join(cmd)}")
