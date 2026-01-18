@@ -81,6 +81,8 @@ def main():
     parser.add_argument('--model_path', default='/opt/lama_models/big-lama.pt')
     parser.add_argument('--tile_size', type=int, default=2048, help="Размер тайла. Для 16GB VRAM ставь 2048 или больше.")
     parser.add_argument('--dilation', type=int, default=8, help="Насколько расширять маску (пиксели)")
+    parser.add_argument('--stability', type=float, default=0.2, 
+                        help='Сила сглаживания (0.0 - нет, 1.0 - макс). Помогает от мерцания.')
     args = parser.parse_args()
 
     # 1. Device
@@ -109,10 +111,14 @@ def main():
     
     frames = sorted([f for f in os.listdir(input_dir) if f.lower().endswith(('.png', '.jpg', '.jpeg'))])
     
-    logger.info(f"Processing {len(frames)} frames with Tiling (Size={args.tile_size}) and Dilation={args.dilation}...")
+    logger.info(f"Processing {len(frames)} frames with Tiling (Size={args.tile_size}), Dilation={args.dilation}, Stability={args.stability}...")
 
     processed = 0
     kernel = np.ones((args.dilation, args.dilation), np.uint8) if args.dilation > 0 else None
+    
+    # Buffers for temporal smoothing
+    prev_frame_gray = None
+    prev_inpainted = None
 
     for fname in frames:
         try:
@@ -143,17 +149,46 @@ def main():
             if h <= args.tile_size and w <= args.tile_size:
                 # Direct inference if small enough
                 with torch.no_grad():
-                    res = model(t_img, t_mask)
+                    res_tensor = model(t_img, t_mask)
             else:
                 # Tiled inference for huge images
-                res = predict_tiled(model, t_img, t_mask, device, tile_size=args.tile_size)
+                res_tensor = predict_tiled(model, t_img, t_mask, device, tile_size=args.tile_size)
+            
+            # Convert to Numpy (H, W, 3)
+            cur_inpainted = res_tensor[0].permute(1,2,0).detach().cpu().numpy()
+            
+            # --- STABILIZATION BLOCK START ---
+            if args.stability > 0 and prev_inpainted is not None:
+                # Простейшая защита от смены сцен (Scene Change Detection)
+                # Считаем разницу между текущим исходником и прошлым
+                cur_gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+                if prev_frame_gray is not None:
+                    diff = cv2.absdiff(cur_gray, prev_frame_gray).mean()
+                    
+                    # Если разница маленькая (одна сцена) -> смешиваем
+                    # Порог 15.0 подобран эмпирически
+                    if diff < 15.0: 
+                        # Blending: New * (1-alpha) + Old * alpha
+                        # Мы смешиваем ТОЛЬКО в зоне маски, чтобы не мылить фон
+                        mask_np_norm = mask.astype(np.float32) / 255.0
+                        mask_3d = np.expand_dims(mask_np_norm, axis=2)
+                        
+                        stable_result = cur_inpainted * (1 - args.stability) + prev_inpainted * args.stability
+                        
+                        # Применяем стабилизацию только там, где была маска
+                        cur_inpainted = cur_inpainted * (1 - mask_3d) + stable_result * mask_3d
+                    else:
+                        logger.debug(f"Scene change detected (diff={diff:.1f}), resetting buffer.")
+                        prev_inpainted = None # Reset
+                
+                prev_frame_gray = cur_gray
+
+            # Update buffer
+            prev_inpainted = cur_inpainted
+            # --- STABILIZATION BLOCK END ---
 
             # Save
-            out_np = res[0].permute(1,2,0).detach().cpu().numpy() * 255
-            out_np = np.clip(out_np, 0, 255).astype(np.uint8)
-            
-            # Crop padding back if needed (optional, keeping it simple for now)
-            
+            out_np = np.clip(cur_inpainted * 255, 0, 255).astype(np.uint8)
             cv2.imwrite(str(output_dir / fname), cv2.cvtColor(out_np, cv2.COLOR_RGB2BGR))
             processed += 1
 

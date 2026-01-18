@@ -69,7 +69,7 @@ class LaMaAdapter:
         # Ensure output directory exists
         output_dir.mkdir(parents=True, exist_ok=True)
         
-        # Build command with tiling and dilation for high-quality inference
+        # Build command with tiling, dilation and temporal smoothing for high-quality inference
         cmd = [
             "python3", str(self.script_path),
             "--input_dir", str(frames_dir),
@@ -77,7 +77,8 @@ class LaMaAdapter:
             "--output_dir", str(output_dir),
             "--model_path", str(self.model_path),
             "--tile_size", "2048",  # Optimal for 16GB VRAM, preserves original resolution
-            "--dilation", str(self.config.MASK_DILATION)  # Use config dilation for mask expansion
+            "--dilation", str(self.config.MASK_DILATION),  # Use config dilation for mask expansion
+            "--stability", "0.2"  # Temporal smoothing factor to reduce flickering
         ]
         
         logger.debug(f"LaMa command: {' '.join(cmd)}")
