@@ -71,20 +71,44 @@ def get_gpu_info() -> Optional[Dict[str, any]]:
 def require_gpu(operation_name: str) -> None:
     """
     Check if GPU is available and raise GPURequiredError if not.
+    Can be bypassed with FORCE_CPU environment variable or AppConfig.
 
     Args:
         operation_name: Name of the operation requiring GPU (for error message)
 
     Raises:
-        GPURequiredError: If GPU is not available
+        GPURequiredError: If GPU is not available and FORCE_CPU is not set
     """
     from src.domain.exceptions import GPURequiredError
+    import os
 
+    # Check if CPU fallback is forced via environment variable
+    force_cpu_env = os.environ.get('FORCE_CPU', '').lower() in ('1', 'true', 'yes', 'on')
+    
+    # Check if CPU fallback is forced via AppConfig
+    force_cpu_config = False
+    try:
+        from src.core.config import get_config
+        config = get_config()
+        force_cpu_config = getattr(config, 'FORCE_CPU', False)
+    except ImportError:
+        pass
+    
+    force_cpu = force_cpu_env or force_cpu_config
+    
     if not check_gpu_available():
+        if force_cpu:
+            source = "AppConfig" if force_cpu_config else "environment variable"
+            logger.warning(f"⚠️  GPU not available for {operation_name}, using CPU (slow mode)")
+            logger.warning(f"   CPU processing is enabled via {source}")
+            logger.warning(f"   This will be extremely slow (hours for typical videos)")
+            return
+        
         error_msg = (
             f"❌ GPU required for {operation_name}\n"
             f"CPU processing is disabled (too slow, would take hours).\n"
-            f"Please run on GPU-enabled instance with CUDA support."
+            f"Please run on GPU-enabled instance with CUDA support.\n"
+            f"To force CPU processing (very slow), set FORCE_CPU=1 or FORCE_CPU=true in .env"
         )
         logger.error(error_msg)
         raise GPURequiredError(error_msg)
@@ -116,4 +140,3 @@ def log_gpu_status() -> None:
     else:
         logger.warning("⚠️  No GPU detected")
         logger.warning("   Some operations may be unavailable or extremely slow")
-

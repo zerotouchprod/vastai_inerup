@@ -6,7 +6,7 @@ services:
 #      context: .
 #      dockerfile: docker/Dockerfile.pytorch.fat
     image: registry.gitlab.com/gfever/vastai_interup:pytorch-fat-291225
-    container_name: vastai_interup_dev
+    container_name: vastai_interup_dev1
     entrypoint: /bin/bash
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
@@ -31,3 +31,4 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu, compute, utility]
+#python pipeline_v2.py       --mode 'remove-subtitles'       --subs-lang 'ru'       --roi '0.05,0.5,0.9,0.3'       --input /workspace/project/tests/video/1smaho.mp4       --output /workspace/results
