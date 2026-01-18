@@ -1,0 +1,42 @@
+Direct OCR Parameters Test Summary
+============================================================
+
+Profile: precision
+  Detections: 1
+  Coverage: 6.18%
+  Mask pixels: 34578/559872
+  Texts: ШАКЯ
+  Confidences: ['0.559']
+  Average confidence: 0.559
+
+Profile: balanced
+  Detections: 4
+  Coverage: 8.15%
+  Mask pixels: 45613/559872
+  Texts: JW, ~, 5, 'АКЯЛ
+  Confidences: ['0.800', '0.434', '0.451', '0.448']
+  Average confidence: 0.533
+
+Profile: glow
+  Detections: 1
+  Coverage: 4.69%
+  Mask pixels: 26244/559872
+  Texts: ПАКЯЕУ
+  Confidences: ['0.478']
+  Average confidence: 0.478
+
+Profile: current_default
+  Detections: 1
+  Coverage: 6.74%
+  Mask pixels: 37714/559872
+  Texts: ШАКЯ
+  Confidences: ['0.559']
+  Average confidence: 0.559
+
+Profile: ultra_sensitive
+  Detections: 6
+  Coverage: 12.54%
+  Mask pixels: 70198/559872
+  Texts: 1, J, 2, ZАКЯМ, ~$,  |
+  Confidences: ['0.859', '0.416', '0.731', '0.251', '0.134', '0.231']
+  Average confidence: 0.437

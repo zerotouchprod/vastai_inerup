@@ -1,0 +1,106 @@
+# Dockerfile for Text-to-Video Generation Worker
+# Based on PyTorch 2.2 with CUDA 12.1 for CogVideoX-5b support
+
+# ============================================
+# Stage 1: Builder (for optional compilation)
+# ============================================
+FROM pytorch/pytorch:2.2.0-cuda12.1-cudnn8-runtime as builder
+
+# Install system dependencies for building
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    git \
+    wget \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create virtual environment (optional, but good practice)
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+# Copy and install Python dependencies
+COPY requirements.gen.txt /tmp/requirements.gen.txt
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r /tmp/requirements.gen.txt
+
+# ============================================
+# Stage 2: Runtime (Production image)
+# ============================================
+FROM pytorch/pytorch:2.2.0-cuda12.1-cudnn8-runtime
+
+LABEL maintainer="VastAI Video Generation Worker"
+LABEL description="Text-to-Video generation using CogVideoX-5b model"
+LABEL version="1.0.0"
+
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg \
+    libgl1 \
+    libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy Python environment from builder
+COPY --from=builder /opt/venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+# Set working directory
+WORKDIR /app
+
+# Copy application source code
+COPY src/ /app/src/
+COPY requirements.gen.txt /app/
+
+# Create necessary directories
+RUN mkdir -p \
+    /tmp/generation \
+    /root/.cache/huggingface \
+    /app/output
+
+# Set environment variables
+ENV PYTHONPATH="/app:$PYTHONPATH"
+ENV PYTHONUNBUFFERED="1"
+ENV HF_HOME="/root/.cache/huggingface"
+ENV TEMP_DIR="/tmp/generation"
+ENV TORCH_INFERENCE_MODE="1"
+
+# Health check (verify basic functionality)
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD python -c "import torch; print(f'CUDA available: {torch.cuda.is_available()}')" || exit 1
+
+# Default command (show help)
+CMD ["python", "-m", "src.entrypoints.run_gen", "--help"]
+
+# ============================================
+# Build Instructions:
+# ============================================
+# docker build -f Dockerfile.gen -t video-gen:latest .
+#
+# Run Examples:
+# 1. Test with single prompt:
+#    docker run --rm --gpus all \
+#      -e B2_KEY="your_key" \
+#      -e B2_SECRET="your_secret" \
+#      -e B2_BUCKET="your_bucket" \
+#      video-gen:latest \
+#      python -m src.entrypoints.run_gen \
+#      --job '{"prompts": ["A cat dancing"]}'
+#
+# 2. With volume for model cache (recommended for Vast.ai):
+#    docker run --rm --gpus all \
+#      -v /path/to/hf_cache:/root/.cache/huggingface \
+#      -v /path/to/output:/app/output \
+#      -e B2_KEY="your_key" \
+#      -e B2_SECRET="your_secret" \
+#      -e B2_BUCKET="your_bucket" \
+#      video-gen:latest \
+#      python -m src.entrypoints.run_gen \
+#      --job '{"prompts": ["A cat dancing", "A dog running"]}'
+#
+# 3. Development/test without B2 upload:
+#    docker run --rm --gpus all \
+#      video-gen:latest \
+#      python -m src.entrypoints.run_gen \
+#      --job '{"prompts": ["Test prompt"]}' \
+#      --no-upload
+#
+# Expected Image Size: ~8-10GB (includes PyTorch + dependencies)
+# ============================================

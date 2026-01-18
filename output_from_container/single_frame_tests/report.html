@@ -1,0 +1,180 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+    <title>OCR Profiles Comparison</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        h1 { color: #333; }
+        .profile { margin: 20px 0; padding: 15px; border: 1px solid #ddd; border-radius: 5px; }
+        .profile h2 { margin-top: 0; color: #555; }
+        .images { display: flex; flex-wrap: wrap; gap: 10px; }
+        .image { flex: 1; min-width: 300px; }
+        .image img { max-width: 100%; height: auto; border: 1px solid #ccc; }
+        .caption { font-size: 12px; color: #666; margin-top: 5px; }
+        .success { background-color: #e8f5e8; }
+        .failed { background-color: #f5e8e8; }
+    </style>
+</head>
+<body>
+    <h1>OCR Profiles Comparison for Subtitle Removal</h1>
+    <p>Video: 1smaho.mp4 | ROI: 0.05,0.5,0.9,0.3 | Frame: 0</p>
+
+    <div class="profile success">
+        <h2>current_default - ✅ SUCCESS</h2>
+        <div class="images">
+            <div class="image">
+                <img src="current_default/original.png" alt="Original">
+                <div class="caption">Original Frame</div>
+            </div>
+            <div class="image">
+                <img src="current_default/detection.png" alt="Detection">
+                <div class="caption">OCR Detection (green boxes)</div>
+            </div>
+            <div class="image">
+                <img src="current_default/mask.png" alt="Mask">
+                <div class="caption">Generated Mask</div>
+            </div>
+            <div class="image">
+                <img src="current_default/inpainted.png" alt="Inpainted">
+                <div class="caption">Inpainted Result</div>
+            </div>
+            <div class="image">
+                <img src="current_default/comparison.png" alt="Comparison">
+                <div class="caption">Comparison (Original | Mask | Result)</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="profile success">
+        <h2>precision - ✅ SUCCESS</h2>
+        <div class="images">
+            <div class="image">
+                <img src="precision/original.png" alt="Original">
+                <div class="caption">Original Frame</div>
+            </div>
+            <div class="image">
+                <img src="precision/detection.png" alt="Detection">
+                <div class="caption">OCR Detection (green boxes)</div>
+            </div>
+            <div class="image">
+                <img src="precision/mask.png" alt="Mask">
+                <div class="caption">Generated Mask</div>
+            </div>
+            <div class="image">
+                <img src="precision/inpainted.png" alt="Inpainted">
+                <div class="caption">Inpainted Result</div>
+            </div>
+            <div class="image">
+                <img src="precision/comparison.png" alt="Comparison">
+                <div class="caption">Comparison (Original | Mask | Result)</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="profile success">
+        <h2>balanced - ✅ SUCCESS</h2>
+        <div class="images">
+            <div class="image">
+                <img src="balanced/original.png" alt="Original">
+                <div class="caption">Original Frame</div>
+            </div>
+            <div class="image">
+                <img src="balanced/detection.png" alt="Detection">
+                <div class="caption">OCR Detection (green boxes)</div>
+            </div>
+            <div class="image">
+                <img src="balanced/mask.png" alt="Mask">
+                <div class="caption">Generated Mask</div>
+            </div>
+            <div class="image">
+                <img src="balanced/inpainted.png" alt="Inpainted">
+                <div class="caption">Inpainted Result</div>
+            </div>
+            <div class="image">
+                <img src="balanced/comparison.png" alt="Comparison">
+                <div class="caption">Comparison (Original | Mask | Result)</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="profile success">
+        <h2>glow - ✅ SUCCESS</h2>
+        <div class="images">
+            <div class="image">
+                <img src="glow/original.png" alt="Original">
+                <div class="caption">Original Frame</div>
+            </div>
+            <div class="image">
+                <img src="glow/detection.png" alt="Detection">
+                <div class="caption">OCR Detection (green boxes)</div>
+            </div>
+            <div class="image">
+                <img src="glow/mask.png" alt="Mask">
+                <div class="caption">Generated Mask</div>
+            </div>
+            <div class="image">
+                <img src="glow/inpainted.png" alt="Inpainted">
+                <div class="caption">Inpainted Result</div>
+            </div>
+            <div class="image">
+                <img src="glow/comparison.png" alt="Comparison">
+                <div class="caption">Comparison (Original | Mask | Result)</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="profile success">
+        <h2>purple_glow - ✅ SUCCESS</h2>
+        <div class="images">
+            <div class="image">
+                <img src="purple_glow/original.png" alt="Original">
+                <div class="caption">Original Frame</div>
+            </div>
+            <div class="image">
+                <img src="purple_glow/detection.png" alt="Detection">
+                <div class="caption">OCR Detection (green boxes)</div>
+            </div>
+            <div class="image">
+                <img src="purple_glow/mask.png" alt="Mask">
+                <div class="caption">Generated Mask</div>
+            </div>
+            <div class="image">
+                <img src="purple_glow/inpainted.png" alt="Inpainted">
+                <div class="caption">Inpainted Result</div>
+            </div>
+            <div class="image">
+                <img src="purple_glow/comparison.png" alt="Comparison">
+                <div class="caption">Comparison (Original | Mask | Result)</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="profile success">
+        <h2>ultra_sensitive - ✅ SUCCESS</h2>
+        <div class="images">
+            <div class="image">
+                <img src="ultra_sensitive/original.png" alt="Original">
+                <div class="caption">Original Frame</div>
+            </div>
+            <div class="image">
+                <img src="ultra_sensitive/detection.png" alt="Detection">
+                <div class="caption">OCR Detection (green boxes)</div>
+            </div>
+            <div class="image">
+                <img src="ultra_sensitive/mask.png" alt="Mask">
+                <div class="caption">Generated Mask</div>
+            </div>
+            <div class="image">
+                <img src="ultra_sensitive/inpainted.png" alt="Inpainted">
+                <div class="caption">Inpainted Result</div>
+            </div>
+            <div class="image">
+                <img src="ultra_sensitive/comparison.png" alt="Comparison">
+                <div class="caption">Comparison (Original | Mask | Result)</div>
+            </div>
+        </div>
+    </div>
+
+</body>
+</html>
