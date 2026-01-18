@@ -18,7 +18,7 @@ class PaddleWrapper:
     Wrapper that mimics PaddleOCR interface but uses EasyOCR under the hood.
     This solves the Segmentation Fault issues caused by PaddlePaddle C++ conflicts.
     """
-    def __init__(self, lang='en', use_gpu=True):
+    def __init__(self, lang='en', use_gpu=True, detector_params=None):
         if easyocr is None:
             raise ImportError("EasyOCR not installed. Please run: pip install easyocr")
 
@@ -43,6 +43,25 @@ class PaddleWrapper:
             
         logger.info(f"Initializing EasyOCR (langs={langs_list}, gpu={use_gpu})...")
         
+        # Параметры детектора для чувствительности к слабым пикселям
+        # По умолчанию агрессивные настройки для обнаружения прозрачного/светящегося текста
+        default_detector_params = {
+            'text_threshold': 0.1,        # Default 0.7. Lower -> more sensitive
+            'low_text': 0.05,             # Default 0.4. Lower -> detect faint text
+            'link_threshold': 0.4,        # Default 0.4. Keep same
+            'canvas_size': 960,           # Default 2560. Smaller for speed
+            'mag_ratio': 1.0,             # Default 1.0
+            'threshold': 0.1,             # Default 0.2. Lower -> more sensitive
+            'bbox_min_score': 0.2,        # Default 0.2. Lower -> keep more boxes
+            'bbox_min_size': 3,           # Default 3. Minimum box size
+            'max_candidates': 0,          # Default 0 (unlimited)
+        }
+        
+        if detector_params:
+            default_detector_params.update(detector_params)
+        
+        self.detector_params = default_detector_params
+        
         # Инициализация Reader. 
         # При первом запуске он скачает модели в ~/.EasyOCR/model, если их там нет.
         self.reader = easyocr.Reader(
@@ -51,6 +70,8 @@ class PaddleWrapper:
             verbose=False,
             quantize=False # Отключаем квантование для максимальной точности
         )
+        
+        logger.info(f"EasyOCR detector params: {self.detector_params}")
 
     def detect(self, image: Union[str, np.ndarray], confidence_threshold: float = 0.0, roi_str: Optional[str] = None) -> List[Dict[str, Any]]:
         """
@@ -92,11 +113,11 @@ class PaddleWrapper:
             logger.debug(f"ROI pre-cropping: {roi_str} -> cropped to {roi_w}x{roi_h} (offset: {x},{y})")
             img = img_cropped
 
-        # 3. Инференс
+        # 3. Инференс с агрессивными параметрами детектора
         # EasyOCR returns list of tuples: (bbox, text, prob)
         # bbox = [[x1, y1], [x2, y2], [x3, y3], [x4, y4]]
         try:
-            results = self.reader.readtext(img)
+            results = self.reader.readtext(img, **self.detector_params)
         except Exception as e:
             logger.error(f"EasyOCR inference failed: {e}")
             return []
