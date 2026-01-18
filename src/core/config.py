@@ -104,22 +104,22 @@ class AppConfig(BaseSettings):
     # OCR_ADD_MARGIN: float = 0.1       # Default 0.1. Add margin around text
 
     # Профиль "Агрессивный для свечения" - игнорирование полупрозрачных краёв
-    MASK_DILATION = 5
-    CONFIDENCE_THRESHOLD = 0.3
-    OCR_TEXT_THRESHOLD = 0.3
-    OCR_LOW_TEXT = 0.3
-    OCR_LINK_THRESHOLD = 0.4
-    OCR_MAG_RATIO = 1.0
-    OCR_CANVAS_SIZE = 1280
-    OCR_THRESHOLD = 0.2
-    OCR_BBOX_MIN_SCORE = 0.3
-    OCR_BBOX_MIN_SIZE = 8
-    OCR_MAX_CANDIDATES = 500
-    OCR_SLOPE_THS = 0.2
-    OCR_YCENTER_THS = 0.7
-    OCR_HEIGHT_THS = 0.7
-    OCR_WIDTH_THS = 0.7
-    OCR_ADD_MARGIN = 0.05
+    MASK_DILATION: int = 5
+    CONFIDENCE_THRESHOLD: float = 0.3
+    OCR_TEXT_THRESHOLD: float = 0.3
+    OCR_LOW_TEXT: float = 0.3
+    OCR_LINK_THRESHOLD: float = 0.4
+    OCR_MAG_RATIO: float = 1.0
+    OCR_CANVAS_SIZE: int = 1280
+    OCR_THRESHOLD: float = 0.2
+    OCR_BBOX_MIN_SCORE: float = 0.3
+    OCR_BBOX_MIN_SIZE: int = 8
+    OCR_MAX_CANDIDATES: int = 500
+    OCR_SLOPE_THS: float = 0.2
+    OCR_YCENTER_THS: float = 0.7
+    OCR_HEIGHT_THS: float = 0.7
+    OCR_WIDTH_THS: float = 0.7
+    OCR_ADD_MARGIN: float = 0.05
 
     # # Профиль "Точный" - минимизация лишней области, точные границы текста
     # OCR_TEXT_THRESHOLD = 0.2
