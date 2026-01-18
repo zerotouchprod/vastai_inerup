@@ -1,0 +1,62 @@
+# Dockerfile for Vast.ai instance with LaMa support
+# Based on NVIDIA CUDA 12.1 with PyTorch 2.0+
+FROM nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
+ENV TZ=UTC
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    python3.10 \
+    python3-pip \
+    python3.10-venv \
+    git \
+    wget \
+    curl \
+    ffmpeg \
+    libsm6 \
+    libxext6 \
+    libxrender-dev \
+    libgl1-mesa-glx \
+    libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create virtual environment
+RUN python3.10 -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+# Upgrade pip
+RUN pip install --upgrade pip setuptools wheel
+
+# Install PyTorch with CUDA 12.1
+RUN pip install torch==2.0.1 torchvision==0.15.2 torchaudio==2.0.2 --index-url https://download.pytorch.org/whl/cu121
+
+# Install project dependencies
+COPY requirements.txt /tmp/requirements.txt
+RUN pip install -r /tmp/requirements.txt
+
+# Install LaMa dependencies
+RUN pip install opencv-python-headless pillow numpy scipy tqdm
+
+# Create directories
+RUN mkdir -p /opt/lama_models /workspace/project /workspace/results
+
+# Download LaMa model
+RUN wget -q -O /opt/lama_models/big-lama.pt \
+    https://github.com/Sanster/models/releases/download/add_big_lama/big-lama.pt
+
+# Copy project code
+COPY . /workspace/project
+WORKDIR /workspace/project
+
+# Set Python path
+ENV PYTHONPATH="/workspace/project/src:/opt/ProPainter:$PYTHONPATH"
+ENV PROPAINTER_ROOT="/opt/ProPainter"
+ENV LAMA_MODEL_PATH="/opt/lama_models/big-lama.pt"
+
+# Verify GPU
+RUN python3 -c "import torch; print(f'CUDA available: {torch.cuda.is_available()}'); print(f'CUDA version: {torch.version.cuda}')"
+
+# Default command
+CMD ["/bin/bash"]
