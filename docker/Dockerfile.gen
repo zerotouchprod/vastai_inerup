@@ -39,10 +39,12 @@ ENV HF_HOME="/model_cache"
 
 RUN mkdir -p /model_cache && \
     echo "Downloading model: ${MODEL_ID}..." && \
-    python -m huggingface_hub.commands.huggingface_cli download ${MODEL_ID} \
-    --exclude "*.bin" "*.onnx" "*.pb" "fp32/*" \
-    --cache-dir /model_cache && \
-    echo "✓ Model downloaded and cached"
+    python -c "from huggingface_hub import snapshot_download; \
+import os; \
+model_id = os.environ.get('MODEL_ID', 'THUDM/CogVideoX-5b-I2V'); \
+print(f'Downloading {model_id}...'); \
+snapshot_download(repo_id=model_id, cache_dir='/model_cache', ignore_patterns=['*.bin', '*.onnx', '*.pb', 'fp32/*']); \
+print('✓ Model downloaded and cached')"
 
 # ============================================
 # Stage 2: Runtime (Production)

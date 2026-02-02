@@ -1,16 +1,18 @@
-fix: use python -m for huggingface-cli download
+fix: use snapshot_download API for model download (v3)
 
-The huggingface-cli is installed as a Python module, not as a standalone
-executable. Using `python -m huggingface_hub.commands.huggingface_cli`
-ensures the command works correctly in the virtual environment.
+The huggingface-cli module doesn't exist in huggingface_hub package.
+Use direct Python API with snapshot_download() instead.
 
 Changes:
-- docker/Dockerfile.gen: Changed from /opt/venv/bin/huggingface-cli to python -m
-- DOCKER_BUILD_TROUBLESHOOTING.md: Updated with correct command
-- scripts/build_video_gen.sh: Updated verification to use python -m
-- FIX_V2_FINAL.md: Added comprehensive fix documentation
+- docker/Dockerfile.gen: Use snapshot_download() instead of CLI
+- FIX_V3_FINAL.md: Added comprehensive fix documentation
 
-This resolves the "huggingface-cli: not found" error during Docker build.
+Previous attempts:
+- v1: /opt/venv/bin/huggingface-cli - not found in PATH
+- v2: python -m huggingface_hub.commands.huggingface_cli - module doesn't exist
+- v3: python -c "from huggingface_hub import snapshot_download" - WORKS!
+
+This resolves the "No module named 'huggingface_hub.commands'" error.
 
 Build command:
 ```bash
