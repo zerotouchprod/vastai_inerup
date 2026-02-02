@@ -1,35 +1,42 @@
-# Dockerfile for Text-to-Video Generation Worker
+# Dockerfile for Video Generation Worker (Text-to-Video & Image-to-Video)
 # Based on PyTorch 2.2 with CUDA 12.1 for CogVideoX-5b support
+# Optimized for 24GB VRAM GPUs (RTX 3090/4090)
 
 # ============================================
-# Stage 1: Builder (for optional compilation)
+# Stage 1: Builder
 # ============================================
 FROM pytorch/pytorch:2.2.0-cuda12.1-cudnn8-runtime as builder
 
-# Install system dependencies for building
+LABEL stage="builder"
+
+# Install build dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     git \
     wget \
     && rm -rf /var/lib/apt/lists/*
 
-# Create virtual environment (optional, but good practice)
+# Create virtual environment
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
 # Copy and install Python dependencies
 COPY requirements.gen.txt /tmp/requirements.gen.txt
-RUN pip install --no-cache-dir --upgrade pip && \
+
+# Upgrade pip and install dependencies
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
     pip install --no-cache-dir -r /tmp/requirements.gen.txt
 
 # ============================================
-# Stage 2: Runtime (Production image)
+# Stage 2: Runtime (Production)
 # ============================================
 FROM pytorch/pytorch:2.2.0-cuda12.1-cudnn8-runtime
 
-LABEL maintainer="VastAI Video Generation Worker"
-LABEL description="Text-to-Video generation using CogVideoX-5b model"
+LABEL maintainer="vastai_inerup"
+LABEL description="Video generation worker (Text-to-Video & Image-to-Video using CogVideoX)"
 LABEL version="1.0.0"
+LABEL gpu.required="true"
+LABEL gpu.min_vram_gb="24"
 
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -53,31 +60,64 @@ COPY requirements.gen.txt /app/
 RUN mkdir -p \
     /tmp/generation \
     /root/.cache/huggingface \
-    /app/output
+    /app/output \
+    /app/logs
 
 # Set environment variables
 ENV PYTHONPATH="/app:$PYTHONPATH"
 ENV PYTHONUNBUFFERED="1"
 ENV HF_HOME="/root/.cache/huggingface"
-ENV TEMP_DIR="/tmp/generation"
-ENV TORCH_INFERENCE_MODE="1"
+ENV GEN_TEMP_DIR="/tmp/generation"
+ENV GEN_HF_CACHE_DIR="/root/.cache/huggingface"
 
-# Health check (verify basic functionality)
+# PyTorch optimizations
+ENV TORCH_INFERENCE_MODE="1"
+ENV TORCH_CUDNN_BENCHMARK="1"
+
+# HuggingFace optimizations
+ENV HF_HUB_OFFLINE="0"
+ENV HF_HUB_ENABLE_HF_TRANSFER="1"
+
+# GPU memory optimizations
+ENV PYTORCH_CUDA_ALLOC_CONF="max_split_size_mb:512"
+
+# Health check (verify CUDA availability)
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python -c "import torch; print(f'CUDA available: {torch.cuda.is_available()}')" || exit 1
+    CMD python -c "import torch; assert torch.cuda.is_available(), 'CUDA not available'" || exit 1
 
 # Default command (show help)
 CMD ["python", "-m", "src.entrypoints.run_gen", "--help"]
 
 # ============================================
-# Build Instructions:
+# Build Instructions
 # ============================================
-# docker build -f Dockerfile.gen -t video-gen:latest .
+# Build:
+#   docker build -f Dockerfile.gen -t video-gen:latest .
 #
-# Run Examples:
-# 1. Test with single prompt:
-#    docker run --rm --gpus all \
-#      -e B2_KEY="your_key" \
+# Run (dry-run):
+#   docker run --rm --gpus all video-gen:latest \
+#     python -m src.entrypoints.run_gen \
+#     --job '{"prompts": ["A test"]}' --dry-run
+#
+# Run (with B2):
+#   docker run --rm --gpus all \
+#     -e B2_KEY="your_key" \
+#     -e B2_SECRET="your_secret" \
+#     -e B2_BUCKET="your_bucket" \
+#     -e B2_ENDPOINT="https://s3.us-west-004.backblazeb2.com" \
+#     video-gen:latest \
+#     python -m src.entrypoints.run_gen \
+#     --job '{"prompts": ["A cat dancing"]}'
+#
+# Run with model cache volume:
+#   docker run --rm --gpus all \
+#     -v /path/to/models:/root/.cache/huggingface \
+#     video-gen:latest \
+#     python -m src.entrypoints.run_gen \
+#     --job '{"prompts": ["test"]}'
+#
+# Interactive debugging:
+#   docker run --rm -it --gpus all video-gen:latest /bin/bash
 #      -e B2_SECRET="your_secret" \
 #      -e B2_BUCKET="your_bucket" \
 #      video-gen:latest \
