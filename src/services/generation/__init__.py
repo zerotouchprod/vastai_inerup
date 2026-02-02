@@ -1,27 +1,28 @@
 """
-Text-to-Video generation module.
+Video generation module (Text-to-Video & Image-to-Video).
 
-This module provides functionality for generating videos from text prompts
-using diffusion models like CogVideoX-5b.
-
-Note: Importing CogVideoEngine requires diffusers and torch.
+Provides isolated runtime for video generation with CogVideoX models.
 """
 
 from .config import GenerationConfig
-from .models import GenJob
+from .models import GenJob, GenerationResult, BatchGenerationResult, GenerationMode
+from .orchestrator import GenerationOrchestrator
 
 __all__ = [
     'GenerationConfig',
     'GenJob',
+    'GenerationResult',
+    'BatchGenerationResult',
+    'GenerationMode',
+    'GenerationOrchestrator',
 ]
 
-# Lazy imports to avoid requiring diffusers/torch at module level
+# Lazy imports for engines (avoid loading diffusers until needed)
 def __getattr__(name):
-    if name == 'CogVideoEngine':
-        from .engine import CogVideoEngine
-        return CogVideoEngine
-    elif name == 'GenerationOrchestrator':
-        from .orchestrator import GenerationOrchestrator
-        return GenerationOrchestrator
-    else:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    if name == 'CogVideoText2VideoEngine':
+        from .engines.text2video import CogVideoText2VideoEngine
+        return CogVideoText2VideoEngine
+    elif name == 'BaseVideoEngine':
+        from .engines.base import BaseVideoEngine
+        return BaseVideoEngine
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

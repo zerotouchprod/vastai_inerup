@@ -1,16 +1,25 @@
 #!/usr/bin/env python3
 """
-Entry point for text-to-video generation worker.
+Entry point for video generation worker (Text-to-Video & Image-to-Video).
 
 This script implements a "run & die" worker that:
 1. Parses a JSON job specification from CLI arguments
-2. Initializes the generation engine and B2 client
+2. Initializes the generation engine (T2V or I2V based on mode)
 3. Processes all prompts in the job
-4. Outputs results as JSON to stdout
-5. Exits with appropriate status code
+4. Uploads results to B2/S3 storage
+5. Outputs results as JSON to stdout
+6. Exits with appropriate status code
 
 Usage:
-    python -m src.entrypoints.run_gen --job '{"prompts": ["A cat dancing"], ...}'
+    # Text-to-Video
+    python -m src.entrypoints.run_gen --job '{"prompts": ["A cat dancing"]}'
+
+    # Image-to-Video (Phase 2)
+    python -m src.entrypoints.run_gen --job '{
+      "mode": "image2video",
+      "prompts": ["Make it dance"],
+      "input_images": ["https://example.com/cat.jpg"]
+    }'
 """
 
 import argparse
@@ -20,7 +29,7 @@ import os
 from pathlib import Path
 
 # Add src to Python path
-sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from src.services.generation.models import GenJob
 from src.services.generation.orchestrator import GenerationOrchestrator
@@ -31,23 +40,23 @@ from src.shared.logging import setup_logger, get_logger
 def parse_arguments():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(
-        description="Text-to-Video Generation Worker",
+        description="Video Generation Worker (Text-to-Video & Image-to-Video)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Single prompt
+  # Text-to-Video (single prompt)
   python -m src.entrypoints.run_gen --job '{"prompts": ["A cat dancing"]}'
   
-  # Batch with custom parameters
+  # Batch generation with custom parameters
   python -m src.entrypoints.run_gen --job '{
-    "prompts": ["A cat dancing", "A dog running"],
-    "guidance_scale": 7.5,
-    "num_inference_steps": 40,
-    "output_prefix": "videos/2025/"
+    "prompts": ["Sunset over ocean", "City at night"],
+    "guidance_scale": 7.0,
+    "num_inference_steps": 30,
+    "output_prefix": "videos/batch1/"
   }'
   
-  # From file
-  python -m src.entrypoints.run_gen --job "$(cat job.json)"
+  # Dry run (validation only)
+  python -m src.entrypoints.run_gen --job '{"prompts": ["test"]}' --dry-run
         """
     )
     

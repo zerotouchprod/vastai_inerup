@@ -46,3 +46,18 @@ class GPURequiredError(DomainException):
     pass
 
 
+class GenerationError(DomainException):
+    """Raised when video generation fails."""
+    pass
+
+
+class ModelNotLoadedError(GenerationError):
+    """Raised when attempting to use uninitialized model."""
+    pass
+
+
+class NSFWContentError(GenerationError):
+    """Raised when NSFW content is detected."""
+    pass
+
+
