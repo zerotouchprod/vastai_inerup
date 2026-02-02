@@ -39,7 +39,7 @@ ENV HF_HOME="/model_cache"
 
 RUN mkdir -p /model_cache && \
     echo "Downloading model: ${MODEL_ID}..." && \
-    huggingface-cli download ${MODEL_ID} \
+    /opt/venv/bin/huggingface-cli download ${MODEL_ID} \
     --exclude "*.bin" "*.onnx" "*.pb" "fp32/*" \
     --cache-dir /model_cache && \
     echo "✓ Model downloaded and cached"

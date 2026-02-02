@@ -12,7 +12,15 @@ NC='\033[0m'
 
 echo -e "${BLUE}📦 1. BUILD DOCKER IMAGE${NC}"
 echo "----------------------------------------"
+echo "# Using build script (recommended):"
+echo "chmod +x scripts/build_video_gen.sh"
+echo "./scripts/build_video_gen.sh"
+echo ""
+echo "# Or manually:"
 echo "docker build -f docker/Dockerfile.gen -t video-gen:latest ."
+echo ""
+echo "# Note: Build takes 15-20 minutes (downloads ~11GB model)"
+echo "# Final image size: ~15GB"
 echo ""
 
 echo -e "${BLUE}🧪 2. RUN TESTS${NC}"
