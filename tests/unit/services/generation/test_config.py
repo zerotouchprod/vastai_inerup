@@ -11,7 +11,7 @@ def test_config_defaults():
     """Test default configuration values."""
     config = GenerationConfig()
 
-    assert config.T2V_MODEL_ID == "THUDM/CogVideoX-5b"
+    assert config.T2V_MODEL_ID == "THUDM/CogVideoX-5b-I2V"  # Updated to unified model
     assert config.I2V_MODEL_ID == "THUDM/CogVideoX-5b-I2V"
     assert config.ENABLE_SAFETY_CHECKER is True
     assert config.DEFAULT_GUIDANCE_SCALE == 6.0

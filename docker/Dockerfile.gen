@@ -1,9 +1,10 @@
 # Dockerfile for Video Generation Worker (Text-to-Video & Image-to-Video)
+# Model: CogVideoX-5b-I2V (Baked inside)
 # Based on PyTorch 2.2 with CUDA 12.1 for CogVideoX-5b support
 # Optimized for 24GB VRAM GPUs (RTX 3090/4090)
 
 # ============================================
-# Stage 1: Builder
+# Stage 1: Builder & Model Downloader
 # ============================================
 FROM pytorch/pytorch:2.2.0-cuda12.1-cudnn8-runtime as builder
 
@@ -23,9 +24,25 @@ ENV PATH="/opt/venv/bin:$PATH"
 # Copy and install Python dependencies
 COPY requirements.gen.txt /tmp/requirements.gen.txt
 
-# Upgrade pip and install dependencies
+# Upgrade pip and install dependencies (including huggingface-cli)
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
-    pip install --no-cache-dir -r /tmp/requirements.gen.txt
+    pip install --no-cache-dir -r /tmp/requirements.gen.txt && \
+    pip install --no-cache-dir "huggingface_hub[cli]"
+
+# ============================================
+# BAKE MODEL INTO IMAGE (All-in-One)
+# ============================================
+# Download CogVideoX-5b-I2V model (best for anime/image-to-video)
+# Exclude heavy files to optimize image size
+ARG MODEL_ID="THUDM/CogVideoX-5b-I2V"
+ENV HF_HOME="/model_cache"
+
+RUN mkdir -p /model_cache && \
+    echo "Downloading model: ${MODEL_ID}..." && \
+    huggingface-cli download ${MODEL_ID} \
+    --exclude "*.bin" "*.onnx" "*.pb" "fp32/*" \
+    --cache-dir /model_cache && \
+    echo "✓ Model downloaded and cached"
 
 # ============================================
 # Stage 2: Runtime (Production)
@@ -33,7 +50,7 @@ RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
 FROM pytorch/pytorch:2.2.0-cuda12.1-cudnn8-runtime
 
 LABEL maintainer="vastai_inerup"
-LABEL description="Video generation worker (Text-to-Video & Image-to-Video using CogVideoX)"
+LABEL description="Video Gen Worker with CogVideoX-5b-I2V baked in (All-in-One)"
 LABEL version="1.0.0"
 LABEL gpu.required="true"
 LABEL gpu.min_vram_gb="24"
@@ -48,6 +65,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Copy Python environment from builder
 COPY --from=builder /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
+
+# ============================================
+# COPY BAKED MODEL FROM BUILDER
+# This is the critical step: model is now part of the image
+# ============================================
+COPY --from=builder /model_cache /root/.cache/huggingface
 
 # Set working directory
 WORKDIR /app
@@ -75,7 +98,8 @@ ENV TORCH_INFERENCE_MODE="1"
 ENV TORCH_CUDNN_BENCHMARK="1"
 
 # HuggingFace optimizations
-ENV HF_HUB_OFFLINE="0"
+# IMPORTANT: Offline mode forces diffusers to use local cached model
+ENV HF_HUB_OFFLINE="1"
 ENV HF_HUB_ENABLE_HF_TRANSFER="1"
 
 # GPU memory optimizations

@@ -15,8 +15,8 @@ class GenerationConfig(BaseSettings):
     """
     
     # Model configuration
-    T2V_MODEL_ID: str = "THUDM/CogVideoX-5b"
-    I2V_MODEL_ID: str = "THUDM/CogVideoX-5b-I2V"
+    T2V_MODEL_ID: str = "THUDM/CogVideoX-5b-I2V"  # Unified model for both T2V and I2V
+    I2V_MODEL_ID: str = "THUDM/CogVideoX-5b-I2V"  # Same model, better for anime
 
     # Safety checker
     ENABLE_SAFETY_CHECKER: bool = True

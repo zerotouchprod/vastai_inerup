@@ -82,8 +82,11 @@ class GenerationOrchestrator:
             return self._t2v_engine
 
         elif mode == GenerationMode.IMAGE2VIDEO:
-            # TODO: Phase 2 - implement I2V engine
-            raise NotImplementedError("Image-to-Video mode coming in Phase 2")
+            if not self._i2v_engine:
+                self.logger.info("Creating Image-to-Video engine...")
+                from .engines.image2video import CogVideoImage2VideoEngine
+                self._i2v_engine = CogVideoImage2VideoEngine(self.config)
+            return self._i2v_engine
 
         else:
             raise ValueError(f"Unknown generation mode: {mode}")
@@ -186,15 +189,26 @@ class GenerationOrchestrator:
             # Generate video
             self.logger.info(f"[{index + 1}/{len(job.prompts)}] Generating: '{prompt[:50]}...'")
 
-            video_path = engine.generate(
-                prompt=prompt,
-                negative_prompt=job.negative_prompt,
-                seed=job.seed,
-                guidance_scale=job.guidance_scale,
-                num_inference_steps=job.num_inference_steps,
-                num_frames=job.num_frames
-            )
-            
+            # Prepare generation kwargs
+            gen_kwargs = {
+                'prompt': prompt,
+                'negative_prompt': job.negative_prompt,
+                'seed': job.seed,
+                'guidance_scale': job.guidance_scale,
+                'num_inference_steps': job.num_inference_steps,
+                'num_frames': job.num_frames,
+                'fps': job.fps
+            }
+
+            # Add input_image for I2V mode
+            if job.mode == GenerationMode.IMAGE2VIDEO:
+                if not job.input_images or index >= len(job.input_images):
+                    raise ValueError(f"Missing input_image for prompt {index}")
+                gen_kwargs['input_image'] = job.input_images[index]
+                self.logger.info(f"  Using input image: {job.input_images[index][:50]}...")
+
+            video_path = engine.generate(**gen_kwargs)
+
             # Get video metadata
             result.local_path = video_path
             result.size_bytes = video_path.stat().st_size
