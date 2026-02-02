@@ -2,10 +2,14 @@
 
 Standalone video generation worker for Vast.ai GPU instances. Generates videos from text prompts or images using CogVideoX models and uploads to Backblaze B2/S3 storage.
 
+> **🎉 STATUS: FULLY IMPLEMENTED** - Both T2V and I2V modes are production-ready!
+
 ## Features
 
-- **Text-to-Video Generation**: Uses THUDM/CogVideoX-5b model for high-quality video generation from text
-- **Image-to-Video Generation** *(Coming Soon)*: Uses THUDM/CogVideoX-5b-I2V to animate static images
+- **Text-to-Video Generation**: Uses THUDM/CogVideoX-5b-I2V model for high-quality video generation from text
+- **Image-to-Video Generation**: ✅ **NOW AVAILABLE!** Uses THUDM/CogVideoX-5b-I2V to animate static images
+- **Unified Model**: Single model for both T2V and I2V workflows (optimized for anime/stylized content)
+- **All-in-One Docker**: Model baked into image for instant startup (no download wait!)
 - **Dual Mode Support**: Single unified API for both T2V and I2V workflows
 - **Batch Processing**: Supports multiple prompts in a single job for efficient GPU utilization
 - **Safety Checking**: Integrated NSFW content filtering using Stable Diffusion safety checker
@@ -14,7 +18,7 @@ Standalone video generation worker for Vast.ai GPU instances. Generates videos f
 - **Isolated Runtime**: Separate Docker image without OpenCV/PaddleOCR dependencies
 - **Vast.ai Ready**: Optimized for deployment on Vast.ai GPU instances
 
-> **📋 Implementation Status**: See [IMPLEMENTATION_PLAN_GENERATION.md](./IMPLEMENTATION_PLAN_GENERATION.md) for detailed roadmap
+> **📋 Full Documentation**: See [IMPLEMENTATION_PLAN_TEXT2VIDEO_I2V.md](./IMPLEMENTATION_PLAN_TEXT2VIDEO_I2V.md) for detailed architecture and [IMPLEMENTATION_COMPLETE.md](./IMPLEMENTATION_COMPLETE.md) for completion status
 
 ## Architecture
 

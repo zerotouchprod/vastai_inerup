@@ -7,13 +7,10 @@ Supports:
 - Local file paths
 """
 
-declare(strict_types=1);
-
 import base64
 import io
 from pathlib import Path
-from typing import Union, Optional
-from urllib.parse import urlparse
+from typing import Optional
 
 import requests
 from PIL import Image

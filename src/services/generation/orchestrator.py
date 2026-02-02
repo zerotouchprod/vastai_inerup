@@ -294,16 +294,21 @@ class GenerationOrchestrator:
         """Shutdown the orchestrator and clean up resources."""
         self.logger.info("Shutting down generation orchestrator")
         
-        try:
-            self.engine.cleanup()
-            self.logger.info("Engine cleaned up")
-        except Exception as e:
-            self.logger.warning(f"Error cleaning up engine: {e}")
-        
+        # Clean up engines if they exist
+        for engine in [self._t2v_engine, self._i2v_engine]:
+            if engine:
+                try:
+                    if hasattr(engine, 'cleanup'):
+                        engine.cleanup()
+                except Exception as e:
+                    self.logger.warning(f"Error cleaning up engine: {e}")
+
         self._cleanup_temporary_files()
         self._current_job = None
         self._results = []
-    
+
+        self.logger.info("Orchestrator shutdown complete")
+
     def __enter__(self):
         """Context manager entry."""
         return self
