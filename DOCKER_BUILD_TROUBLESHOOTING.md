@@ -4,17 +4,23 @@
 
 ### 1. `huggingface-cli: not found`
 
-**Problem:** The `huggingface-cli` command is not in PATH during build.
+**Problem:** The `huggingface-cli` command is not found during build.
 
 **Solution:** ✅ **FIXED** in latest Dockerfile
-- Changed from: `huggingface-cli download ...`
-- Changed to: `/opt/venv/bin/huggingface-cli download ...`
+- Using: `python -m huggingface_hub.commands.huggingface_cli download ...`
+- This works because we installed `huggingface_hub[cli]` package
 
 **If you still see this error:**
 ```bash
 # Make sure you're using the latest Dockerfile
-git pull origin main  # or your branch
+git pull origin main_video_gen
 docker build -f docker/Dockerfile.gen -t video-gen:latest .
+```
+
+**Alternative (if python -m fails):**
+The CLI is installed as part of the package, use the module directly:
+```dockerfile
+RUN python -m huggingface_hub.commands.huggingface_cli download ${MODEL_ID} ...
 ```
 
 ---

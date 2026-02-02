@@ -1,0 +1,19 @@
+fix: use python -m for huggingface-cli download
+
+The huggingface-cli is installed as a Python module, not as a standalone
+executable. Using `python -m huggingface_hub.commands.huggingface_cli`
+ensures the command works correctly in the virtual environment.
+
+Changes:
+- docker/Dockerfile.gen: Changed from /opt/venv/bin/huggingface-cli to python -m
+- DOCKER_BUILD_TROUBLESHOOTING.md: Updated with correct command
+- scripts/build_video_gen.sh: Updated verification to use python -m
+- FIX_V2_FINAL.md: Added comprehensive fix documentation
+
+This resolves the "huggingface-cli: not found" error during Docker build.
+
+Build command:
+```bash
+docker builder prune -a -f  # Clear cache first!
+docker build -f docker/Dockerfile.gen -t video-gen:latest --progress=plain .
+```

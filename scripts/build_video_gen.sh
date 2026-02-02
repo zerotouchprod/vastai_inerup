@@ -82,9 +82,14 @@ if [ $BUILD_EXIT_CODE -eq 0 ]; then
 
     # Quick verification
     echo -e "${BLUE}🔍 Quick Verification:${NC}"
-    echo "Running: docker run --rm ${IMAGE_NAME}:${IMAGE_TAG} python -c 'import torch; print(f\"PyTorch {torch.__version__}\"); print(f\"CUDA available: {torch.cuda.is_available()}\")'"
+    echo "Checking PyTorch and CUDA availability..."
     docker run --rm "${IMAGE_NAME}:${IMAGE_TAG}" \
         python -c 'import torch; print(f"PyTorch {torch.__version__}"); print(f"CUDA available: {torch.cuda.is_available()}")'
+
+    echo ""
+    echo "Checking HuggingFace CLI..."
+    docker run --rm "${IMAGE_NAME}:${IMAGE_TAG}" \
+        python -m huggingface_hub.commands.huggingface_cli --version || echo "CLI check skipped"
     echo ""
 
     echo -e "${GREEN}✅ Next steps:${NC}"
