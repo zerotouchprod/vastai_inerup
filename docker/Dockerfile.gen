@@ -24,13 +24,14 @@ RUN python -c "import huggingface_hub; print(f'huggingface_hub version: {hugging
 
 # Создаем папку для модели
 ENV HF_HOME="/model_cache"
+# Set HF_TOKEN from build arg if provided
+ENV HF_TOKEN="$HF_TOKEN"
 RUN mkdir -p /model_cache
 
 # Скачиваем модель (THUDM/CogVideoX-5b-I2V) с аутентификацией
 # FIX: Используем python -m huggingface_hub.cli.hf which is the hf command
 RUN if [ -n "$HF_TOKEN" ]; then \
-        echo "Using HF_TOKEN for authenticated download..." && \
-        python -m huggingface_hub.cli.hf login --token $HF_TOKEN; \
+        echo "Using HF_TOKEN for authenticated download (higher rate limits)..."; \
     else \
         echo "Warning: No HF_TOKEN provided, using unauthenticated download (lower rate limits)"; \
     fi && \
