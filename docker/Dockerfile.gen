@@ -18,8 +18,8 @@ ENV HF_HOME="/model_cache"
 RUN mkdir -p /model_cache
 
 # Скачиваем модель (THUDM/CogVideoX-5b-I2V)
-# FIX: Используем "python -m huggingface_hub.cli" вместо просто "huggingface-cli"
-RUN python -m huggingface_hub.cli download THUDM/CogVideoX-5b-I2V \
+# FIX: Используем "python -m huggingface_hub.commands.huggingface_cli" вместо просто "huggingface-cli"
+RUN python -m huggingface_hub.commands.huggingface_cli download THUDM/CogVideoX-5b-I2V \
     --include "*.safetensors" "*.json" "*.txt" "scheduler/*" "tokenizer/*" "transformer/*" "vae/*" "text_encoder/*" \
     --exclude "*.bin" "*.onnx" "*.pb" "fp32/*" \
     --cache-dir /model_cache
