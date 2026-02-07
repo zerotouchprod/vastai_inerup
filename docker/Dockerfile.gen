@@ -8,18 +8,25 @@
 # Используем devel образ, чтобы был git и компиляторы, если понадобятся
 FROM pytorch/pytorch:2.5.1-cuda12.4-cudnn9-devel as downloader
 
+# Cache busting argument to force pip install to run
+ARG CACHEBUST=1
+
 # Очищаем кэш сразу, чтобы не занимать место
 RUN apt-get update && apt-get install -y git && \
     pip install --no-cache-dir "huggingface_hub[cli]" && \
     rm -rf /var/lib/apt/lists/*
+
+# Проверяем что huggingface-cli установлен
+RUN python -c "import huggingface_hub; print(f'huggingface_hub version: {huggingface_hub.__version__}')" && \
+    python -m huggingface_hub.cli.hf --help 2>&1 | head -5
 
 # Создаем папку для модели
 ENV HF_HOME="/model_cache"
 RUN mkdir -p /model_cache
 
 # Скачиваем модель (THUDM/CogVideoX-5b-I2V)
-# FIX: Используем absolute path to huggingface-cli in conda environment
-RUN /opt/conda/bin/huggingface-cli download THUDM/CogVideoX-5b-I2V \
+# FIX: Используем python -m huggingface_hub.cli.hf which is the hf command
+RUN python -m huggingface_hub.cli.hf download THUDM/CogVideoX-5b-I2V \
     --include "*.safetensors" "*.json" "*.txt" "scheduler/*" "tokenizer/*" "transformer/*" "vae/*" "text_encoder/*" \
     --exclude "*.bin" "*.onnx" "*.pb" "fp32/*" \
     --cache-dir /model_cache
