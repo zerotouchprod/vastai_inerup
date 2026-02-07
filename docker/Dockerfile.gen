@@ -10,7 +10,7 @@ FROM pytorch/pytorch:2.5.1-cuda12.4-cudnn9-devel as downloader
 
 # Очищаем кэш сразу, чтобы не занимать место
 RUN apt-get update && apt-get install -y git && \
-    pip install --no-cache-dir huggingface_hub[cli] && \
+    pip install --no-cache-dir "huggingface_hub[cli]" && \
     rm -rf /var/lib/apt/lists/*
 
 # Создаем папку для модели
@@ -18,8 +18,8 @@ ENV HF_HOME="/model_cache"
 RUN mkdir -p /model_cache
 
 # Скачиваем модель (THUDM/CogVideoX-5b-I2V)
-# Используем bf16 (bfloat16) — это стандарт для 40xx/50xx карт
-RUN huggingface-cli download THUDM/CogVideoX-5b-I2V \
+# FIX: Используем "python -m huggingface_hub.cli" вместо просто "huggingface-cli"
+RUN python -m huggingface_hub.cli download THUDM/CogVideoX-5b-I2V \
     --include "*.safetensors" "*.json" "*.txt" "scheduler/*" "tokenizer/*" "transformer/*" "vae/*" "text_encoder/*" \
     --exclude "*.bin" "*.onnx" "*.pb" "fp32/*" \
     --cache-dir /model_cache
