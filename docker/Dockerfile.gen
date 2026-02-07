@@ -1,172 +1,68 @@
-# Dockerfile for Video Generation Worker (Text-to-Video & Image-to-Video)
-# Model: CogVideoX-5b-I2V (Baked inside)
-# Based on PyTorch 2.2 with CUDA 12.1 for CogVideoX-5b support
-# Optimized for 24GB VRAM GPUs (RTX 3090/4090)
+# Dockerfile.gen (2026 High-Performance Edition)
+# Optimized for RTX 4090 / 5090 (Blackwell/Ada)
+# Stack: PyTorch 2.5+, CUDA 12.4, CogVideoX-5b-I2V Baked-in
 
 # ============================================
-# Stage 1: Builder & Model Downloader
+# Stage 1: Downloader (Heavy lifting)
 # ============================================
-FROM pytorch/pytorch:2.2.0-cuda12.1-cudnn8-runtime as builder
+# Используем devel образ, чтобы был git и компиляторы, если понадобятся
+FROM pytorch/pytorch:2.5.1-cuda12.4-cudnn9-devel as downloader
 
-LABEL stage="builder"
+# Очищаем кэш сразу, чтобы не занимать место
+RUN apt-get update && apt-get install -y git && \
+    pip install --no-cache-dir huggingface_hub[cli] && \
+    rm -rf /var/lib/apt/lists/*
 
-# Install build dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    git \
-    wget \
-    && rm -rf /var/lib/apt/lists/*
-
-# Create virtual environment
-RUN python -m venv /opt/venv
-ENV PATH="/opt/venv/bin:$PATH"
-
-# Copy and install Python dependencies
-COPY requirements.gen.txt /tmp/requirements.gen.txt
-
-# Upgrade pip and install dependencies (including huggingface-cli)
-RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
-    pip install --no-cache-dir -r /tmp/requirements.gen.txt && \
-    pip install --no-cache-dir "huggingface_hub[cli]"
-
-# ============================================
-# BAKE MODEL INTO IMAGE (All-in-One)
-# ============================================
-# Download CogVideoX-5b-I2V model (best for anime/image-to-video)
-# Exclude heavy files to optimize image size
-ARG MODEL_ID="THUDM/CogVideoX-5b-I2V"
+# Создаем папку для модели
 ENV HF_HOME="/model_cache"
+RUN mkdir -p /model_cache
 
-RUN mkdir -p /model_cache && \
-    echo "Downloading model: ${MODEL_ID}..." && \
-    python -c "from huggingface_hub import snapshot_download; \
-import os; \
-model_id = os.environ.get('MODEL_ID', 'THUDM/CogVideoX-5b-I2V'); \
-print(f'Downloading {model_id}...'); \
-snapshot_download(repo_id=model_id, cache_dir='/model_cache', ignore_patterns=['*.bin', '*.onnx', '*.pb', 'fp32/*']); \
-print('✓ Model downloaded and cached')"
+# Скачиваем модель (THUDM/CogVideoX-5b-I2V)
+# Используем bf16 (bfloat16) — это стандарт для 40xx/50xx карт
+RUN huggingface-cli download THUDM/CogVideoX-5b-I2V \
+    --include "*.safetensors" "*.json" "*.txt" "scheduler/*" "tokenizer/*" "transformer/*" "vae/*" "text_encoder/*" \
+    --exclude "*.bin" "*.onnx" "*.pb" "fp32/*" \
+    --cache-dir /model_cache
 
 # ============================================
-# Stage 2: Runtime (Production)
+# Stage 2: Runtime (Slim & Fast)
 # ============================================
-FROM pytorch/pytorch:2.2.0-cuda12.1-cudnn8-runtime
+# Переходим на Runtime образ (меньше весит)
+FROM pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime
 
 LABEL maintainer="vastai_inerup"
-LABEL description="Video Gen Worker with CogVideoX-5b-I2V baked in (All-in-One)"
-LABEL version="1.0.0"
-LABEL gpu.required="true"
+LABEL description="Video Gen Worker 2026 (RTX 50xx Ready)"
 LABEL gpu.min_vram_gb="24"
 
-# Install runtime dependencies
+# Системные зависимости (FFmpeg нужен свежий)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ffmpeg \
-    libgl1 \
-    libglib2.0-0 \
-    && rm -rf /var/lib/apt/lists/*
+    ffmpeg libgl1 libglib2.0-0 && \
+    rm -rf /var/lib/apt/lists/*
 
-# Copy Python environment from builder
-COPY --from=builder /opt/venv /opt/venv
-ENV PATH="/opt/venv/bin:$PATH"
-
-# ============================================
-# COPY BAKED MODEL FROM BUILDER
-# This is the critical step: model is now part of the image
-# ============================================
-COPY --from=builder /model_cache /root/.cache/huggingface
-
-# Set working directory
 WORKDIR /app
 
-# Copy application source code
-COPY src/ /app/src/
+# Копируем зависимости
 COPY requirements.gen.txt /app/
 
-# Create necessary directories
-RUN mkdir -p \
-    /tmp/generation \
-    /root/.cache/huggingface \
-    /app/output \
-    /app/logs
+# Устанавливаем Python пакеты
+# ВАЖНО: --no-cache-dir критичен для твоих 60 ГБ диска!
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.gen.txt && \
+    # Дополнительные оптимизации для 50-й серии (если есть в requirements, но на всякий случай)
+    pip install --no-cache-dir xformers --index-url https://download.pytorch.org/whl/cu124
 
-# Set environment variables
-ENV PYTHONPATH="/app:$PYTHONPATH"
-ENV PYTHONUNBUFFERED="1"
+# Копируем МОДЕЛЬ из первого этапа
+COPY --from=downloader /model_cache /root/.cache/huggingface
+
+# Копируем код
+COPY src/ /app/src/
+
+# Настройка ENV
 ENV HF_HOME="/root/.cache/huggingface"
-ENV GEN_TEMP_DIR="/tmp/generation"
-ENV GEN_HF_CACHE_DIR="/root/.cache/huggingface"
-
-# PyTorch optimizations
-ENV TORCH_INFERENCE_MODE="1"
-ENV TORCH_CUDNN_BENCHMARK="1"
-
-# HuggingFace optimizations
-# IMPORTANT: Offline mode forces diffusers to use local cached model
 ENV HF_HUB_OFFLINE="1"
-ENV HF_HUB_ENABLE_HF_TRANSFER="1"
+ENV TORCH_INFERENCE_MODE="1"
+ENV PYTHONPATH="/app:$PYTHONPATH"
+# Оптимизация памяти для PyTorch 2.5+
+ENV PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
 
-# GPU memory optimizations
-ENV PYTORCH_CUDA_ALLOC_CONF="max_split_size_mb:512"
-
-# Health check (verify CUDA availability)
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python -c "import torch; assert torch.cuda.is_available(), 'CUDA not available'" || exit 1
-
-# Default command (show help)
 CMD ["python", "-m", "src.entrypoints.run_gen", "--help"]
-
-# ============================================
-# Build Instructions
-# ============================================
-# Build:
-#   docker build -f Dockerfile.gen -t video-gen:latest .
-#
-# Run (dry-run):
-#   docker run --rm --gpus all video-gen:latest \
-#     python -m src.entrypoints.run_gen \
-#     --job '{"prompts": ["A test"]}' --dry-run
-#
-# Run (with B2):
-#   docker run --rm --gpus all \
-#     -e B2_KEY="your_key" \
-#     -e B2_SECRET="your_secret" \
-#     -e B2_BUCKET="your_bucket" \
-#     -e B2_ENDPOINT="https://s3.us-west-004.backblazeb2.com" \
-#     video-gen:latest \
-#     python -m src.entrypoints.run_gen \
-#     --job '{"prompts": ["A cat dancing"]}'
-#
-# Run with model cache volume:
-#   docker run --rm --gpus all \
-#     -v /path/to/models:/root/.cache/huggingface \
-#     video-gen:latest \
-#     python -m src.entrypoints.run_gen \
-#     --job '{"prompts": ["test"]}'
-#
-# Interactive debugging:
-#   docker run --rm -it --gpus all video-gen:latest /bin/bash
-#      -e B2_SECRET="your_secret" \
-#      -e B2_BUCKET="your_bucket" \
-#      video-gen:latest \
-#      python -m src.entrypoints.run_gen \
-#      --job '{"prompts": ["A cat dancing"]}'
-#
-# 2. With volume for model cache (recommended for Vast.ai):
-#    docker run --rm --gpus all \
-#      -v /path/to/hf_cache:/root/.cache/huggingface \
-#      -v /path/to/output:/app/output \
-#      -e B2_KEY="your_key" \
-#      -e B2_SECRET="your_secret" \
-#      -e B2_BUCKET="your_bucket" \
-#      video-gen:latest \
-#      python -m src.entrypoints.run_gen \
-#      --job '{"prompts": ["A cat dancing", "A dog running"]}'
-#
-# 3. Development/test without B2 upload:
-#    docker run --rm --gpus all \
-#      video-gen:latest \
-#      python -m src.entrypoints.run_gen \
-#      --job '{"prompts": ["Test prompt"]}' \
-#      --no-upload
-#
-# Expected Image Size: ~8-10GB (includes PyTorch + dependencies)
-# ============================================
