@@ -1,14 +1,13 @@
-# Dockerfile.gen.optimized (2026 Space-Optimized Edition)
-# Optimized for RTX 4090 / 5090 (Blackwell/Ada) with minimal disk usage
-# Stack: PyTorch 2.6+, CUDA 12.4, CogVideoX-5b-I2V Baked-in
-# Target: ~10-12GB final image size (vs ~15GB original)
+# Dockerfile.universal_studio (2026 Universal Studio Edition)
+# Optimized for RTX 4090 / 5090 (Blackwell/Ada)
+# Stack: PyTorch 2.6+, CUDA 12.4, CogVideoX-5b-I2V + DreamShaper XL Lightning
 
 # ============================================
-# Stage 1: Minimal Downloader (Only what's needed for model download)
+# Stage 1: Downloader (Heavy lifting - both models)
 # ============================================
-FROM ubuntu:22.04 as downloader
+FROM ubuntu:22.04 AS downloader
 
-# Install only essential packages for model download
+# Install minimal dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
@@ -18,31 +17,39 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
 
-# Create virtual environment for isolation
+# Create virtual environment
 RUN python3 -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
-# Install ONLY huggingface_hub for model download (minimal dependencies)
+# Install huggingface_hub
 RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir "huggingface_hub[cli]"
 
-# Create model cache directory
+# Setup model cache
 ENV HF_HOME="/model_cache"
 RUN mkdir -p /model_cache
 
-# HF token for authenticated downloads
+# Download models
 ARG HF_TOKEN=""
 ENV HF_TOKEN="$HF_TOKEN"
-
-# Download model (THUDM/CogVideoX-5b-I2V) with authentication
 RUN if [ -n "$HF_TOKEN" ]; then \
         echo "Using HF_TOKEN for authenticated download (higher rate limits)..."; \
     else \
         echo "Warning: No HF_TOKEN provided, using unauthenticated download"; \
-    fi && \
+    fi
+
+# 1. Download Video Model (CogVideoX-I2V)
+RUN echo "Downloading CogVideoX-5b-I2V..." && \
     python -m huggingface_hub.cli.hf download THUDM/CogVideoX-5b-I2V \
         --include "*.safetensors" "*.json" "*.txt" "scheduler/*" "tokenizer/*" "transformer/*" "vae/*" "text_encoder/*" \
         --exclude "*.bin" "*.onnx" "*.pb" "fp32/*" \
+        --cache-dir /model_cache
+
+# 2. Download Universal Image Model (DreamShaper XL Lightning)
+RUN echo "Downloading DreamShaper XL Lightning..." && \
+    python -m huggingface_hub.cli.hf download Lykon/dreamshaper-xl-lightning \
+        --include "*.safetensors" "*.json" "*.txt" "scheduler/*" "tokenizer/*" "text_encoder/*" "text_encoder_2/*" "vae/*" "unet/*" \
+        --exclude "*.bin" "*.onnx" \
         --cache-dir /model_cache
 
 # ============================================
@@ -59,21 +66,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \
     python3-pip \
     python3-venv \
-    python3-dev \
-    build-essential \
     && rm -rf /var/lib/apt/lists/* \
-    && apt-get clean \
-    && rm -rf /usr/share/doc/* /usr/share/man/* /usr/share/locale/* /var/cache/debconf/*-old
+    && apt-get clean
 
 # Create virtual environment
 RUN python3 -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
-# Upgrade pip and install Python packages from requirements.gen.txt
 WORKDIR /tmp
+
+# Copy requirements
 COPY requirements.gen.txt .
 
-# Install PyTorch with CUDA 12.4 first (optimized for size)
+# Install PyTorch with CUDA 12.4 support
 RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir \
         torch==2.6.0+cu124 \
@@ -81,67 +86,45 @@ RUN pip install --no-cache-dir --upgrade pip \
         torchaudio==2.6.0+cu124 \
         --index-url https://download.pytorch.org/whl/cu124
 
-# Install remaining dependencies (without duplicating PyTorch)
-RUN pip install --no-cache-dir -r requirements.gen.txt \
-    && pip install --no-cache-dir xformers --index-url https://download.pytorch.org/whl/cu124 \
-    && rm -rf /root/.cache/pip
+# Install other dependencies (including diffusers for SDXL)
+RUN pip install --no-cache-dir -r requirements.gen.txt
+
+# Install xformers for optimization
+RUN pip install --no-cache-dir xformers --index-url https://download.pytorch.org/whl/cu124
 
 # ============================================
-# Stage 3: Runtime (Minimal final image)
+# Stage 3: Runtime (Slim & Fast)
 # ============================================
 FROM nvidia/cuda:12.4.0-runtime-ubuntu22.04
 
 LABEL maintainer="vastai_inerup"
-LABEL description="Video Gen Worker 2026 Optimized (RTX 50xx Ready)"
+LABEL description="Universal Studio Worker 2026 (RTX 50xx Ready) - Photorealism + Anime + 3D Art"
 LABEL gpu.min_vram_gb="24"
 
-# Install only runtime dependencies
+# System dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     libgl1 \
     libglib2.0-0 \
-    python3 \
-    python3-venv \
-    && rm -rf /var/lib/apt/lists/* \
-    && apt-get clean \
-    && rm -rf /usr/share/doc/* /usr/share/man/* /usr/share/locale/* /var/cache/debconf/*-old
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
 
 # Copy virtual environment from builder
 COPY --from=builder /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
-# Copy model from downloader
+# Copy models from downloader
 COPY --from=downloader /model_cache /root/.cache/huggingface
 
-WORKDIR /app
-
-# Copy application code
+# Copy source code
 COPY src/ /app/src/
 
-# Copy requirements for reference (not for installation)
-COPY requirements.gen.txt /app/
-
-# Environment configuration
+# Environment variables
 ENV HF_HOME="/root/.cache/huggingface"
 ENV HF_HUB_OFFLINE="1"
 ENV TORCH_INFERENCE_MODE="1"
 ENV PYTHONPATH="/app:$PYTHONPATH"
 ENV PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
-ENV CUDA_VISIBLE_DEVICES="0"
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python -c "import torch; print(f'PyTorch {torch.__version__} OK')" || exit 1
-
-# Default command
 CMD ["python", "-m", "src.entrypoints.run_gen", "--help"]
-
-# ============================================
-# Image size optimization summary:
-# 1. Uses lighter base images (ubuntu + cuda instead of full pytorch)
-# 2. Three-stage build separates download, build, and runtime
-# 3. Virtual environment reduces duplication
-# 4. Removes unnecessary system packages and documentation
-# 5. Minimal runtime dependencies only
-# Expected savings: 3-5GB from original ~15GB
-# ============================================
