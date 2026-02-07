@@ -10,6 +10,8 @@ FROM pytorch/pytorch:2.5.1-cuda12.4-cudnn9-devel as downloader
 
 # Cache busting argument to force pip install to run
 ARG CACHEBUST=1
+# HuggingFace token for authenticated downloads (higher rate limits)
+ARG HF_TOKEN=""
 
 # Очищаем кэш сразу, чтобы не занимать место
 RUN apt-get update && apt-get install -y git && \
@@ -24,12 +26,18 @@ RUN python -c "import huggingface_hub; print(f'huggingface_hub version: {hugging
 ENV HF_HOME="/model_cache"
 RUN mkdir -p /model_cache
 
-# Скачиваем модель (THUDM/CogVideoX-5b-I2V)
+# Скачиваем модель (THUDM/CogVideoX-5b-I2V) с аутентификацией
 # FIX: Используем python -m huggingface_hub.cli.hf which is the hf command
-RUN python -m huggingface_hub.cli.hf download THUDM/CogVideoX-5b-I2V \
-    --include "*.safetensors" "*.json" "*.txt" "scheduler/*" "tokenizer/*" "transformer/*" "vae/*" "text_encoder/*" \
-    --exclude "*.bin" "*.onnx" "*.pb" "fp32/*" \
-    --cache-dir /model_cache
+RUN if [ -n "$HF_TOKEN" ]; then \
+        echo "Using HF_TOKEN for authenticated download..." && \
+        python -m huggingface_hub.cli.hf login --token $HF_TOKEN; \
+    else \
+        echo "Warning: No HF_TOKEN provided, using unauthenticated download (lower rate limits)"; \
+    fi && \
+    python -m huggingface_hub.cli.hf download THUDM/CogVideoX-5b-I2V \
+        --include "*.safetensors" "*.json" "*.txt" "scheduler/*" "tokenizer/*" "transformer/*" "vae/*" "text_encoder/*" \
+        --exclude "*.bin" "*.onnx" "*.pb" "fp32/*" \
+        --cache-dir /model_cache
 
 # ============================================
 # Stage 2: Runtime (Slim & Fast)

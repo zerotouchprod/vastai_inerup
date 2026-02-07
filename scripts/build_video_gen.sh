@@ -22,6 +22,7 @@ NC='\033[0m'
 IMAGE_NAME="${IMAGE_NAME:-video-gen}"
 IMAGE_TAG="${IMAGE_TAG:-latest}"
 DOCKERFILE="docker/Dockerfile.gen"
+HF_TOKEN="${HF_TOKEN:-}"
 
 # Check if Dockerfile exists
 if [ ! -f "$DOCKERFILE" ]; then
@@ -40,6 +41,11 @@ echo -e "${BLUE}📊 Build Information:${NC}"
 echo "  Image name: ${IMAGE_NAME}:${IMAGE_TAG}"
 echo "  Dockerfile: ${DOCKERFILE}"
 echo "  Model: THUDM/CogVideoX-5b-I2V"
+if [ -n "$HF_TOKEN" ]; then
+    echo "  Authentication: HF_TOKEN provided (higher rate limits)"
+else
+    echo "  Authentication: No HF_TOKEN (lower rate limits, may be slower)"
+fi
 echo ""
 echo -e "${YELLOW}⏱️  Estimated build time: 15-20 minutes${NC}"
 echo -e "${YELLOW}💾 Expected image size: ~15GB${NC}"
@@ -58,10 +64,17 @@ echo -e "${BLUE}🔨 Starting build...${NC}"
 echo ""
 
 # Build with progress
+BUILD_ARGS="--build-arg CACHEBUST=$(date +%s)"
+if [ -n "$HF_TOKEN" ]; then
+    echo -e "${YELLOW}🔑 Using HF_TOKEN for authenticated downloads${NC}"
+    BUILD_ARGS="$BUILD_ARGS --build-arg HF_TOKEN=$HF_TOKEN"
+fi
+
 docker build \
     -f "${DOCKERFILE}" \
     -t "${IMAGE_NAME}:${IMAGE_TAG}" \
     --progress=plain \
+    $BUILD_ARGS \
     .
 
 BUILD_EXIT_CODE=$?
