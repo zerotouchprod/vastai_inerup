@@ -24,7 +24,7 @@ IMAGE_NAME="${IMAGE_NAME:-video-gen-optimized}"
 IMAGE_TAG="${IMAGE_TAG:-latest}"
 DOCKERFILE="docker/Dockerfile.gen.optimized"
 HF_TOKEN="${HF_TOKEN:-}"
-EXTERNAL_MOUNT="${EXTERNAL_MOUNT:-/mnt/external_hdd}"
+EXTERNAL_MOUNT="${EXTERNAL_MOUNT:-/sdb1/docker_base}"
 PROJECT_NAME="vastai_inerup_external"
 
 # Check if external mount exists
