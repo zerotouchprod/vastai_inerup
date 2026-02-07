@@ -1,0 +1,130 @@
+# Dockerfile.universal_no_token (2026 Universal Studio Edition - No HF_TOKEN)
+# Optimized for RTX 4090 / 5090 (Blackwell/Ada)
+# Stack: PyTorch 2.5+, CUDA 12.4, CogVideoX-5b-I2V + DreamShaper XL Lightning
+# Key feature: No HF_TOKEN dependency - uses anonymous downloads only
+
+# ============================================
+# Stage 1: Downloader (Heavy lifting - both models)
+# ============================================
+FROM ubuntu:22.04 AS downloader
+
+# Install minimal dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    python3 \
+    python3-pip \
+    python3-venv \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
+
+# Create virtual environment
+RUN python3 -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+# Install huggingface_hub
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir "huggingface_hub[cli]"
+
+# Setup model cache
+ENV HF_HOME="/model_cache"
+RUN mkdir -p /model_cache
+
+# 1. Download Video Model (CogVideoX-I2V) - Anonymous
+RUN echo "Downloading CogVideoX-5b-I2V (anonymous)..." && \
+    python -m huggingface_hub.cli.hf download THUDM/CogVideoX-5b-I2V \
+        --include "*.safetensors" "*.json" "*.txt" "scheduler/*" "tokenizer/*" "transformer/*" "vae/*" "text_encoder/*" \
+        --exclude "*.bin" "*.onnx" "*.pb" "fp32/*" \
+        --cache-dir /model_cache
+
+# 2. Download Universal Image Model (DreamShaper XL Lightning) - Anonymous
+RUN echo "Downloading DreamShaper XL Lightning (anonymous)..." && \
+    python -m huggingface_hub.cli.hf download Lykon/dreamshaper-xl-lightning \
+        --include "*.safetensors" "*.json" "*.txt" "scheduler/*" "tokenizer/*" "text_encoder/*" "text_encoder_2/*" "vae/*" "unet/*" \
+        --exclude "*.bin" "*.onnx" \
+        --cache-dir /model_cache
+
+# ============================================
+# Stage 2: Builder (Install all dependencies)
+# ============================================
+FROM nvidia/cuda:12.4.0-devel-ubuntu22.04 as builder
+
+# Install system dependencies (minimal set)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    ffmpeg \
+    libgl1 \
+    libglib2.0-0 \
+    python3 \
+    python3-pip \
+    python3-venv \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
+
+# Create virtual environment
+RUN python3 -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+WORKDIR /tmp
+
+# Copy requirements
+COPY requirements.gen.txt .
+
+# Install PyTorch with CUDA 12.4 support
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir \
+        torch==2.5.1+cu124 \
+        torchvision==0.20.1+cu124 \
+        torchaudio==2.5.1+cu124 \
+        --index-url https://download.pytorch.org/whl/cu124
+
+# Install other dependencies (including diffusers for SDXL)
+RUN pip install --no-cache-dir -r requirements.gen.txt
+
+# Install xformers for optimization
+RUN pip install --no-cache-dir xformers --index-url https://download.pytorch.org/whl/cu124
+
+# ============================================
+# Stage 3: Runtime (Slim & Fast)
+# ============================================
+FROM nvidia/cuda:12.4.0-runtime-ubuntu22.04
+
+LABEL maintainer="vastai_inerup"
+LABEL description="Universal Studio Worker 2026 (RTX 50xx Ready) - Photorealism + Anime + 3D Art - No HF_TOKEN"
+LABEL gpu.min_vram_gb="24"
+
+# System dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg \
+    libgl1 \
+    libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Copy virtual environment from builder
+COPY --from=builder /opt/venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+# Copy models from downloader
+COPY --from=downloader /model_cache /root/.cache/huggingface
+
+# Copy source code
+COPY src/ /app/src/
+
+# Environment variables
+ENV HF_HOME="/root/.cache/huggingface"
+ENV HF_HUB_OFFLINE="1"
+ENV TORCH_INFERENCE_MODE="1"
+ENV PYTHONPATH="/app:$PYTHONPATH"
+ENV PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
+
+CMD ["python", "-m", "src.entrypoints.run_gen", "--help"]
+
+# ============================================
+# Advantages of this approach:
+# 1. No HF_TOKEN dependency - won't rebuild when token changes
+# 2. Anonymous downloads work (lower rate limits but acceptable for Docker builds)
+# 3. Cache-friendly - same Dockerfile always produces same image
+# 4. Security - no tokens embedded in images
+# ============================================
