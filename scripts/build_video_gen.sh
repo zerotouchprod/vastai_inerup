@@ -21,8 +21,9 @@ NC='\033[0m'
 # Configuration
 IMAGE_NAME="${IMAGE_NAME:-video-gen}"
 IMAGE_TAG="${IMAGE_TAG:-latest}"
-DOCKERFILE="docker/Dockerfile.gen"
+DOCKERFILE="${DOCKERFILE:-docker/Dockerfile.gen}"
 HF_TOKEN="${HF_TOKEN:-}"
+OPTIMIZED="${OPTIMIZED:-0}"
 
 # Check if Dockerfile exists
 if [ ! -f "$DOCKERFILE" ]; then
@@ -47,8 +48,13 @@ else
     echo "  Authentication: No HF_TOKEN (lower rate limits, may be slower)"
 fi
 echo ""
-echo -e "${YELLOW}⏱️  Estimated build time: 15-20 minutes${NC}"
-echo -e "${YELLOW}💾 Expected image size: ~15GB${NC}"
+if [ "$DOCKERFILE" = "docker/Dockerfile.gen.optimized" ]; then
+    echo -e "${YELLOW}⏱️  Estimated build time: 12-18 minutes (optimized)${NC}"
+    echo -e "${YELLOW}💾 Expected image size: ~10-12GB (optimized)${NC}"
+else
+    echo -e "${YELLOW}⏱️  Estimated build time: 15-20 minutes${NC}"
+    echo -e "${YELLOW}💾 Expected image size: ~15GB${NC}"
+fi
 echo ""
 
 # Confirm build
