@@ -1,0 +1,125 @@
+# Dockerfile.universal_compact (2026 Compact Universal Studio Edition)
+# Optimized for RTX 4090 / 5090 with minimal disk usage
+# Stack: PyTorch 2.5+, CUDA 12.4, CogVideoX-5b-I2V + DreamShaper XL Lightning
+# Key features: Minimal size, no HF_TOKEN, optimized layers
+
+# ============================================
+# Stage 1: Downloader (Minimal - only models)
+# ============================================
+FROM alpine:3.19 AS downloader
+
+# Install minimal dependencies
+RUN apk add --no-cache \
+    python3 \
+    py3-pip \
+    curl \
+    && pip3 install --no-cache-dir huggingface_hub
+
+# Setup model cache
+ENV HF_HOME="/model_cache"
+RUN mkdir -p /model_cache
+
+# Download models (anonymous, minimal)
+# 1. CogVideoX-5b-I2V (video generation)
+RUN echo "Downloading CogVideoX-5b-I2V..." && \
+    python3 -m huggingface_hub.cli.hf download THUDM/CogVideoX-5b-I2V \
+        --include "*.safetensors" "*.json" "*.txt" "scheduler/*" "tokenizer/*" "transformer/*" "vae/*" "text_encoder/*" \
+        --exclude "*.bin" "*.onnx" "*.pb" "fp32/*" "*.ckpt" \
+        --cache-dir /model_cache
+
+# 2. DreamShaper XL Lightning (image generation)
+RUN echo "Downloading DreamShaper XL Lightning..." && \
+    python3 -m huggingface_hub.cli.hf download Lykon/dreamshaper-xl-lightning \
+        --include "*.safetensors" "*.json" "*.txt" "scheduler/*" "tokenizer/*" "text_encoder/*" "text_encoder_2/*" "vae/*" "unet/*" \
+        --exclude "*.bin" "*.onnx" "*.ckpt" \
+        --cache-dir /model_cache
+
+# Clean up pip cache
+RUN rm -rf /root/.cache/pip
+
+# ============================================
+# Stage 2: Builder (Minimal Python environment)
+# ============================================
+FROM nvidia/cuda:12.4.0-devel-ubuntu22.04 as builder
+
+# Install minimal system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 \
+    python3-pip \
+    python3-venv \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
+
+# Create virtual environment
+RUN python3 -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+WORKDIR /tmp
+
+# Copy requirements
+COPY requirements.gen.txt .
+
+# Install PyTorch with CUDA 12.4 (minimal)
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir \
+        torch==2.5.1+cu124 \
+        torchvision==0.20.1+cu124 \
+        torchaudio==2.5.1+cu124 \
+        --index-url https://download.pytorch.org/whl/cu124
+
+# Install only essential dependencies
+RUN pip install --no-cache-dir -r requirements.gen.txt
+
+# Clean up
+RUN rm -rf /root/.cache/pip
+
+# ============================================
+# Stage 3: Runtime (Ultra minimal)
+# ============================================
+FROM nvidia/cuda:12.4.0-runtime-ubuntu22.04
+
+LABEL maintainer="vastai_inerup"
+LABEL description="Universal Studio Compact 2026 (RTX 50xx Ready) - Minimal size"
+LABEL gpu.min_vram_gb="24"
+
+# Minimal system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 \
+    libgl1 \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
+
+WORKDIR /app
+
+# Copy virtual environment from builder
+COPY --from=builder /opt/venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+# Copy models from downloader
+COPY --from=downloader /model_cache /root/.cache/huggingface
+
+# Copy only essential source code
+COPY src/ /app/src/
+
+# Environment variables
+ENV HF_HOME="/root/.cache/huggingface"
+ENV HF_HUB_OFFLINE="1"
+ENV TORCH_INFERENCE_MODE="1"
+ENV PYTHONPATH="/app:$PYTHONPATH"
+ENV PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD python3 -c "import torch; print(f'PyTorch {torch.__version__} OK')" || exit 1
+
+CMD ["python3", "-m", "src.entrypoints.run_gen", "--help"]
+
+# ============================================
+# Size optimization summary:
+# 1. Uses Alpine for downloader stage (smaller base image)
+# 2. Minimal system dependencies in each stage
+# 3. Clean pip cache after installations
+# 4. No HF_TOKEN dependency
+# 5. Only essential packages installed
+# Expected size: ~8-10GB (vs ~15GB original)
+# ============================================
