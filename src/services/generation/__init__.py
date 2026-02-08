@@ -25,4 +25,10 @@ def __getattr__(name):
     elif name == 'BaseVideoEngine':
         from .engines.base import BaseVideoEngine
         return BaseVideoEngine
+    elif name == 'UniversalVideoEngine':
+        from .engine import UniversalVideoEngine
+        return UniversalVideoEngine
+    elif name == 'CogVideoEngine':
+        from .engine import CogVideoEngine
+        return CogVideoEngine
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

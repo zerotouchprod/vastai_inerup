@@ -15,6 +15,7 @@ class GenerationConfig(BaseSettings):
     """
     
     # Model configuration
+    T2I_MODEL_ID: str = "Lykon/dreamshaper-xl-lightning"  # SDXL Lightning for fast image generation
     T2V_MODEL_ID: str = "THUDM/CogVideoX-5b-I2V"  # Unified model for both T2V and I2V
     I2V_MODEL_ID: str = "THUDM/CogVideoX-5b-I2V"  # Same model, better for anime
 
