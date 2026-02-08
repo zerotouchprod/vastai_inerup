@@ -6,13 +6,16 @@
 # ============================================
 # Stage 1: Downloader (Minimal - only models)
 # ============================================
-FROM alpine:3.19 AS downloader
+FROM ubuntu:22.04 AS downloader
 
 # Install minimal dependencies
-RUN apk add --no-cache \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \
-    py3-pip \
+    python3-pip \
     curl \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean \
     && pip3 install --no-cache-dir huggingface_hub
 
 # Setup model cache
@@ -116,10 +119,10 @@ CMD ["python3", "-m", "src.entrypoints.run_gen", "--help"]
 
 # ============================================
 # Size optimization summary:
-# 1. Uses Alpine for downloader stage (smaller base image)
+# 1. Uses minimal Ubuntu for downloader stage (compatible with huggingface_hub)
 # 2. Minimal system dependencies in each stage
 # 3. Clean pip cache after installations
 # 4. No HF_TOKEN dependency
 # 5. Only essential packages installed
-# Expected size: ~8-10GB (vs ~15GB original)
+# Expected size: ~10-12GB (vs ~15GB original)
 # ============================================
