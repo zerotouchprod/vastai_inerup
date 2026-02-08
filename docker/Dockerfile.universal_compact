@@ -111,9 +111,30 @@ ENV TORCH_INFERENCE_MODE="1"
 ENV PYTHONPATH="/app:$PYTHONPATH"
 ENV PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python3 -c "import torch; print(f'PyTorch {torch.__version__} OK')" || exit 1
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    wget \
+    curl \
+    git \
+    python3-venv \
+    python3-dev \
+    build-essential \
+    gcc \
+    g++ \
+    make \
+    cmake \
+    ninja-build \
+    ffmpeg \
+    libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender-dev \
+    libgomp1 \
+    libtesseract-dev \
+    libgl1-mesa-glx \
+    && apt-get purge -y --auto-remove manpages manpages-dev \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* /usr/share/doc/* /usr/share/man/*
+
 
 CMD ["python3", "-m", "src.entrypoints.run_gen", "--help"]
 
