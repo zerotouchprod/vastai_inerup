@@ -13,8 +13,8 @@ from pydantic import BaseModel, Field, field_validator
 
 class GenerationMode(str, Enum):
     """Video generation modes."""
-    TEXT2VIDEO = "text2video"
-    IMAGE2VIDEO = "image2video"
+    UNIVERSAL = "universal"      # Two-stage: T2I → I2V
+    IMAGE2VIDEO = "image2video"  # Single-stage: Image → Video
 
 
 class GenJob(BaseModel):
@@ -29,8 +29,8 @@ class GenJob(BaseModel):
         description="Unique job identifier"
     )
     mode: GenerationMode = Field(
-        default=GenerationMode.TEXT2VIDEO,
-        description="Generation mode: text2video or image2video"
+        default=GenerationMode.UNIVERSAL,
+        description="Generation mode: universal (T2I→I2V) or image2video (Image→Video)"
     )
     prompts: List[str] = Field(
         ...,
@@ -113,8 +113,8 @@ class GenJob(BaseModel):
                 raise ValueError(
                     f"input_images count ({len(v)}) must match prompts count ({len(prompts)})"
                 )
-        elif mode == GenerationMode.TEXT2VIDEO and v:
-            raise ValueError("input_images not allowed for text2video mode")
+        elif mode == GenerationMode.UNIVERSAL and v:
+            raise ValueError("input_images not allowed for universal mode (uses text prompts only)")
 
         return v
 
@@ -169,7 +169,7 @@ class GenJob(BaseModel):
             raise ValueError(f"Invalid prompt index: {index}")
         
         prompt_hash = str(uuid.uuid5(uuid.NAMESPACE_DNS, self.prompts[index]))[:8]
-        mode_prefix = "t2v" if self.mode == GenerationMode.TEXT2VIDEO else "i2v"
+        mode_prefix = "universal" if self.mode == GenerationMode.UNIVERSAL else "i2v"
         return f"{self.output_prefix}{mode_prefix}_{self.id}_{index}_{prompt_hash}.{extension}"
 
 

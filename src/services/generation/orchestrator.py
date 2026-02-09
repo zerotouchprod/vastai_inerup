@@ -75,10 +75,11 @@ class GenerationOrchestrator:
         Raises:
             ValueError: If mode is not supported
         """
-        if mode == GenerationMode.TEXT2VIDEO:
+        if mode == GenerationMode.UNIVERSAL:
             if not self._t2v_engine:
-                self.logger.info("Creating Text-to-Video engine...")
-                self._t2v_engine = CogVideoText2VideoEngine(self.config)
+                self.logger.info("Creating Universal Video engine (T2I → I2V)...")
+                from .engine import UniversalVideoEngine
+                self._t2v_engine = UniversalVideoEngine(self.config)
             return self._t2v_engine
 
         elif mode == GenerationMode.IMAGE2VIDEO:

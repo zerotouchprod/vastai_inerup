@@ -92,6 +92,28 @@ Examples:
         help="Output format (default: json)"
     )
     
+    # B2/S3 upload arguments (like in pipeline_v2.py)
+    parser.add_argument(
+        "--bucket", "-b",
+        help="B2 bucket name (overrides B2_BUCKET in config/env)"
+    )
+    parser.add_argument(
+        "--b2-endpoint",
+        help="B2 S3-compatible endpoint URL (overrides B2_ENDPOINT)"
+    )
+    parser.add_argument(
+        "--b2-key",
+        help="B2 access key (overrides B2_KEY)"
+    )
+    parser.add_argument(
+        "--b2-secret",
+        help="B2 secret key (overrides B2_SECRET)"
+    )
+    parser.add_argument(
+        "--b2-region",
+        help="B2 region name (overrides B2_REGION)"
+    )
+    
     return parser.parse_args()
 
 
@@ -139,9 +161,35 @@ def main():
             # TODO: Implement config file loading
             logger.info(f"Using config file: {args.config}")
         
+        # Create B2 client if upload is enabled
+        b2_client = None
+        if not args.no_upload:
+            try:
+                from src.infrastructure.storage.b2_client import B2Client
+                from src.domain.b2_storage import B2Credentials
+                
+                # Create credentials from CLI args or environment
+                credentials = B2Credentials(
+                    key_id=args.b2_key or os.environ.get('B2_KEY'),
+                    application_key=args.b2_secret or os.environ.get('B2_SECRET'),
+                    bucket=args.bucket or os.environ.get('B2_BUCKET'),
+                    endpoint=args.b2_endpoint or os.environ.get('B2_ENDPOINT'),
+                    region=args.b2_region or os.environ.get('B2_REGION')
+                )
+                
+                if credentials.validate():
+                    b2_client = B2Client(credentials=credentials, logger=logger)
+                    logger.info("✓ B2 client initialized with CLI arguments")
+                else:
+                    logger.warning("B2 credentials incomplete, uploads will be skipped")
+                    
+            except Exception as e:
+                logger.warning(f"Failed to initialize B2 client: {e}")
+                logger.warning("Uploads will be skipped")
+        
         # Initialize orchestrator
         logger.info("Initializing orchestrator...")
-        orchestrator = GenerationOrchestrator(config=config)
+        orchestrator = GenerationOrchestrator(config=config, b2_client=b2_client)
         
         # Process job
         logger.info(f"Processing job {job.id}...")
