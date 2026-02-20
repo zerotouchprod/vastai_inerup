@@ -27,6 +27,7 @@ docker run --rm \
     tests/integration/test_text2video_full.py \
     tests/integration/test_image2video_full.py \
     tests/integration/test_universal_mode.py \
+    tests/integration/test_run_gen_e2e.py \
     -v --tb=short --timeout=30 \
     --cov \
     --cov-config=.coveragerc \
