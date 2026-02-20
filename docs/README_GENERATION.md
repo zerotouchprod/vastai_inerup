@@ -18,7 +18,7 @@ Standalone video generation worker for Vast.ai GPU instances. Generates videos f
 - **Isolated Runtime**: Separate Docker image without OpenCV/PaddleOCR dependencies
 - **Vast.ai Ready**: Optimized for deployment on Vast.ai GPU instances
 
-> **📋 Full Documentation**: See [IMPLEMENTATION_PLAN_TEXT2VIDEO_I2V.md](./IMPLEMENTATION_PLAN_TEXT2VIDEO_I2V.md) for detailed architecture and [IMPLEMENTATION_COMPLETE.md](./IMPLEMENTATION_COMPLETE.md) for completion status
+> **📋 Full Documentation**: See [IMPLEMENTATION_PLAN_TEXT2VIDEO_I2V.md](IMPLEMENTATION_PLAN_TEXT2VIDEO_I2V.md) for detailed architecture and [IMPLEMENTATION_COMPLETE.md](IMPLEMENTATION_COMPLETE.md) for completion status
 
 ## Architecture
 
@@ -201,7 +201,7 @@ docker run --rm --gpus all \
 
 ### Project Structure
 
-See [IMPLEMENTATION_PLAN_GENERATION.md](./IMPLEMENTATION_PLAN_GENERATION.md) for detailed architecture and implementation roadmap.
+See [IMPLEMENTATION_PLAN_GENERATION.md](IMPLEMENTATION_PLAN_GENERATION.md) for detailed architecture and implementation roadmap.
 
 ### Testing
 
@@ -226,7 +226,7 @@ pytest tests/integration/generation/ -xvs -m gpu
 
 ### Extending for Image-to-Video
 
-> **Status**: Planned for Phase 2. See [IMPLEMENTATION_PLAN_GENERATION.md](./IMPLEMENTATION_PLAN_GENERATION.md#этап-2-image-to-video-приоритет-средний)
+> **Status**: Planned for Phase 2. See [IMPLEMENTATION_PLAN_GENERATION.md](IMPLEMENTATION_PLAN_GENERATION.md#этап-2-image-to-video-приоритет-средний)
 
 1. Implement `ImageLoader` utility in `src/services/generation/utils/`
 2. Create `CogVideoImage2VideoEngine` class in `src/services/generation/engines/image2video.py`

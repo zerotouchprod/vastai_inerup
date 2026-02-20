@@ -234,8 +234,8 @@ docker build -f docker/Dockerfile.gen -t video-gen:latest .
 
 ## Next Steps
 
-1. **Читайте полный план:** [IMPLEMENTATION_PLAN_TEXT2VIDEO_I2V.md](./IMPLEMENTATION_PLAN_TEXT2VIDEO_I2V.md)
-2. **Архитектура:** [README_GENERATION.md](./README_GENERATION.md)
+1. **Читайте полный план:** [IMPLEMENTATION_PLAN_TEXT2VIDEO_I2V.md](IMPLEMENTATION_PLAN_TEXT2VIDEO_I2V.md)
+2. **Архитектура:** [README_GENERATION.md](README_GENERATION.md)
 3. **Тесты:** `tests/run_generation_tests.sh`
 4. **Deployment:** Deploy на Vast.ai с этими командами
 

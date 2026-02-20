@@ -8,7 +8,7 @@ from enum import Enum
 from typing import List, Optional, Dict, Any
 from datetime import datetime, timezone
 from pathlib import Path
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class GenerationMode(str, Enum):
@@ -117,6 +117,13 @@ class GenJob(BaseModel):
             raise ValueError("input_images not allowed for universal mode (uses text prompts only)")
 
         return v
+
+    @model_validator(mode='after')
+    def check_i2v_requires_images(self) -> "GenJob":
+        """Ensure IMAGE2VIDEO mode always has input_images (catches missing field case)."""
+        if self.mode == GenerationMode.IMAGE2VIDEO and not self.input_images:
+            raise ValueError("input_images required for image2video mode")
+        return self
 
     @field_validator('output_prefix')
     @classmethod

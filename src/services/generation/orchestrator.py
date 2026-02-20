@@ -9,7 +9,6 @@ from datetime import datetime, timezone
 from .config import GenerationConfig
 from .models import GenJob, GenerationResult, BatchGenerationResult, GenerationMode
 from .engines.base import BaseVideoEngine
-from .engines.text2video import CogVideoText2VideoEngine
 from src.infrastructure.storage.b2_client import B2Client
 from src.shared.logging import get_logger
 
@@ -44,9 +43,9 @@ class GenerationOrchestrator:
         self.config = config or GenerationConfig()
         self.logger = get_logger(__name__)
         
-        # Engines (lazy loading)
-        self._t2v_engine: Optional[CogVideoText2VideoEngine] = None
-        self._i2v_engine: Optional[BaseVideoEngine] = None  # TODO: Phase 2
+        # Engines (lazy loading) — typed as BaseVideoEngine for testability
+        self._t2v_engine: Optional[BaseVideoEngine] = None
+        self._i2v_engine: Optional[BaseVideoEngine] = None
 
         # Initialize B2 client
         self.b2_client = b2_client

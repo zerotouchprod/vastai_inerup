@@ -728,6 +728,7 @@ pillow>=10.0.0
 ```
 
 #### 1.7.2 Dockerfile
+
 ```dockerfile
 # Dockerfile.gen
 FROM pytorch/pytorch:2.2.0-cuda12.1-cudnn8-runtime
@@ -745,13 +746,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Python dependencies
 WORKDIR /tmp
-COPY requirements.gen.txt .
+COPY ../requirements.gen.txt .
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.gen.txt
 
 # Application
 WORKDIR /app
-COPY src/ /app/src/
+COPY ../src /app/src/
 
 # Directories
 RUN mkdir -p \

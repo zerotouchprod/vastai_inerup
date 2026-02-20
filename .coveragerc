@@ -1,0 +1,14 @@
+[run]
+relative_files = True
+include =
+    src/services/generation/models.py
+    src/services/generation/config.py
+    src/services/generation/orchestrator.py
+    src/services/generation/engines/base.py
+    src/domain/exceptions.py
+    src/domain/generation.py
+
+[report]
+fail_under = 80
+show_missing = True
+skip_covered = False

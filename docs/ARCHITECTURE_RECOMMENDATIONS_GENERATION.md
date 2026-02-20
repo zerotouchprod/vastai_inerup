@@ -421,6 +421,6 @@ RTX 4090 (24GB): ~$0.35/hour
 ---
 
 **Ссылки**:
-- [Implementation Plan](./IMPLEMENTATION_PLAN_GENERATION.md) - детальный план реализации
-- [README](./README_GENERATION.md) - документация по использованию
-- [Complete Architecture](./COMPLETE_ARCHITECTURE_DOCUMENTATION.md) - общая архитектура проекта
+- [Implementation Plan](IMPLEMENTATION_PLAN_GENERATION.md) - детальный план реализации
+- [README](README_GENERATION.md) - документация по использованию
+- [Complete Architecture](COMPLETE_ARCHITECTURE_DOCUMENTATION.md) - общая архитектура проекта
