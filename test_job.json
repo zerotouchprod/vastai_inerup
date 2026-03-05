@@ -1,0 +1,10 @@
+{
+  "mode": "text2video",
+  "prompts": ["A simple test animation of a rotating cube, minimalistic, white background"],
+  "guidance_scale": 7.5,
+  "num_inference_steps": 20,
+  "num_frames": 16,
+  "fps": 8,
+  "output_prefix": "test_run/",
+  "seed": 12345
+}
