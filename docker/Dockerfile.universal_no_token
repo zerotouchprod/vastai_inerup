@@ -34,7 +34,6 @@ RUN mkdir -p /model_cache
 RUN echo "Downloading CogVideoX-5b-I2V (anonymous)..." && \
     python -m huggingface_hub.cli.hf download THUDM/CogVideoX-5b-I2V \
         --local-dir /model_cache/THUDM--CogVideoX-5b-I2V \
-        --local-dir-use-symlinks False \
         --resume-download \
         --retry 5
 
@@ -42,7 +41,6 @@ RUN echo "Downloading CogVideoX-5b-I2V (anonymous)..." && \
 RUN echo "Downloading DreamShaper XL Lightning (anonymous)..." && \
     python -m huggingface_hub.cli.hf download Lykon/dreamshaper-xl-lightning \
         --local-dir /model_cache/Lykon--dreamshaper-xl-lightning \
-        --local-dir-use-symlinks False \
         --resume-download \
         --retry 5
 
