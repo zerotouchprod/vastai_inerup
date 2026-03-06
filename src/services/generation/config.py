@@ -103,6 +103,11 @@ class GenerationConfig(BaseSettings):
         if self.torch_dtype is not None:
             kwargs["torch_dtype"] = self.torch_dtype
 
+        # Add local_files_only if HF_HUB_OFFLINE is set
+        import os
+        if os.getenv("HF_HUB_OFFLINE") == "1":
+            kwargs["local_files_only"] = True
+
         return kwargs
 
     def validate_generation_params(
