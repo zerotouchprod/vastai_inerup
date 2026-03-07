@@ -74,6 +74,18 @@ class GenJob(BaseModel):
         ge=1,
         le=30
     )
+    t2i_steps: int = Field(
+        4,
+        description="Number of inference steps for T2I phase (4-8 for Lightning models)",
+        ge=1,
+        le=20
+    )
+    t2i_guidance_scale: float = Field(
+        0.0,
+        description="Guidance scale for T2I phase (0 for Lightning models)",
+        ge=0.0,
+        le=20.0
+    )
     output_prefix: str = Field(
         "generated/",
         description="Prefix for output files in storage"
