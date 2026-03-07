@@ -197,7 +197,7 @@ class GenerationOrchestrator:
                 'guidance_scale': job.guidance_scale,
                 'num_inference_steps': job.num_inference_steps,
                 'num_frames': job.num_frames,
-                'fps': job.fps
+                'fps': job.fps  # fps is used in export_to_video inside the engine
             }
 
             # Add input_image for I2V mode

@@ -652,6 +652,11 @@ class UniversalVideoEngine:
             import torch
             from diffusers.utils import export_to_video
             
+            # Remove fps from kwargs as CogVideoXImageToVideoPipeline doesn't support it
+            # fps is only used in export_to_video later
+            pipeline_kwargs = kwargs.copy()
+            pipeline_kwargs.pop('fps', None)
+            
             with torch.inference_mode():
                 output = self.i2v_pipe(
                     prompt=prompt,
@@ -661,7 +666,7 @@ class UniversalVideoEngine:
                     num_frames=num_frames,
                     guidance_scale=guidance_scale,
                     generator=self._create_generator(seed),
-                    **kwargs
+                    **pipeline_kwargs
                 )
             
             frames = output.frames[0]
