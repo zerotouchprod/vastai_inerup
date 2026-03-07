@@ -79,5 +79,8 @@ RUN echo "Verifying models..." && \
 RUN python3 -c "import torch; print(f'PyTorch: {torch.__version__}, CUDA: {torch.cuda.is_available()}')" && \
     python3 -c "import diffusers; print(f'Diffusers: {diffusers.__version__}')"
 
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git
+
 # Default command
 CMD ["python3", "-m", "src.entrypoints.run_gen", "--help"]
