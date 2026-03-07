@@ -70,19 +70,19 @@ WORKDIR /tmp
 # Copy requirements
 COPY requirements.gen.txt .
 
-# Install PyTorch with CUDA 12.4 support
+# Install PyTorch with CUDA 12.4 support (updated to fix CVE-2025-32434)
 RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir \
-        torch==2.5.1+cu124 \
-        torchvision==0.20.1+cu124 \
-        torchaudio==2.5.1+cu124 \
+        torch==2.6.0+cu124 \
+        torchvision==0.21.0+cu124 \
+        torchaudio==2.6.0+cu124 \
         --index-url https://download.pytorch.org/whl/cu124
 
 # Install other dependencies (including diffusers for SDXL)
 RUN pip install --no-cache-dir -r requirements.gen.txt
 
-# Install xformers for optimization
-RUN pip install --no-cache-dir xformers --index-url https://download.pytorch.org/whl/cu124
+# Install xformers for optimization (compatible with torch 2.6.0)
+RUN pip install --no-cache-dir xformers==0.0.30 --index-url https://download.pytorch.org/whl/cu124
 
 # ============================================
 # Stage 3: Runtime (Slim & Fast)
