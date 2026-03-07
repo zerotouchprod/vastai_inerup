@@ -22,8 +22,8 @@ echo "Installing requirements from requirements.gen.txt..."
 pip install -r requirements.gen.txt
 
 # Install xformers compatible with torch 2.6.0
-echo "Installing xformers 0.0.30..."
-pip install xformers==0.0.30 --index-url https://download.pytorch.org/whl/cu124
+echo "Installing xformers 0.0.29.post3..."
+pip install xformers==0.0.29.post3 --index-url https://download.pytorch.org/whl/cu124
 
 # Verify installations
 echo "=== Verification ==="

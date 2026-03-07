@@ -81,8 +81,8 @@ RUN pip install --no-cache-dir --upgrade pip \
 # Install other dependencies (including diffusers for SDXL)
 RUN pip install --no-cache-dir -r requirements.gen.txt
 
-# Install xformers for optimization (compatible with torch 2.6.0)
-RUN pip install --no-cache-dir xformers==0.0.30 --index-url https://download.pytorch.org/whl/cu124
+# Install xformers for optimization (latest available for torch 2.6.0)
+RUN pip install --no-cache-dir xformers==0.0.29.post3 --index-url https://download.pytorch.org/whl/cu124
 
 # ============================================
 # Stage 3: Runtime (Slim & Fast)
