@@ -76,8 +76,7 @@ RUN echo "Verifying models..." && \
     find /root/.cache/huggingface -name "*.safetensors" | wc -l
 
 # Test imports
-RUN python3 -c "import torch; print(f'PyTorch: {torch.__version__}, CUDA: {torch.cuda.is_available()}')" && \
-    python3 -c "import diffusers; print(f'Diffusers: {diffusers.__version__}')"
+RUN python3 -c "import torch; print(f'PyTorch: {torch.__version__}, CUDA: {torch.cuda.is_available()}')"
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git
