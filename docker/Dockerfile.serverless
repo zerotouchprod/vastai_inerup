@@ -69,7 +69,7 @@ RUN mkdir -p /runpod-volume/models
 ENV PYTHONPATH="/app:$PYTHONPATH"
 ENV PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
 ENV HF_HOME="/runpod-volume/huggingface_cache"
-ENV HF_HUB_OFFLINE="1"  # Prevents any internet connection attempts
+ENV HF_HUB_OFFLINE="1"
 ENV TORCH_INFERENCE_MODE="1"
 ENV ENABLE_SAFETY_CHECKER="False"
 
