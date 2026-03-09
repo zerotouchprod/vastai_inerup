@@ -51,6 +51,10 @@ RUN pip install --no-cache-dir xformers==0.0.29.post1 --index-url https://downlo
 # Copy source code
 COPY src/ /app/src/
 
+# Copy entrypoint script
+COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
 # Create model directory structure (will be mounted from network volume)
 RUN mkdir -p /runpod-volume/models
 
@@ -66,5 +70,5 @@ RUN python3 -c "import torch; print(f'PyTorch: {torch.__version__}, CUDA: {torch
     python3 -c "import diffusers; print(f'Diffusers: {diffusers.__version__}')" && \
     python3 -c "import runpod; print(f'RunPod: {runpod.__version__}')"
 
-# Default command for RunPod Serverless
-CMD ["python", "-m", "src.entrypoints.runpod_handler"]
+# Default command for RunPod Serverless (uses entrypoint script)
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
