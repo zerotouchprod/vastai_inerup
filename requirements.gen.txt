@@ -15,7 +15,7 @@ diffusers>=0.30.0
 transformers>=4.40.0
 accelerate>=0.30.0
 safetensors>=0.4.0
-huggingface_hub[cli]>=0.20.0  # Required for model downloading in Dockerfile
+huggingface_hub[cli]>=0.22.0  # Required for model downloading in Dockerfile, compatible with diffusers 0.30.0
 
 # CogVideoX specific dependencies
 tiktoken>=0.12.0
