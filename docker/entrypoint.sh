@@ -1,4 +1,3 @@
-volume
 #!/bin/bash
 # Entrypoint script for RunPod Serverless Video Generation
 # Models should be pre-loaded in /runpod-volume/models/ from RunPod Network Volume
