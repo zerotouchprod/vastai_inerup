@@ -1,0 +1,138 @@
+# Dockerfile.serverless.with_models - Complete image with models pre-loaded
+# Base: pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime
+# Size: ~25GB (includes DreamShaper + CogVideoX models)
+# Models are baked into the image for instant startup
+
+FROM pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime
+
+LABEL maintainer="vastai_inerup"
+LABEL description="RunPod Serverless Video Generation - Complete image with models"
+LABEL version="2.0.0"
+
+# System dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg \
+    libgl1 \
+    libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender-dev \
+    libgomp1 \
+    libgl1-mesa-glx \
+    curl \
+    ca-certificates \
+    git \
+    git-lfs \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
+
+WORKDIR /app
+
+# Create virtual environment
+RUN python3 -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+# Upgrade pip and install base dependencies
+RUN pip install --no-cache-dir --upgrade pip
+
+# Copy requirements file
+COPY requirements.gen.txt .
+
+# Install Python dependencies from requirements.gen.txt
+RUN pip install --no-cache-dir -r requirements.gen.txt
+
+# Install RunPod and additional serverless dependencies
+RUN pip install --no-cache-dir \
+    runpod==1.8.1 \
+    boto3==1.34.0 \
+    huggingface_hub
+
+# Install xformers for optimization
+RUN pip install --no-cache-dir xformers==0.0.29.post1 --index-url https://download.pytorch.org/whl/cu124
+
+# Create model directories
+RUN mkdir -p /app/models/dreamshaper-xl-lightning
+RUN mkdir -p /app/models/CogVideoX-5b-I2V
+
+# Download DreamShaper XL Lightning (~2GB)
+RUN echo "Downloading DreamShaper XL Lightning..." && \
+    cd /app/models/dreamshaper-xl-lightning && \
+    python3 -c "
+from huggingface_hub import hf_hub_download
+import os
+print('Starting DreamShaper download...')
+hf_hub_download(
+    repo_id='ByteDance/SDXL-Lightning',
+    filename='sdxl_lightning_4step_unet.safetensors',
+    local_dir='.',
+    local_dir_use_symlinks=False
+)
+print('DreamShaper download complete!')
+size = os.path.getsize('sdxl_lightning_4step_unet.safetensors')
+print(f'Size: {size / (1024**3):.2f} GB')
+"
+
+# Download CogVideoX-5b-I2V (~15GB) - This will take 30-60 minutes during build
+RUN echo "Downloading CogVideoX-5b-I2V..." && \
+    cd /app/models/CogVideoX-5b-I2V && \
+    python3 -c "
+from huggingface_hub import snapshot_download
+import os
+import time
+print('Starting CogVideoX download (this will take 30-60 minutes)...')
+start_time = time.time()
+snapshot_download(
+    repo_id='THUDM/CogVideoX-5b',
+    local_dir='.',
+    local_dir_use_symlinks=False,
+    ignore_patterns=['*.bin', '*.msgpack', '*.h5', '*.ot']
+)
+download_time = time.time() - start_time
+files = [f for f in os.listdir('.') if os.path.isfile(f)]
+total_size = sum(os.path.getsize(f) for f in files)
+print(f'CogVideoX download complete!')
+print(f'Files: {len(files)}')
+print(f'Total size: {total_size / (1024**3):.2f} GB')
+print(f'Download time: {download_time/60:.1f} minutes')
+"
+
+# Copy source code
+COPY src/ /app/src/
+
+# Copy entrypoint script (modified to use local models)
+COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
+# Create symlink from /runpod-volume/models to /app/models for compatibility
+RUN mkdir -p /runpod-volume && \
+    ln -sf /app/models /runpod-volume/models
+
+# Environment variables for RunPod
+ENV PYTHONPATH="/app:$PYTHONPATH"
+ENV PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
+ENV HF_HOME="/app/.cache/huggingface"
+ENV TORCH_INFERENCE_MODE="1"
+ENV ENABLE_SAFETY_CHECKER="False"
+
+# Verify installation and model loading
+RUN python3 -c "
+import torch
+print(f'PyTorch: {torch.__version__}, CUDA: {torch.cuda.is_available()}')
+import os
+dreamshaper_path = '/app/models/dreamshaper-xl-lightning/sdxl_lightning_4step_unet.safetensors'
+cogvideox_dir = '/app/models/CogVideoX-5b-I2V'
+print(f'DreamShaper exists: {os.path.exists(dreamshaper_path)}')
+if os.path.exists(dreamshaper_path):
+    size = os.path.getsize(dreamshaper_path) / (1024**3)
+    print(f'DreamShaper size: {size:.2f} GB')
+print(f'CogVideoX dir exists: {os.path.exists(cogvideox_dir)}')
+if os.path.exists(cogvideox_dir):
+    files = [f for f in os.listdir(cogvideox_dir) if os.path.isfile(os.path.join(cogvideox_dir, f))]
+    print(f'CogVideoX files: {len(files)}')
+    if files:
+        total_size = sum(os.path.getsize(os.path.join(cogvideox_dir, f)) for f in files)
+        print(f'CogVideoX total size: {total_size / (1024**3):.2f} GB')
+"
+
+# Default command for RunPod Serverless (uses entrypoint script)
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

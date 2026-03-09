@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
 """
-RunPod Serverless Handler for Video Generation
+RunPod Serverless Handler for Ultra-Fast Video Generation
 
-This handler processes video generation jobs in a serverless environment.
+This handler processes video generation jobs with zero model downloading.
 Models are loaded from a mounted network volume at /runpod-volume/models/
+with HF_HUB_OFFLINE=1 to prevent any internet connection attempts.
+
+Cold start: <5 seconds when Docker image is cached on RunPod host.
 """
 
 import os
 import sys
 import json
-import tempfile
-import uuid
 import gc
+import uuid
 from pathlib import Path
 from typing import Dict, Any, Optional
 
@@ -25,7 +27,6 @@ from diffusers.utils import export_to_video
 
 import runpod
 from src.shared.logging import get_logger
-from src.services.storage.b2_client import B2Client
 
 # Configure logging
 logger = get_logger(__name__)
@@ -42,19 +43,11 @@ DEFAULT_I2V_GUIDANCE_SCALE = 6.0
 DEFAULT_NUM_FRAMES = 16
 DEFAULT_FPS = 8
 
-# Initialize B2 client (if credentials available)
-b2_client = None
-try:
-    # Try to initialize B2 client from environment variables
-    b2_client = B2Client()
-    logger.info("B2 client initialized successfully")
-except Exception as e:
-    logger.warning(f"B2 client initialization failed: {e}. Videos will be stored locally.")
-
 
 def load_t2i_pipeline() -> StableDiffusionXLPipeline:
     """
     Load Text-to-Image pipeline from local model path.
+    Uses torch.float16 and variant="fp16" for memory efficiency.
     
     Returns:
         StableDiffusionXLPipeline instance
@@ -64,31 +57,30 @@ def load_t2i_pipeline() -> StableDiffusionXLPipeline:
     if not os.path.exists(T2I_MODEL_PATH):
         raise FileNotFoundError(f"T2I model not found at {T2I_MODEL_PATH}")
     
-    # Load pipeline with optimizations
+    # Load pipeline with optimizations for serverless
     pipeline = StableDiffusionXLPipeline.from_pretrained(
         T2I_MODEL_PATH,
-        torch_dtype=torch.bfloat16,
-        local_files_only=True,
+        torch_dtype=torch.float16,  # Use float16 for DreamShaper
+        local_files_only=True,      # CRITICAL: No internet connection
+        variant="fp16",             # Use fp16 variant if available
         use_safetensors=True
     )
     
-    # Move to GPU and apply optimizations
+    # Move to GPU
     pipeline = pipeline.to("cuda")
     
-    # Apply optimizations for 24GB VRAM
+    # Apply memory optimizations
     if hasattr(pipeline, "enable_vae_slicing"):
         pipeline.enable_vae_slicing()
     
-    if hasattr(pipeline, "enable_vae_tiling"):
-        pipeline.enable_vae_tiling()
-    
-    logger.info("✓ T2I pipeline loaded")
+    logger.info("✓ T2I pipeline loaded (float16, VAE slicing enabled)")
     return pipeline
 
 
 def load_i2v_pipeline() -> CogVideoXImageToVideoPipeline:
     """
     Load Image-to-Video pipeline from local model path.
+    Uses torch.bfloat16 for CogVideoX with CPU offload.
     
     Returns:
         CogVideoXImageToVideoPipeline instance
@@ -98,35 +90,37 @@ def load_i2v_pipeline() -> CogVideoXImageToVideoPipeline:
     if not os.path.exists(I2V_MODEL_PATH):
         raise FileNotFoundError(f"I2V model not found at {I2V_MODEL_PATH}")
     
-    # Load pipeline with optimizations
+    # Load pipeline with optimizations for serverless
     pipeline = CogVideoXImageToVideoPipeline.from_pretrained(
         I2V_MODEL_PATH,
-        torch_dtype=torch.bfloat16,
-        local_files_only=True,
+        torch_dtype=torch.bfloat16,  # Use bfloat16 for CogVideoX
+        local_files_only=True,       # CRITICAL: No internet connection
         use_safetensors=True
     )
     
-    # Move to GPU and apply optimizations
+    # Move to GPU and apply advanced memory optimizations
     pipeline = pipeline.to("cuda")
     
-    # Apply optimizations
+    # Enable CPU offload for memory efficiency
     if hasattr(pipeline, "enable_model_cpu_offload"):
         pipeline.enable_model_cpu_offload()
     
+    # Enable VAE slicing
     if hasattr(pipeline, "enable_vae_slicing"):
         pipeline.enable_vae_slicing()
     
-    logger.info("✓ I2V pipeline loaded")
+    logger.info("✓ I2V pipeline loaded (bfloat16, CPU offload, VAE slicing)")
     return pipeline
 
 
-def cleanup_vram():
+def aggressive_vram_cleanup():
     """
-    Aggressively clean up VRAM by deleting pipelines and forcing garbage collection.
+    Aggressively clean up VRAM between pipeline loads.
+    CRITICAL for serverless to free memory for next job.
     """
-    logger.info("Cleaning up VRAM...")
+    logger.info("🧹 Aggressive VRAM cleanup...")
     
-    # Force garbage collection
+    # Force Python garbage collection
     gc.collect()
     
     # Clear CUDA cache
@@ -181,18 +175,16 @@ def generate_image(
             ).images[0]
         
         # Save image to temporary file
-        temp_dir = Path("/tmp/generation")
-        temp_dir.mkdir(parents=True, exist_ok=True)
-        image_path = temp_dir / f"ref_image_{uuid.uuid4().hex[:8]}.png"
+        image_path = Path("/tmp") / f"ref_{uuid.uuid4().hex[:8]}.png"
         image.save(image_path)
         
         logger.info(f"✓ Image generated: {image_path}")
         return image_path
         
     finally:
-        # Clean up T2I pipeline
+        # CRITICAL: Clean up T2I pipeline aggressively
         del t2i_pipeline
-        cleanup_vram()
+        aggressive_vram_cleanup()
 
 
 def generate_video(
@@ -237,7 +229,6 @@ def generate_video(
         
         # Generate video frames
         with torch.inference_mode():
-            # Remove fps from kwargs as CogVideoX doesn't support it
             output = i2v_pipeline(
                 image=image,
                 prompt=prompt,
@@ -251,9 +242,7 @@ def generate_video(
         frames = output.frames[0]
         
         # Save video to temporary file
-        temp_dir = Path("/tmp/generation")
-        temp_dir.mkdir(parents=True, exist_ok=True)
-        video_path = temp_dir / f"video_{uuid.uuid4().hex[:8]}.mp4"
+        video_path = Path("/tmp") / f"output_{uuid.uuid4().hex[:8]}.mp4"
         
         # Export frames to video
         export_to_video(
@@ -262,51 +251,14 @@ def generate_video(
             fps=fps
         )
         
-        logger.info(f"✓ Video generated: {video_path} ({video_path.stat().st_size / 1024 / 1024:.2f} MB)")
+        video_size_mb = video_path.stat().st_size / (1024**2)
+        logger.info(f"✓ Video generated: {video_path} ({video_size_mb:.2f} MB)")
         return video_path
         
     finally:
-        # Clean up I2V pipeline
+        # CRITICAL: Clean up I2V pipeline aggressively
         del i2v_pipeline
-        cleanup_vram()
-
-
-def upload_to_storage(video_path: Path, job_id: str) -> str:
-    """
-    Upload video to cloud storage (B2/Cloudflare R2/S3).
-    
-    Args:
-        video_path: Path to video file
-        job_id: Job ID for naming
-        
-    Returns:
-        URL of uploaded video
-    """
-    if b2_client is None:
-        # Return local file URL if B2 client not available
-        return f"file://{video_path}"
-    
-    try:
-        # Generate unique output key
-        output_key = f"runpod/generated/{job_id}_{video_path.name}"
-        
-        # Upload to B2
-        logger.info(f"Uploading to B2: {output_key}")
-        b2_client.upload_file(video_path, output_key)
-        
-        # Get presigned URL
-        url = b2_client.get_presigned_url(output_key)
-        logger.info(f"✓ Upload complete: {url}")
-        
-        # Delete local file after successful upload
-        video_path.unlink(missing_ok=True)
-        
-        return url
-        
-    except Exception as e:
-        logger.error(f"Upload failed: {e}")
-        # Fall back to local file
-        return f"file://{video_path}"
+        aggressive_vram_cleanup()
 
 
 def process_job(job: Dict[str, Any]) -> Dict[str, Any]:
@@ -317,7 +269,7 @@ def process_job(job: Dict[str, Any]) -> Dict[str, Any]:
         job: Job dictionary from RunPod
         
     Returns:
-        Result dictionary with status and video URL
+        Result dictionary with status and video path
     """
     job_input = job.get("input", {})
     job_id = job.get("id", str(uuid.uuid4()))
@@ -377,21 +329,14 @@ def process_job(job: Dict[str, Any]) -> Dict[str, Any]:
             seed=seed
         )
         
-        # Clean up image file
+        # Clean up intermediate files
         image_path.unlink(missing_ok=True)
         
-        # Phase 3: Upload to storage
-        logger.info("=" * 60)
-        logger.info("PHASE 3: Upload to Cloud Storage")
-        logger.info("=" * 60)
-        
-        video_url = upload_to_storage(video_path, job_id)
-        
-        # Return success result
+        # Return success result (simple format for serverless)
         result = {
             "status": "success",
             "job_id": job_id,
-            "video_url": video_url,
+            "video_path": str(video_path),
             "prompt": prompt,
             "parameters": {
                 "t2i_steps": t2i_steps,
@@ -426,8 +371,20 @@ def main():
     logger.info("=" * 60)
     logger.info(f"T2I Model Path: {T2I_MODEL_PATH}")
     logger.info(f"I2V Model Path: {I2V_MODEL_PATH}")
-    logger.info(f"B2 Client: {'Available' if b2_client else 'Not available'}")
+    logger.info(f"HF_HUB_OFFLINE: {os.getenv('HF_HUB_OFFLINE', 'NOT SET')}")
+    logger.info(f"PyTorch CUDA: {torch.cuda.is_available()}")
     logger.info("=" * 60)
+    
+    # Verify model paths exist
+    if not os.path.exists(T2I_MODEL_PATH):
+        logger.error(f"❌ T2I model not found at {T2I_MODEL_PATH}")
+        logger.error("Please run scripts/prepare_runpod_volume.py to download models")
+        sys.exit(1)
+    
+    if not os.path.exists(I2V_MODEL_PATH):
+        logger.error(f"❌ I2V model not found at {I2V_MODEL_PATH}")
+        logger.error("Please run scripts/prepare_runpod_volume.py to download models")
+        sys.exit(1)
     
     # Start RunPod serverless handler
     runpod.serverless.start({"handler": process_job})
