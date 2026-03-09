@@ -45,22 +45,8 @@ RUN pip install --no-cache-dir runpod==1.8.1
 # Install xformers for memory-efficient attention
 RUN pip install --no-cache-dir xformers==0.0.29.post1 --index-url https://download.pytorch.org/whl/cu124
 
-# Copy source code (minimal - only what's needed for handler)
-COPY src/entrypoints/runpod_handler.py /app/src/entrypoints/
-COPY src/services/video_generation_service.py /app/src/services/
-COPY src/infrastructure/__init__.py /app/src/infrastructure/
-COPY src/infrastructure/diffusion/__init__.py /app/src/infrastructure/diffusion/
-COPY src/infrastructure/diffusion/dreamshaper_adapter.py /app/src/infrastructure/diffusion/
-COPY src/infrastructure/diffusion/cogvideox_adapter.py /app/src/infrastructure/diffusion/
-COPY src/shared/__init__.py /app/src/shared/
-COPY src/shared/logging.py /app/src/shared/
-COPY src/core/__init__.py /app/src/core/
-COPY src/core/config.py /app/src/core/
-
-# Create minimal __init__.py files
-RUN echo "" > /app/src/__init__.py && \
-    echo "" > /app/src/entrypoints/__init__.py && \
-    echo "" > /app/src/services/__init__.py
+# Copy source code (simplified - copy entire src directory)
+COPY src/ /app/src/
 
 # Create model directory structure (will be mounted from network volume)
 RUN mkdir -p /runpod-volume/models
