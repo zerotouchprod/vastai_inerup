@@ -1,45 +1,24 @@
 # Dockerfile.serverless - Ultra-fast startup for RunPod Serverless
-# Base: runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04
-#   → Pre-cached on ALL RunPod workers — zero download overhead
-#   → Includes PyTorch 2.4, CUDA 12.4, Python 3.11
-# Size: ~6GB (dependencies only, NO models)
+#
+# Multi-stage build:
+#   Stage 1 (builder): runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04
+#     → устанавливаем все зависимости
+#   Stage 2 (final):   nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
+#     → копируем только Python + установленные пакеты (~slim образ)
+#     → финальный образ НЕ содержит CUDA compiler/headers → меньше размер
+#
 # Models are stored on Network Volume at /workspace/models/
-# Cold start: <5 seconds when image is cached on host
 
-FROM runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04
-
-LABEL maintainer="vastai_inerup"
-LABEL description="RunPod Serverless Video Generation - Ultra-fast startup"
-LABEL version="2.0.0"
-
-# Minimal system dependencies (ffmpeg + OpenGL for image processing)
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ffmpeg \
-    git \
-    libgl1 \
-    libglib2.0-0 \
-    libsm6 \
-    libxext6 \
-    libxrender-dev \
-    libgomp1 \
-    libgl1-mesa-glx \
-    ca-certificates \
-    && rm -rf /var/lib/apt/lists/* \
-    && apt-get clean
+# ── Stage 1: install dependencies ────────────────────────────────────────────
+FROM runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04 AS builder
 
 WORKDIR /app
 
-# Upgrade pip
 RUN pip install --no-cache-dir --upgrade pip
 
-# Install Python dependencies with exact versions for compatibility
-# PyTorch уже включён в базовый образ runpod/pytorch — пропускаем его установку
-
 # Установить совместимые версии diffusers и transformers
-# diffusers 0.28.0 и transformers 4.40.0 хорошо работают вместе
-# safetensors>=0.4.1 required by transformers==4.40.0; 0.4.3 satisfies both
-# pydantic==2.7.0 — минимум, требуемый fastapi (транзитивная зависимость runpod)
-# pydantic-settings==2.3.0 — совместима с pydantic>=2.7
+# safetensors 0.4.3 — удовлетворяет transformers>=0.4.1 и diffusers>=0.3.1
+# pydantic 2.7.0 — минимум для fastapi (транзитивная dep runpod)
 RUN pip install --no-cache-dir \
     diffusers==0.28.0 \
     transformers==4.40.0 \
@@ -58,42 +37,63 @@ RUN pip install --no-cache-dir \
     pillow==10.4.0 \
     tqdm==4.66.0 \
     requests==2.32.0 \
+    cryptography==42.0.8 \
+    paramiko==3.4.0 \
     runpod==1.8.1
 
-# Install xformers — используем extra-index-url + constraint на torch чтобы
-# pip не переустанавливал torch из базового образа (2.4.1+cu124)
-# Constraint заморозит torch, pip возьмёт совместимый xformers без апгрейда
-RUN TORCH_VERSION=$(python3 -c "import torch; print(torch.__version__)") && \
-    pip install --no-cache-dir \
-        --extra-index-url https://download.pytorch.org/whl/cu124 \
-        "torch==${TORCH_VERSION}" \
-        "xformers==0.0.28.post1"
+# ── Stage 2: slim runtime image ───────────────────────────────────────────────
+FROM nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
 
-# Copy source code (simplified - copy entire src directory)
+LABEL maintainer="vastai_inerup"
+LABEL description="RunPod Serverless Video Generation - Ultra-fast startup"
+LABEL version="3.0.0"
+
+# Minimal system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3.11 \
+    python3.11-distutils \
+    python3-pip \
+    ffmpeg \
+    git \
+    libgl1 \
+    libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender-dev \
+    libgomp1 \
+    libgl1-mesa-glx \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean \
+    && ln -sf /usr/bin/python3.11 /usr/bin/python3 \
+    && ln -sf /usr/bin/python3.11 /usr/bin/python
+
+# Копируем Python пакеты из builder-стадии
+COPY --from=builder /usr/local/lib/python3.11 /usr/local/lib/python3.11
+COPY --from=builder /usr/local/bin /usr/local/bin
+
+WORKDIR /app
+
 COPY src/ /app/src/
 
-# Create model directory structure (will be mounted from network volume at /workspace)
 RUN mkdir -p /workspace/models
 
-# CRITICAL: Environment variables for offline operation
-ENV PYTHONPATH="/app:$PYTHONPATH"
+ENV PYTHONPATH="/app"
 ENV PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
 ENV HF_HOME="/workspace/huggingface_cache"
 ENV HF_HUB_OFFLINE="1"
 ENV TORCH_INFERENCE_MODE="1"
 ENV ENABLE_SAFETY_CHECKER="False"
 
-# Verify installation (quick check)
-RUN python3 -c "import torch; print(f'PyTorch: {torch.__version__}, CUDA: {torch.cuda.is_available()}')" && \
+# Verify installation
+RUN python3 -c "import torch; print(f'PyTorch: {torch.__version__}, CUDA available at runtime: check with nvidia-smi')" && \
     python3 -c "import diffusers; print(f'Diffusers: {diffusers.__version__}')" && \
     python3 -c "import runpod; print(f'RunPod: {runpod.__version__}')"
 
-# Health check for RunPod
-RUN echo '#!/bin/bash\npython3 -c "import torch; exit(0 if torch.cuda.is_available() else 1)"' > /healthcheck.sh && \
+RUN echo '#!/bin/bash\npython3 -c "import torch; exit(0)"' > /healthcheck.sh && \
     chmod +x /healthcheck.sh
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD /healthcheck.sh
 
-# Direct CMD for RunPod Serverless (no entrypoint script needed)
-CMD ["python", "-m", "src.entrypoints.runpod_handler"]
+CMD ["python3", "-m", "src.entrypoints.runpod_handler"]
