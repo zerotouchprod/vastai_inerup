@@ -38,7 +38,33 @@ except ImportError:
 
 
 # Configuration
-VOLUME_BASE = "/runpod-volume"
+# Network Volume может быть смонтирован в разных местах
+# Пробуем оба возможных пути
+POSSIBLE_VOLUME_PATHS = [
+    "/workspace",      # RunPod часто монтирует сюда
+    "/runpod-volume",  # Стандартный путь
+    "/volume"          # Альтернативный путь
+]
+
+# Найти существующий volume
+VOLUME_BASE = None
+for path in POSSIBLE_VOLUME_PATHS:
+    if os.path.exists(path):
+        VOLUME_BASE = path
+        logger.info(f"✅ Found Network Volume at: {path}")
+        break
+
+if VOLUME_BASE is None:
+    logger.error("❌ Network Volume not found! Check mount points.")
+    logger.info("Available mount points:")
+    try:
+        import subprocess
+        result = subprocess.run(["mount"], capture_output=True, text=True)
+        logger.info(result.stdout)
+    except:
+        pass
+    sys.exit(1)
+
 MODELS_DIR = Path(VOLUME_BASE) / "models"
 MODELS_DIR.mkdir(parents=True, exist_ok=True)
 

@@ -32,8 +32,27 @@ from src.shared.logging import get_logger
 logger = get_logger(__name__)
 
 # Model paths (mounted from RunPod Network Volume)
-T2I_MODEL_PATH = "/runpod-volume/models/dreamshaper-xl-lightning"
-I2V_MODEL_PATH = "/runpod-volume/models/CogVideoX-5b-I2V"
+# Network Volume может быть смонтирован в разных местах
+POSSIBLE_VOLUME_PATHS = [
+    "/workspace",      # RunPod часто монтирует сюда
+    "/runpod-volume",  # Стандартный путь
+    "/volume"          # Альтернативный путь
+]
+
+# Найти существующий volume
+VOLUME_BASE = None
+for path in POSSIBLE_VOLUME_PATHS:
+    if os.path.exists(path):
+        VOLUME_BASE = path
+        logger.info(f"✅ Found Network Volume at: {path}")
+        break
+
+if VOLUME_BASE is None:
+    logger.error("❌ Network Volume not found! Check mount points.")
+    sys.exit(1)
+
+T2I_MODEL_PATH = os.path.join(VOLUME_BASE, "models/dreamshaper-xl-lightning")
+I2V_MODEL_PATH = os.path.join(VOLUME_BASE, "models/CogVideoX-5b-I2V")
 
 # Default generation parameters
 DEFAULT_T2I_STEPS = 4
