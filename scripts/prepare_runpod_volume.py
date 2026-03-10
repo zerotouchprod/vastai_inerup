@@ -73,8 +73,7 @@ MODELS = [
     {
         "name": "dreamshaper-xl-lightning",
         "repo_id": "Lykon/dreamshaper-xl-lightning",
-        "type": "file",  # Single file download
-        "filename": "dreamshaperXL_lightningDPMSDE.safetensors",
+        "type": "folder",  # Full folder download (лучше скачать всю папку)
         "ignore_patterns": ["*.bin", "*.onnx", "fp32/*", "*.ckpt", "*.msgpack", "*.h5", "*.ot"],
         "description": "DreamShaper XL Lightning - Text-to-Image model (~2GB)"
     },
