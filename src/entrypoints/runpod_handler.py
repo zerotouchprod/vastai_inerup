@@ -183,7 +183,7 @@ def generate_image(
         if seed is not None:
             generator = torch.Generator(device="cuda").manual_seed(seed)
         
-        # Generate image at 720x480 — точный размер входа CogVideoX-5b-I2V
+        # SDXL лучше работает на 768x512; ресайзим до 720x480 для CogVideoX
         with torch.inference_mode():
             image = t2i_pipeline(
                 prompt=prompt,
@@ -191,10 +191,13 @@ def generate_image(
                 num_inference_steps=num_inference_steps,
                 guidance_scale=guidance_scale,
                 generator=generator,
-                width=720,
-                height=480,
+                width=768,
+                height=512,
             ).images[0]
-        
+
+        # Ресайз до точного размера входа CogVideoX-5b-I2V
+        image = image.resize((720, 480), Image.LANCZOS)
+
         # Save image to temporary file
         image_path = Path("/tmp") / f"ref_{uuid.uuid4().hex[:8]}.png"
         image.save(image_path)
@@ -240,9 +243,12 @@ def generate_video(
     i2v_pipeline = load_i2v_pipeline()
     
     try:
-        # Load reference image
-        image = Image.open(image_path)
-        
+        # Load reference image и гарантируем точный размер 720x480
+        image = Image.open(image_path).convert("RGB")
+        if image.size != (720, 480):
+            logger.warning(f"⚠️ Image size {image.size} != (720, 480), resizing...")
+            image = image.resize((720, 480), Image.LANCZOS)
+
         # Create generator with seed if provided
         generator = None
         if seed is not None:

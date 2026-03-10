@@ -17,15 +17,16 @@ WORKDIR /app
 RUN pip install --no-cache-dir --upgrade pip
 
 # Установить все зависимости включая явные транзитивные
-# CogVideoXImageToVideoPipeline добавлен в diffusers>=0.30.0
+# diffusers==0.30.3 — последняя версия с корректным prepare_latents для CogVideoX-5b-I2V
+#   diffusers>=0.31 содержит баг: "Expected size 16 but got size 8" в spatial padding
 # six — требуется transformers.generation.utils
 # cryptography + paramiko — требуются runpod.cli.groups.ssh
 RUN pip install --no-cache-dir \
-    diffusers==0.32.2 \
-    transformers==4.49.0 \
-    accelerate==1.3.0 \
+    diffusers==0.30.3 \
+    transformers==4.45.0 \
+    accelerate==0.34.0 \
     safetensors==0.4.5 \
-    huggingface_hub[cli]==0.27.0 \
+    huggingface_hub[cli]==0.25.0 \
     tiktoken==0.12.0 \
     sentencepiece==0.2.0 \
     protobuf==5.29.0 \
