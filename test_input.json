@@ -1,0 +1,14 @@
+{
+  "input": {
+    "prompt": "A cat sitting on a windowsill, sunlight streaming in, cinematic, 4K",
+    "negative_prompt": "blurry, low quality, distorted",
+    "t2i_steps": 4,
+    "t2i_guidance_scale": 0.0,
+    "num_inference_steps": 10,
+    "guidance_scale": 6.0,
+    "num_frames": 16,
+    "fps": 8,
+    "seed": 42
+  }
+}
+

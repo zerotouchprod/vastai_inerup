@@ -27,6 +27,7 @@ from diffusers.utils import export_to_video
 
 import runpod
 from src.shared.logging import get_logger
+from src.infrastructure.storage.r2_client import R2Client
 
 # Configure logging
 logger = get_logger(__name__)
@@ -350,12 +351,40 @@ def process_job(job: Dict[str, Any]) -> Dict[str, Any]:
         
         # Clean up intermediate files
         image_path.unlink(missing_ok=True)
-        
-        # Return success result (simple format for serverless)
+
+        # Upload video to Cloudflare R2 and get presigned URL
+        video_url: Optional[str] = None
+        r2_key: Optional[str] = None
+
+        r2_enabled = all([
+            os.getenv("R2_ACCESS_KEY_ID"),
+            os.getenv("R2_SECRET_ACCESS_KEY"),
+            os.getenv("R2_BUCKET"),
+            os.getenv("R2_ENDPOINT"),
+        ])
+
+        if r2_enabled:
+            try:
+                logger.info("📤 Uploading video to Cloudflare R2...")
+                r2 = R2Client()
+                r2_key = f"outputs/{job_id}/{video_path.name}"
+                r2.upload_file(video_path, r2_key)
+                # Presigned URL действителен 24 часа
+                video_url = r2.get_presigned_url(r2_key, expires_in=86400)
+                video_path.unlink(missing_ok=True)
+                logger.info(f"✅ Video uploaded to R2: {r2_key}")
+            except Exception as e:
+                logger.warning(f"⚠️ R2 upload failed, returning local path: {e}")
+        else:
+            logger.warning("⚠️ R2 not configured (R2_ACCESS_KEY_ID/R2_SECRET_ACCESS_KEY/R2_BUCKET/R2_ENDPOINT missing) — video_url will be null")
+
+        # Return success result
         result = {
             "status": "success",
             "job_id": job_id,
-            "video_path": str(video_path),
+            "video_url": video_url,        # presigned R2 URL (24h), null если R2 не настроен
+            "video_path": str(video_path), # локальный путь (доступен только если R2 не настроен)
+            "r2_key": r2_key,              # ключ в R2 для постоянного хранения
             "prompt": prompt,
             "parameters": {
                 "t2i_steps": t2i_steps,
