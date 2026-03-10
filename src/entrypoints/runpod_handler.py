@@ -3,7 +3,7 @@
 RunPod Serverless Handler for Ultra-Fast Video Generation
 
 This handler processes video generation jobs with zero model downloading.
-Models are loaded from a mounted network volume at /runpod-volume/models/
+Models are loaded from a mounted network volume at /workspace/models/
 with HF_HUB_OFFLINE=1 to prevent any internet connection attempts.
 
 Cold start: <5 seconds when Docker image is cached on RunPod host.

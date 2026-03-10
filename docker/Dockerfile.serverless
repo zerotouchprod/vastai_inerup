@@ -1,10 +1,12 @@
 # Dockerfile.serverless - Ultra-fast startup for RunPod Serverless
-# Base: pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime (heavily cached by RunPod)
+# Base: runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04
+#   → Pre-cached on ALL RunPod workers — zero download overhead
+#   → Includes PyTorch 2.4, CUDA 12.4, Python 3.11
 # Size: ~6GB (dependencies only, NO models)
-# Models are stored on Network Volume at /runpod-volume/models/
+# Models are stored on Network Volume at /workspace/models/
 # Cold start: <5 seconds when image is cached on host
 
-FROM pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime
+FROM runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04
 
 LABEL maintainer="vastai_inerup"
 LABEL description="RunPod Serverless Video Generation - Ultra-fast startup"
@@ -27,27 +29,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Create virtual environment
-RUN python3 -m venv /opt/venv
-ENV PATH="/opt/venv/bin:$PATH"
-
 # Upgrade pip
 RUN pip install --no-cache-dir --upgrade pip
 
-# Copy requirements file
-COPY requirements.gen.txt .
-
 # Install Python dependencies with exact versions for compatibility
-# Используем точные версии, которые точно работают вместе
-RUN pip install --no-cache-dir \
-    torch==2.5.1+cu124 \
-    torchvision==0.20.1+cu124 \
-    torchaudio==2.5.1+cu124 \
-    --index-url https://download.pytorch.org/whl/cu124
+# PyTorch уже включён в базовый образ runpod/pytorch — пропускаем его установку
 
 # Установить совместимые версии diffusers и transformers
 # diffusers 0.28.0 и transformers 4.40.0 хорошо работают вместе
 # safetensors>=0.4.1 required by transformers==4.40.0; 0.4.3 satisfies both
+# pydantic==2.7.0 — минимум, требуемый fastapi (транзитивная зависимость runpod)
+# pydantic-settings==2.3.0 — совместима с pydantic>=2.7
 RUN pip install --no-cache-dir \
     diffusers==0.28.0 \
     transformers==4.40.0 \
@@ -56,33 +48,37 @@ RUN pip install --no-cache-dir \
     huggingface_hub[cli]==0.22.0 \
     tiktoken==0.12.0 \
     sentencepiece==0.2.0 \
-    protobuf==7.34.0 \
+    protobuf==5.29.0 \
     imageio[ffmpeg]==2.34.0 \
     imageio-ffmpeg==0.5.0 \
     boto3==1.34.0 \
-    pydantic==2.0.0 \
-    pydantic-settings==2.0.0 \
-    numpy==1.24.0 \
-    pillow==10.0.0 \
-    tqdm==4.65.0 \
-    requests==2.31.0
+    pydantic==2.7.0 \
+    pydantic-settings==2.3.0 \
+    numpy==1.26.4 \
+    pillow==10.4.0 \
+    tqdm==4.66.0 \
+    requests==2.32.0 \
+    runpod==1.8.1
 
-# Install RunPod serverless dependency
-RUN pip install --no-cache-dir runpod==1.8.1
-
-# Install xformers for memory-efficient attention (совместимая версия)
-RUN pip install --no-cache-dir xformers==0.0.29.post1 --index-url https://download.pytorch.org/whl/cu124
+# Install xformers — используем extra-index-url + constraint на torch чтобы
+# pip не переустанавливал torch из базового образа (2.4.1+cu124)
+# Constraint заморозит torch, pip возьмёт совместимый xformers без апгрейда
+RUN TORCH_VERSION=$(python3 -c "import torch; print(torch.__version__)") && \
+    pip install --no-cache-dir \
+        --extra-index-url https://download.pytorch.org/whl/cu124 \
+        "torch==${TORCH_VERSION}" \
+        "xformers==0.0.28.post1"
 
 # Copy source code (simplified - copy entire src directory)
 COPY src/ /app/src/
 
-# Create model directory structure (will be mounted from network volume)
-RUN mkdir -p /runpod-volume/models
+# Create model directory structure (will be mounted from network volume at /workspace)
+RUN mkdir -p /workspace/models
 
 # CRITICAL: Environment variables for offline operation
 ENV PYTHONPATH="/app:$PYTHONPATH"
 ENV PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
-ENV HF_HOME="/runpod-volume/huggingface_cache"
+ENV HF_HOME="/workspace/huggingface_cache"
 ENV HF_HUB_OFFLINE="1"
 ENV TORCH_INFERENCE_MODE="1"
 ENV ENABLE_SAFETY_CHECKER="False"
