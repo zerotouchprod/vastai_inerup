@@ -1,12 +1,12 @@
 {
   "input": {
-    "prompt": "A cat sitting on a windowsill, sunlight streaming in, cinematic, 4K",
+    "prompt": "Dynamic tracking shot, 4k resolution, hyper-detailed anime style, top-tier sakuga animation. Saitama from One Punch Man in his yellow suit and flowing white cape effortlessly dodges a rapid barrage of golden glowing Rasengans from Naruto in Six Paths Sage Mode. Fast-paced hand-to-hand combat, heavy motion blur, impact frames with thick black ink strokes. The camera aggressively circles around them as their fists collide, creating a massive shockwave that shatters the rocky ground into floating debris. Cinematic lighting, glowing embers and dust particles in the air, masterpiece.",
     "negative_prompt": "blurry, low quality, distorted",
     "t2i_steps": 4,
     "t2i_guidance_scale": 0.0,
     "num_inference_steps": 10,
     "guidance_scale": 6.0,
-    "num_frames": 16,
+    "num_frames": 49,
     "fps": 8,
     "seed": 42
   }

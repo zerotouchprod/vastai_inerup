@@ -60,7 +60,7 @@ DEFAULT_T2I_STEPS = 4
 DEFAULT_T2I_GUIDANCE_SCALE = 0.0
 DEFAULT_I2V_STEPS = 25
 DEFAULT_I2V_GUIDANCE_SCALE = 6.0
-DEFAULT_NUM_FRAMES = 16
+DEFAULT_NUM_FRAMES = 49  # CogVideoX требует 4k+1; 49 = дефолт модели
 DEFAULT_FPS = 8
 
 
@@ -113,23 +113,22 @@ def load_i2v_pipeline() -> CogVideoXImageToVideoPipeline:
     # Load pipeline with optimizations for serverless
     pipeline = CogVideoXImageToVideoPipeline.from_pretrained(
         I2V_MODEL_PATH,
-        torch_dtype=torch.bfloat16,  # Use bfloat16 for CogVideoX
-        local_files_only=True,       # CRITICAL: No internet connection
-        use_safetensors=True
+        torch_dtype=torch.bfloat16,
+        local_files_only=True,
+        use_safetensors=True,
     )
-    
-    # Move to GPU and apply advanced memory optimizations
-    pipeline = pipeline.to("cuda")
-    
-    # Enable CPU offload for memory efficiency
-    if hasattr(pipeline, "enable_model_cpu_offload"):
-        pipeline.enable_model_cpu_offload()
-    
-    # Enable VAE slicing
+
+    # enable_model_cpu_offload управляет перемещением само —
+    # НЕ вызывать .to("cuda") перед ним, иначе конфликт устройств
+    pipeline.enable_model_cpu_offload()
+
     if hasattr(pipeline, "enable_vae_slicing"):
         pipeline.enable_vae_slicing()
-    
-    logger.info("✓ I2V pipeline loaded (bfloat16, CPU offload, VAE slicing)")
+
+    if hasattr(pipeline, "enable_vae_tiling"):
+        pipeline.enable_vae_tiling()
+
+    logger.info("✓ I2V pipeline loaded (bfloat16, CPU offload, VAE slicing+tiling)")
     return pipeline
 
 
@@ -184,7 +183,7 @@ def generate_image(
         if seed is not None:
             generator = torch.Generator(device="cuda").manual_seed(seed)
         
-        # Generate image
+        # Generate image at 720x480 — точный размер входа CogVideoX-5b-I2V
         with torch.inference_mode():
             image = t2i_pipeline(
                 prompt=prompt,
@@ -192,6 +191,8 @@ def generate_image(
                 num_inference_steps=num_inference_steps,
                 guidance_scale=guidance_scale,
                 generator=generator,
+                width=720,
+                height=480,
             ).images[0]
         
         # Save image to temporary file
@@ -248,6 +249,7 @@ def generate_video(
             generator = torch.Generator(device="cuda").manual_seed(seed)
         
         # Generate video frames
+        # height=480, width=720 — единственный поддерживаемый размер CogVideoX-5b-I2V
         with torch.inference_mode():
             output = i2v_pipeline(
                 image=image,
@@ -256,6 +258,8 @@ def generate_video(
                 num_inference_steps=num_inference_steps,
                 guidance_scale=guidance_scale,
                 num_frames=num_frames,
+                height=480,
+                width=720,
                 generator=generator,
             )
         
@@ -309,13 +313,19 @@ def process_job(job: Dict[str, Any]) -> Dict[str, Any]:
         # T2I parameters
         t2i_steps = job_input.get("t2i_steps", DEFAULT_T2I_STEPS)
         t2i_guidance_scale = job_input.get("t2i_guidance_scale", DEFAULT_T2I_GUIDANCE_SCALE)
-        
+
         # I2V parameters
         i2v_steps = job_input.get("num_inference_steps", DEFAULT_I2V_STEPS)
         i2v_guidance_scale = job_input.get("guidance_scale", DEFAULT_I2V_GUIDANCE_SCALE)
-        num_frames = job_input.get("num_frames", DEFAULT_NUM_FRAMES)
         fps = job_input.get("fps", DEFAULT_FPS)
-        
+
+        # CogVideoX требует num_frames = 4k+1 (1, 5, 9, 13, 17, 25, 33, 41, 49)
+        # Автокоррекция: округляем до ближайшего допустимого значения
+        raw_frames = job_input.get("num_frames", DEFAULT_NUM_FRAMES)
+        num_frames = max(1, ((raw_frames - 1) // 4) * 4 + 1)
+        if num_frames != raw_frames:
+            logger.warning(f"⚠️ num_frames={raw_frames} не поддерживается CogVideoX, скорректировано до {num_frames} (требуется 4k+1)")
+
         # Phase 1: Generate image
         logger.info("=" * 60)
         logger.info("PHASE 1: Text-to-Image Generation")

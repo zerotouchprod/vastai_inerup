@@ -82,6 +82,9 @@ COPY --from=builder /usr/lib/python3 /usr/lib/python3
 WORKDIR /app
 
 COPY src/ /app/src/
+# test_input.json нужен runpod worker для локального тестирования (иначе WARN и выход)
+COPY test_input.json /app/test_input.json
+COPY debug_handler.py /app/debug_handler.py
 
 RUN mkdir -p /workspace/models
 
@@ -91,6 +94,12 @@ ENV HF_HOME="/workspace/huggingface_cache"
 ENV HF_HUB_OFFLINE="1"
 ENV TORCH_INFERENCE_MODE="1"
 ENV ENABLE_SAFETY_CHECKER="False"
+# Cloudflare R2
+ENV R2_ACCESS_KEY_ID=""
+ENV R2_SECRET_ACCESS_KEY=""
+ENV R2_DEFAULT_REGION="auto"
+ENV R2_BUCKET="videos"
+ENV R2_ENDPOINT=""
 
 # Verify installation
 RUN python3 -c "import torch; print(f'PyTorch: {torch.__version__}, CUDA available at runtime: check with nvidia-smi')" && \
