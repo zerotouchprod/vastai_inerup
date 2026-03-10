@@ -37,13 +37,40 @@ RUN pip install --no-cache-dir --upgrade pip
 # Copy requirements file
 COPY requirements.gen.txt .
 
-# Install Python dependencies from requirements.gen.txt
-RUN pip install --no-cache-dir -r requirements.gen.txt
+# Install Python dependencies with exact versions for compatibility
+# Используем точные версии, которые точно работают вместе
+RUN pip install --no-cache-dir \
+    torch==2.5.1+cu124 \
+    torchvision==0.20.1+cu124 \
+    torchaudio==2.5.1+cu124 \
+    --index-url https://download.pytorch.org/whl/cu124
+
+# Установить совместимые версии diffusers и transformers
+# diffusers 0.28.0 и transformers 4.40.0 хорошо работают вместе
+# safetensors>=0.4.1 required by transformers==4.40.0; 0.4.3 satisfies both
+RUN pip install --no-cache-dir \
+    diffusers==0.28.0 \
+    transformers==4.40.0 \
+    accelerate==0.30.0 \
+    safetensors==0.4.3 \
+    huggingface_hub[cli]==0.22.0 \
+    tiktoken==0.12.0 \
+    sentencepiece==0.2.0 \
+    protobuf==7.34.0 \
+    imageio[ffmpeg]==2.34.0 \
+    imageio-ffmpeg==0.5.0 \
+    boto3==1.34.0 \
+    pydantic==2.0.0 \
+    pydantic-settings==2.0.0 \
+    numpy==1.24.0 \
+    pillow==10.0.0 \
+    tqdm==4.65.0 \
+    requests==2.31.0
 
 # Install RunPod serverless dependency
 RUN pip install --no-cache-dir runpod==1.8.1
 
-# Install xformers for memory-efficient attention
+# Install xformers for memory-efficient attention (совместимая версия)
 RUN pip install --no-cache-dir xformers==0.0.29.post1 --index-url https://download.pytorch.org/whl/cu124
 
 # Copy source code (simplified - copy entire src directory)
