@@ -1,13 +1,12 @@
 {
   "input": {
     "prompt": "Saitama from One Punch Man throws a devastating punch at Naruto Uzumaki who dodges backwards through the air. Explosive shockwave on impact, debris flying outward, dynamic camera shake, fast-paced sakuga anime combat, flat cel shading, vibrant colors, Studio Bones style.",
-    "negative_prompt": "blurry, low quality, static, no motion, 3d render, photorealistic",
-    "num_inference_steps": 50,
+    "num_inference_steps": 30,
     "guidance_scale": 6.0,
-    "num_frames": 49,
+    "num_frames": 25,
     "fps": 8,
-    "height": 480,
-    "width": 720,
+    "height": 320,
+    "width": 512,
     "seed": 42
   }
 }

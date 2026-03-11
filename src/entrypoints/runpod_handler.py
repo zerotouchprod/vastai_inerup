@@ -76,27 +76,33 @@ def generate_video(
         raise FileNotFoundError(f"HunyuanVideo model not found: {MODEL_PATH}")
 
     from diffusers import HunyuanVideoPipeline  # noqa: PLC0415
+    from transformers import BitsAndBytesConfig  # noqa: PLC0415
 
     import diffusers as _d  # noqa: PLC0415
     logger.info(f"diffusers: {_d.__version__}")
     logger.info(f"Loading HunyuanVideoPipeline from {MODEL_PATH}")
 
+    # 8-bit квантизация текстового LLM-энкодера — экономит ~6-8 GB VRAM
+    quantization_config = BitsAndBytesConfig(load_in_8bit=True)
+
     pipe = HunyuanVideoPipeline.from_pretrained(
         MODEL_PATH,
         torch_dtype=torch.bfloat16,
+        text_encoder_quantization_config=quantization_config,
         local_files_only=True,
     )
 
-    # CRITICAL: без cpu_offload — OOM на 24 GB
-    pipe.enable_model_cpu_offload()
+    # sequential: offload трансформатор послойно — не весь сразу → нет OOM
+    pipe.enable_sequential_cpu_offload()
 
-    # CRITICAL: VAE tiling предотвращает memory spike при декоде
+    # VAE tiling + slicing — предотвращают memory spike при декоде
     if hasattr(pipe, "vae") and hasattr(pipe.vae, "enable_tiling"):
         pipe.vae.enable_tiling()
         logger.info("VAE tiling enabled")
 
     if hasattr(pipe, "enable_vae_slicing"):
         pipe.enable_vae_slicing()
+        logger.info("VAE slicing enabled")
 
     # HunyuanVideo требует num_frames = 4k+1
     stf = getattr(pipe, "vae_scale_factor_temporal", 4)

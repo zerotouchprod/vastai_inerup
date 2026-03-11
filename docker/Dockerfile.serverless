@@ -27,6 +27,7 @@ RUN pip install --no-cache-dir \
     "accelerate==1.0.0" \
     "safetensors>=0.4.5" \
     "huggingface_hub[cli]>=0.25.0" \
+    bitsandbytes==0.44.1 \
     sentencepiece==0.2.0 \
     protobuf==5.29.0 \
     imageio[ffmpeg]==2.34.0 \
@@ -61,7 +62,7 @@ ENV HF_HUB_OFFLINE="1"
 ENV R2_DEFAULT_REGION="auto"
 
 # Smoke test
-RUN python3 -c "import torch, diffusers, transformers; print('torch:', torch.__version__, '| diffusers:', diffusers.__version__)"
+RUN python3 -c "import torch, diffusers, transformers, bitsandbytes; print('torch:', torch.__version__, '| diffusers:', diffusers.__version__, '| bitsandbytes:', bitsandbytes.__version__)"
 RUN python3 -c "from src.entrypoints.runpod_handler import process_job; print('✅ handler importable')"
 
 RUN printf '#!/bin/bash\npython3 -c "import torch; exit(0 if torch.cuda.is_available() else 1)"\n' \

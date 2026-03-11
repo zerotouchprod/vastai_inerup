@@ -12,9 +12,13 @@ git pull --ff-only origin main_video_gen 2>&1 || echo "⚠️  git pull failed (
 echo "📌 Current commit: $(git log --oneline -1)"
 echo "============================================================"
 
+# ── Runtime dep check: bitsandbytes (нужен для 8-bit квантизации) ─────────────
+python3 -c "import bitsandbytes" 2>/dev/null || {
+    echo "📦 Installing bitsandbytes..."
+    pip install bitsandbytes==0.44.1 -q
+}
+
 # ── Debug mode ────────────────────────────────────────────────────────────────
-# Запустить: DEBUG=1 /app/entrypoint.sh
-# или через RunPod env: DEBUG=1
 if [ "${DEBUG}" = "1" ]; then
     echo "🐛 DEBUG MODE — running debug_handler.py"
     echo "============================================================"
@@ -22,7 +26,6 @@ if [ "${DEBUG}" = "1" ]; then
 fi
 
 # ── Check only mode ───────────────────────────────────────────────────────────
-# Запустить: CHECK=1 /app/entrypoint.sh
 if [ "${CHECK}" = "1" ]; then
     echo "🔍 CHECK MODE — environment + model check only"
     echo "============================================================"
