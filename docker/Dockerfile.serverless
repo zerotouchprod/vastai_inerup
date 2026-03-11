@@ -1,13 +1,13 @@
 # Dockerfile.serverless — RunPod Serverless HunyuanVideo T2V
 #
-# Single-stage build на базе runpod/pytorch (torch 2.4.1 + cu124).
+# Клонирует репозиторий ветку main_video_gen вместо COPY
 # Models (Network Volume /workspace/models/HunyuanVideo): ~30 GB
 
 FROM runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04
 
 LABEL maintainer="vastai_inerup"
 LABEL description="RunPod Serverless — HunyuanVideo T2V"
-LABEL version="7.0.0"
+LABEL version="8.0.0"
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg git libgl1 libglib2.0-0 libsm6 libxext6 \
@@ -16,13 +16,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 RUN pip install --no-cache-dir --upgrade pip
 
-# flash-attn в базовом образе несовместим с diffusers HunyuanVideo — удалить ДО установки
+# flash-attn несовместим с diffusers HunyuanVideo — удалить ДО установки
 RUN pip uninstall -y flash-attn 2>/dev/null || true
 
 # ── ML stack ──────────────────────────────────────────────────────────────────
-# torch/torchvision НЕ трогаем — базовый образ (2.4.1+cu124)
-# diffusers 0.32.2 — последняя версия с HunyuanVideoPipeline БЕЗ infer_schema бага
-# (баг появился в 0.33.0 из-за torch.compile несовместимого с torch 2.4.1)
+# diffusers 0.32.2 — последняя совместимая с torch 2.4.1 без infer_schema бага
 RUN pip install --no-cache-dir \
     "diffusers==0.32.2" \
     "transformers==4.46.1" \
@@ -44,13 +42,15 @@ RUN pip install --no-cache-dir \
     paramiko==3.4.0 \
     runpod==1.8.1
 
+# ── Clone repo ────────────────────────────────────────────────────────────────
+RUN git clone \
+    --branch main_video_gen \
+    --single-branch \
+    --depth 1 \
+    https://github.com/zerotouchprod/vastai_inerup.git \
+    /app
 
 WORKDIR /app
-
-COPY src/ /app/src/
-COPY scripts/ /app/scripts/
-COPY test_input.json /app/test_input.json
-COPY debug_handler.py /app/debug_handler.py
 
 RUN mkdir -p /workspace/models
 
@@ -60,11 +60,15 @@ ENV HF_HOME="/workspace/huggingface_cache"
 ENV HF_HUB_OFFLINE="1"
 ENV R2_DEFAULT_REGION="auto"
 
+# Smoke test
 RUN python3 -c "import torch, diffusers, transformers; print('torch:', torch.__version__, '| diffusers:', diffusers.__version__)"
+RUN python3 -c "from src.entrypoints.runpod_handler import process_job; print('✅ handler importable')"
 
 RUN printf '#!/bin/bash\npython3 -c "import torch; exit(0 if torch.cuda.is_available() else 1)"\n' \
     > /healthcheck.sh && chmod +x /healthcheck.sh
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 CMD /healthcheck.sh
 
-CMD ["python3", "-m", "src.entrypoints.runpod_handler"]
+# entrypoint.sh делает git pull при каждом старте контейнера → хотфиксы без ребилда
+RUN chmod +x /app/entrypoint.sh
+CMD ["/app/entrypoint.sh"]
