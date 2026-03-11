@@ -16,14 +16,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 RUN pip install --no-cache-dir --upgrade pip
 
+# flash-attn в базовом образе несовместим с diffusers HunyuanVideo — удалить ДО установки
+RUN pip uninstall -y flash-attn 2>/dev/null || true
+
 # ── ML stack ──────────────────────────────────────────────────────────────────
 # torch/torchvision НЕ трогаем — базовый образ (2.4.1+cu124)
-# diffusers>=0.33.0 — HunyuanVideoPipeline стабильный
-# sentencepiece + protobuf — LLM text encoder HunyuanVideo
+# diffusers 0.32.2 — последняя версия с HunyuanVideoPipeline БЕЗ infer_schema бага
+# (баг появился в 0.33.0 из-за torch.compile несовместимого с torch 2.4.1)
 RUN pip install --no-cache-dir \
-    "diffusers>=0.33.0" \
-    "transformers>=4.49.0" \
-    "accelerate>=1.2.0" \
+    "diffusers==0.32.2" \
+    "transformers==4.46.1" \
+    "accelerate==1.0.0" \
     "safetensors>=0.4.5" \
     "huggingface_hub[cli]>=0.25.0" \
     sentencepiece==0.2.0 \
@@ -40,6 +43,7 @@ RUN pip install --no-cache-dir \
     cryptography==42.0.8 \
     paramiko==3.4.0 \
     runpod==1.8.1
+
 
 WORKDIR /app
 

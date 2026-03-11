@@ -49,9 +49,11 @@ MODELS_DIR.mkdir(parents=True, exist_ok=True)
 MODELS = [
     {
         "name": "HunyuanVideo",
-        "repo_id": "tencent/HunyuanVideo",
+        # hunyuanvideo-community — diffusers-совместимый форм с model_index.json
+        # tencent/HunyuanVideo — оригинал БЕЗ model_index.json, не работает с from_pretrained
+        "repo_id": "hunyuanvideo-community/HunyuanVideo",
         "ignore_patterns": ["*.bin", "*.onnx", "fp32/*"],
-        "description": "HunyuanVideo T2V (~30 GB safetensors, fp16/bf16 only)",
+        "description": "HunyuanVideo T2V diffusers format (~30 GB safetensors, fp16/bf16 only)",
     },
 ]
 

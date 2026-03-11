@@ -64,7 +64,6 @@ def flush_vram() -> None:
 
 def generate_video(
     prompt: str,
-    negative_prompt: Optional[str],
     num_inference_steps: int,
     guidance_scale: float,
     num_frames: int,
@@ -114,7 +113,6 @@ def generate_video(
         with torch.inference_mode():
             output = pipe(
                 prompt=prompt,
-                negative_prompt=negative_prompt,
                 num_inference_steps=num_inference_steps,
                 guidance_scale=guidance_scale,
                 num_frames=num_frames,
@@ -147,7 +145,6 @@ def process_job(job: dict[str, Any]) -> dict[str, Any]:
         if not prompt:
             raise ValueError("'prompt' is required")
 
-        negative_prompt: Optional[str] = job_input.get("negative_prompt")
         seed: Optional[int] = job_input.get("seed")
 
         # ── Generation params ─────────────────────────────────────────────────
@@ -171,7 +168,6 @@ def process_job(job: dict[str, Any]) -> dict[str, Any]:
 
         video_path = generate_video(
             prompt=prompt,
-            negative_prompt=negative_prompt,
             num_inference_steps=num_inference_steps,
             guidance_scale=guidance_scale,
             num_frames=num_frames,
