@@ -22,7 +22,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import torch
 from PIL import Image
-from diffusers import StableDiffusionXLPipeline, CogVideoXImageToVideoPipeline
+from diffusers import StableDiffusionXLPipeline, CogVideoXImageToVideoPipeline, CogVideoXPipeline
 from diffusers.utils import export_to_video
 
 import runpod
@@ -97,39 +97,68 @@ def load_t2i_pipeline() -> StableDiffusionXLPipeline:
     return pipeline
 
 
-def load_i2v_pipeline() -> CogVideoXImageToVideoPipeline:
+def _detect_cogvideo_model_type() -> str:
     """
-    Load Image-to-Video pipeline from local model path.
-    Uses torch.bfloat16 for CogVideoX with CPU offload.
-    
-    Returns:
-        CogVideoXImageToVideoPipeline instance
+    Определить тип модели из model_index.json.
+    Returns: 'i2v' или 't2v'
     """
-    logger.info(f"Loading I2V model from: {I2V_MODEL_PATH}")
-    
+    import json
+    model_index = os.path.join(I2V_MODEL_PATH, "model_index.json")
+    try:
+        data = json.loads(open(model_index).read())
+        class_name = data.get("_class_name", "")
+        # I2V модель имеет CogVideoXImageToVideoPipeline
+        # T2V модель имеет CogVideoXPipeline
+        if "ImageToVideo" in class_name:
+            return "i2v"
+        # Проверяем transformer in_channels — I2V имеет 32, T2V имеет 16
+        tr_config_path = os.path.join(I2V_MODEL_PATH, "transformer/config.json")
+        tr_config = json.loads(open(tr_config_path).read())
+        if tr_config.get("in_channels", 16) >= 32:
+            return "i2v"
+        logger.warning(f"⚠️ Model class: {class_name}, in_channels={tr_config.get('in_channels')} → treating as T2V")
+        return "t2v"
+    except Exception as e:
+        logger.warning(f"Could not detect model type: {e}, defaulting to t2v")
+        return "t2v"
+
+
+def load_i2v_pipeline():
+    """
+    Load CogVideoX pipeline — автоматически определяет I2V или T2V.
+    """
+    logger.info(f"Loading CogVideoX model from: {I2V_MODEL_PATH}")
+
     if not os.path.exists(I2V_MODEL_PATH):
-        raise FileNotFoundError(f"I2V model not found at {I2V_MODEL_PATH}")
-    
-    # Load pipeline with optimizations for serverless
-    pipeline = CogVideoXImageToVideoPipeline.from_pretrained(
+        raise FileNotFoundError(f"Model not found at {I2V_MODEL_PATH}")
+
+    import diffusers as _diffusers
+    logger.info(f"diffusers version: {_diffusers.__version__}")
+
+    model_type = _detect_cogvideo_model_type()
+    logger.info(f"Detected model type: {model_type.upper()}")
+
+    pipeline_cls = CogVideoXImageToVideoPipeline if model_type == "i2v" else CogVideoXPipeline
+
+    pipeline = pipeline_cls.from_pretrained(
         I2V_MODEL_PATH,
         torch_dtype=torch.bfloat16,
         local_files_only=True,
         use_safetensors=True,
     )
 
-    # enable_model_cpu_offload управляет перемещением само —
-    # НЕ вызывать .to("cuda") перед ним, иначе конфликт устройств
     pipeline.enable_model_cpu_offload()
 
     if hasattr(pipeline, "enable_vae_slicing"):
         pipeline.enable_vae_slicing()
-
     if hasattr(pipeline, "enable_vae_tiling"):
         pipeline.enable_vae_tiling()
 
-    logger.info("✓ I2V pipeline loaded (bfloat16, CPU offload, VAE slicing+tiling)")
-    return pipeline
+    stf = getattr(pipeline, "vae_scale_factor_temporal", 4)
+    ssf = getattr(pipeline, "vae_scale_factor_spatial", 8)
+    logger.info(f"VAE temporal_scale={stf}, spatial_scale={ssf}, model_type={model_type}")
+    logger.info(f"✓ CogVideoX pipeline loaded ({model_type.upper()}, bfloat16, CPU offload)")
+    return pipeline, model_type
 
 
 def aggressive_vram_cleanup():
@@ -238,56 +267,63 @@ def generate_video(
         Path to generated video file
     """
     logger.info(f"Generating video from image: {image_path.name}")
-    
-    # Load I2V pipeline
-    i2v_pipeline = load_i2v_pipeline()
-    
-    try:
-        # Load reference image и гарантируем точный размер 720x480
-        image = Image.open(image_path).convert("RGB")
-        if image.size != (720, 480):
-            logger.warning(f"⚠️ Image size {image.size} != (720, 480), resizing...")
-            image = image.resize((720, 480), Image.LANCZOS)
 
-        # Create generator with seed if provided
+    # Load pipeline (auto-detects I2V vs T2V)
+    cogvideo_pipeline, model_type = load_i2v_pipeline()
+
+    try:
         generator = None
         if seed is not None:
             generator = torch.Generator(device="cuda").manual_seed(seed)
-        
-        # Generate video frames
-        # height=480, width=720 — единственный поддерживаемый размер CogVideoX-5b-I2V
+
+        t = getattr(cogvideo_pipeline, "vae_scale_factor_temporal", 4)
+        corrected_frames = max(1, ((num_frames - 1) // t) * t + 1)
+        if corrected_frames != num_frames:
+            logger.warning(f"⚠️ num_frames={num_frames} → {corrected_frames} (temporal={t})")
+            num_frames = corrected_frames
+        logger.info(f"Generating {num_frames} frames (temporal={t}, type={model_type})")
+
         with torch.inference_mode():
-            output = i2v_pipeline(
-                image=image,
-                prompt=prompt,
-                negative_prompt=negative_prompt,
-                num_inference_steps=num_inference_steps,
-                guidance_scale=guidance_scale,
-                num_frames=num_frames,
-                height=480,
-                width=720,
-                generator=generator,
-            )
-        
+            if model_type == "i2v":
+                # I2V: передаём изображение
+                image = Image.open(image_path).convert("RGB")
+                logger.info(f"Input image size: {image.size}")
+                if image.size != (720, 480):
+                    image = image.resize((720, 480), Image.LANCZOS)
+                output = cogvideo_pipeline(
+                    image=image,
+                    prompt=prompt,
+                    negative_prompt=negative_prompt,
+                    num_inference_steps=num_inference_steps,
+                    guidance_scale=guidance_scale,
+                    num_frames=num_frames,
+                    generator=generator,
+                )
+            else:
+                # T2V: передаём только промпт (модель не принимает image)
+                logger.info("T2V mode: using prompt only (no image input)")
+                output = cogvideo_pipeline(
+                    prompt=prompt,
+                    negative_prompt=negative_prompt,
+                    num_inference_steps=num_inference_steps,
+                    guidance_scale=guidance_scale,
+                    num_frames=num_frames,
+                    height=480,
+                    width=720,
+                    generator=generator,
+                )
+
         frames = output.frames[0]
-        
-        # Save video to temporary file
+
         video_path = Path("/tmp") / f"output_{uuid.uuid4().hex[:8]}.mp4"
-        
-        # Export frames to video
-        export_to_video(
-            frames,
-            str(video_path),
-            fps=fps
-        )
-        
+        export_to_video(frames, str(video_path), fps=fps)
+
         video_size_mb = video_path.stat().st_size / (1024**2)
         logger.info(f"✓ Video generated: {video_path} ({video_size_mb:.2f} MB)")
         return video_path
-        
+
     finally:
-        # CRITICAL: Clean up I2V pipeline aggressively
-        del i2v_pipeline
+        del cogvideo_pipeline
         aggressive_vram_cleanup()
 
 

@@ -79,8 +79,8 @@ MODELS = [
     },
     {
         "name": "CogVideoX-5b-I2V",
-        "repo_id": "THUDM/CogVideoX-5b",
-        "type": "folder",  # Full folder download
+        "repo_id": "THUDM/CogVideoX-5b-I2V",
+        "type": "folder",
         "ignore_patterns": ["*.bin", "*.onnx", "fp32/*", "*.ckpt", "*.msgpack", "*.h5", "*.ot"],
         "description": "CogVideoX-5b Image-to-Video model (~15GB)"
     }

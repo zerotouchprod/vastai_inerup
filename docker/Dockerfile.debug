@@ -1,0 +1,5 @@
+# Dockerfile.debug — для дебага на RunPod Pod
+# CMD = sleep infinity → SSH доступен, генерацию запускаешь вручную
+FROM registry.gitlab.com/gfever/vastai_interup:video-gen-serverless-ultra
+
+CMD ["sleep", "infinity"]

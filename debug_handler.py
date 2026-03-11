@@ -132,6 +132,29 @@ def check_models() -> None:
         if not exists:
             ok = False
 
+    # Диагностика версии diffusers и совместимости с моделью
+    try:
+        import diffusers
+        print(f"\n  diffusers version: {diffusers.__version__}")
+
+        model_index = Path(I2V_MODEL_PATH) / "model_index.json"
+        if model_index.exists():
+            import json
+            data = json.loads(model_index.read_text())
+            print(f"  model _class_name : {data.get('_class_name')}")
+            print(f"  model _diffusers_version: {data.get('_diffusers_version')}")
+
+        # Показать архитектуру patch_embed если модель доступна
+        from diffusers import CogVideoXImageToVideoPipeline
+        import inspect
+        src = inspect.getsource(CogVideoXImageToVideoPipeline.prepare_latents)
+        cat_lines = [(i, l) for i, l in enumerate(src.split('\n')) if 'torch.cat' in l]
+        print(f"  prepare_latents torch.cat calls: {len(cat_lines)}")
+        for i, l in cat_lines:
+            print(f"    line {i}: {l.strip()}")
+    except Exception as e:
+        print(f"  ⚠️ diagnostics error: {e}")
+
     if not ok:
         print("\n⚠️  Загрузите модели:")
         print("  huggingface-cli download lykon/dreamshaper-xl-lightning \\")

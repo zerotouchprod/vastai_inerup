@@ -1,33 +1,43 @@
-# Dockerfile.serverless - Ultra-fast startup for RunPod Serverless
+# Dockerfile.serverless - RunPod Serverless Video Generation
 #
-# Multi-stage build:
-#   Stage 1 (builder): runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04
-#     → устанавливаем все зависимости
-#   Stage 2 (final):   nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
-#     → копируем только Python + установленные пакеты (~slim образ)
-#     → финальный образ НЕ содержит CUDA compiler/headers → меньше размер
+# Single-stage build на базе runpod/pytorch которая уже содержит
+# согласованный стек: torch 2.4.1 + torchvision 0.19.1 + cu124
+# НЕ используем multi-stage copy — это ломает ABI совместимость
 #
-# Models are stored on Network Volume at /workspace/models/
+# Models: /workspace/models/ (Network Volume)
 
-# ── Stage 1: install dependencies ────────────────────────────────────────────
-FROM runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04 AS builder
+FROM runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04
 
-WORKDIR /app
+LABEL maintainer="vastai_inerup"
+LABEL description="RunPod Serverless Video Generation"
+LABEL version="4.0.0"
 
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg \
+    git \
+    libgl1 \
+    libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender-dev \
+    libgomp1 \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Обновляем pip
 RUN pip install --no-cache-dir --upgrade pip
 
-# Установить все зависимости включая явные транзитивные
-# diffusers==0.30.3 — последняя версия с корректным prepare_latents для CogVideoX-5b-I2V
-#   diffusers>=0.31 содержит баг: "Expected size 16 but got size 8" в spatial padding
-# six — требуется transformers.generation.utils
-# cryptography + paramiko — требуются runpod.cli.groups.ssh
+# Устанавливаем весь ML-стек за один RUN чтобы pip разрешал конфликты разом
+# torch/torchvision НЕ трогаем — они уже в базовом образе (2.4.1+cu124)
+# diffusers==0.31.0 — соответствует _diffusers_version модели CogVideoX-5b-I2V
+# safetensors==0.4.5 — требуется transformers==4.46.1
 RUN pip install --no-cache-dir \
-    diffusers==0.30.3 \
-    transformers==4.45.0 \
-    accelerate==0.34.0 \
+    diffusers==0.31.0 \
+    transformers==4.46.1 \
+    accelerate==1.0.0 \
     safetensors==0.4.5 \
     huggingface_hub[cli]==0.25.0 \
-    tiktoken==0.12.0 \
+    tiktoken==0.8.0 \
     sentencepiece==0.2.0 \
     protobuf==5.29.0 \
     imageio[ffmpeg]==2.34.0 \
@@ -44,48 +54,17 @@ RUN pip install --no-cache-dir \
     paramiko==3.4.0 \
     runpod==1.8.1
 
-
-# ── Stage 2: slim runtime image ───────────────────────────────────────────────
-FROM nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
-
-LABEL maintainer="vastai_inerup"
-LABEL description="RunPod Serverless Video Generation - Ultra-fast startup"
-LABEL version="3.0.0"
-
-# Minimal system dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3.11 \
-    python3.11-distutils \
-    python3-pip \
-    ffmpeg \
-    git \
-    libgl1 \
-    libglib2.0-0 \
-    libsm6 \
-    libxext6 \
-    libxrender-dev \
-    libgomp1 \
-    libgl1-mesa-glx \
-    ca-certificates \
-    && rm -rf /var/lib/apt/lists/* \
-    && apt-get clean \
-    && ln -sf /usr/bin/python3.11 /usr/bin/python3 \
-    && ln -sf /usr/bin/python3.11 /usr/bin/python
-
-# Копируем Python пакеты из builder-стадии
-# dist-packages — системные пакеты builder-образа (torch, numpy и т.д.)
-# site-packages — пакеты установленные через pip в builder
-COPY --from=builder /usr/local/lib/python3.11 /usr/local/lib/python3.11
-COPY --from=builder /usr/local/bin /usr/local/bin
-# на случай если часть пакетов в builder лежит в dist-packages
-COPY --from=builder /usr/lib/python3 /usr/lib/python3
-
 WORKDIR /app
 
 COPY src/ /app/src/
-# test_input.json нужен runpod worker для локального тестирования (иначе WARN и выход)
 COPY test_input.json /app/test_input.json
 COPY debug_handler.py /app/debug_handler.py
+
+# Патч diffusers==0.31.0 для CogVideoX-5b-I2V:
+#   - permute latent_image_input чтобы совпасть с форматом latent_model_input
+#   - выравнивание temporal dim
+COPY docker/patches/patch_cogvideox_final.py /tmp/patch_cogvideox_final.py
+RUN python3 /tmp/patch_cogvideox_final.py
 
 RUN mkdir -p /workspace/models
 
@@ -95,20 +74,16 @@ ENV HF_HOME="/workspace/huggingface_cache"
 ENV HF_HUB_OFFLINE="1"
 ENV TORCH_INFERENCE_MODE="1"
 ENV ENABLE_SAFETY_CHECKER="False"
-# Cloudflare R2
-ENV R2_ACCESS_KEY_ID=""
-ENV R2_SECRET_ACCESS_KEY=""
+ENV R2_ACCESS_KEY_ID="38d76603a9bf203a2578011fff337f32"
+ENV R2_SECRET_ACCESS_KEY="7d519dead51176583788cd4e74d347ac07d7eaccb7fb468c5addd76f536748a0"
 ENV R2_DEFAULT_REGION="auto"
 ENV R2_BUCKET="videos"
-ENV R2_ENDPOINT=""
+ENV R2_ENDPOINT="https://c0601da55592f50ef5c7e8b8bc18f62d.r2.cloudflarestorage.com"
 
-# Verify installation
-RUN python3 -c "import torch; print(f'PyTorch: {torch.__version__}, CUDA available at runtime: check with nvidia-smi')" && \
-    python3 -c "import diffusers; print(f'Diffusers: {diffusers.__version__}')" && \
-    python3 -c "import runpod; print(f'RunPod: {runpod.__version__}')"
+# Проверить согласованность стека
+RUN python3 -c "import torch, torchvision, diffusers, transformers, safetensors; print('torch:', torch.__version__, '| torchvision:', torchvision.__version__, '| diffusers:', diffusers.__version__, '| transformers:', transformers.__version__, '| safetensors:', safetensors.__version__)"
 
-RUN echo '#!/bin/bash\npython3 -c "import torch; exit(0)"' > /healthcheck.sh && \
-    chmod +x /healthcheck.sh
+RUN printf '#!/bin/bash\npython3 -c "import torch; exit(0)"\n' > /healthcheck.sh && chmod +x /healthcheck.sh
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD /healthcheck.sh
