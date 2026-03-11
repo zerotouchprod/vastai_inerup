@@ -1,6 +1,7 @@
 {
   "input": {
-    "prompt": "Saitama in yellow suit punching Naruto in orange jacket, dynamic action scene, high speed motion, camera shakes violently, explosion shockwave, anime style, highly detailed.",    "negative_prompt": "blurry, low quality, distorted",
+    "prompt": "Saitama in yellow suit punching Naruto in orange jacket, dynamic action scene, high speed motion, camera shakes violently, explosion shockwave, anime style, highly detailed.",
+    "negative_prompt": "blurry, low quality, distorted",
     "t2i_steps": 6,
     "t2i_guidance_scale": 1.5,
     "num_inference_steps": 50,
