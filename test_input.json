@@ -1,0 +1,15 @@
+{
+  "input": {
+    "t2i_prompt": "Saitama from One Punch Man in mid-punch, facing Naruto Uzumaki who is dodging. Dynamic anime combat scene, 2D flat cel shading, vibrant colors, Studio Bones sakuga art style, clean outlines, cinematic composition",
+    "i2v_prompt": "The bald man rapidly swings his arm forward in a powerful punch. The blonde ninja violently twists and dodges backwards through the air. Explosive shockwave on impact, bodies in fast motion, dynamic camera shake, debris flying outward.",
+    "negative_prompt": "blurry, low quality, 3d render, photorealistic, deformed",
+    "t2i_steps": 4,
+    "t2i_guidance_scale": 0.0,
+    "max_sequence_length": 256,
+    "num_inference_steps": 50,
+    "guidance_scale": 6.0,
+    "num_frames": 61,
+    "fps": 8,
+    "seed": 42
+  }
+}
