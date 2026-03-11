@@ -1,14 +1,13 @@
 {
   "input": {
-    "t2i_prompt": "1boy Saitama from One Punch Man throwing a punch, 1boy Naruto Uzumaki dodging, dynamic combat pose, 2D anime style, flat cel shading, official art, Studio Bones, trigger studio, sakuga, vibrant colors, clear outlines, masterpiece",
-    "i2v_prompt": "The bald man rapidly swings his arm forward to punch, the blonde boy violently dodges backwards through the air. Fast-paced physical combat, characters are actively moving, bodies in motion, dynamic camera pan, shockwave distortion, impact.",
-    "negative_prompt": "blurry, low quality, distorted, realistic, 3d render, photorealistic",
-    "t2i_steps": 7,
-    "t2i_guidance_scale": 2.0,
+    "prompt": "Saitama from One Punch Man throws a devastating punch at Naruto Uzumaki who dodges backwards through the air. Explosive shockwave on impact, debris flying outward, dynamic camera shake, fast-paced sakuga anime combat, flat cel shading, vibrant colors, Studio Bones style.",
+    "negative_prompt": "blurry, low quality, static, no motion, 3d render, photorealistic",
     "num_inference_steps": 50,
     "guidance_scale": 6.0,
     "num_frames": 49,
     "fps": 8,
+    "height": 480,
+    "width": 720,
     "seed": 42
   }
 }

@@ -2,30 +2,27 @@
 """
 Prepare RunPod Network Volume with ML models.
 
-This script downloads models from HuggingFace Hub and saves them to
-/runpod-volume/models/ for use with RunPod Serverless.
-
 Usage:
-    python prepare_runpod_volume.py
+    HF_HUB_OFFLINE=0 python3 scripts/prepare_runpod_volume.py
 
-Requirements:
-    pip install huggingface_hub
+Models:
+    HunyuanVideo — T2V  (~30 GB safetensors, fp16/bf16 only)
 """
+
+from __future__ import annotations
 
 import os
 import sys
 import time
 from pathlib import Path
-from typing import List, Optional
 
-# Add src to path for logging
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 try:
-    from huggingface_hub import snapshot_download, hf_hub_download
+    from huggingface_hub import snapshot_download
     from huggingface_hub.utils import HfHubHTTPError
 except ImportError:
-    print("ERROR: huggingface_hub not installed. Install with: pip install huggingface_hub")
+    print("ERROR: pip install huggingface_hub")
     sys.exit(1)
 
 try:
@@ -33,228 +30,109 @@ try:
     logger = get_logger(__name__)
 except ImportError:
     import logging
-    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
     logger = logging.getLogger(__name__)
 
-
-# Configuration
-# Network Volume может быть смонтирован в разных местах
-# Пробуем оба возможных пути
-POSSIBLE_VOLUME_PATHS = [
-    "/workspace",      # RunPod часто монтирует сюда
-    "/runpod-volume",  # Стандартный путь
-    "/volume"          # Альтернативный путь
-]
-
-# Найти существующий volume
-VOLUME_BASE = None
-for path in POSSIBLE_VOLUME_PATHS:
-    if os.path.exists(path):
-        VOLUME_BASE = path
-        logger.info(f"✅ Found Network Volume at: {path}")
-        break
+# ── Volume detection ──────────────────────────────────────────────────────────
+_CANDIDATES = ["/workspace", "/runpod-volume", "/volume"]
+VOLUME_BASE = next((p for p in _CANDIDATES if os.path.exists(p)), None)
 
 if VOLUME_BASE is None:
-    logger.error("❌ Network Volume not found! Check mount points.")
-    logger.info("Available mount points:")
-    try:
-        import subprocess
-        result = subprocess.run(["mount"], capture_output=True, text=True)
-        logger.info(result.stdout)
-    except:
-        pass
+    logger.error("❌ Network Volume not found!")
     sys.exit(1)
 
+logger.info(f"✅ Found Network Volume at: {VOLUME_BASE}")
 MODELS_DIR = Path(VOLUME_BASE) / "models"
 MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
-# Model specifications
+# ── Model specs ───────────────────────────────────────────────────────────────
 MODELS = [
     {
-        "name": "dreamshaper-xl-lightning",
-        "repo_id": "Lykon/dreamshaper-xl-lightning",
-        "type": "folder",  # Full folder download (лучше скачать всю папку)
-        "ignore_patterns": ["*.bin", "*.onnx", "fp32/*", "*.ckpt", "*.msgpack", "*.h5", "*.ot"],
-        "description": "DreamShaper XL Lightning - Text-to-Image model (~2GB)"
+        "name": "HunyuanVideo",
+        "repo_id": "tencent/HunyuanVideo",
+        "ignore_patterns": ["*.bin", "*.onnx", "fp32/*"],
+        "description": "HunyuanVideo T2V (~30 GB safetensors, fp16/bf16 only)",
     },
-    {
-        "name": "CogVideoX-5b-I2V",
-        "repo_id": "THUDM/CogVideoX-5b-I2V",
-        "type": "folder",
-        "ignore_patterns": ["*.bin", "*.onnx", "fp32/*", "*.ckpt", "*.msgpack", "*.h5", "*.ot"],
-        "description": "CogVideoX-5b Image-to-Video model (~15GB)"
-    }
 ]
 
 
-def download_model(model_spec: dict) -> bool:
-    """
-    Download a model from HuggingFace Hub.
-    
-    Args:
-        model_spec: Model specification dictionary
-        
-    Returns:
-        True if successful, False otherwise
-    """
-    model_name = model_spec["name"]
-    repo_id = model_spec["repo_id"]
-    model_dir = MODELS_DIR / model_name
-    
-    logger.info(f"📥 Downloading {model_spec['description']}")
-    logger.info(f"  Repository: {repo_id}")
-    logger.info(f"  Target: {model_dir}")
-    
-    try:
-        start_time = time.time()
-        
-        if model_spec["type"] == "file":
-            # Download single file
-            logger.info(f"  Downloading file: {model_spec['filename']}")
-            
-            hf_hub_download(
-                repo_id=repo_id,
-                filename=model_spec["filename"],
-                local_dir=model_dir,
-                local_dir_use_symlinks=False,
-                resume_download=True
-            )
-            
-            # Verify download
-            downloaded_file = model_dir / model_spec["filename"]
-            if downloaded_file.exists():
-                size_mb = downloaded_file.stat().st_size / (1024**2)
-                logger.info(f"  ✅ File downloaded: {downloaded_file.name} ({size_mb:.1f} MB)")
-            else:
-                logger.error(f"  ❌ File not found after download: {model_spec['filename']}")
-                return False
-                
-        else:  # folder download
-            # Download entire repository (excluding patterns)
-            logger.info(f"  Downloading repository (excluding: {model_spec['ignore_patterns']})")
-            
-            snapshot_download(
-                repo_id=repo_id,
-                local_dir=model_dir,
-                local_dir_use_symlinks=False,
-                ignore_patterns=model_spec["ignore_patterns"],
-                resume_download=True
-            )
-            
-            # Verify download
-            if model_dir.exists():
-                files = list(model_dir.rglob("*"))
-                files = [f for f in files if f.is_file()]
-                total_size = sum(f.stat().st_size for f in files)
-                
-                logger.info(f"  ✅ Repository downloaded")
-                logger.info(f"    Files: {len(files)}")
-                logger.info(f"    Total size: {total_size / (1024**3):.2f} GB")
-            else:
-                logger.error(f"  ❌ Directory not created: {model_dir}")
-                return False
-        
-        download_time = time.time() - start_time
-        logger.info(f"  ⏱️  Download time: {download_time/60:.1f} minutes")
-        
+def check_disk_space() -> None:
+    import shutil
+    total, used, free = shutil.disk_usage(VOLUME_BASE)
+    free_gb = free / 1024 ** 3
+    logger.info(f"💾 Disk: {total/1024**3:.0f} GB total / {free_gb:.1f} GB free")
+    if free_gb < 35:
+        logger.warning(f"⚠️  Only {free_gb:.1f} GB free — need ~35 GB for HunyuanVideo")
+
+
+def download_model(name: str, repo_id: str, ignore_patterns: list[str], description: str) -> bool:
+    model_dir = MODELS_DIR / name
+
+    if model_dir.exists() and any(model_dir.iterdir()):
+        size_gb = sum(f.stat().st_size for f in model_dir.rglob("*") if f.is_file()) / 1024 ** 3
+        logger.info(f"⏭  {description} — already exists ({size_gb:.1f} GB), skipping")
         return True
-        
+
+    logger.info(f"⬇  Downloading {description}")
+    logger.info(f"   repo  : {repo_id}")
+    logger.info(f"   target: {model_dir}")
+
+
+
+
+
+
+    model_dir.mkdir(parents=True, exist_ok=True)
+    t0 = time.time()
+
+    try:
+        snapshot_download(
+            repo_id=repo_id,
+            local_dir=str(model_dir),
+            local_dir_use_symlinks=False,
+            ignore_patterns=ignore_patterns,
+            resume_download=True,
+        )
     except HfHubHTTPError as e:
-        logger.error(f"  ❌ HTTP error: {e}")
+        logger.error(f"❌ HTTP error: {e}")
         return False
     except Exception as e:
-        logger.error(f"  ❌ Unexpected error: {e}")
+        logger.error(f"❌ Unexpected error: {e}")
         return False
 
-
-def check_disk_space() -> bool:
-    """
-    Check if there's enough disk space on the volume.
-    
-    Returns:
-        True if sufficient space, False otherwise
-    """
-    try:
-        import shutil
-        total, used, free = shutil.disk_usage(VOLUME_BASE)
-        
-        free_gb = free / (1024**3)
-        logger.info(f"💾 Disk space on {VOLUME_BASE}:")
-        logger.info(f"  Total: {total / (1024**3):.1f} GB")
-        logger.info(f"  Used: {used / (1024**3):.1f} GB")
-        logger.info(f"  Free: {free_gb:.1f} GB")
-        
-        # Estimated required space: ~20GB for both models
-        required_gb = 20
-        if free_gb < required_gb:
-            logger.warning(f"  ⚠️  Warning: Only {free_gb:.1f} GB free, {required_gb} GB recommended")
-            return False
-            
-        return True
-        
-    except Exception as e:
-        logger.warning(f"  ⚠️  Could not check disk space: {e}")
-        return True  # Continue anyway
+    files = [f for f in model_dir.rglob("*") if f.is_file()]
+    size_gb = sum(f.stat().st_size for f in files) / 1024 ** 3
+    elapsed = (time.time() - t0) / 60
+    logger.info(f"✅ {name}: {len(files)} files, {size_gb:.1f} GB  ({elapsed:.1f} min)")
+    return True
 
 
-def main():
-    """Main function to prepare RunPod Network Volume."""
-    logger.info("=" * 60)
-    logger.info("RunPod Network Volume Preparation")
-    logger.info("=" * 60)
-    logger.info(f"Volume path: {VOLUME_BASE}")
-    logger.info(f"Models directory: {MODELS_DIR}")
-    
-    # Check disk space
-    if not check_disk_space():
-        logger.warning("Continuing despite low disk space...")
-    
-    # Create models directory
-    MODELS_DIR.mkdir(parents=True, exist_ok=True)
-    logger.info(f"Created directory: {MODELS_DIR}")
-    
-    # Download models
-    success_count = 0
-    total_count = len(MODELS)
-    
-    for i, model_spec in enumerate(MODELS, 1):
-        logger.info("")
-        logger.info(f"Model {i}/{total_count}: {model_spec['name']}")
-        logger.info("-" * 40)
-        
-        if download_model(model_spec):
-            success_count += 1
-        else:
-            logger.error(f"Failed to download {model_spec['name']}")
-    
-    # Summary
-    logger.info("")
-    logger.info("=" * 60)
-    logger.info("DOWNLOAD SUMMARY")
-    logger.info("=" * 60)
-    logger.info(f"Successful: {success_count}/{total_count}")
-    
-    if success_count == total_count:
-        logger.info("✅ All models downloaded successfully!")
-        
-        # List downloaded models
-        logger.info("")
-        logger.info("Downloaded models:")
-        for model_dir in MODELS_DIR.iterdir():
-            if model_dir.is_dir():
-                files = list(model_dir.rglob("*"))
-                files = [f for f in files if f.is_file()]
-                total_size = sum(f.stat().st_size for f in files)
-                logger.info(f"  📁 {model_dir.name}: {len(files)} files, {total_size / (1024**3):.2f} GB")
-    else:
-        logger.error("❌ Some models failed to download")
+def main() -> None:
+    if os.getenv("HF_HUB_OFFLINE", "0") == "1":
+        logger.error("⚠️  HF_HUB_OFFLINE=1 — set to 0 before running")
         sys.exit(1)
-    
-    logger.info("")
-    logger.info("🎉 Network Volume is ready for RunPod Serverless!")
-    logger.info(f"Models available at: {MODELS_DIR}")
+
     logger.info("=" * 60)
+    logger.info("RunPod Network Volume — HunyuanVideo T2V")
+    logger.info("=" * 60)
+
+    check_disk_space()
+
+    ok = 0
+    for spec in MODELS:
+        logger.info("")
+        if download_model(**spec):
+            ok += 1
+
+    logger.info("")
+    logger.info("=" * 60)
+    if ok == len(MODELS):
+        logger.info(f"✅ All {ok} models ready at {MODELS_DIR}")
+    else:
+        logger.error(f"❌ {len(MODELS) - ok} model(s) failed")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
     main()
+

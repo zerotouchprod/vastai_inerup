@@ -1,43 +1,31 @@
-# Dockerfile.serverless - RunPod Serverless Video Generation
+# Dockerfile.serverless — RunPod Serverless HunyuanVideo T2V
 #
-# Single-stage build на базе runpod/pytorch которая уже содержит
-# согласованный стек: torch 2.4.1 + torchvision 0.19.1 + cu124
-# НЕ используем multi-stage copy — это ломает ABI совместимость
-#
-# Models: /workspace/models/ (Network Volume)
+# Single-stage build на базе runpod/pytorch (torch 2.4.1 + cu124).
+# Models (Network Volume /workspace/models/HunyuanVideo): ~30 GB
 
 FROM runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04
 
 LABEL maintainer="vastai_inerup"
-LABEL description="RunPod Serverless Video Generation"
-LABEL version="4.0.0"
+LABEL description="RunPod Serverless — HunyuanVideo T2V"
+LABEL version="7.0.0"
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ffmpeg \
-    git \
-    libgl1 \
-    libglib2.0-0 \
-    libsm6 \
-    libxext6 \
-    libxrender-dev \
-    libgomp1 \
-    ca-certificates \
+    ffmpeg git libgl1 libglib2.0-0 libsm6 libxext6 \
+    libxrender-dev libgomp1 ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Обновляем pip
 RUN pip install --no-cache-dir --upgrade pip
 
-# Устанавливаем весь ML-стек за один RUN чтобы pip разрешал конфликты разом
-# torch/torchvision НЕ трогаем — они уже в базовом образе (2.4.1+cu124)
-# diffusers==0.31.0 — соответствует _diffusers_version модели CogVideoX-5b-I2V
-# safetensors==0.4.5 — требуется transformers==4.46.1
+# ── ML stack ──────────────────────────────────────────────────────────────────
+# torch/torchvision НЕ трогаем — базовый образ (2.4.1+cu124)
+# diffusers>=0.33.0 — HunyuanVideoPipeline стабильный
+# sentencepiece + protobuf — LLM text encoder HunyuanVideo
 RUN pip install --no-cache-dir \
-    diffusers==0.31.0 \
-    transformers==4.46.1 \
-    accelerate==1.0.0 \
-    safetensors==0.4.5 \
-    huggingface_hub[cli]==0.25.0 \
-    tiktoken==0.8.0 \
+    "diffusers>=0.33.0" \
+    "transformers>=4.49.0" \
+    "accelerate>=1.2.0" \
+    "safetensors>=0.4.5" \
+    "huggingface_hub[cli]>=0.25.0" \
     sentencepiece==0.2.0 \
     protobuf==5.29.0 \
     imageio[ffmpeg]==2.34.0 \
@@ -49,7 +37,6 @@ RUN pip install --no-cache-dir \
     pillow==10.4.0 \
     tqdm==4.66.0 \
     requests==2.32.0 \
-    six==1.16.0 \
     cryptography==42.0.8 \
     paramiko==3.4.0 \
     runpod==1.8.1
@@ -57,14 +44,9 @@ RUN pip install --no-cache-dir \
 WORKDIR /app
 
 COPY src/ /app/src/
+COPY scripts/ /app/scripts/
 COPY test_input.json /app/test_input.json
 COPY debug_handler.py /app/debug_handler.py
-
-# Патч diffusers==0.31.0 для CogVideoX-5b-I2V:
-#   - permute latent_image_input чтобы совпасть с форматом latent_model_input
-#   - выравнивание temporal dim
-COPY docker/patches/patch_cogvideox_final.py /tmp/patch_cogvideox_final.py
-RUN python3 /tmp/patch_cogvideox_final.py
 
 RUN mkdir -p /workspace/models
 
@@ -72,20 +54,13 @@ ENV PYTHONPATH="/app"
 ENV PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
 ENV HF_HOME="/workspace/huggingface_cache"
 ENV HF_HUB_OFFLINE="1"
-ENV TORCH_INFERENCE_MODE="1"
-ENV ENABLE_SAFETY_CHECKER="False"
-ENV R2_ACCESS_KEY_ID="38d76603a9bf203a2578011fff337f32"
-ENV R2_SECRET_ACCESS_KEY="7d519dead51176583788cd4e74d347ac07d7eaccb7fb468c5addd76f536748a0"
 ENV R2_DEFAULT_REGION="auto"
-ENV R2_BUCKET="videos"
-ENV R2_ENDPOINT="https://c0601da55592f50ef5c7e8b8bc18f62d.r2.cloudflarestorage.com"
 
-# Проверить согласованность стека
-RUN python3 -c "import torch, torchvision, diffusers, transformers, safetensors; print('torch:', torch.__version__, '| torchvision:', torchvision.__version__, '| diffusers:', diffusers.__version__, '| transformers:', transformers.__version__, '| safetensors:', safetensors.__version__)"
+RUN python3 -c "import torch, diffusers, transformers; print('torch:', torch.__version__, '| diffusers:', diffusers.__version__)"
 
-RUN printf '#!/bin/bash\npython3 -c "import torch; exit(0)"\n' > /healthcheck.sh && chmod +x /healthcheck.sh
+RUN printf '#!/bin/bash\npython3 -c "import torch; exit(0 if torch.cuda.is_available() else 1)"\n' \
+    > /healthcheck.sh && chmod +x /healthcheck.sh
 
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD /healthcheck.sh
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 CMD /healthcheck.sh
 
 CMD ["python3", "-m", "src.entrypoints.runpod_handler"]
