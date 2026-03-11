@@ -1,9 +1,10 @@
 {
   "input": {
-    "prompt": "Saitama in yellow suit punching Naruto in orange jacket, dynamic action scene, high speed motion, camera shakes violently, explosion shockwave, anime style, highly detailed.",
-    "negative_prompt": "blurry, low quality, distorted",
-    "t2i_steps": 6,
-    "t2i_guidance_scale": 1.5,
+    "t2i_prompt": "1boy Saitama from One Punch Man throwing a punch, 1boy Naruto Uzumaki dodging, dynamic combat pose, 2D anime style, flat cel shading, official art, Studio Bones, trigger studio, sakuga, vibrant colors, clear outlines, masterpiece",
+    "i2v_prompt": "The bald man rapidly swings his arm forward to punch, the blonde boy violently dodges backwards through the air. Fast-paced physical combat, characters are actively moving, bodies in motion, dynamic camera pan, shockwave distortion, impact.",
+    "negative_prompt": "blurry, low quality, distorted, realistic, 3d render, photorealistic",
+    "t2i_steps": 7,
+    "t2i_guidance_scale": 2.0,
     "num_inference_steps": 50,
     "guidance_scale": 6.0,
     "num_frames": 49,
@@ -11,4 +12,3 @@
     "seed": 42
   }
 }
-

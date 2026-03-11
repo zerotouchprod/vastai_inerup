@@ -344,14 +344,20 @@ def process_job(job: Dict[str, Any]) -> Dict[str, Any]:
     logger.info(f"Job input: {json.dumps(job_input, indent=2)}")
     
     try:
-        # Extract parameters from job input
-        prompt = job_input.get("prompt", "")
-        if not prompt:
-            raise ValueError("Prompt is required")
-        
+        # Раздельные промпты: t2i_prompt для картинки, i2v_prompt для видео
+        # Fallback на общий "prompt" для обратной совместимости
+        base_prompt = job_input.get("prompt", "")
+        t2i_prompt = job_input.get("t2i_prompt") or base_prompt
+        i2v_prompt = job_input.get("i2v_prompt") or base_prompt
+
+        if not t2i_prompt:
+            raise ValueError("t2i_prompt (or prompt) is required")
+        if not i2v_prompt:
+            raise ValueError("i2v_prompt (or prompt) is required")
+
         negative_prompt = job_input.get("negative_prompt")
         seed = job_input.get("seed")
-        
+
         # T2I parameters
         t2i_steps = job_input.get("t2i_steps", DEFAULT_T2I_STEPS)
         t2i_guidance_scale = job_input.get("t2i_guidance_scale", DEFAULT_T2I_GUIDANCE_SCALE)
@@ -361,38 +367,38 @@ def process_job(job: Dict[str, Any]) -> Dict[str, Any]:
         i2v_guidance_scale = job_input.get("guidance_scale", DEFAULT_I2V_GUIDANCE_SCALE)
         fps = job_input.get("fps", DEFAULT_FPS)
 
-        # CogVideoX требует num_frames = 4k+1 (1, 5, 9, 13, 17, 25, 33, 41, 49)
-        # Автокоррекция: округляем до ближайшего допустимого значения
+        # CogVideoX требует num_frames = 4k+1
         raw_frames = job_input.get("num_frames", DEFAULT_NUM_FRAMES)
         num_frames = max(1, ((raw_frames - 1) // 4) * 4 + 1)
         if num_frames != raw_frames:
-            logger.warning(f"⚠️ num_frames={raw_frames} не поддерживается CogVideoX, скорректировано до {num_frames} (требуется 4k+1)")
+            logger.warning(f"⚠️ num_frames={raw_frames} → {num_frames} (требуется 4k+1)")
 
-        # Phase 1: Generate image
+        # Phase 1: Text-to-Image
         logger.info("=" * 60)
         logger.info("PHASE 1: Text-to-Image Generation")
-        logger.info(f"Prompt: '{prompt[:60]}...'")
+        logger.info(f"T2I prompt: '{t2i_prompt[:80]}...'")
         logger.info(f"Steps: {t2i_steps}, Guidance: {t2i_guidance_scale}")
         logger.info("=" * 60)
-        
+
         image_path = generate_image(
-            prompt=prompt,
+            prompt=t2i_prompt,
             negative_prompt=negative_prompt,
             num_inference_steps=t2i_steps,
             guidance_scale=t2i_guidance_scale,
             seed=seed
         )
-        
-        # Phase 2: Generate video
+
+        # Phase 2: Image-to-Video
         logger.info("=" * 60)
         logger.info("PHASE 2: Image-to-Video Animation")
+        logger.info(f"I2V prompt: '{i2v_prompt[:80]}...'")
         logger.info(f"Steps: {i2v_steps}, Guidance: {i2v_guidance_scale}")
         logger.info(f"Frames: {num_frames}, FPS: {fps}")
         logger.info("=" * 60)
-        
+
         video_path = generate_video(
             image_path=image_path,
-            prompt=prompt,
+            prompt=i2v_prompt,
             negative_prompt=negative_prompt,
             num_inference_steps=i2v_steps,
             guidance_scale=i2v_guidance_scale,
@@ -400,8 +406,7 @@ def process_job(job: Dict[str, Any]) -> Dict[str, Any]:
             fps=fps,
             seed=seed
         )
-        
-        # Clean up intermediate files
+
         image_path.unlink(missing_ok=True)
 
         # Upload video to Cloudflare R2 and get presigned URL
@@ -434,10 +439,11 @@ def process_job(job: Dict[str, Any]) -> Dict[str, Any]:
         result = {
             "status": "success",
             "job_id": job_id,
-            "video_url": video_url,        # presigned R2 URL (24h), null если R2 не настроен
-            "video_path": str(video_path), # локальный путь (доступен только если R2 не настроен)
-            "r2_key": r2_key,              # ключ в R2 для постоянного хранения
-            "prompt": prompt,
+            "video_url": video_url,
+            "video_path": str(video_path),
+            "r2_key": r2_key,
+            "t2i_prompt": t2i_prompt,
+            "i2v_prompt": i2v_prompt,
             "parameters": {
                 "t2i_steps": t2i_steps,
                 "t2i_guidance_scale": t2i_guidance_scale,
@@ -460,7 +466,8 @@ def process_job(job: Dict[str, Any]) -> Dict[str, Any]:
             "status": "error",
             "job_id": job_id,
             "error": str(e),
-            "prompt": job_input.get("prompt", "")
+            "t2i_prompt": job_input.get("t2i_prompt", job_input.get("prompt", "")),
+            "i2v_prompt": job_input.get("i2v_prompt", job_input.get("prompt", "")),
         }
 
 
