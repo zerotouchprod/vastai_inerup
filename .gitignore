@@ -175,3 +175,9 @@ cython_debug/
 #.idea/
 
 .last_instance
+# local/IDE artifacts
+.idea/
+.git_status.txt
+/frame_*.png
+/*.jpg
+/*.jpeg
