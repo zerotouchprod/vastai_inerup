@@ -1,0 +1,11 @@
+# Build context for docker/Dockerfile.worker (BuildKit picks this file up automatically).
+# Only what the worker needs is sent: src/, RIFE v4.26 code+weights, requirements-worker.txt, scripts/worker_start.sh.
+*
+!src/
+!pipeline_v2.py
+!RIFEv4.26_0921/
+!requirements-worker.txt
+!scripts/worker_start.sh
+**/__pycache__
+**/*.pyc
+**/.pytest_cache

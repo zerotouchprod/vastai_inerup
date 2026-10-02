@@ -1,0 +1,88 @@
+# syntax=docker/dockerfile:1.6
+#
+# AIVIDUP pull worker: claims chunk tasks from the control plane and processes them on this GPU
+# (Real-ESRGAN upscale + RIFE interpolation). Lean on purpose: no subtitle/watermark stack
+# (OCR, SAM2, ProPainter), so the image is smaller, boots faster and carries no non-commercial-licensed models.
+#
+# Build (from the repo root):
+#   scripts/build_worker.sh            # tags ghcr.io/zerotouchprod/aividup-worker:<git-sha>
+# or manually:
+#   docker build -f docker/Dockerfile.worker --build-arg GIT_SHA=$(git rev-parse --short HEAD) -t aividup-worker .
+#
+# Code is baked in and pinned to the build (no `git pull` at start, unlike the legacy fat image),
+# so a worker's behaviour is exactly what was tested for that image tag.
+
+# CUDA 12.6 runtime: native support for Turing .. Hopper and Blackwell (sm_120, RTX 50xx).
+FROM nvidia/cuda:12.6.0-cudnn-runtime-ubuntu22.04
+
+ARG GIT_SHA=unknown
+LABEL org.opencontainers.image.title="aividup-worker" \
+      org.opencontainers.image.source="https://github.com/zerotouchprod/vastai_inerup" \
+      org.opencontainers.image.revision="${GIT_SHA}"
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
+
+# ffmpeg (chunk cutting, probing, h264_nvenc where available), tini (PID 1: signal forwarding, zombie reaping), curl (self-destroy call).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3 python3-pip python3-venv \
+        ffmpeg tini curl wget ca-certificates \
+        libglib2.0-0 libgl1 libgomp1 \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+RUN python3 -m venv /opt/venv
+ENV PATH="/opt/venv/bin:${PATH}"
+RUN pip install --upgrade pip setuptools wheel
+
+# PyTorch with the CUDA 12.6 wheels (same version the fat image ran on an RTX A4000 in the smoke test).
+RUN pip install torch==2.9.1 torchvision --index-url https://download.pytorch.org/whl/cu126
+
+COPY requirements-worker.txt /tmp/requirements-worker.txt
+RUN pip install -r /tmp/requirements-worker.txt
+
+# Real-ESRGAN. basicsr is installed without deps and patched for new torchvision
+# (functional_tensor was removed); realesrgan itself only needs RealESRGANer + basicsr.
+RUN pip install --no-deps basicsr realesrgan \
+    && F="$(python -c 'import importlib.util as u; print(u.find_spec("basicsr").submodule_search_locations[0])')/data/degradations.py" \
+    && sed -i 's/from torchvision.transforms.functional_tensor import rgb_to_grayscale/from torchvision.transforms.functional import rgb_to_grayscale/' "$F" \
+    && ! grep -q functional_tensor "$F"
+
+# Model weights live in the image: no download on a rented (billed) GPU.
+RUN mkdir -p /opt/realesrgan_models && cd /opt/realesrgan_models \
+    && wget -q https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.1/RealESRGAN_x2plus.pth \
+    && wget -q https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth \
+    && test "$(stat -c %s RealESRGAN_x2plus.pth)" -gt 30000000 \
+    && test "$(stat -c %s RealESRGAN_x4plus.pth)" -gt 60000000
+
+WORKDIR /workspace/project
+# RIFE v4.26: model code (model/, train_log/*.py) is loaded from here, weights (flownet.pkl) from /opt/rife_models.
+COPY RIFEv4.26_0921/ /workspace/project/RIFEv4.26_0921/
+RUN mkdir -p /opt/rife_models && ln -s /workspace/project/RIFEv4.26_0921/train_log /opt/rife_models/train_log \
+    && test -s /opt/rife_models/train_log/flownet.pkl
+COPY src/ /workspace/project/src/
+COPY pipeline_v2.py /workspace/project/pipeline_v2.py
+COPY scripts/worker_start.sh /usr/local/bin/worker_start.sh
+RUN chmod +x /usr/local/bin/worker_start.sh && echo "${GIT_SHA}" > /etc/aividup_revision
+
+# Fail the BUILD (not a rented GPU) if anything the worker imports is missing.
+# CPU-only builder: CUDA is not available here, so only imports are checked, not model execution.
+RUN python -c "import torch, torchvision, cv2, numpy, yaml, requests, boto3, ffmpeg, pydantic_settings; \
+from basicsr.archs.rrdbnet_arch import RRDBNet; from realesrgan import RealESRGANer; \
+import src.worker.runner, src.presentation.cli; print('worker imports ok, torch', torch.__version__, 'cuda', torch.version.cuda)" \
+    && ffmpeg -hide_banner -encoders 2>/dev/null | grep -q libx264
+
+ENV PYTHONPATH=/workspace/project \
+    USE_NATIVE_PROCESSORS=1 \
+    STRICT_FRAME_COUNT=1 \
+    NVIDIA_VISIBLE_DEVICES=all \
+    NVIDIA_DRIVER_CAPABILITIES=compute,utility,video \
+    TORCH_CUDA_ARCH_LIST="7.5;8.0;8.6;8.7;8.9;9.0;12.0" \
+    AIVIDUP_PROCESSOR=pipeline \
+    AIVIDUP_IDLE_EXIT_SECONDS=300 \
+    AIVIDUP_MAX_LIFETIME_SECONDS=14400
+
+# Required at run time: AIVIDUP_API_URL, AIVIDUP_WORKER_TOKEN. Worker id: AIVIDUP_WORKER_ID, else Vast's CONTAINER_ID.
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/worker_start.sh"]

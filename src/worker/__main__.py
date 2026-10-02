@@ -1,6 +1,7 @@
 import argparse
 import logging
 import os
+import signal
 import sys
 
 from src.worker.client import ControlPlaneClient
@@ -23,6 +24,8 @@ def main() -> int:
         p.error(f"missing: {', '.join(missing)}")
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    # Exit at once on SIGTERM: the heartbeat stops, the lease lapses and the control plane retries the chunk elsewhere.
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
     worker = Worker(ControlPlaneClient(a.api, a.token, a.worker_id), processor=a.processor)
     if a.once:
         worker.run_once()
