@@ -11,7 +11,8 @@ from src.domain.protocols import (
 )
 from src.domain.exceptions import VideoProcessingError
 from src.shared.logging import get_logger
-from src.shared.fps_planning import interp_factor_for, needs_resample, resample_fps
+from src.shared.fps_planning import interp_factor_for, is_integer_multiple, needs_resample, resample_fps
+import os
 import tempfile
 import shutil
 
@@ -127,6 +128,11 @@ class VideoProcessingOrchestrator:
                 if original_fps > 0:
                     calculated_factor = interp_factor_for(float(job.target_fps), original_fps)
                     job.interp_factor = calculated_factor
+                    # Single-stage interpolation to a non-integer multiple: synthesise exact frames
+                    # at fractional timesteps instead of ceil-factor + resample (no judder).
+                    if (job.mode == 'interp' and not is_integer_multiple(float(job.target_fps), original_fps)
+                            and os.environ.get('RIFE_FRACTIONAL', '1') != '0'):
+                        job.config['fractional_fps'] = {'source_fps': original_fps, 'target_fps': float(job.target_fps)}
                     self._logger.info(f"Calculated interp_factor: {calculated_factor}x (from target FPS {job.target_fps} / original FPS {original_fps})")
                 else:
                     self._logger.warning(f"Original FPS is zero or unknown, using default interp_factor")
@@ -159,7 +165,11 @@ class VideoProcessingOrchestrator:
 
             # Calculate target FPS based on mode and available information
             resample_to = None
-            if getattr(job, 'target_fps', None) and job.mode in ('interp', 'both') and original_fps > 0:
+            if isinstance(job.config, dict) and job.config.get('fractional_fps'):
+                # Frames are already at the exact target rate
+                target_fps = float(job.target_fps)
+                self._logger.info(f"Fractional interpolation: assemble {processed_frame_count} frames at {target_fps} fps")
+            elif getattr(job, 'target_fps', None) and job.mode in ('interp', 'both') and original_fps > 0:
                 # Assemble at the rate the interpolated frames actually represent (keeps duration and speed),
                 # then resample to the requested target FPS below.
                 target_fps = original_fps * int(job.interp_factor)
@@ -302,6 +312,7 @@ class VideoProcessingOrchestrator:
             output_dir = workspace / "interpolated"
             options = {'factor': int(job.interp_factor), 'job_id': job.job_id}
             if isinstance(job.config, dict):
+                options.update(job.config.get('fractional_fps') or {})
                 options['b2_output_key'] = job.config.get('b2_output_key')
                 options['b2_bucket'] = job.config.get('b2_bucket')
             result = self._interpolator.process(frame_paths, output_dir, **options)

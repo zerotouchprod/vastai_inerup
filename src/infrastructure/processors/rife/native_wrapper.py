@@ -96,11 +96,18 @@ class RIFENativeWrapper(BaseProcessor):
                 )
 
             # Process frames
-            output_frames = self._processor.process_frames(
-                input_frames,
-                output_dir,
-                progress_callback=None  # TODO: Add progress tracking
-            )
+            target_fps, source_fps = options.get('target_fps'), options.get('source_fps')
+            if target_fps and source_fps:
+                # Arbitrary (non-integer) FPS conversion with fractional timesteps
+                output_frames = self._processor.process_frames_to_fps(
+                    input_frames, output_dir, float(source_fps), float(target_fps)
+                )
+            else:
+                output_frames = self._processor.process_frames(
+                    input_frames,
+                    output_dir,
+                    progress_callback=None  # TODO: Add progress tracking
+                )
 
             if not output_frames:
                 raise VideoProcessingError("No output frames produced")

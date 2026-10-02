@@ -512,7 +512,8 @@ class RIFENative:
         self,
         frame1: 'torch.Tensor',
         frame2: 'torch.Tensor',
-        mids_count: int
+        mids_count: int,
+        timesteps: Optional[List[float]] = None
     ) -> List['torch.Tensor']:
         """
         Interpolate between two frames.
@@ -521,6 +522,7 @@ class RIFENative:
             frame1: First frame (tensor)
             frame2: Second frame (tensor)
             mids_count: Number of intermediate frames
+            timesteps: Explicit timesteps in (0, 1); overrides the evenly spaced default
 
         Returns:
             List of intermediate frames
@@ -580,9 +582,11 @@ class RIFENative:
         mids: List['torch.Tensor'] = []
 
         with torch.no_grad():
+            if timesteps is not None:
+                mids_count = len(timesteps)
             for i in range(mids_count):
                 # Calculate timestep
-                timestep = (i + 1) / (mids_count + 1)
+                timestep = timesteps[i] if timesteps is not None else (i + 1) / (mids_count + 1)
 
                 # Log debug info about device placement before inference
                 try:
@@ -778,6 +782,56 @@ class RIFENative:
         )
         self.logger.info(f"Generated {len(output_frames)} total frames")
 
+        return output_frames
+
+    def process_frames_to_fps(
+        self,
+        input_frames: List[Path],
+        output_dir: Path,
+        src_fps: float,
+        target_fps: float,
+    ) -> List[Path]:
+        """
+        Resample a frame sequence to an arbitrary target FPS (e.g. 24 -> 60).
+
+        Every output frame at time k/target_fps is either a source frame or is synthesised by
+        RIFE at the fractional timestep between its two neighbours, so there is no judder from
+        dropping/duplicating frames and duration is preserved.
+        """
+        import shutil
+        from src.shared.fps_planning import plan_output_frames
+
+        output_dir.mkdir(parents=True, exist_ok=True)
+        self._load_model()
+
+        plan = plan_output_frames(len(input_frames), src_fps, target_fps)
+        n_interp = sum(1 for _, f in plan if f > 0)
+        self.logger.info(
+            f"Fractional interpolation {src_fps} -> {target_fps} fps: "
+            f"{len(input_frames)} -> {len(plan)} frames ({n_interp} synthesised)"
+        )
+
+        output_frames: List[Path] = []
+        start_time = time.time()
+        cache_idx, cache = -1, None  # tensors of the current source pair
+        for out_idx, (i, frac) in enumerate(plan, 1):
+            out_path = output_dir / f"frame_{out_idx:06d}.png"
+            if frac == 0.0:
+                try:
+                    out_path.symlink_to(input_frames[i].absolute())
+                except (OSError, NotImplementedError):
+                    shutil.copy2(input_frames[i], out_path)
+            else:
+                if cache_idx != i:
+                    cache = (self._load_frame_as_tensor(input_frames[i]),
+                             self._load_frame_as_tensor(input_frames[i + 1]))
+                    cache_idx = i
+                mid = self._interpolate_pair(cache[0], cache[1], 0, timesteps=[frac])[0]
+                self._save_tensor_as_frame(mid, out_path)
+            output_frames.append(out_path)
+            if out_idx % 50 == 0 or out_idx == len(plan):
+                elapsed = time.time() - start_time
+                self.logger.info(f"Frame {out_idx}/{len(plan)} | {out_idx / elapsed:.2f} fps" if elapsed > 0 else f"Frame {out_idx}/{len(plan)}")
         return output_frames
 
     def process_video(

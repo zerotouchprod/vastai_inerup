@@ -43,3 +43,37 @@ def test_resample_reaches_target_and_keeps_duration(tmp_path):
     num, den = info["streams"][0]["avg_frame_rate"].split("/")
     assert round(int(num) / int(den)) == 60
     assert abs(float(info["format"]["duration"]) - 2.0) < 0.1
+
+
+from src.shared.fps_planning import is_integer_multiple, plan_output_frames
+
+
+def test_plan_24_to_60_pattern_and_length():
+    plan = plan_output_frames(48, 24, 60)
+    assert len(plan) == int((47) * 2.5) + 1 == 118
+    # period of 5 output frames per 2 source frames: t = 0, .4, .8, 1.2, 1.6 | 2.0 ...
+    assert plan[:6] == [(0, 0.0), (0, pytest.approx(0.4)), (0, pytest.approx(0.8)),
+                        (1, pytest.approx(0.2)), (1, pytest.approx(0.6)), (2, 0.0)]
+    assert plan[-1] == (46, pytest.approx(0.8))  # t=46.8 < last source frame (47)
+
+
+def test_plan_integer_multiple_has_exact_originals():
+    plan = plan_output_frames(10, 24, 48)
+    assert [p for p in plan if p[1] == 0.0] == [(i, 0.0) for i in range(10)]
+    assert all(abs(f - 0.5) < 1e-9 for _, f in plan if f)
+
+
+def test_plan_downsampling_never_interpolates_out_of_range():
+    plan = plan_output_frames(30, 30, 24)
+    assert all(0 <= i <= 29 for i, _ in plan)
+    assert plan[-1][0] <= 29
+
+
+def test_plan_preserves_duration():
+    plan = plan_output_frames(48, 24, 60)
+    assert abs(len(plan) / 60 - 48 / 24) < 1 / 24 + 1 / 60
+
+
+def test_is_integer_multiple():
+    assert is_integer_multiple(48, 24) and not is_integer_multiple(60, 24)
+    assert is_integer_multiple(60, 23.976 * 2.5, 1e-2)
