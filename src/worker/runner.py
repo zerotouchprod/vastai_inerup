@@ -36,8 +36,10 @@ def deliver(output: Dict[str, Any], src: Path) -> str:
         last: Optional[Exception] = None
         for attempt in range(3):
             try:
+                # Extra signed headers from the presigned URL; Host is set by the HTTP client itself
+                headers = {"Content-Type": "video/mp4", **{k: v for k, v in (output.get("headers") or {}).items() if k.lower() != "host"}}
                 with open(src, "rb") as fh:
-                    r = requests.put(output["url"], data=fh, timeout=300, headers={"Content-Type": "video/mp4"})
+                    r = requests.put(output["url"], data=fh, timeout=300, headers=headers)
                 r.raise_for_status()
                 return output["url"].split("?", 1)[0]
             except requests.RequestException as e:  # transient storage errors are retried, then reported as retryable

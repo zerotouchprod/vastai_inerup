@@ -125,3 +125,26 @@ def test_workdir_is_cleaned(source, tmp_path):
     client = FakeClient([task(source, tmp_path / "res" / "o.mp4")])
     Worker(client, "passthrough", workdir=tmp_path).run_once()
     assert [p for p in tmp_path.iterdir() if p.name.startswith("chunk_")] == []
+
+
+def test_put_delivery_sends_signed_headers_and_reports_url_without_query(tmp_path, monkeypatch):
+    from src.worker import runner
+    seen = {}
+
+    class R:
+        def raise_for_status(self):
+            pass
+
+    def fake_put(url, data, timeout, headers):
+        seen.update(url=url, headers=headers, body=data.read())
+        return R()
+
+    monkeypatch.setattr(runner.requests, "put", fake_put)
+    f = tmp_path / "x.mp4"
+    f.write_bytes(b"abc")
+    out = runner.deliver({"type": "put", "url": "https://r2.test/b/k.mp4?X-Amz-Signature=s",
+                          "headers": {"x-amz-acl": "private", "Host": "r2.test"}}, f)
+
+    assert out == "https://r2.test/b/k.mp4"
+    assert seen["headers"]["x-amz-acl"] == "private" and "Host" not in seen["headers"]
+    assert seen["headers"]["Content-Type"] == "video/mp4" and seen["body"] == b"abc"
