@@ -29,8 +29,9 @@ class FakeClient:
         if self.lose_after_beats is not None and self.beats > self.lose_after_beats:
             raise LeaseLost("reaped")
 
-    def complete(self, attempt_id, output_path):
+    def complete(self, attempt_id, output_path, timings=None):
         self.completed.append((attempt_id, output_path))
+        self.timings = timings
 
     def fail(self, attempt_id, code):
         self.failed.append((attempt_id, code))
@@ -57,6 +58,8 @@ def test_processes_chunk_and_reports_output(source, tmp_path):
     assert Worker(client, "ffmpeg", workdir=tmp_path, heartbeat_seconds=0.2).run_once() is True
 
     assert client.failed == [] and client.completed == [("a1", str(out))]
+    assert {"boot_to_claim_s", "cut_s", "process_s", "verify_s", "upload_s", "work_s"} <= set(client.timings)
+    assert all(v >= 0 for v in client.timings.values())
     assert abs(probe_duration(out) - 4.0) < 0.3
     fps = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=avg_frame_rate",
                           "-of", "csv=p=0", str(out)], capture_output=True, text=True).stdout.strip()

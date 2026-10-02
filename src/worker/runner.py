@@ -51,18 +51,22 @@ def deliver(output: Dict[str, Any], src: Path) -> str:
 
 class Worker:
     def __init__(self, client: ControlPlaneClient, processor: str = "pipeline", workdir: Optional[Path] = None,
-                 heartbeat_seconds: Optional[float] = None, expected_tolerance: float = 0.15):
+                 heartbeat_seconds: Optional[float] = None, expected_tolerance: float = 0.15,
+                 process_started_at: Optional[float] = None):
         self._client = client
         self._processor = PROCESSORS[processor]
         self._workdir = Path(workdir or tempfile.gettempdir())
         self._hb_override = heartbeat_seconds
         self._tol = expected_tolerance
+        self._process_started = process_started_at if process_started_at is not None else time.monotonic()
+        self._first_claim_reported = False
 
     def run_once(self) -> bool:
         """Handle at most one task. Returns False when there was nothing to do."""
         claimed = self._client.claim()
         if claimed is None:
             return False
+        claimed_at = time.monotonic()
         attempt_id, task = claimed["attempt_id"], claimed["task"]
         interval = self._hb_override or max(1.0, claimed.get("lease_seconds", 300) / 4)
         lost, stop = threading.Event(), threading.Event()
@@ -83,14 +87,25 @@ class Worker:
         try:
             self._client.heartbeat(attempt_id)  # first beat immediately: claim -> running is visible
             chunk_in, chunk_out = work / "in.mp4", work / "out.mp4"
+            timings: Dict[str, float] = {}
+            if not self._first_claim_reported:  # container start -> first task in hand (python boot, not image pull)
+                timings["boot_to_claim_s"] = round(claimed_at - self._process_started, 2)
+                self._first_claim_reported = True
+            t = time.monotonic()
             cut_chunk(task["input_url"], task["start_seconds"], task["duration_seconds"], chunk_in, lost)
+            timings["cut_s"], t = round(time.monotonic() - t, 2), time.monotonic()
+            task["_timings"] = timings  # processors may add finer phases (e.g. model_load_s)
             self._processor(task, chunk_in, chunk_out, lost)
+            timings["process_s"], t = round(time.monotonic() - t, 2), time.monotonic()
             if lost.is_set():
                 raise LeaseLost("lost during processing")
             self._verify(task, chunk_out)
+            timings["verify_s"], t = round(time.monotonic() - t, 2), time.monotonic()
             out_path = deliver(task["output"], chunk_out)
-            self._client.complete(attempt_id, out_path)
-            log.info("chunk %s done -> %s", task.get("chunk_index"), out_path)
+            timings["upload_s"] = round(time.monotonic() - t, 2)
+            timings["work_s"] = round(time.monotonic() - claimed_at, 2)
+            self._client.complete(attempt_id, out_path, timings)
+            log.info("chunk %s done -> %s timings=%s", task.get("chunk_index"), out_path, timings)
         except LeaseLost:
             log.warning("dropping attempt %s (reaped by control plane)", attempt_id)
         except ProcessorError as e:

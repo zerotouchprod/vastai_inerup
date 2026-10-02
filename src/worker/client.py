@@ -30,8 +30,11 @@ class ControlPlaneClient:
         payload = {} if progress is None else {"progress": progress}
         self._owned(self._post(f"/attempts/{attempt_id}/heartbeat", payload))
 
-    def complete(self, attempt_id: str, output_path: str) -> None:
-        self._owned(self._post(f"/attempts/{attempt_id}/complete", {"output_path": output_path}))
+    def complete(self, attempt_id: str, output_path: str, timings: Optional[Dict[str, float]] = None) -> None:
+        payload: Dict[str, Any] = {"output_path": output_path}
+        if timings:
+            payload["timings"] = timings
+        self._owned(self._post(f"/attempts/{attempt_id}/complete", payload))
 
     def fail(self, attempt_id: str, failure_code: str) -> None:
         self._owned(self._post(f"/attempts/{attempt_id}/fail", {"failure_code": failure_code}))

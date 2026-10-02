@@ -1,6 +1,7 @@
 """Chunk processors. Each takes a chunk video file and writes the processed chunk to `dst`."""
 import subprocess
 import threading
+import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List
 
@@ -81,7 +82,9 @@ def pipeline(task: Dict[str, Any], src: Path, dst: Path, lost: threading.Event) 
             shutil.copy2(file_path, dst)
             return UploadResult(success=True, url=f"file://{dst}", bucket="local", key=key, size_bytes=Path(dst).stat().st_size)
 
+    t0 = time.monotonic()
     orchestrator = create_orchestrator_from_config(config)
+    task.get("_timings", {})["setup_s"] = round(time.monotonic() - t0, 2)  # wiring/model objects, before frames flow
     orchestrator._uploader = CopyUploader()
     job = Job(job_id=task["attempt_id"], input_url=str(src), mode=task["mode"], scale=p.get("scale", 2.0),
               target_fps=p.get("target_fps"), interp_factor=p.get("interp_factor", 2.0))

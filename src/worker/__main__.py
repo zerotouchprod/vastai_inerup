@@ -1,4 +1,5 @@
 import argparse
+import time
 import logging
 import os
 import signal
@@ -10,6 +11,7 @@ from src.worker.runner import Worker
 
 
 def main() -> int:
+    started = time.monotonic()
     p = argparse.ArgumentParser(prog="python -m src.worker", description="AIVIDUP pull worker")
     p.add_argument("--api", default=os.getenv("AIVIDUP_API_URL"), help="Control plane base URL, e.g. https://aividup.com/api/worker")
     p.add_argument("--token", default=os.getenv("AIVIDUP_WORKER_TOKEN"), help="Worker token (prefer the env var)")
@@ -26,7 +28,7 @@ def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     # Exit at once on SIGTERM: the heartbeat stops, the lease lapses and the control plane retries the chunk elsewhere.
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
-    worker = Worker(ControlPlaneClient(a.api, a.token, a.worker_id), processor=a.processor)
+    worker = Worker(ControlPlaneClient(a.api, a.token, a.worker_id), processor=a.processor, process_started_at=started)
     if a.once:
         worker.run_once()
     else:
