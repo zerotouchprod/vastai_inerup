@@ -35,10 +35,19 @@ AIVIDUP_API_URL=http://127.0.0.1:8081/api/worker AIVIDUP_WORKER_TOKEN=... AIVIDU
 ```
 
 ## Verified vs. not
-Verified (no GPU, no Docker daemon available): `worker_start.sh` (19 behavioural tests: config validation, id resolution, token never logged,
-restart/give-up, orphan cleanup, SIGTERM, lifetime cap, self-destroy) and the worker against a live control plane over HTTP, including `kill -9`
-of the worker mid-job (restarted, resumed its attempt, 0 failed attempts, no duplicated work).
+**Verified on a real build of this Dockerfile** (CUDA-less builder, CPU runs inside the container, 2026-10):
+- the image builds end to end (26 steps, 10.6 GB, torch 2.9.1+cu126, ffmpeg 4.4.2) and the build-time import smoke test passes;
+- `worker_start.sh` inside the container: config validation (exit 2), dry run, token never printed; weights present (Real-ESRGAN x2/x4, RIFE v4.26);
+- Real-ESRGAN x2 on CPU: 48x64 -> 96x128 (validates the basicsr patch, weights and torchvision compatibility);
+- fractional RIFE (`process_frames_to_fps`) on the real v4.26 weights, CPU: 24 -> 60 fps gives exactly the planned frame count, originals bit-exact, and the
+  synthesised frames are real motion-compensated interpolation (PSNR vs. ground-truth middle frame 24.5 dB vs. 21.9 dB for naive blending; timestep monotonic);
+- the containerised worker against a live control plane over HTTP: claim, heartbeat, deliver, report; job completed at 60 fps with audio, credits charged once.
+`worker_start.sh` itself: 19 behavioural tests (config, id resolution, restart, orphan cleanup, SIGTERM, lifetime cap, self-destroy) plus `kill -9` of the worker mid-job.
 
-**Not verified - check on the first real run:** the image build itself, `torch.cuda` + RIFE/Real-ESRGAN on the target GPU (especially RIFE
-fractional timesteps and chunk seams at 60 fps), that Vast injects `CONTAINER_ID`/`CONTAINER_API_KEY` and honours the image entrypoint for the
-chosen run type, `h264_nvenc` availability (the worker cuts with libx264; the assembler falls back automatically).
+**Not verified - needs a real GPU machine:** CUDA execution of RIFE / Real-ESRGAN (speed, VRAM, `half`), chunk seams at 60 fps on real footage, that Vast injects
+`CONTAINER_ID` / `CONTAINER_API_KEY` and honours the image entrypoint for `runtype=args`, image pull time (10.6 GB).
+
+## Known limits / ideas
+- No `h264_nvenc` in the apt ffmpeg (the assembler falls back to libx264 automatically). A static ffmpeg build would enable GPU encoding.
+- Image size: the CUDA base (~3 GB) duplicates libraries that the torch wheels already bundle; a plain `ubuntu:22.04` base would save ~3 GB of pull time.
+- Building inside a sandbox that re-terminates TLS needs the proxy CA inside the build (test-only copy of the Dockerfile; the real one is unchanged).

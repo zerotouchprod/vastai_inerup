@@ -181,3 +181,5 @@ cython_debug/
 /frame_*.png
 /*.jpg
 /*.jpeg
+
+.DS_Store
