@@ -65,13 +65,13 @@ def plan_output_frames(
 
     Returns a list of (source_index, fraction): fraction ~ 0 means "copy source frame
     `source_index`"; otherwise the frame must be interpolated between source_index and
-    source_index + 1 at timestep=fraction. Duration is preserved (last output time <= last
-    source frame time).
+    `source_index + 1` at timestep=fraction. Target timestamps cover all `n_src` presentation
+    intervals; after the final source PTS, the final frame is held to preserve duration.
     """
     if n_src < 1 or src_fps <= 0 or target_fps <= 0:
         raise ValueError("n_src, src_fps and target_fps must be positive")
     step = src_fps / target_fps
-    count = int(math.floor((n_src - 1) / step + eps)) + 1
+    count = max(1, int(math.ceil(n_src * target_fps / src_fps - eps)))
     plan = []
     for k in range(count):
         t = k * step

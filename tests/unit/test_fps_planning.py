@@ -88,8 +88,8 @@ def test_resample_reaches_target_and_keeps_duration(tmp_path):
 
 def test_plan_24_to_60_pattern_and_length():
     plan = plan_output_frames(48, 24, 60)
-    assert len(plan) == int((47) * 2.5) + 1 == 118
-    # period of 5 output frames per 2 source frames: t = 0, .4, .8, 1.2, 1.6 | 2.0 ...
+    assert len(plan) == 120
+    # Sample at every target timestamp through the final source-frame interval.
     assert plan[:6] == [
         (0, 0.0),
         (0, pytest.approx(0.4)),
@@ -98,24 +98,44 @@ def test_plan_24_to_60_pattern_and_length():
         (1, pytest.approx(0.6)),
         (2, 0.0),
     ]
-    assert plan[-1] == (46, pytest.approx(0.8))  # t=46.8 < last source frame (47)
+    # Sample throughout the final source-frame interval and hold its final frame.
+    assert plan[-1] == (47, 0.0)
+
+
+@pytest.mark.parametrize("source_count,expected_count", [(240, 600), (293, 733)])
+def test_plan_preserves_full_chunk_frame_count_at_24_to_60(
+    source_count, expected_count
+):
+    assert len(plan_output_frames(source_count, 24, 60)) == expected_count
 
 
 def test_plan_integer_multiple_has_exact_originals():
     plan = plan_output_frames(10, 24, 48)
-    assert [p for p in plan if p[1] == 0.0] == [(i, 0.0) for i in range(10)]
-    assert all(abs(f - 0.5) < 1e-9 for _, f in plan if f)
+    assert len(plan) == 20
+    assert all((i, 0.0) in plan for i in range(10))
+    assert plan[-1] == (9, 0.0)
+    assert all(0 <= i < 9 for i, frac in plan if frac > 0.0)
 
 
 def test_plan_downsampling_never_interpolates_out_of_range():
     plan = plan_output_frames(30, 30, 24)
+    assert len(plan) == 24
     assert all(0 <= i <= 29 for i, _ in plan)
-    assert plan[-1][0] <= 29
+    assert all(i + 1 <= 29 for i, frac in plan if frac > 0.0)
 
 
-def test_plan_preserves_duration():
-    plan = plan_output_frames(48, 24, 60)
-    assert abs(len(plan) / 60 - 48 / 24) < 1 / 24 + 1 / 60
+@pytest.mark.parametrize(
+    "source_count,source_fps,target_fps",
+    [(48, 24, 60), (240, 24, 60), (293, 24, 60), (30, 30, 24)],
+)
+def test_plan_duration_covers_source_presentation_intervals_within_one_target_frame(
+    source_count, source_fps, target_fps
+):
+    plan = plan_output_frames(source_count, source_fps, target_fps)
+    duration = len(plan) / target_fps
+    source_duration = source_count / source_fps
+    assert source_duration <= duration + 1e-12
+    assert duration < source_duration + 1 / target_fps
 
 
 def test_is_integer_multiple():
