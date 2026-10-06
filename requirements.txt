@@ -32,7 +32,6 @@ scikit-image>=0.21.0
 
 # Subtitle removal (STABLE STACK)
 opencv-python-headless>=4.8.0
-tqdm>=4.35.0
 
 # ВАЖНО: Удаляем paddlex и paddleocr 3.x.
 # Ставим золотой стандарт стабильности.
