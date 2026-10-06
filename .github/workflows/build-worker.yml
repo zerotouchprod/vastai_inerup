@@ -2,15 +2,39 @@ name: Build worker image
 
 on:
   workflow_dispatch:
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'src/worker/**'
+      - 'src/application/orchestrator.py'
+      - 'src/infrastructure/processors/rife/native.py'
+      - 'src/infrastructure/processors/rife/native_wrapper.py'
+      - 'src/shared/fps_planning.py'
+      - 'tests/unit/test_worker.py'
+      - 'tests/unit/test_worker_start.py'
+      - 'tests/unit/test_fps_planning.py'
+      - 'docker/Dockerfile.worker'
+      - 'docker/Dockerfile.worker.dockerignore'
+      - 'requirements-worker.txt'
+      - 'scripts/worker_start.sh'
+      - 'scripts/build_worker.sh'
   push:
     branches: [ main ]
     paths:
-      - 'src/**'
+      - 'src/worker/**'
+      - 'src/application/orchestrator.py'
+      - 'src/infrastructure/processors/rife/native.py'
+      - 'src/infrastructure/processors/rife/native_wrapper.py'
+      - 'src/shared/fps_planning.py'
+      - 'tests/unit/test_worker.py'
+      - 'tests/unit/test_worker_start.py'
+      - 'tests/unit/test_fps_planning.py'
       - 'docker/Dockerfile.worker'
+      - 'docker/Dockerfile.worker.dockerignore'
       - 'requirements-worker.txt'
       - 'scripts/worker_start.sh'
+      - 'scripts/build_worker.sh'
       - 'RIFEv4.26_0921/**'
-
 jobs:
   tests:
     runs-on: ubuntu-latest
@@ -19,8 +43,21 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: '3.10'
-      - run: pip install pytest "numpy<2" opencv-python-headless requests pyyaml
-      - run: python -m pytest tests/unit/test_worker.py tests/unit/test_worker_start.py tests/unit/test_fps_planning.py -q
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+      - name: Install test dependencies
+        run: pip install pytest "numpy<2" "opencv-python-headless<5" requests pyyaml
+      - name: Compile worker runtime and its pipeline dependencies
+        run: >-
+          python -m compileall -q
+          src/worker src/application/orchestrator.py
+          src/infrastructure/processors/rife/native.py
+          src/infrastructure/processors/rife/native_wrapper.py
+          src/shared/fps_planning.py
+      - name: Run worker and baseline FPS tests
+        run: python -m pytest tests/unit/test_worker.py tests/unit/test_worker_start.py tests/unit/test_fps_planning.py -q
 
   image:
     needs: tests
@@ -32,16 +69,17 @@ jobs:
       - uses: actions/checkout@v7
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
+        if: github.ref == 'refs/heads/main'
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      # Dockerfile's import smoke test fails the build if worker dependencies are broken.
+      # A PR builds but does not publish; main publishes only after the same tests pass.
       - uses: docker/build-push-action@v6
         with:
           context: .
           file: docker/Dockerfile.worker
-          push: true
+          push: ${{ github.ref == 'refs/heads/main' }}
           build-args: GIT_SHA=${{ github.sha }}
           tags: ghcr.io/zerotouchprod/aividup-worker:${{ github.sha }}
           cache-from: type=gha

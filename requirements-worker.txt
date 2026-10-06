@@ -1,0 +1,21 @@
+# Lean dependency set for the GPU pull worker (upscale / interpolation only).
+# torch/torchvision are installed separately from the CUDA wheel index in docker/Dockerfile.worker.
+numpy<2
+opencv-python-headless
+pillow
+tqdm
+pyyaml
+requests
+boto3
+ffmpeg-python
+pydantic>=2
+pydantic_settings==2.12.0
+python-dotenv
+scipy
+scikit-image
+# basicsr (installed with --no-deps + patch in the Dockerfile) needs these at import time:
+addict
+future
+lmdb
+yapf
+tensorboard
