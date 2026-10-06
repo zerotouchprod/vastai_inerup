@@ -11,6 +11,8 @@ from src.domain.protocols import (
 )
 from src.domain.exceptions import VideoProcessingError
 from src.shared.logging import get_logger
+from src.shared.fps_planning import interp_factor_for, is_integer_multiple, needs_resample, resample_fps
+import os
 import tempfile
 import shutil
 
@@ -120,12 +122,17 @@ class VideoProcessingOrchestrator:
             except Exception:
                 pass  # Use defaults
 
-            # Calculate interp_factor if target_fps is provided (must happen before _process_frames)
-            if getattr(job, 'target_fps', None) and job.mode == 'interp':
+            # Calculate interp_factor if target_fps is provided (must happen before _process_frames).
+            # RIFE multiplies by an integer, so round UP; the result is resampled to target_fps after assembly.
+            if getattr(job, 'target_fps', None) and job.mode in ('interp', 'both'):
                 if original_fps > 0:
-                    calculated_factor = max(2, round(float(job.target_fps) / original_fps))
-                    # Always set interp_factor to calculated value
+                    calculated_factor = interp_factor_for(float(job.target_fps), original_fps)
                     job.interp_factor = calculated_factor
+                    # Single-stage interpolation to a non-integer multiple: synthesise exact frames
+                    # at fractional timesteps instead of ceil-factor + resample (no judder).
+                    if (job.mode == 'interp' and not is_integer_multiple(float(job.target_fps), original_fps)
+                            and os.environ.get('RIFE_FRACTIONAL', '1') != '0'):
+                        job.config['fractional_fps'] = {'source_fps': original_fps, 'target_fps': float(job.target_fps)}
                     self._logger.info(f"Calculated interp_factor: {calculated_factor}x (from target FPS {job.target_fps} / original FPS {original_fps})")
                 else:
                     self._logger.warning(f"Original FPS is zero or unknown, using default interp_factor")
@@ -157,10 +164,18 @@ class VideoProcessingOrchestrator:
             processed_frame_count = len(frame_paths)
 
             # Calculate target FPS based on mode and available information
-            if getattr(job, 'target_fps', None):
-                # Explicit target FPS takes priority
+            resample_to = None
+            if isinstance(job.config, dict) and job.config.get('fractional_fps'):
+                # Frames are already at the exact target rate
                 target_fps = float(job.target_fps)
-                self._logger.info(f"Using explicit target FPS: {target_fps}")
+                self._logger.info(f"Fractional interpolation: assemble {processed_frame_count} frames at {target_fps} fps")
+            elif getattr(job, 'target_fps', None) and job.mode in ('interp', 'both') and original_fps > 0:
+                # Assemble at the rate the interpolated frames actually represent (keeps duration and speed),
+                # then resample to the requested target FPS below.
+                target_fps = original_fps * int(job.interp_factor)
+                if needs_resample(target_fps, float(job.target_fps)):
+                    resample_to = float(job.target_fps)
+                self._logger.info(f"Explicit target FPS {job.target_fps}: assemble at {target_fps} fps, resample={resample_to is not None}")
             elif job.mode == 'interp':
                 # For interpolation: MULTIPLY the FPS by the interpolation factor
                 # More frames at higher FPS = same duration, smoother motion
@@ -189,6 +204,11 @@ class VideoProcessingOrchestrator:
             except Exception as e:
                 self._logger.error(f"❌ Video assembly failed: {e}")
                 raise
+            if resample_to is not None:
+                resampled = workspace / "output_resampled.mp4"
+                resample_fps(output_video, resampled, resample_to)
+                output_video = resampled
+                self._logger.info(f"✅ Resampled to {resample_to} fps: {output_video}")
             self._metrics.stop_timer('assembly')
 
             # 5.5. Merge audio back (NEW - v2.0.1)
@@ -292,6 +312,7 @@ class VideoProcessingOrchestrator:
             output_dir = workspace / "interpolated"
             options = {'factor': int(job.interp_factor), 'job_id': job.job_id}
             if isinstance(job.config, dict):
+                options.update(job.config.get('fractional_fps') or {})
                 options['b2_output_key'] = job.config.get('b2_output_key')
                 options['b2_bucket'] = job.config.get('b2_bucket')
             result = self._interpolator.process(frame_paths, output_dir, **options)

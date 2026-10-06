@@ -6,8 +6,13 @@ on:
     branches: [ main ]
     paths:
       - 'src/worker/**'
+      - 'src/application/orchestrator.py'
+      - 'src/infrastructure/processors/rife/native.py'
+      - 'src/infrastructure/processors/rife/native_wrapper.py'
+      - 'src/shared/fps_planning.py'
       - 'tests/unit/test_worker.py'
       - 'tests/unit/test_worker_start.py'
+      - 'tests/unit/test_fps_planning.py'
       - 'docker/Dockerfile.worker'
       - 'docker/Dockerfile.worker.dockerignore'
       - 'requirements-worker.txt'
@@ -17,8 +22,13 @@ on:
     branches: [ main ]
     paths:
       - 'src/worker/**'
+      - 'src/application/orchestrator.py'
+      - 'src/infrastructure/processors/rife/native.py'
+      - 'src/infrastructure/processors/rife/native_wrapper.py'
+      - 'src/shared/fps_planning.py'
       - 'tests/unit/test_worker.py'
       - 'tests/unit/test_worker_start.py'
+      - 'tests/unit/test_fps_planning.py'
       - 'docker/Dockerfile.worker'
       - 'docker/Dockerfile.worker.dockerignore'
       - 'requirements-worker.txt'
@@ -38,9 +48,16 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ffmpeg
       - name: Install test dependencies
-        run: pip install pytest "numpy<2" opencv-python-headless requests pyyaml
-      - name: Run dedicated worker tests
-        run: python -m pytest tests/unit/test_worker.py tests/unit/test_worker_start.py -q
+        run: pip install pytest "numpy<2" "opencv-python-headless<5" requests pyyaml
+      - name: Compile worker runtime and its pipeline dependencies
+        run: >-
+          python -m compileall -q
+          src/worker src/application/orchestrator.py
+          src/infrastructure/processors/rife/native.py
+          src/infrastructure/processors/rife/native_wrapper.py
+          src/shared/fps_planning.py
+      - name: Run worker and baseline FPS tests
+        run: python -m pytest tests/unit/test_worker.py tests/unit/test_worker_start.py tests/unit/test_fps_planning.py -q
 
   image:
     needs: tests
