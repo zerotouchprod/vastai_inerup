@@ -86,7 +86,7 @@ jobs:
     needs: unit-tests
     if: >-
       github.event_name != 'pull_request' ||
-      github.event.pull_request.head.ref != 'ci/enable-staging-worker-build'
+      !startsWith(github.event.pull_request.head.ref, 'worker/')
 
     steps:
     - uses: actions/checkout@v7
@@ -207,7 +207,7 @@ jobs:
         echo "Lint: ${{ needs.lint.result }}"
         echo "Unit Tests: ${{ needs.unit-tests.result }}"
         if [ "${{ needs.integration-tests.result }}" = "skipped" ]; then
-          echo "Integration Tests: skipped for workflow-only staging build PR; worker tests run in Build worker image."
+          echo "Integration Tests: skipped for worker/* PR; dedicated tests and image build run in Build worker image."
         else
           echo "Integration Tests: ${{ needs.integration-tests.result }}"
         fi
