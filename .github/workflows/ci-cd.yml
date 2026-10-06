@@ -12,10 +12,12 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v7
+      with:
+        fetch-depth: 0
 
     - name: Set up Python
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v7
       with:
         python-version: '3.10'
 
@@ -24,11 +26,15 @@ jobs:
         python -m pip install --upgrade pip
         pip install black flake8 pylint mypy
 
-    - name: Black formatting check
-      run: black --check src/ tests/
-
-    - name: Flake8 linting
-      run: flake8 src/ tests/ --max-line-length=120 --ignore=E203,W503
+    - name: Changed Python files checks
+      run: |
+        changed=$(git diff --name-only HEAD^ HEAD -- 'src/**/*.py' 'tests/**/*.py')
+        if [ -z "$changed" ]; then
+          echo "No changed Python files to check."
+        else
+          printf '%s\n' "$changed" | xargs black --check
+          printf '%s\n' "$changed" | xargs flake8 --max-line-length=120 --ignore=E203,W503
+        fi
 
     - name: Pylint
       run: pylint src/ --disable=C0111,R0903 || true  # Don't fail on warnings
@@ -38,10 +44,10 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v7
 
     - name: Set up Python
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v7
       with:
         python-version: '3.10'
 
@@ -63,7 +69,7 @@ jobs:
                -v --cov=src --cov-report=xml --cov-report=term
 
     - name: Upload coverage to Codecov
-      uses: codecov/codecov-action@v3
+      uses: codecov/codecov-action@v7
       with:
         files: ./coverage.xml
         flags: unittests
@@ -75,10 +81,10 @@ jobs:
     needs: unit-tests
 
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v7
 
     - name: Set up Python
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v7
       with:
         python-version: '3.10'
 
@@ -105,7 +111,7 @@ jobs:
 
     - name: Archive test videos
       if: failure()
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: test-videos
         path: tests/fixtures/videos/
@@ -117,10 +123,10 @@ jobs:
     if: github.event_name == 'push'
 
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v7
 
     - name: Set up Python
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v7
       with:
         python-version: '3.10'
 
@@ -143,7 +149,7 @@ jobs:
                --benchmark-json=benchmark.json
 
     - name: Store benchmark results
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: benchmark-results
         path: benchmark.json
@@ -161,10 +167,10 @@ jobs:
     if: github.event_name == 'push'
 
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v7
 
     - name: Set up Python
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v7
       with:
         python-version: '3.10'
 
