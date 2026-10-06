@@ -1,8 +1,9 @@
 """Frame-rate planning for interpolation jobs.
 
 RIFE inserts an integer number of mid frames, so it can only multiply the frame rate by an
-integer. To reach an arbitrary target (e.g. 24 -> 60 fps = 2.5x) we interpolate by the next
-integer factor and then resample the assembled video to the target with ffmpeg.
+integer. To reach an arbitrary target (e.g. 24 -> 60 fps) output frames are sampled across the
+full presentation interval of all source frames; the final source frame is held until that
+interval ends.
 """
 import math
 import subprocess
@@ -44,13 +45,15 @@ def plan_output_frames(n_src: int, src_fps: float, target_fps: float, eps: float
 
     Returns a list of (source_index, fraction): fraction ~ 0 means "copy source frame
     `source_index`"; otherwise the frame must be interpolated between source_index and
-    source_index + 1 at timestep=fraction. Duration is preserved (last output time <= last
-    source frame time).
+    source_index + 1 at timestep=fraction. Target timestamps cover all `n_src` presentation
+    intervals; after the final source PTS, the final frame is held to preserve duration.
     """
     if n_src < 1 or src_fps <= 0 or target_fps <= 0:
         raise ValueError("n_src, src_fps and target_fps must be positive")
     step = src_fps / target_fps
-    count = int(math.floor((n_src - 1) / step + eps)) + 1
+    # Each source frame occupies a full 1/src_fps interval. Include target timestamps
+    # throughout the final interval and hold the last source frame where no right neighbour exists.
+    count = max(1, int(math.ceil(n_src * target_fps / src_fps - eps)))
     plan = []
     for k in range(count):
         t = k * step

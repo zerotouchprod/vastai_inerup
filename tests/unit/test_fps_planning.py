@@ -50,17 +50,25 @@ from src.shared.fps_planning import is_integer_multiple, plan_output_frames
 
 def test_plan_24_to_60_pattern_and_length():
     plan = plan_output_frames(48, 24, 60)
-    assert len(plan) == int((47) * 2.5) + 1 == 118
-    # period of 5 output frames per 2 source frames: t = 0, .4, .8, 1.2, 1.6 | 2.0 ...
+    assert len(plan) == 120
+    # Sample at every target timestamp through the end of the last source-frame interval.
     assert plan[:6] == [(0, 0.0), (0, pytest.approx(0.4)), (0, pytest.approx(0.8)),
                         (1, pytest.approx(0.2)), (1, pytest.approx(0.6)), (2, 0.0)]
-    assert plan[-1] == (46, pytest.approx(0.8))  # t=46.8 < last source frame (47)
+    assert plan[-1] == (47, 0.0)  # hold the last source frame through its presentation interval
+
+
+def test_plan_preserves_full_chunk_frame_count_at_24_to_60():
+    # Frame presentation intervals span N/fps, not only the first-to-last PTS span.
+    assert len(plan_output_frames(240, 24, 60)) == 600
+    assert len(plan_output_frames(293, 24, 60)) == 733
 
 
 def test_plan_integer_multiple_has_exact_originals():
     plan = plan_output_frames(10, 24, 48)
-    assert [p for p in plan if p[1] == 0.0] == [(i, 0.0) for i in range(10)]
-    assert all(abs(f - 0.5) < 1e-9 for _, f in plan if f)
+    assert len(plan) == 20
+    assert all((i, 0.0) in plan for i in range(10))
+    assert plan[-1] == (9, 0.0)  # hold final source frame for the last target interval
+    assert all(0 <= i < 9 for i, f in plan if f > 0.0)
 
 
 def test_plan_downsampling_never_interpolates_out_of_range():
