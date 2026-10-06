@@ -3,17 +3,11 @@ Integration tests for video processing pipeline with real videos.
 Tests end-to-end processing with quality validation.
 """
 
+import cv2
 import pytest
-from pathlib import Path
-import time
-import sys
-
-# Add tests/utils to path
-sys.path.insert(0, str(Path(__file__).parent.parent / "utils"))
-from quality_metrics import (
-    compare_videos_quality,
+from tests.utils.quality_metrics import (
     compare_audio_duration,
-    validate_video_quality
+    validate_video_quality,
 )
 
 from src.domain.models import Job
@@ -32,8 +26,6 @@ class TestVideoProcessingIntegration:
     @pytest.fixture
     def orchestrator(self, temp_workspace):
         """Create orchestrator for testing."""
-        factory = ProcessorFactory()
-
         return VideoProcessingOrchestrator(
             downloader=HttpDownloader(),
             extractor=FFmpegExtractor(),
@@ -43,7 +35,7 @@ class TestVideoProcessingIntegration:
             interpolator=None,
             subtitle_remover=None,
             logger=LoggerAdapter(get_logger(__name__)),
-            metrics=MetricsCollector()
+            metrics=MetricsCollector(),
         )
 
     @pytest.mark.integration
@@ -55,9 +47,9 @@ class TestVideoProcessingIntegration:
         job = Job(
             job_id="test_audio_001",
             input_url=str(sample_video_with_audio),
-            type='video',
-            mode='upscale',  # Simple mode for testing
-            scale=1.0  # No actual upscaling
+            type="video",
+            mode="upscale",  # Simple mode for testing
+            scale=1.0,  # No actual upscaling
         )
 
         # Process
@@ -69,14 +61,14 @@ class TestVideoProcessingIntegration:
 
         # Check audio preservation
         audio_comparison = compare_audio_duration(
-            sample_video_with_audio,
-            result.output_path
+            sample_video_with_audio, result.output_path
         )
 
-        assert audio_comparison['original_has_audio'], "Original should have audio"
-        assert audio_comparison['processed_has_audio'], "Processed should have audio"
-        assert audio_comparison['duration_match'], \
-            f"Audio duration mismatch: {audio_comparison.get('duration_diff', 'N/A')}s"
+        assert audio_comparison["original_has_audio"], "Original should have audio"
+        assert audio_comparison["processed_has_audio"], "Processed should have audio"
+        assert audio_comparison[
+            "duration_match"
+        ], f"Audio duration mismatch: {audio_comparison.get('duration_diff', 'N/A')}s"
 
     @pytest.mark.integration
     def test_silent_video_handling(
@@ -86,9 +78,9 @@ class TestVideoProcessingIntegration:
         job = Job(
             job_id="test_silent_001",
             input_url=str(sample_silent_video),
-            type='video',
-            mode='upscale',
-            scale=1.0
+            type="video",
+            mode="upscale",
+            scale=1.0,
         )
 
         result = orchestrator.process(job)
@@ -98,12 +90,11 @@ class TestVideoProcessingIntegration:
 
         # Silent video should remain silent (no audio track)
         audio_comparison = compare_audio_duration(
-            sample_silent_video,
-            result.output_path
+            sample_silent_video, result.output_path
         )
 
-        assert not audio_comparison['original_has_audio']
-        assert not audio_comparison['processed_has_audio']
+        assert not audio_comparison["original_has_audio"]
+        assert not audio_comparison["processed_has_audio"]
 
     @pytest.mark.integration
     @pytest.mark.quality
@@ -114,9 +105,9 @@ class TestVideoProcessingIntegration:
         job = Job(
             job_id="test_quality_001",
             input_url=str(sample_short_video),
-            type='video',
-            mode='upscale',
-            scale=1.0
+            type="video",
+            mode="upscale",
+            scale=1.0,
         )
 
         result = orchestrator.process(job)
@@ -135,14 +126,15 @@ class TestVideoProcessingIntegration:
         passed, metrics = validate_video_quality(
             sample_short_video,
             result.output_path,
-            psnr_threshold=quality_thresholds['psnr_min'],
-            ssim_threshold=quality_thresholds['ssim_min'],
-            roi=roi
+            psnr_threshold=quality_thresholds["psnr_min"],
+            ssim_threshold=quality_thresholds["ssim_min"],
+            roi=roi,
         )
 
-        assert passed, \
-            f"Quality validation failed: PSNR={metrics.get('psnr_mean', 0):.2f}dB, " \
+        assert passed, (
+            f"Quality validation failed: PSNR={metrics.get('psnr_mean', 0):.2f}dB, "
             f"SSIM={metrics.get('ssim_mean', 0):.3f}"
+        )
 
     @pytest.mark.integration
     @pytest.mark.slow
@@ -150,7 +142,9 @@ class TestVideoProcessingIntegration:
         self, sample_video_with_subtitles, temp_workspace
     ):
         """Test that subtitle removal preserves audio."""
-        from src.infrastructure.processors.subtitle.wrapper import SubtitleRemoverProPainterWrapper
+        from src.infrastructure.processors.subtitle.wrapper import (
+            SubtitleRemoverProPainterWrapper,
+        )
 
         # Check if subtitle remover is available
         if not SubtitleRemoverProPainterWrapper.is_available():
@@ -158,9 +152,7 @@ class TestVideoProcessingIntegration:
 
         factory = ProcessorFactory()
         subtitle_remover = factory.create_subtitle_remover(
-            prefer='propainter',
-            lang='en',
-            roi='bottom'
+            prefer="propainter", lang="en", roi="bottom"
         )
 
         # Create frames directory
@@ -171,6 +163,7 @@ class TestVideoProcessingIntegration:
 
         # Extract frames
         from src.infrastructure.video.ffmpeg_wrapper import FFmpegExtractor
+
         extractor = FFmpegExtractor()
         video_info = extractor.get_video_info(sample_video_with_subtitles)
         frame_paths = extractor.extract_frames(video_info, frames_dir)
@@ -203,11 +196,12 @@ class TestPerformanceBenchmarks:
         assert result is True
 
         # Check against baseline (allow 50% margin)
-        baseline_ms = performance_baseline['audio_extraction_time_s'] * 1000
-        actual_ms = benchmark.stats['mean'] * 1000
+        baseline_ms = performance_baseline["audio_extraction_time_s"] * 1000
+        actual_ms = benchmark.stats["mean"] * 1000
 
-        assert actual_ms < baseline_ms * 1.5, \
-            f"Audio extraction too slow: {actual_ms:.0f}ms (baseline: {baseline_ms:.0f}ms)"
+        assert (
+            actual_ms < baseline_ms * 1.5
+        ), f"Audio extraction too slow: {actual_ms:.0f}ms (baseline: {baseline_ms:.0f}ms)"
 
     @pytest.mark.benchmark
     def test_audio_merge_performance(
@@ -229,17 +223,18 @@ class TestPerformanceBenchmarks:
             preserver.merge_audio_video,
             sample_video_with_audio,
             audio_path,
-            output_path
+            output_path,
         )
 
         assert result is True
 
         # Check against baseline
-        baseline_ms = performance_baseline['audio_merge_time_s'] * 1000
-        actual_ms = benchmark.stats['mean'] * 1000
+        baseline_ms = performance_baseline["audio_merge_time_s"] * 1000
+        actual_ms = benchmark.stats["mean"] * 1000
 
-        assert actual_ms < baseline_ms * 1.5, \
-            f"Audio merge too slow: {actual_ms:.0f}ms (baseline: {baseline_ms:.0f}ms)"
+        assert (
+            actual_ms < baseline_ms * 1.5
+        ), f"Audio merge too slow: {actual_ms:.0f}ms (baseline: {baseline_ms:.0f}ms)"
 
 
 class TestQualityMetrics:
@@ -255,7 +250,9 @@ class TestQualityMetrics:
 
         psnr = calculate_psnr(img, img)
 
-        assert psnr > 100 or psnr == float('inf'), "Identical images should have very high PSNR"
+        assert psnr > 100 or psnr == float(
+            "inf"
+        ), "Identical images should have very high PSNR"
 
     @pytest.mark.quality
     def test_ssim_calculation_identical_images(self):
@@ -276,13 +273,16 @@ class TestQualityMetrics:
         from quality_metrics import calculate_psnr
 
         img1 = np.random.randint(0, 256, (100, 100, 3), dtype=np.uint8)
-        img2 = np.clip(img1.astype(int) + 5, 0, 255).astype(np.uint8)  # Add 5 to each pixel
+        img2 = np.clip(img1.astype(int) + 5, 0, 255).astype(
+            np.uint8
+        )  # Add 5 to each pixel
 
         psnr = calculate_psnr(img1, img2)
 
-        assert 20 < psnr < 50, f"PSNR should be reasonable for small difference, got {psnr}"
+        assert (
+            20 < psnr < 50
+        ), f"PSNR should be reasonable for small difference, got {psnr}"
 
 
-if __name__ == '__main__':
-    pytest.main([__file__, '-v', '-m', 'integration'])
-
+if __name__ == "__main__":
+    pytest.main([__file__, "-v", "-m", "integration"])
