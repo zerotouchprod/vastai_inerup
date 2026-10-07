@@ -3,13 +3,13 @@
 #
 # Required env:   AIVIDUP_API_URL        e.g. https://aividup.com/api/worker
 #                 AIVIDUP_WORKER_TOKEN   shared secret (never printed, never put on a command line)
-# Worker id:      AIVIDUP_WORKER_ID, else CONTAINER_ID (set by Vast.ai = instance id), else VAST_CONTAINERLABEL ("C.123" -> 123).
-#                 It MUST equal the GpuLease instance id the control plane rented: the worker only claims tasks of its own instance.
-# Optional env:   AIVIDUP_PROCESSOR (pipeline|ffmpeg|passthrough, default pipeline)
+# Provider instance id: AIVIDUP_GPU_INSTANCE_ID, CONTAINER_ID or VAST_CONTAINERLABEL.
+# Worker id: unique UUID for this process; a new boot requires a new lease generation.
+# Optional env: AIVIDUP_PROCESSOR (pipeline|ffmpeg|passthrough, default pipeline)
 #                 AIVIDUP_IDLE_EXIT_SECONDS (default 300)   leave after this long without work (stop paying for an idle GPU)
 #                 AIVIDUP_MAX_LIFETIME_SECONDS (default 14400)  hard cap on how long the container lives
-#                 AIVIDUP_MAX_RESTARTS (default 5)          crash restarts before giving up
-#                 AIVIDUP_POLL_SECONDS (default 3)   AIVIDUP_RESTART_BACKOFF (default 5, seconds x crash count)
+#                 AIVIDUP_MAX_RESTARTS (must be 0)    in-lease restarts are fenced; recover with a new lease
+#                 AIVIDUP_POLL_SECONDS (default 3)   AIVIDUP_RESTART_BACKOFF (unused; compatibility only)
 #                 AIVIDUP_SELF_DESTROY=1                    after exit, destroy this Vast instance (needs CONTAINER_ID + CONTAINER_API_KEY)
 #                 AIVIDUP_SKIP_GPU_CHECK=1 | AIVIDUP_DRY_RUN=1 | PYTHON=<interpreter>
 #
@@ -25,12 +25,12 @@ API_URL="${AIVIDUP_API_URL:-}"
 PROCESSOR="${AIVIDUP_PROCESSOR:-pipeline}"
 IDLE_EXIT="${AIVIDUP_IDLE_EXIT_SECONDS:-300}"
 MAX_LIFETIME="${AIVIDUP_MAX_LIFETIME_SECONDS:-14400}"
-MAX_RESTARTS="${AIVIDUP_MAX_RESTARTS:-5}"
+MAX_RESTARTS="${AIVIDUP_MAX_RESTARTS:-0}"
 POLL="${AIVIDUP_POLL_SECONDS:-3}"
 BACKOFF="${AIVIDUP_RESTART_BACKOFF:-5}"
 
-resolve_worker_id() {
-  if [[ -n "${AIVIDUP_WORKER_ID:-}" ]]; then printf '%s' "$AIVIDUP_WORKER_ID"; return; fi
+resolve_provider_instance_id() {
+  if [[ -n "${AIVIDUP_GPU_INSTANCE_ID:-}" ]]; then printf '%s' "$AIVIDUP_GPU_INSTANCE_ID"; return; fi
   if [[ -n "${CONTAINER_ID:-}" ]]; then printf '%s' "$CONTAINER_ID"; return; fi
   if [[ -n "${VAST_CONTAINERLABEL:-}" ]]; then printf '%s' "${VAST_CONTAINERLABEL#C.}"; return; fi
 }
@@ -52,12 +52,15 @@ maybe_self_destroy() {
   log "WARNING: could not destroy instance ${CONTAINER_ID}; the control plane will reap it when the lease expires"
 }
 
-WORKER_ID="$(resolve_worker_id)"
+PROVIDER_INSTANCE_ID="$(resolve_provider_instance_id)"
+WORKER_ID="$(python3 -c 'import uuid; print(uuid.uuid4())')"
 [[ -n "$API_URL" ]] || die 2 "AIVIDUP_API_URL is not set"
 [[ -n "${AIVIDUP_WORKER_TOKEN:-}" ]] || die 2 "AIVIDUP_WORKER_TOKEN is not set"
-[[ -n "$WORKER_ID" ]] || die 2 "no worker id: set AIVIDUP_WORKER_ID (or run on Vast.ai where CONTAINER_ID is set)"
+[[ -n "$PROVIDER_INSTANCE_ID" ]] || die 2 "provider instance id is unavailable"
+[[ -n "${AIVIDUP_GPU_LEASE_ID:-}" && -n "${AIVIDUP_BOOT_ID:-}" ]] || die 2 "lease/boot identity is unavailable"
 case "$PROCESSOR" in pipeline|ffmpeg|passthrough) ;; *) die 2 "unknown AIVIDUP_PROCESSOR '$PROCESSOR'";; esac
 for v in IDLE_EXIT MAX_LIFETIME MAX_RESTARTS POLL BACKOFF; do [[ "${!v}" =~ ^[0-9]+$ ]] || die 2 "$v must be a non-negative integer (got '${!v}')"; done
+[[ "$MAX_RESTARTS" == 0 ]] || die 2 "in-lease restarts are disabled; issue a new lease/boot generation instead"
 [[ "$API_URL" =~ ^https?:// ]] || die 2 "AIVIDUP_API_URL must start with http:// or https://"
 [[ "$API_URL" == http://* && "$API_URL" != http://127.0.0.1* && "$API_URL" != http://localhost* ]] \
   && log "WARNING: control plane URL is plain http - the worker token travels unencrypted"
@@ -75,7 +78,7 @@ print(f"GPU ok: {torch.cuda.get_device_name(0)} cc={torch.cuda.get_device_capabi
 PY
 fi
 
-CMD=("$PYTHON" -m src.worker --api "$API_URL" --worker-id "$WORKER_ID" --processor "$PROCESSOR"
+CMD=("$PYTHON" -m src.worker --api "$API_URL" --worker-id "$WORKER_ID" --provider-instance-id "$PROVIDER_INSTANCE_ID" --gpu-lease-id "$AIVIDUP_GPU_LEASE_ID" --boot-id "$AIVIDUP_BOOT_ID" --processor "$PROCESSOR"
      --poll-seconds "$POLL" --idle-exit-seconds "$IDLE_EXIT")
 if [[ "${AIVIDUP_DRY_RUN:-0}" == "1" ]]; then
   log "DRY RUN: ${CMD[*]}"; maybe_self_destroy "dry run"; exit 0
@@ -103,7 +106,7 @@ while true; do
     *)   FAILS=$((FAILS + 1))
          log "worker exited with code ${RC} (crash ${FAILS}/${MAX_RESTARTS})"
          if (( FAILS >= MAX_RESTARTS )); then REASON="too many crashes"; RC=4; break; fi
-         sleep $(( FAILS * BACKOFF )) ;;   # a restarted worker resumes the attempt it already owns (claim is resumable)
+         sleep $(( FAILS * BACKOFF )) ;;   # unreachable: nonzero MAX_RESTARTS is rejected; recovery requires a new lease/boot generation
   esac
 done
 
