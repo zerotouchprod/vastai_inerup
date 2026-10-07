@@ -140,7 +140,8 @@ def test_crash_is_not_restarted_inside_the_same_lease(env):
     )
     r = run(env)
     assert r.returncode == 4 and len(calls(env)) == 1
-    assert "in-lease restarts are disabled" in r.stdout
+    assert "worker exited with code 1 (crash 1/0)" in r.stdout
+    assert "exiting: too many crashes" in r.stdout
 
 
 def test_nonzero_restart_override_is_rejected_before_worker_launch(env):
