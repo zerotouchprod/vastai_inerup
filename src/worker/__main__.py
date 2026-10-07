@@ -33,7 +33,9 @@ def main() -> int:
     )
     p.add_argument(
         "--provider-instance-id",
-        default=os.getenv("AIVIDUP_GPU_INSTANCE_ID") or os.getenv("CONTAINER_ID") or os.getenv("VAST_CONTAINERLABEL", "").removeprefix("C."),
+        default=os.getenv("AIVIDUP_GPU_INSTANCE_ID")
+        or os.getenv("CONTAINER_ID")
+        or os.getenv("VAST_CONTAINERLABEL", "").removeprefix("C."),
         help="provider-assigned GPU instance id",
     )
     p.add_argument(
@@ -78,7 +80,9 @@ def main() -> int:
     )
     # Exit at once on SIGTERM: the heartbeat stops, the lease lapses and the control plane retries the chunk elsewhere.
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
-    client = ControlPlaneClient(a.api, a.token, a.worker_id, a.provider_instance_id, a.gpu_lease_id, a.boot_id)
+    client = ControlPlaneClient(
+        a.api, a.token, a.worker_id, a.provider_instance_id, a.gpu_lease_id, a.boot_id
+    )
     revision = os.getenv("AIVIDUP_IMAGE_REVISION")
     if not revision:
         try:

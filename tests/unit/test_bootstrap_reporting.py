@@ -39,25 +39,40 @@ class FakeSession:
 
 class BootstrapReportingTest(unittest.TestCase):
     def test_all_client_requests_match_shared_contract_fixture(self):
-        contract_path = Path(__file__).resolve().parents[2] / "contracts" / "worker-api-v1.json"
+        contract_path = (
+            Path(__file__).resolve().parents[2] / "contracts" / "worker-api-v1.json"
+        )
         contract = json.loads(contract_path.read_text())
         claim_request_id = "11111111-2222-4333-8444-555555555555"
         responses = [
             FakeResponse(200, {"ok": True, "retryable": False}),
-            FakeResponse(200, {
-                "attempt_id": "attempt-1", "job_id": "job-1", "worker_id": "worker-7",
-                "provider_instance_id": "gpu-123", "gpu_lease_id": "lease-42", "boot_id": "boot-42",
-                "claim_request_id": claim_request_id,
-                "lease_seconds": 300, "task": {},
-            }),
+            FakeResponse(
+                200,
+                {
+                    "attempt_id": "attempt-1",
+                    "job_id": "job-1",
+                    "worker_id": "worker-7",
+                    "provider_instance_id": "gpu-123",
+                    "gpu_lease_id": "lease-42",
+                    "boot_id": "boot-42",
+                    "claim_request_id": claim_request_id,
+                    "lease_seconds": 300,
+                    "task": {},
+                },
+            ),
             FakeResponse(200, {"ok": True}),
             FakeResponse(200, {"ok": True}),
             FakeResponse(200, {"ok": True}),
         ]
         session = FakeSession(responses)
         client = ControlPlaneClient(
-            "https://api.test" + contract["base_path"], "unit", "worker-7", "gpu-123",
-            "lease-42", "boot-42", session=session
+            "https://api.test" + contract["base_path"],
+            "unit",
+            "worker-7",
+            "gpu-123",
+            "lease-42",
+            "boot-42",
+            session=session,
         )
 
         with patch("src.worker.client.uuid.uuid4", return_value=UUID(claim_request_id)):
@@ -68,9 +83,15 @@ class BootstrapReportingTest(unittest.TestCase):
             client.fail("attempt-1", "unknown")
 
         self.assertEqual(len(session.calls), len(contract["endpoints"]))
-        for (url, payload, _timeout), (name, endpoint) in zip(session.calls, contract["endpoints"].items()):
-            path = endpoint["path"].format(provider_instance_id="gpu-123", attempt_id="attempt-1")
-            self.assertEqual(url, "https://api.test" + contract["base_path"] + path, name)
+        for (url, payload, _timeout), (name, endpoint) in zip(
+            session.calls, contract["endpoints"].items()
+        ):
+            path = endpoint["path"].format(
+                provider_instance_id="gpu-123", attempt_id="attempt-1"
+            )
+            self.assertEqual(
+                url, "https://api.test" + contract["base_path"] + path, name
+            )
             self.assertEqual(endpoint["method"], "POST")
             self.assertTrue(set(endpoint["request_required"]).issubset(payload), name)
             if name in {"heartbeat", "complete", "fail"}:
@@ -79,56 +100,111 @@ class BootstrapReportingTest(unittest.TestCase):
 
     def test_claim_request_and_response_are_bound_to_exact_lease_generation(self):
         claim_request_id = "11111111-2222-4333-8444-555555555555"
-        session = FakeSession([FakeResponse(200, {
-            "attempt_id": "attempt-1", "worker_id": "worker-7", "job_id": "job-1",
-            "gpu_lease_id": "lease-42", "boot_id": "boot-42",
-            "provider_instance_id": "gpu-123", "claim_request_id": claim_request_id,
-            "lease_seconds": 300,
-            "task": {"chunk_id": "chunk-1"},
-        })])
+        session = FakeSession(
+            [
+                FakeResponse(
+                    200,
+                    {
+                        "attempt_id": "attempt-1",
+                        "worker_id": "worker-7",
+                        "job_id": "job-1",
+                        "gpu_lease_id": "lease-42",
+                        "boot_id": "boot-42",
+                        "provider_instance_id": "gpu-123",
+                        "claim_request_id": claim_request_id,
+                        "lease_seconds": 300,
+                        "task": {"chunk_id": "chunk-1"},
+                    },
+                )
+            ]
+        )
         client = ControlPlaneClient(
-            "https://api.test/api/worker", "unit", "worker-7", "gpu-123",
-            gpu_lease_id="lease-42", boot_id="boot-42", session=session
+            "https://api.test/api/worker",
+            "unit",
+            "worker-7",
+            "gpu-123",
+            gpu_lease_id="lease-42",
+            boot_id="boot-42",
+            session=session,
         )
 
         with patch("src.worker.client.uuid.uuid4", return_value=UUID(claim_request_id)):
             claim = client.claim()
 
-        self.assertEqual(session.calls, [(
-            "https://api.test/api/worker/claim",
-            {
-                "worker_id": "worker-7",
-                "provider_instance_id": "gpu-123",
-                "gpu_lease_id": "lease-42",
-                "boot_id": "boot-42",
-                "claim_request_id": claim_request_id,
-            },
-            20.0,
-        )])
+        self.assertEqual(
+            session.calls,
+            [
+                (
+                    "https://api.test/api/worker/claim",
+                    {
+                        "worker_id": "worker-7",
+                        "provider_instance_id": "gpu-123",
+                        "gpu_lease_id": "lease-42",
+                        "boot_id": "boot-42",
+                        "claim_request_id": claim_request_id,
+                    },
+                    20.0,
+                )
+            ],
+        )
         self.assertEqual(claim["attempt_id"], "attempt-1")
 
     def test_claim_rejects_response_for_another_lease_generation(self):
-        session = FakeSession([FakeResponse(200, {
-            "attempt_id": "attempt-1", "worker_id": "worker-7", "job_id": "job-1",
-            "gpu_lease_id": "old-lease", "boot_id": "boot-42",
-            "provider_instance_id": "gpu-123", "lease_seconds": 300, "task": {},
-        })])
+        session = FakeSession(
+            [
+                FakeResponse(
+                    200,
+                    {
+                        "attempt_id": "attempt-1",
+                        "worker_id": "worker-7",
+                        "job_id": "job-1",
+                        "gpu_lease_id": "old-lease",
+                        "boot_id": "boot-42",
+                        "provider_instance_id": "gpu-123",
+                        "lease_seconds": 300,
+                        "task": {},
+                    },
+                )
+            ]
+        )
         client = ControlPlaneClient(
-            "https://api.test/api/worker", "unit", "worker-7", "gpu-123",
-            gpu_lease_id="lease-42", boot_id="boot-42", session=session
+            "https://api.test/api/worker",
+            "unit",
+            "worker-7",
+            "gpu-123",
+            gpu_lease_id="lease-42",
+            boot_id="boot-42",
+            session=session,
         )
         with self.assertRaises(ValueError):
             client.claim()
 
     def test_claim_rejects_response_for_another_process_on_same_lease(self):
-        session = FakeSession([FakeResponse(200, {
-            "attempt_id": "attempt-1", "worker_id": "worker-b", "job_id": "job-1",
-            "gpu_lease_id": "lease-42", "boot_id": "boot-42",
-            "provider_instance_id": "gpu-123", "lease_seconds": 300, "task": {},
-        })])
+        session = FakeSession(
+            [
+                FakeResponse(
+                    200,
+                    {
+                        "attempt_id": "attempt-1",
+                        "worker_id": "worker-b",
+                        "job_id": "job-1",
+                        "gpu_lease_id": "lease-42",
+                        "boot_id": "boot-42",
+                        "provider_instance_id": "gpu-123",
+                        "lease_seconds": 300,
+                        "task": {},
+                    },
+                )
+            ]
+        )
         client = ControlPlaneClient(
-            "https://api.test/api/worker", "unit", "worker-a", "gpu-123",
-            "lease-42", "boot-42", session=session
+            "https://api.test/api/worker",
+            "unit",
+            "worker-a",
+            "gpu-123",
+            "lease-42",
+            "boot-42",
+            session=session,
         )
         with self.assertRaises(ValueError):
             client.claim()
@@ -136,7 +212,13 @@ class BootstrapReportingTest(unittest.TestCase):
     def test_client_reports_worker_identity_and_image_revision(self):
         session = FakeSession()
         client = ControlPlaneClient(
-            "https://api.test/api/worker", "unit", "worker-7", "gpu-123", "lease-42", "boot-42", session=session
+            "https://api.test/api/worker",
+            "unit",
+            "worker-7",
+            "gpu-123",
+            "lease-42",
+            "boot-42",
+            session=session,
         )
 
         client.report_bootstrap("ready", "rev-123")
@@ -164,7 +246,13 @@ class BootstrapReportingTest(unittest.TestCase):
     def test_client_retries_only_transient_425(self):
         session = FakeSession([FakeResponse(425), FakeResponse()])
         client = ControlPlaneClient(
-            "https://api.test/api/worker", "unit", "worker-7", "gpu-123", "lease-42", "boot-42", session=session
+            "https://api.test/api/worker",
+            "unit",
+            "worker-7",
+            "gpu-123",
+            "lease-42",
+            "boot-42",
+            session=session,
         )
 
         with patch("src.worker.client.time.sleep") as sleep:
@@ -176,7 +264,13 @@ class BootstrapReportingTest(unittest.TestCase):
     def test_client_does_not_retry_stale_lease_response(self):
         session = FakeSession([FakeResponse(409), FakeResponse()])
         client = ControlPlaneClient(
-            "https://api.test/api/worker", "unit", "worker-7", "gpu-123", "lease-42", "boot-42", session=session
+            "https://api.test/api/worker",
+            "unit",
+            "worker-7",
+            "gpu-123",
+            "lease-42",
+            "boot-42",
+            session=session,
         )
 
         with patch("src.worker.client.time.sleep") as sleep:
@@ -219,7 +313,23 @@ class BootstrapReportingTest(unittest.TestCase):
                 events.append((stage, revision, self.boot_id))
 
         with patch.object(worker_main, "ControlPlaneClient", FakeClient), patch.object(
-            sys, "argv", ["worker", "--api", "https://api.test", "--token", "test", "--worker-id", "worker-7", "--provider-instance-id", "gpu-123", "--gpu-lease-id", "lease-42", "--boot-id", "boot-42"]
+            sys,
+            "argv",
+            [
+                "worker",
+                "--api",
+                "https://api.test",
+                "--token",
+                "test",
+                "--worker-id",
+                "worker-7",
+                "--provider-instance-id",
+                "gpu-123",
+                "--gpu-lease-id",
+                "lease-42",
+                "--boot-id",
+                "boot-42",
+            ],
         ), patch.dict("os.environ", {"AIVIDUP_IMAGE_REVISION": "rev-123"}), patch(
             "signal.signal"
         ):

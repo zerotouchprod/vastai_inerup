@@ -28,7 +28,9 @@ class ControlPlaneClient:
     ):
         self._base = api_url.rstrip("/")
         if not worker_id or not provider_instance_id or not gpu_lease_id or not boot_id:
-            raise ValueError("worker, provider instance, GPU lease, and boot identities are required")
+            raise ValueError(
+                "worker, provider instance, GPU lease, and boot identities are required"
+            )
         self._worker_id = worker_id
         self._provider_instance_id = provider_instance_id
         self._gpu_lease_id = gpu_lease_id
@@ -70,7 +72,9 @@ class ControlPlaneClient:
                 ("claim_request_id", claim_request_id),
             )
         ):
-            raise ValueError("Control plane returned a task for a different worker lease generation or claim")
+            raise ValueError(
+                "Control plane returned a task for a different worker lease generation or claim"
+            )
         if not isinstance(task.get("attempt_id"), str) or not task["attempt_id"]:
             raise ValueError("Control plane returned a claim without an attempt id")
         if not isinstance(task.get("job_id"), str) or not task["job_id"]:
@@ -84,10 +88,14 @@ class ControlPlaneClient:
         try:
             return self._claim_request_ids[attempt_id]
         except KeyError as exc:
-            raise LeaseLost("No successful claim identity is stored for this attempt") from exc
+            raise LeaseLost(
+                "No successful claim identity is stored for this attempt"
+            ) from exc
 
     def heartbeat(self, attempt_id: str, progress: Optional[float] = None) -> None:
-        payload: Dict[str, Any] = {"claim_request_id": self._claim_request_id(attempt_id)}
+        payload: Dict[str, Any] = {
+            "claim_request_id": self._claim_request_id(attempt_id)
+        }
         if progress is not None:
             payload["progress"] = progress
         self._owned(self._post(f"/attempts/{attempt_id}/heartbeat", payload))
@@ -126,7 +134,11 @@ class ControlPlaneClient:
             try:
                 response = self._post(
                     f"/bootstrap/{quote(self._provider_instance_id, safe='')}",
-                    {"stage": stage, "image_revision": image_revision, "boot_id": self._boot_id},
+                    {
+                        "stage": stage,
+                        "image_revision": image_revision,
+                        "boot_id": self._boot_id,
+                    },
                 )
                 if response.status_code == 425:
                     if attempt < 4:
