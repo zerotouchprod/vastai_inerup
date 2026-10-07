@@ -1,0 +1,62 @@
+{
+  "version": 1,
+  "base_path": "/api/worker",
+  "auth": {"header": "Authorization", "scheme": "Bearer", "failure_status": 401},
+  "endpoints": {
+    "bootstrap": {
+      "method": "POST",
+      "path": "/bootstrap/{provider_instance_id}",
+      "request_required": ["worker_id", "provider_instance_id", "gpu_lease_id", "boot_id", "stage", "image_revision"],
+      "stage_values": ["started", "ready"],
+      "success_status": 200,
+      "retry_status": 425,
+      "stale_status": 409,
+      "response_required": ["ok", "retryable"]
+    },
+    "claim": {
+      "method": "POST",
+      "path": "/claim",
+      "request_required": ["worker_id", "provider_instance_id", "gpu_lease_id", "boot_id", "claim_request_id"],
+      "empty_status": 204,
+      "empty_response_body": "none",
+      "success_status": 200,
+      "stale_status": 409,
+      "response_required": ["attempt_id", "job_id", "worker_id", "provider_instance_id", "gpu_lease_id", "boot_id", "claim_request_id", "lease_seconds", "task"]
+    },
+    "heartbeat": {
+      "method": "POST",
+      "path": "/attempts/{attempt_id}/heartbeat",
+      "request_required": ["worker_id", "provider_instance_id", "gpu_lease_id", "boot_id", "claim_request_id"],
+      "request_optional": ["progress"],
+      "success_status": 200,
+      "stale_status": 409
+    },
+    "complete": {
+      "method": "POST",
+      "path": "/attempts/{attempt_id}/complete",
+      "request_required": ["worker_id", "provider_instance_id", "gpu_lease_id", "boot_id", "claim_request_id", "output_path"],
+      "request_optional": ["timings"],
+      "success_status": 200,
+      "stale_status": 409
+    },
+    "fail": {
+      "method": "POST",
+      "path": "/attempts/{attempt_id}/fail",
+      "request_required": ["worker_id", "provider_instance_id", "gpu_lease_id", "boot_id", "claim_request_id", "failure_code"],
+      "success_status": 200,
+      "stale_status": 409
+    }
+  },
+  "nullability": {
+    "request_optional_nullable": ["heartbeat.progress", "complete.timings"],
+    "claim_empty_response_body": "none",
+    "successful_claim_identity_fields": "required_non_null"
+  },
+  "identity": {
+    "worker_id": "unique process UUID; bound by first started callback",
+    "provider_instance_id": "provider-assigned GPU instance; immutable on lease",
+    "gpu_lease_id": "exact lease UUID assigned before rent",
+    "boot_id": "orchestration-assigned UUID immutable for this lease generation",
+    "claim_request_id": "unique UUID per claim request; exact replay is idempotent and a different request cannot resume the claim"
+  }
+}

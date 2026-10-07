@@ -28,7 +28,10 @@ def env(tmp_path):
         "PYTHON": str(py),
         "AIVIDUP_API_URL": "https://aividup.test/api/worker",
         "AIVIDUP_WORKER_TOKEN": TOKEN,
-        "AIVIDUP_WORKER_ID": "w-1",
+        "AIVIDUP_WORKER_ID": "legacy-worker-id-is-ignored",
+        "AIVIDUP_GPU_INSTANCE_ID": "gpu-123",
+        "AIVIDUP_GPU_LEASE_ID": "lease-uuid",
+        "AIVIDUP_BOOT_ID": "boot-uuid",
         "AIVIDUP_PROCESSOR": "ffmpeg",
         "AIVIDUP_RESTART_BACKOFF": "0",
         "_counter": str(counter),
@@ -67,19 +70,20 @@ def test_requires_api_url_and_token_and_never_prints_token(env):
 @pytest.mark.parametrize(
     "extra,expected",
     [
-        ({"AIVIDUP_WORKER_ID": "explicit", "CONTAINER_ID": "999"}, "explicit"),
-        ({"AIVIDUP_WORKER_ID": None, "CONTAINER_ID": "999"}, "999"),
-        ({"AIVIDUP_WORKER_ID": None, "VAST_CONTAINERLABEL": "C.12345"}, "12345"),
+        ({"AIVIDUP_GPU_INSTANCE_ID": "explicit", "CONTAINER_ID": "999"}, "explicit"),
+        ({"AIVIDUP_GPU_INSTANCE_ID": None, "CONTAINER_ID": "999"}, "999"),
+        ({"AIVIDUP_GPU_INSTANCE_ID": None, "CONTAINER_ID": None, "VAST_CONTAINERLABEL": "C.12345"}, "12345"),
     ],
 )
-def test_worker_id_resolution_order(env, extra, expected):
+def test_provider_instance_id_resolution_order(env, extra, expected):
     r = run(env, AIVIDUP_DRY_RUN="1", **extra)
-    assert r.returncode == 0 and f"--worker-id {expected} " in r.stdout
+    assert r.returncode == 0 and f"--provider-instance-id {expected} " in r.stdout
+    assert "--worker-id " in r.stdout and "legacy-worker-id-is-ignored" not in r.stdout
 
 
-def test_no_worker_id_is_a_config_error(env):
-    r = run(env, AIVIDUP_WORKER_ID=None)
-    assert r.returncode == 2 and "no worker id" in r.stdout
+def test_no_provider_instance_id_is_a_config_error(env):
+    r = run(env, AIVIDUP_GPU_INSTANCE_ID=None, CONTAINER_ID=None, VAST_CONTAINERLABEL=None)
+    assert r.returncode == 2 and "provider instance id is unavailable" in r.stdout
 
 
 @pytest.mark.parametrize(
@@ -127,21 +131,23 @@ def test_idle_exit_is_a_clean_exit(env):
     )  # token travels in the environment only, never on the command line
 
 
-def test_crash_then_recovery(env):
+def test_crash_is_not_restarted_inside_the_same_lease(env):
     state = Path(env["_dir"]) / "n"
     make_stub(
         Path(env["PYTHON"]),
         f'echo x >> "{env["_counter"]}"\n'
         f'n=$(cat "{state}" 2>/dev/null || echo 0); echo $((n+1)) > "{state}"\n[ "$n" -ge 2 ] && exit 0 || exit 1\n',
     )
-    r = run(env, AIVIDUP_MAX_RESTARTS="5")
-    assert r.returncode == 0 and len(calls(env)) == 3
+    r = run(env)
+    assert r.returncode == 4 and len(calls(env)) == 1
+    assert "in-lease restarts are disabled" in r.stdout
 
 
-def test_gives_up_after_repeated_crashes(env):
+def test_nonzero_restart_override_is_rejected_before_worker_launch(env):
     make_stub(Path(env["PYTHON"]), f'echo x >> "{env["_counter"]}"\nexit 1\n')
     r = run(env, AIVIDUP_MAX_RESTARTS="3")
-    assert r.returncode == 4 and len(calls(env)) == 3 and "too many crashes" in r.stdout
+    assert r.returncode == 2 and "in-lease restarts are disabled" in r.stdout
+    assert calls(env) == []
 
 
 def test_self_destroy_only_when_enabled_and_uses_header_not_url(env):
@@ -212,7 +218,7 @@ def test_max_lifetime_stops_a_running_worker(env):
     )
 
 
-def test_orphaned_worker_is_killed_before_restart(env):
+def test_orphaned_worker_is_killed_when_same_lease_restart_is_disabled(env):
     """If the supervised process dies hard, its leftovers must not keep running next to the replacement."""
     pidfile = Path(env["_dir"]) / "orphan.pid"
     n = Path(env["_dir"]) / "n"
@@ -221,8 +227,8 @@ def test_orphaned_worker_is_killed_before_restart(env):
         f'c=$(cat "{n}" 2>/dev/null || echo 0); echo $((c+1)) > "{n}"\n'
         f'if [ "$c" -eq 0 ]; then sleep 120 & echo $! > "{pidfile}"; kill -9 $PPID; wait; fi\nexit 0\n',
     )
-    r = run(env, AIVIDUP_MAX_RESTARTS="3")
-    assert r.returncode == 0
+    r = run(env)
+    assert r.returncode == 4
     pid = int(pidfile.read_text())
 
     def alive() -> (
