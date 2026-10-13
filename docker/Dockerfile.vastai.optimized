@@ -77,7 +77,7 @@ RUN pip install --no-cache-dir \
 # Install Real-ESRGAN with proper dependencies
 RUN git clone --depth 1 https://github.com/xinntao/Real-ESRGAN.git /tmp/Real-ESRGAN && \
     cd /tmp/Real-ESRGAN && \
-    pip install --no-cache-dir basicsr && \
+    pip install --no-cache-dir --no-build-isolation basicsr && \
     # Patch basicsr for torchvision compatibility (functional_tensor was removed)
     if [ -f /opt/venv/lib/python3.10/site-packages/basicsr/data/degradations.py ]; then \
         sed -i 's/from torchvision.transforms.functional_tensor import rgb_to_grayscale/from torchvision.transforms.functional import rgb_to_grayscale/' /opt/venv/lib/python3.10/site-packages/basicsr/data/degradations.py; \
