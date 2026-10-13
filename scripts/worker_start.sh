@@ -69,13 +69,7 @@ log "worker id=${WORKER_ID} processor=${PROCESSOR} api=${API_URL} idle_exit=${ID
 
 if [[ "$PROCESSOR" == "pipeline" && "${AIVIDUP_SKIP_GPU_CHECK:-0}" != "1" && "${AIVIDUP_DRY_RUN:-0}" != "1" ]]; then
   command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L || log "nvidia-smi not available"
-  "$PYTHON" - <<'PY' || die 3 "GPU is not usable from PyTorch (bad host / driver mismatch) - refusing to take work"
-import sys, torch
-if not torch.cuda.is_available():
-    sys.exit("torch.cuda.is_available() is False")
-x = torch.randn(256, 256, device="cuda"); torch.cuda.synchronize()   # really touch the device
-print(f"GPU ok: {torch.cuda.get_device_name(0)} cc={torch.cuda.get_device_capability(0)} torch={torch.__version__} cuda={torch.version.cuda}")
-PY
+  "$PYTHON" /opt/aividup/cuda_runtime_preflight.py || die 3 "CUDA/backend runtime preflight failed - refusing to take work"
 fi
 
 CMD=("$PYTHON" -m src.worker --api "$API_URL" --worker-id "$WORKER_ID" --provider-instance-id "$PROVIDER_INSTANCE_ID" --gpu-lease-id "$AIVIDUP_GPU_LEASE_ID" --boot-id "$AIVIDUP_BOOT_ID" --processor "$PROCESSOR"
