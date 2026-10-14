@@ -146,4 +146,4 @@ COPY scripts/entrypoint.sh /entrypoint.sh
 RUN chmod +x /opt/aividup/cuda_runtime_preflight.py /entrypoint.sh
 
 ENTRYPOINT ["/entrypoint.sh"]
-CMD ["/bin/bash"]
+CMD ["sleep", "infinity"]
