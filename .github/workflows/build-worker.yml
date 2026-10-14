@@ -67,7 +67,7 @@ jobs:
           src/infrastructure/processors/rife/native_wrapper.py
           src/shared/fps_planning.py
       - name: Run worker and baseline FPS tests
-        run: python -m pytest tests/unit/test_worker.py tests/unit/test_worker_start.py tests/unit/test_bootstrap_reporting.py tests/unit/test_fps_planning.py tests/test_worker_image_contract.py -q
+        run: python -m pytest tests/unit/test_worker.py tests/unit/test_worker_start.py tests/unit/test_bootstrap_reporting.py tests/unit/test_fps_planning.py tests/test_worker_image_contract.py tests/test_worker_container_acceptance.py -q
       - name: Run CPU-only worker image acceptance
         run: python scripts/worker_image_acceptance.py
 

@@ -42,10 +42,8 @@ jobs:
             --image "$WORKER_IMAGE" \
             --evidence evidence/worker-image-acceptance.json
 
-      - name: Run worker contract tests
-        run: |
-          python3 -m pip install --disable-pip-version-check pytest
-          python3 -m pytest tests/test_worker_image_contract.py tests/test_worker_container_acceptance.py -q
+      - name: Compile acceptance harness
+        run: python3 -m py_compile scripts/worker_image_container_acceptance.py
 
       - name: Upload acceptance evidence
         if: always()
