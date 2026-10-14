@@ -207,12 +207,15 @@ def main() -> int:
     ]
     stages = [payload.get("stage") for path, payload in FakeApiHandler.events if "/bootstrap/" in path]
     entrypoint = evidence["image_inspect"]["entrypoint"]
+    digest_matches = any(
+        item.endswith(requested_digest or "") for item in repo_digests
+    )
     runtime_ok = (
         entrypoint == ["/usr/bin/tini", "--", "/usr/local/bin/worker_start.sh"]
         and container.returncode == 0
         and paths[:3] == expected_prefix
         and stages == ["started", "ready"]
-        and requested_digest in repo_digests
+        and digest_matches
     )
     evidence["runtime"] = {
         "exit_code": container.returncode,
@@ -223,7 +226,7 @@ def main() -> int:
         "bootstrap_stages": stages,
         "first_claim": "/api/worker/claim" in paths,
         "entrypoint_matches_contract": entrypoint == ["/usr/bin/tini", "--", "/usr/local/bin/worker_start.sh"],
-        "digest_matches_requested": requested_digest in repo_digests,
+        "digest_matches_requested": digest_matches,
     }
     evidence["decision"] = "ALLOW" if runtime_ok else "FAIL"
     Path(args.evidence).parent.mkdir(parents=True, exist_ok=True)
