@@ -16,13 +16,17 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 BUNDLE_MODEL_PATH = "train_log/flownet.pkl"
+_MAX_MANIFEST_SOURCE_BYTES = 64 * 1024
+_MAX_MODEL_SOURCE_BYTES = 128 * 1024 * 1024
 
 
 def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def _read_source_without_symlinks(path: Path | str, *, label: str) -> bytes:
+def _read_source_without_symlinks(
+    path: Path | str, *, label: str, max_bytes: int
+) -> bytes:
     """Open a regular file by walking every path component with O_NOFOLLOW."""
     requested = Path(path).expanduser()
     if not requested.is_absolute():
@@ -49,14 +53,21 @@ def _read_source_without_symlinks(path: Path | str, *, label: str) -> bytes:
         file_fd = os.open(
             parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=directory_fd
         )
-        if not stat.S_ISREG(os.fstat(file_fd).st_mode):
+        source_info = os.fstat(file_fd)
+        if not stat.S_ISREG(source_info.st_mode):
             raise ValueError(f"unsafe {label} source: not a regular file")
+        if source_info.st_size > max_bytes:
+            raise ValueError(f"{label} source exceeds the {max_bytes}-byte limit")
         content = bytearray()
         while True:
             chunk = os.read(file_fd, 1024 * 1024)
             if not chunk:
                 break
             content.extend(chunk)
+            if len(content) > max_bytes:
+                raise ValueError(f"{label} source exceeds the {max_bytes}-byte limit")
+        if os.fstat(file_fd).st_size != len(content):
+            raise ValueError(f"{label} source changed while being read")
         return bytes(content)
     except OSError as exc:
         raise ValueError(
@@ -69,7 +80,9 @@ def _read_source_without_symlinks(path: Path | str, *, label: str) -> bytes:
 
 
 def _validate_source(weights_path: Path, manifest_path: Path) -> tuple[bytes, bytes]:
-    manifest_bytes = _read_source_without_symlinks(manifest_path, label="manifest")
+    manifest_bytes = _read_source_without_symlinks(
+        manifest_path, label="manifest", max_bytes=_MAX_MANIFEST_SOURCE_BYTES
+    )
     try:
         manifest: Any = json.loads(manifest_bytes)
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
@@ -98,7 +111,9 @@ def _validate_source(weights_path: Path, manifest_path: Path) -> tuple[bytes, by
     ):
         raise ValueError("model manifest size or sha256 is invalid")
 
-    weights = _read_source_without_symlinks(weights_path, label="weights")
+    weights = _read_source_without_symlinks(
+        weights_path, label="weights", max_bytes=_MAX_MODEL_SOURCE_BYTES
+    )
     if len(weights) != entry["size_bytes"]:
         raise ValueError("model size mismatch with manifest")
     if _sha256(weights) != entry["sha256"]:

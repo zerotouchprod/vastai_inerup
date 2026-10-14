@@ -322,7 +322,10 @@ def verify_bundle(
     try:
         try:
             volume_manifest = _read_volume_file(
-                root_fd, "manifest.json", purpose="volume manifest"
+                root_fd,
+                "manifest.json",
+                purpose="volume manifest",
+                expected_size=len(expected_bytes),
             )
         except ValueError as exc:
             raise ValueError("unsafe volume manifest path") from exc

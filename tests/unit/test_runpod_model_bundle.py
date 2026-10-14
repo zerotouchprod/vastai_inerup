@@ -112,6 +112,26 @@ def test_export_refuses_weights_that_do_not_match_manifest(tmp_path):
     assert not output.exists()
 
 
+def test_export_caps_source_manifest_size(tmp_path):
+    weights, manifest = make_source(tmp_path)
+    manifest.write_bytes(b"x" * (64 * 1024 + 1))
+
+    with pytest.raises(ValueError, match="manifest source exceeds"):
+        export_bundle(weights, manifest, tmp_path / "bundle.tar.gz")
+
+
+def test_export_caps_source_model_size(tmp_path, monkeypatch):
+    import scripts.export_runpod_rife_bundle as exporter
+
+    weights, manifest = make_source(tmp_path)
+    monkeypatch.setattr(
+        exporter, "_MAX_MODEL_SOURCE_BYTES", len(b"pinned RIFE weights") - 1
+    )
+
+    with pytest.raises(ValueError, match="weights source exceeds"):
+        export_bundle(weights, manifest, tmp_path / "bundle.tar.gz")
+
+
 def test_export_rejects_symlinked_final_weight_source(tmp_path):
     weights, manifest = make_source(tmp_path)
     alias = tmp_path / "weights-link.pkl"
