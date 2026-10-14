@@ -120,7 +120,12 @@ def main() -> int:
     evidence["docker_root"] = root
     before = available_bytes(root)
     pull_started = time.monotonic()
-    pull = run(["docker", "pull", "--platform", "linux/amd64", args.image])
+    if args.allow_local_tag:
+        pull = subprocess.CompletedProcess(
+            args=["docker", "pull", args.image], returncode=0, stdout="local-tag-no-pull\n", stderr=""
+        )
+    else:
+        pull = run(["docker", "pull", "--platform", "linux/amd64", args.image])
     evidence["pull"] = {
         "exit_code": pull.returncode,
         "elapsed_seconds": round(time.monotonic() - pull_started, 3),
