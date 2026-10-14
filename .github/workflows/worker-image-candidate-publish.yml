@@ -27,7 +27,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Check runner disk before image pulls
+      - name: Check runner disk before build
         run: |
           mkdir -p evidence
           df -B1 / | tee evidence/disk-before.txt
@@ -57,6 +57,12 @@ jobs:
           esac
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
           echo "candidate_image=$REGISTRY_IMAGE@$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Check runner disk before exact image pulls
+        run: |
+          df -B1 / | tee evidence/disk-before-exact-pulls.txt
+          available="$(df -B1 --output=avail / | tail -n 1 | tr -d ' ')"
+          test "$available" -ge $((20 * 1024 * 1024 * 1024))
 
       - name: Pull exact candidate digest
         env:

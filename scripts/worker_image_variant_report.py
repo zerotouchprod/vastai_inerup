@@ -68,6 +68,8 @@ def oci_layer_report(image: str) -> dict[str, Any]:
         selected = json.loads(platform_raw.stdout)
     layers = selected.get("layers", [])
     sizes = [int(layer["size"]) for layer in layers]
+    if not manifest_digest or not sizes or sum(sizes) <= 0:
+        raise RuntimeError(f"invalid OCI manifest metrics for {image}")
     return {
         "available": True,
         "platform": "linux/amd64",
