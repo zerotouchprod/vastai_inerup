@@ -62,6 +62,9 @@ jobs:
           CANDIDATE_IMAGE: ${{ steps.resolve.outputs.candidate_image }}
         run: docker pull --platform linux/amd64 "$CANDIDATE_IMAGE"
 
+      - name: Pull exact baseline digest
+        run: docker pull --platform linux/amd64 "$BASELINE_IMAGE"
+
       - name: Compare published OCI manifest sizes
         env:
           CANDIDATE_IMAGE: ${{ steps.resolve.outputs.candidate_image }}
