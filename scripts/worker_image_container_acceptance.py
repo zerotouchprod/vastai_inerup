@@ -139,7 +139,10 @@ def main() -> int:
 
     after_pull = available_bytes(root)
     image = image_inspect(args.image)
-    compressed, raw_manifest = manifest_size(args.image)
+    if args.allow_local_tag:
+        compressed, raw_manifest = None, None
+    else:
+        compressed, raw_manifest = manifest_size(args.image)
     repo_digests = image.get("RepoDigests", [])
     requested_digest = args.image.split("@", 1)[1] if "@" in args.image else None
     evidence["image_inspect"] = {
