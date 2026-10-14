@@ -107,6 +107,65 @@ def test_invalid_config_rejected(env, over):
     assert run(env, **over).returncode == 2
 
 
+def test_required_model_manifest_failure_stops_before_worker(env):
+    make_stub(Path(env["PYTHON"]), f'echo "$@" >> "{env["_counter"]}"\nexit 1\n')
+    r = run(
+        env,
+        AIVIDUP_PROCESSOR="pipeline",
+        AIVIDUP_MODEL_MANIFEST_REQUIRED="1",
+        AIVIDUP_MODEL_VOLUME_ROOT="/runpod-volume/models",
+        AIVIDUP_MODEL_MANIFEST_SHA256="a" * 64,
+        AIVIDUP_SKIP_GPU_CHECK="1",
+    )
+
+    assert r.returncode == 3
+    assert "model manifest validation failed" in r.stdout
+    invocations = calls(env)
+    assert len(invocations) == 1
+    assert "/opt/aividup/validate_rife_manifest.py" in invocations[0]
+    assert "--volume-root /runpod-volume/models" in invocations[0]
+    assert "--expected-sha256" in invocations[0]
+    assert "-m src.worker" not in invocations[0]
+
+
+def test_successful_model_validation_uses_materialized_weights_before_worker(env):
+    body = (
+        f'echo "$@" >> "{env["_counter"]}"\n'
+        'if [[ "$1" == "/opt/aividup/validate_rife_manifest.py" ]]; then '
+        'echo \'{"materialized_root":"/tmp/verified-rife/aividup-verified-test"}\'; exit 0; fi\n'
+        'if [[ "$1" == "-c" ]]; then echo "$3/aividup-verified-test"; exit 0; fi\n'
+        f'echo "$@|${{AIVIDUP_RIFE_MODEL_DIR:-unset}}|'
+        f'${{AIVIDUP_ENTRYPOINT_STARTED_UPTIME:-unset}}" >> "{env["_counter"]}"\n'
+        "exit 0\n"
+    )
+    make_stub(Path(env["PYTHON"]), body)
+    r = run(
+        env,
+        AIVIDUP_PROCESSOR="pipeline",
+        AIVIDUP_MODEL_MANIFEST_REQUIRED="1",
+        AIVIDUP_MODEL_VOLUME_ROOT="/workspace/models/rife-v4.26",
+        AIVIDUP_VERIFIED_MODEL_PARENT="/tmp/verified-rife",
+        AIVIDUP_SKIP_GPU_CHECK="1",
+    )
+
+    assert r.returncode == 0
+    invocations = calls(env)
+    validator_invocation = next(
+        item
+        for item in invocations
+        if item.startswith("/opt/aividup/validate_rife_manifest.py ")
+    )
+    worker_invocation = next(
+        item
+        for item in invocations
+        if item.startswith("-m src.worker ") and "|" in item
+    )
+    assert "--materialize-to /tmp/verified-rife" in validator_invocation
+    _, model_dir, entrypoint_started = worker_invocation.split("|")
+    assert model_dir == "/tmp/verified-rife/aividup-verified-test/train_log"
+    assert float(entrypoint_started) > 0
+
+
 def test_dry_run_prints_the_command_without_token(env):
     r = run(env, AIVIDUP_DRY_RUN="1", AIVIDUP_IDLE_EXIT_SECONDS="120")
     assert (

@@ -13,16 +13,25 @@ on:
       - 'tests/unit/test_worker.py'
       - 'tests/unit/test_worker_start.py'
       - 'tests/unit/test_bootstrap_reporting.py'
-      - 'contracts/worker-api-v1.json'
       - 'tests/unit/test_fps_planning.py'
       - 'tests/test_worker_image_contract.py'
-      - 'docker/Dockerfile.worker'
-      - 'docker/Dockerfile.worker.dockerignore'
-      - 'requirements-worker.txt'
-      - 'scripts/worker_start.sh'
-      - 'scripts/cuda_runtime_preflight.py'
+      - 'contracts/worker-api-v1.json'
       - 'scripts/worker_image_acceptance.py'
       - 'scripts/build_worker.sh'
+      - 'tests/test_runpod_*.py'
+      - 'tests/unit/test_runpod_*.py'
+      - 'docker/Dockerfile.worker'
+      - 'docker/Dockerfile.worker.dockerignore'
+      - 'docker/Dockerfile.runpod-pilot'
+      - 'docker/Dockerfile.runpod-pilot.dockerignore'
+      - 'requirements-worker.txt'
+      - 'requirements-runpod-pilot.txt'
+      - 'scripts/worker_start.sh'
+      - 'scripts/cuda_runtime_preflight.py'
+      - 'scripts/validate_rife_manifest.py'
+      - 'scripts/export_runpod_rife_bundle.py'
+      - 'scripts/build_runpod_pilot_worker.sh'
+      - 'runpod/pilot/**'
   push:
     branches: [ main ]
     paths:
@@ -34,16 +43,25 @@ on:
       - 'tests/unit/test_worker.py'
       - 'tests/unit/test_worker_start.py'
       - 'tests/unit/test_bootstrap_reporting.py'
-      - 'contracts/worker-api-v1.json'
       - 'tests/unit/test_fps_planning.py'
       - 'tests/test_worker_image_contract.py'
-      - 'docker/Dockerfile.worker'
-      - 'docker/Dockerfile.worker.dockerignore'
-      - 'requirements-worker.txt'
-      - 'scripts/worker_start.sh'
-      - 'scripts/cuda_runtime_preflight.py'
+      - 'contracts/worker-api-v1.json'
       - 'scripts/worker_image_acceptance.py'
       - 'scripts/build_worker.sh'
+      - 'tests/test_runpod_*.py'
+      - 'tests/unit/test_runpod_*.py'
+      - 'docker/Dockerfile.worker'
+      - 'docker/Dockerfile.worker.dockerignore'
+      - 'docker/Dockerfile.runpod-pilot'
+      - 'docker/Dockerfile.runpod-pilot.dockerignore'
+      - 'requirements-worker.txt'
+      - 'requirements-runpod-pilot.txt'
+      - 'scripts/worker_start.sh'
+      - 'scripts/cuda_runtime_preflight.py'
+      - 'scripts/validate_rife_manifest.py'
+      - 'scripts/export_runpod_rife_bundle.py'
+      - 'scripts/build_runpod_pilot_worker.sh'
+      - 'runpod/pilot/**'
       - 'RIFEv4.26_0921/**'
 jobs:
   tests:
@@ -66,8 +84,16 @@ jobs:
           src/infrastructure/processors/rife/native.py
           src/infrastructure/processors/rife/native_wrapper.py
           src/shared/fps_planning.py
-      - name: Run worker and baseline FPS tests
-        run: python -m pytest tests/unit/test_worker.py tests/unit/test_worker_start.py tests/unit/test_bootstrap_reporting.py tests/unit/test_fps_planning.py tests/test_worker_image_contract.py -q
+          scripts/validate_rife_manifest.py
+      - name: Run worker, pilot contract, and model manifest tests
+        run: >-
+          python -m pytest
+          tests/unit/test_worker.py tests/unit/test_worker_start.py
+          tests/unit/test_bootstrap_reporting.py tests/unit/test_fps_planning.py
+          tests/test_worker_image_contract.py tests/test_runpod_worker_image_contract.py
+          tests/test_runpod_rife_volume.py tests/test_runpod_rife_code_volume.py
+          tests/test_runpod_rife_timing.py
+          tests/unit/test_runpod_model_manifest.py tests/unit/test_runpod_model_bundle.py -q
       - name: Run CPU-only worker image acceptance
         run: python scripts/worker_image_acceptance.py
 
@@ -86,7 +112,7 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      # A PR builds but does not publish; main publishes only after the same tests pass.
+      # Existing worker image: PR builds only; main publishes after tests pass.
       - uses: docker/build-push-action@v6
         with:
           context: .
@@ -96,3 +122,34 @@ jobs:
           tags: ghcr.io/zerotouchprod/aividup-worker:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  runpod-pilot-image:
+    if: github.event_name != 'push'
+    needs: tests
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: docker/setup-buildx-action@v3
+      - name: Pin the model manifest
+        id: manifest
+        run: echo "sha256=$(sha256sum runpod/pilot/rife-v4.26/manifest.json | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+      - name: Build, but do not publish, the RIFE-only pilot image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.runpod-pilot
+          push: false
+          load: true
+          build-args: |
+            GIT_SHA=${{ github.event.pull_request.head.sha || github.sha }}
+            PIPELINE_VERSION=aividup-rife-interp-v1
+            MODEL_MANIFEST_SHA256=${{ steps.manifest.outputs.sha256 }}
+          tags: aividup-worker-runpod-rife-pilot:${{ github.event.pull_request.head.sha || github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Report image byte size
+        run: docker image inspect --format='image_bytes={{.Size}}' aividup-worker-runpod-rife-pilot:${{ github.event.pull_request.head.sha || github.sha }}

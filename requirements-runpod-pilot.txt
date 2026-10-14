@@ -1,0 +1,15 @@
+# Minimal dependencies for the RIFE-only pilot image.
+# CUDA-enabled torch/torchvision are installed separately in the Dockerfile.
+numpy<2
+opencv-python-headless
+pillow
+tqdm
+pyyaml
+requests
+boto3
+ffmpeg-python
+pydantic>=2
+pydantic_settings==2.12.0
+python-dotenv
+scipy
+scikit-image

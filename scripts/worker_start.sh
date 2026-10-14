@@ -30,6 +30,11 @@ MAX_RESTARTS="${AIVIDUP_MAX_RESTARTS:-0}"
 POLL="${AIVIDUP_POLL_SECONDS:-3}"
 BACKOFF="${AIVIDUP_RESTART_BACKOFF:-5}"
 AIVIDUP_GPU_PROBE_BACKEND="${AIVIDUP_GPU_PROBE_BACKEND:-all}"
+MODEL_MANIFEST_REQUIRED="${AIVIDUP_MODEL_MANIFEST_REQUIRED:-0}"
+if [[ "$MODEL_MANIFEST_REQUIRED" == "1" && -r /proc/uptime ]]; then
+  read -r AIVIDUP_ENTRYPOINT_STARTED_UPTIME _ < /proc/uptime
+  export AIVIDUP_ENTRYPOINT_STARTED_UPTIME
+fi
 export AIVIDUP_GPU_PROBE_BACKEND
 
 resolve_provider_instance_id() {
@@ -65,6 +70,26 @@ case "$PROCESSOR" in pipeline|ffmpeg|passthrough) ;; *) die 2 "unknown AIVIDUP_P
 for v in IDLE_EXIT MAX_LIFETIME MAX_RESTARTS POLL BACKOFF; do [[ "${!v}" =~ ^[0-9]+$ ]] || die 2 "$v must be a non-negative integer (got '${!v}')"; done
 [[ "$MAX_RESTARTS" == 0 ]] || die 2 "in-lease restarts are disabled; issue a new lease/boot generation instead"
 [[ "$API_URL" =~ ^https?:// ]] || die 2 "AIVIDUP_API_URL must start with http:// or https://"
+case "$MODEL_MANIFEST_REQUIRED" in
+  0) ;;
+  1)
+    [[ "$PROCESSOR" == "pipeline" ]] || die 2 "model manifest gate requires the pipeline processor"
+    validator="${AIVIDUP_MODEL_MANIFEST_VALIDATOR:-/opt/aividup/validate_rife_manifest.py}"
+    volume_root="${AIVIDUP_MODEL_VOLUME_ROOT:-/workspace/models/rife-v4.26}"
+    expected_manifest="${AIVIDUP_EXPECTED_MODEL_MANIFEST:-/opt/aividup/model-manifest.expected.json}"
+    verified_model_parent="${AIVIDUP_VERIFIED_MODEL_PARENT:-/tmp}"
+    validator_args=(--volume-root "$volume_root" --expected-manifest "$expected_manifest" --materialize-to "$verified_model_parent")
+    if [[ -n "${AIVIDUP_MODEL_MANIFEST_SHA256:-}" ]]; then
+      validator_args+=(--expected-sha256 "$AIVIDUP_MODEL_MANIFEST_SHA256")
+    fi
+    validation_output=$("$PYTHON" "$validator" "${validator_args[@]}") || die 3 "model manifest validation failed - refusing to take work"
+    verified_model_root=$(printf '%s' "$validation_output" | "$PYTHON" -c 'import json,pathlib,sys; value=json.load(sys.stdin); parent=pathlib.Path(sys.argv[1]); root=pathlib.Path(value.get("materialized_root", "")); assert root.is_absolute() and root.parent==parent and root.name.startswith("aividup-verified-"); print(root)' "$verified_model_parent") \
+      || die 3 "model validator did not return a private verified scratch path"
+    AIVIDUP_RIFE_MODEL_DIR="$verified_model_root/train_log"
+    export AIVIDUP_RIFE_MODEL_DIR
+    ;;
+  *) die 2 "AIVIDUP_MODEL_MANIFEST_REQUIRED must be 0 or 1" ;;
+esac
 [[ "$API_URL" == http://* && "$API_URL" != http://127.0.0.1* && "$API_URL" != http://localhost* ]] \
   && log "WARNING: control plane URL is plain http - the worker token travels unencrypted"
 
@@ -72,7 +97,7 @@ log "worker id=${WORKER_ID} processor=${PROCESSOR} api=${API_URL} idle_exit=${ID
 
 if [[ "$PROCESSOR" == "pipeline" && "${AIVIDUP_SKIP_GPU_CHECK:-0}" != "1" && "${AIVIDUP_DRY_RUN:-0}" != "1" ]]; then
   command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L || log "nvidia-smi not available"
-  "$PYTHON" /opt/aividup/cuda_runtime_preflight.py || die 3 "CUDA/backend runtime preflight failed - refusing to take work"
+  AIVIDUP_GPU_PREFLIGHT=1 "$PYTHON" /opt/aividup/cuda_runtime_preflight.py || die 3 "CUDA/backend runtime preflight failed - refusing to take work"
 fi
 
 CMD=("$PYTHON" -m src.worker --api "$API_URL" --worker-id "$WORKER_ID" --provider-instance-id "$PROVIDER_INSTANCE_ID" --gpu-lease-id "$AIVIDUP_GPU_LEASE_ID" --boot-id "$AIVIDUP_BOOT_ID" --processor "$PROCESSOR"

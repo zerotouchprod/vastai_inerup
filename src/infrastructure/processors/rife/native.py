@@ -13,6 +13,7 @@ Usage:
 
 import sys
 import time
+import os
 from pathlib import Path
 from typing import List, Optional
 import logging
@@ -64,6 +65,7 @@ class RIFENative:
 
         # Model will be loaded on first use
         self._model = None
+        self.model_load_seconds: Optional[float] = None
 
     def _find_model_path(self) -> Path:
         """
@@ -72,6 +74,17 @@ class RIFENative:
         Note: This is for model WEIGHTS (train_log/*.pkl), not the code.
         The code is loaded from external/RIFE.
         """
+        configured = os.environ.get('AIVIDUP_RIFE_MODEL_DIR')
+        if configured:
+            configured_path = Path(configured)
+            weight_path = configured_path / 'flownet.pkl'
+            if not configured_path.is_dir() or weight_path.is_symlink() or not weight_path.is_file():
+                raise FileNotFoundError(
+                    f"configured RIFE model directory is missing or unsafe: {configured_path}"
+                )
+            self.logger.info(f"Using explicitly configured RIFE model weights: {configured_path}")
+            return configured_path
+
         possible_paths = [
             Path('/opt/rife_models/train_log'),  # Docker container preinstalled models (PRIORITY!)
             Path('/workspace/project/RIFEv4.26_0921'),  # Preinstalled weights
@@ -311,6 +324,36 @@ class RIFENative:
         self.logger.debug(f"All model parameters verified on device: {expected_device}")
         return True
 
+    def _find_rife_repo_path(self) -> Path:
+        """Find RIFE implementation code, which may be baked outside the model volume."""
+        configured = os.environ.get('AIVIDUP_RIFE_CODE_DIR')
+        candidate_paths = ([Path(configured)] if configured else []) + [
+            Path('/workspace/project/RIFEv4.26_0921'),
+            Path('RIFEv4.26_0921'),
+            Path('/workspace/project/external/RIFE'),
+            Path('external/RIFE'),
+            Path(__file__).parent.parent.parent.parent.parent / 'external' / 'RIFE',
+        ]
+        for path in candidate_paths:
+            if not path.exists():
+                continue
+            has_train_log = (path / 'train_log').exists()
+            has_model_code = (path / 'model' / 'RIFE_HDv3.py').exists() or (path / 'model' / 'RIFE.py').exists()
+            if has_train_log or has_model_code:
+                self.logger.info(f"Found RIFE repository with code: {path}")
+                return path
+        raise ImportError(
+            f"RIFE repository with model code not found. Searched: {[str(path) for path in candidate_paths]}"
+        )
+
+    def _record_model_load_duration(self, started_at: float, finished_at: Optional[float] = None) -> float:
+        """Persist and log the successful model-load duration as a separate metric."""
+        elapsed = max(0.0, (finished_at if finished_at is not None else time.monotonic()) - started_at)
+        self.model_load_seconds = elapsed
+        phase = "preflight" if os.environ.get("AIVIDUP_GPU_PREFLIGHT") == "1" else "worker"
+        self.logger.info("RIFE_MODEL_LOAD_SECONDS=%.6f phase=%s", elapsed, phase)
+        return elapsed
+
     def _load_model(self):
         """Load RIFE model (lazy loading)."""
         if self._model is not None:
@@ -318,6 +361,8 @@ class RIFENative:
 
         if not TORCH_AVAILABLE:
             raise ImportError("PyTorch not found. Install: pip install torch")
+
+        model_load_started = time.monotonic()
 
         # Check CUDA compatibility and fall back to CPU if needed
         self.device = self._check_cuda_compatibility()
@@ -333,34 +378,7 @@ class RIFENative:
 
         self.logger.info(f"Loading RIFE model (weights from: {self.model_path})")
 
-        # Find RIFE repository - prioritize preinstalled RIFE over cloned repo
-        rife_repo_paths = [
-            Path('/workspace/project/RIFEv4.26_0921'),  # Preinstalled RIFE (priority!)
-            Path('RIFEv4.26_0921'),  # Local dev preinstalled
-            Path('/workspace/project/external/RIFE'),  # Cloned repo
-            Path('external/RIFE'),  # Local dev cloned
-            Path(__file__).parent.parent.parent.parent.parent / 'external' / 'RIFE',  # From src/
-        ]
-
-        rife_repo_path = None
-        for path in rife_repo_paths:
-            # Check if this path has the actual RIFE code (not just empty model/__init__.py)
-            if path and path.exists():
-                # Check for train_log directory (contains actual RIFE implementation)
-                has_train_log = (path / 'train_log').exists()
-                # Or check for model/RIFE_HDv3.py or model/RIFE.py
-                has_model_code = (path / 'model' / 'RIFE_HDv3.py').exists() or \
-                                 (path / 'model' / 'RIFE.py').exists()
-
-                if has_train_log or has_model_code:
-                    rife_repo_path = path
-                    self.logger.info(f"✓ Found RIFE repository with code: {path}")
-                    break
-
-        if not rife_repo_path:
-            raise ImportError(
-                f"RIFE repository with model code not found. Searched: {[str(p) for p in rife_repo_paths if p]}"
-            )
+        rife_repo_path = self._find_rife_repo_path()
 
         # Set up model package (needed for model.warplayer imports)
         self._setup_model_package(rife_repo_path)
@@ -473,6 +491,7 @@ class RIFENative:
                     raise
 
             self.logger.info("\u2713 RIFE model loaded successfully")
+            self._record_model_load_duration(model_load_started)
 
         except Exception as e:
             raise ImportError(
