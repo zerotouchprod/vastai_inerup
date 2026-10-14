@@ -106,6 +106,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--image", default=os.environ.get("WORKER_IMAGE", DEFAULT_IMAGE))
     parser.add_argument("--evidence", default=os.environ.get("WORKER_EVIDENCE", "evidence/worker-image-acceptance.json"))
+    parser.add_argument("--allow-local-tag", action="store_true", help="Allow a local experimental tag without a registry digest")
     args = parser.parse_args()
 
     evidence: dict[str, Any] = {
@@ -207,7 +208,7 @@ def main() -> int:
     ]
     stages = [payload.get("stage") for path, payload in FakeApiHandler.events if "/bootstrap/" in path]
     entrypoint = evidence["image_inspect"]["entrypoint"]
-    digest_matches = any(
+    digest_matches = args.allow_local_tag or any(
         item.endswith(requested_digest or "") for item in repo_digests
     )
     runtime_ok = (
