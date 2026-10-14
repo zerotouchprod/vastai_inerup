@@ -6,6 +6,7 @@
 # Provider instance id: AIVIDUP_GPU_INSTANCE_ID, CONTAINER_ID or VAST_CONTAINERLABEL.
 # Worker id: unique UUID for this process; a new boot requires a new lease generation.
 # Optional env: AIVIDUP_PROCESSOR (pipeline|ffmpeg|passthrough, default pipeline)
+#                 AIVIDUP_GPU_PROBE_BACKEND (all|realesrgan|rife, default all)
 #                 AIVIDUP_IDLE_EXIT_SECONDS (default 300)   leave after this long without work (stop paying for an idle GPU)
 #                 AIVIDUP_MAX_LIFETIME_SECONDS (default 14400)  hard cap on how long the container lives
 #                 AIVIDUP_MAX_RESTARTS (must be 0)    in-lease restarts are fenced; recover with a new lease
@@ -28,6 +29,8 @@ MAX_LIFETIME="${AIVIDUP_MAX_LIFETIME_SECONDS:-14400}"
 MAX_RESTARTS="${AIVIDUP_MAX_RESTARTS:-0}"
 POLL="${AIVIDUP_POLL_SECONDS:-3}"
 BACKOFF="${AIVIDUP_RESTART_BACKOFF:-5}"
+AIVIDUP_GPU_PROBE_BACKEND="${AIVIDUP_GPU_PROBE_BACKEND:-all}"
+export AIVIDUP_GPU_PROBE_BACKEND
 
 resolve_provider_instance_id() {
   if [[ -n "${AIVIDUP_GPU_INSTANCE_ID:-}" ]]; then printf '%s' "$AIVIDUP_GPU_INSTANCE_ID"; return; fi

@@ -8,7 +8,7 @@ cd "$(dirname "$0")/.."
 
 IMAGE="${IMAGE:-ghcr.io/zerotouchprod/aividup-worker}"
 SHA="$(git rev-parse --short=12 HEAD)"
-if [[ -n "$(git status --porcelain -- src RIFEv4.26_0921 pipeline_v2.py scripts/worker_start.sh docker/Dockerfile.worker requirements-worker.txt)" ]]; then
+if [[ -n "$(git status --porcelain -- src RIFEv4.26_0921 pipeline_v2.py scripts/worker_start.sh scripts/cuda_runtime_preflight.py docker/Dockerfile.worker docker/Dockerfile.worker.dockerignore requirements-worker.txt)" ]]; then
   SHA="${SHA}-dirty"
   echo "WARNING: uncommitted changes in worker files - tagging as ${SHA}; do not deploy this tag" >&2
 fi
