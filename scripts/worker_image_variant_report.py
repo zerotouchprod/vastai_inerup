@@ -34,7 +34,12 @@ def saved_gzip_bytes(image: str) -> int:
 
 
 def oci_layer_report(image: str) -> dict[str, Any]:
-    """Read compressed OCI layer sizes from the registry manifest."""
+    """Read compressed OCI layer sizes when the image is registry-addressable."""
+    if "@" not in image:
+        return {
+            "available": False,
+            "reason": "local image reference has no immutable registry digest",
+        }
     raw = subprocess.run(
         ["docker", "buildx", "imagetools", "inspect", image, "--raw"],
         check=True,
@@ -64,6 +69,7 @@ def oci_layer_report(image: str) -> dict[str, Any]:
     layers = selected.get("layers", [])
     sizes = [int(layer["size"]) for layer in layers]
     return {
+        "available": True,
         "platform": "linux/amd64",
         "manifest_digest": manifest_digest,
         "layer_count": len(sizes),
