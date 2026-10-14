@@ -2,12 +2,6 @@ name: Publish worker image candidate for OCI measurement
 
 on:
   workflow_dispatch:
-    inputs:
-      source_sha:
-        description: Source revision to bake into the candidate label
-        required: true
-        default: python-base-candidate
-        type: string
 
 permissions:
   contents: read
@@ -33,13 +27,20 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Check runner disk before image pulls
+        run: |
+          mkdir -p evidence
+          df -B1 / | tee evidence/disk-before.txt
+          available="$(df -B1 --output=avail / | tail -n 1 | tr -d ' ')"
+          test "$available" -ge $((20 * 1024 * 1024 * 1024))
+
       - name: Build and publish candidate tag
         run: |
           mkdir -p evidence
           docker buildx build \
             --platform linux/amd64 \
             --file docker/Dockerfile.worker.python-base.experiment \
-            --build-arg GIT_SHA="${{ inputs.source_sha }}" \
+            --build-arg GIT_SHA="${GITHUB_SHA}" \
             --tag "$REGISTRY_IMAGE:$CANDIDATE_TAG" \
             --push \
             --metadata-file evidence/build-metadata.json \
@@ -64,6 +65,9 @@ jobs:
 
       - name: Pull exact baseline digest
         run: docker pull --platform linux/amd64 "$BASELINE_IMAGE"
+
+      - name: Record runner disk after image pulls
+        run: df -B1 / | tee evidence/disk-after.txt
 
       - name: Compare published OCI manifest sizes
         env:
