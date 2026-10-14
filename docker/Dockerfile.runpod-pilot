@@ -1,0 +1,72 @@
+# syntax=docker/dockerfile:1.6
+# RIFE-only AIVIDUP pull worker. RIFE weights are supplied by the versioned volume.
+FROM nvidia/cuda:12.6.0-cudnn-runtime-ubuntu22.04
+
+ARG GIT_SHA=unknown
+ARG PIPELINE_VERSION=aividup-rife-interp-v1
+ARG MODEL_MANIFEST_SHA256
+LABEL org.opencontainers.image.title="aividup-worker-runpod-rife-pilot" \
+      org.opencontainers.image.source="https://github.com/zerotouchprod/vastai_inerup" \
+      org.opencontainers.image.revision="${GIT_SHA}" \
+      org.zerotouchprod.aividup.pipeline-version="${PIPELINE_VERSION}" \
+      org.zerotouchprod.aividup.model-manifest-sha256="${MODEL_MANIFEST_SHA256}"
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3 python3-pip python3-venv ffmpeg tini curl ca-certificates \
+        libglib2.0-0 libgl1 libgomp1 \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+RUN python3 -m venv /opt/venv
+ENV PATH="/opt/venv/bin:${PATH}"
+RUN pip install --upgrade pip setuptools wheel \
+    && pip install torch==2.9.1 torchvision --index-url https://download.pytorch.org/whl/cu126
+
+COPY requirements-runpod-pilot.txt /tmp/requirements-runpod-pilot.txt
+RUN pip install -r /tmp/requirements-runpod-pilot.txt
+
+# The default Runpod Network Volume mount is /workspace. Keep immutable worker code elsewhere.
+WORKDIR /opt/aividup/project
+RUN mkdir -p /opt/aividup/project/RIFEv4.26_0921/train_log
+COPY RIFEv4.26_0921/model/ ./RIFEv4.26_0921/model/
+COPY RIFEv4.26_0921/train_log/*.py ./RIFEv4.26_0921/train_log/
+COPY src/ ./src/
+COPY pipeline_v2.py ./pipeline_v2.py
+COPY runpod/pilot/rife-v4.26/manifest.json /opt/aividup/model-manifest.expected.json
+COPY scripts/validate_rife_manifest.py /opt/aividup/validate_rife_manifest.py
+COPY scripts/cuda_runtime_preflight.py /opt/aividup/cuda_runtime_preflight.py
+COPY scripts/worker_start.sh /opt/aividup/worker_start.sh
+RUN test -n "${MODEL_MANIFEST_SHA256}" \
+    && test "$(sha256sum /opt/aividup/model-manifest.expected.json | cut -d' ' -f1)" = "${MODEL_MANIFEST_SHA256}" \
+    && python -c 'import json, os; actual=json.load(open("/opt/aividup/model-manifest.expected.json"))["pipeline_version"]; assert actual == os.environ["PIPELINE_VERSION"], "manifest pipeline version differs from image"' \
+    && chmod +x /opt/aividup/worker_start.sh /opt/aividup/cuda_runtime_preflight.py \
+    && echo "${GIT_SHA}" > /etc/aividup_revision \
+    && python -c "import torch, torchvision, cv2, numpy, yaml, requests, boto3, ffmpeg, pydantic_settings; import src.worker.runner, src.presentation.cli; from src.infrastructure.processors.rife.native import RIFENative" \
+    && ffmpeg -hide_banner -encoders 2>/dev/null | grep -q libx264
+
+ENV PYTHONPATH=/opt/aividup/project \
+    USE_NATIVE_PROCESSORS=1 \
+    STRICT_FRAME_COUNT=1 \
+    NVIDIA_VISIBLE_DEVICES=all \
+    NVIDIA_DRIVER_CAPABILITIES=compute,utility,video \
+    TORCH_CUDA_ARCH_LIST="7.5;8.0;8.6;8.7;8.9;9.0;12.0" \
+    AIVIDUP_PROCESSOR=pipeline \
+    AIVIDUP_GPU_PROBE_BACKEND=rife \
+    AIVIDUP_MODEL_VOLUME_ROOT=/workspace/models/rife-v4.26 \
+    AIVIDUP_RIFE_MODEL_DIR=/tmp/aividup-verified-models/train_log \
+    AIVIDUP_RIFE_CODE_DIR=/opt/aividup/project/RIFEv4.26_0921 \
+    AIVIDUP_MODEL_MANIFEST_REQUIRED=1 \
+    AIVIDUP_PIPELINE_VERSION=${PIPELINE_VERSION} \
+    AIVIDUP_IDLE_EXIT_SECONDS=300 \
+    AIVIDUP_MAX_LIFETIME_SECONDS=14400
+
+ENV AIVIDUP_VERIFIED_MODEL_ROOT=/tmp/aividup-verified-models
+ENV MODE=interp
+ENV AIVIDUP_MODEL_MANIFEST_SHA256=${MODEL_MANIFEST_SHA256}
+
+ENTRYPOINT ["/usr/bin/tini", "--", "/opt/aividup/worker_start.sh"]

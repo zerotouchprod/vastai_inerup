@@ -1,0 +1,22 @@
+# Context allowlist for the RIFE-only Runpod pilot image; never send model weights.
+*
+!src/
+!pipeline_v2.py
+!RIFEv4.26_0921/
+RIFEv4.26_0921/train_log/*.pkl
+!requirements-runpod-pilot.txt
+!runpod/
+!runpod/pilot/
+!runpod/pilot/rife-v4.26/
+!scripts/
+!scripts/worker_start.sh
+!scripts/cuda_runtime_preflight.py
+!scripts/validate_rife_manifest.py
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/*.pkl
+**/*.pth
+**/*.ckpt
+**/*.safetensors
+**/*.onnx
