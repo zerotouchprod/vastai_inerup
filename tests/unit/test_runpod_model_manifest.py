@@ -202,6 +202,7 @@ def test_materialized_verified_model_isolated_from_volume_mutation(tmp_path):
     expected = make_expected_manifest(tmp_path / "expected.json")
     volume = make_volume(tmp_path / "volume", expected.read_bytes())
     scratch = tmp_path / "scratch"
+    scratch.mkdir(mode=0o700)
 
     result = verify_bundle(
         volume,
@@ -210,8 +211,76 @@ def test_materialized_verified_model_isolated_from_volume_mutation(tmp_path):
         materialize_to=scratch,
     )
 
-    materialized = scratch / "train_log" / "flownet.pkl"
-    assert materialized.read_bytes() == MODEL
-    (volume / "train_log" / "flownet.pkl").write_bytes(b"changed volume weights")
+    materialized = Path(result["materialized_root"]) / "train_log" / "flownet.pkl"
     assert materialized.read_bytes() == MODEL
     assert result["materialized_files"][0]["path"] == str(materialized)
+    assert result["materialized_root"].startswith(str(scratch / "aividup-verified-"))
+    assert materialized.stat().st_mode & 0o777 == 0o400
+    assert Path(result["materialized_root"]).stat().st_mode & 0o777 == 0o700
+    (volume / "train_log" / "flownet.pkl").write_bytes(b"changed volume weights")
+    assert materialized.read_bytes() == MODEL
+
+
+def test_destination_directory_symlink_race_is_rejected_without_escape(
+    tmp_path, monkeypatch
+):
+    import os
+
+    expected = make_expected_manifest(tmp_path / "expected.json")
+    volume = make_volume(tmp_path / "volume", expected.read_bytes())
+    scratch = tmp_path / "scratch"
+    scratch.mkdir(mode=0o700)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    real_mkdir = os.mkdir
+
+    def replace_new_destination_directory(path, mode=0o777, *, dir_fd=None):
+        real_mkdir(path, mode=mode, dir_fd=dir_fd)
+        if path == "train_log" and dir_fd is not None:
+            os.rmdir(path, dir_fd=dir_fd)
+            os.symlink(outside, path, target_is_directory=True, dir_fd=dir_fd)
+
+    monkeypatch.setattr(os, "mkdir", replace_new_destination_directory)
+    with pytest.raises(ValueError, match="unsafe verified-model output path"):
+        verify_bundle(volume, expected, materialize_to=scratch)
+    assert list(outside.iterdir()) == []
+    assert list(scratch.iterdir()) == []
+
+
+def test_hash_mismatch_after_materialization_cleans_private_scratch(
+    tmp_path, monkeypatch
+):
+    import os
+
+    expected = make_expected_manifest(tmp_path / "expected.json")
+    volume = make_volume(tmp_path / "volume", expected.read_bytes())
+    scratch = tmp_path / "scratch"
+    scratch.mkdir(mode=0o700)
+    real_write = os.write
+
+    def corrupt_model_write(fd, data):
+        if data == MODEL:
+            return real_write(fd, b"X" + data[1:])
+        return real_write(fd, data)
+
+    monkeypatch.setattr(os, "write", corrupt_model_write)
+    with pytest.raises(ValueError, match="hash mismatch after materialization"):
+        verify_bundle(volume, expected, materialize_to=scratch)
+    assert list(scratch.iterdir()) == []
+
+
+def test_materialization_write_error_cleans_private_scratch(tmp_path, monkeypatch):
+    import os
+
+    expected = make_expected_manifest(tmp_path / "expected.json")
+    volume = make_volume(tmp_path / "volume", expected.read_bytes())
+    scratch = tmp_path / "scratch"
+    scratch.mkdir(mode=0o700)
+
+    def fail_write(_fd, _data):
+        raise OSError("injected write failure")
+
+    monkeypatch.setattr(os, "write", fail_write)
+    with pytest.raises(OSError, match="injected write failure"):
+        verify_bundle(volume, expected, materialize_to=scratch)
+    assert list(scratch.iterdir()) == []

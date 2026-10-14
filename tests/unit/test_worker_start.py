@@ -130,6 +130,10 @@ def test_required_model_manifest_failure_stops_before_worker(env):
 
 def test_successful_model_validation_uses_materialized_weights_before_worker(env):
     body = (
+        f'echo "$@" >> "{env["_counter"]}"\n'
+        'if [[ "$1" == "/opt/aividup/validate_rife_manifest.py" ]]; then '
+        'echo \'{"materialized_root":"/tmp/verified-rife/aividup-verified-test"}\'; exit 0; fi\n'
+        'if [[ "$1" == "-c" ]]; then echo "$3/aividup-verified-test"; exit 0; fi\n'
         f'echo "$@|${{AIVIDUP_RIFE_MODEL_DIR:-unset}}|'
         f'${{AIVIDUP_ENTRYPOINT_STARTED_UPTIME:-unset}}" >> "{env["_counter"]}"\n'
         "exit 0\n"
@@ -140,17 +144,25 @@ def test_successful_model_validation_uses_materialized_weights_before_worker(env
         AIVIDUP_PROCESSOR="pipeline",
         AIVIDUP_MODEL_MANIFEST_REQUIRED="1",
         AIVIDUP_MODEL_VOLUME_ROOT="/workspace/models/rife-v4.26",
-        AIVIDUP_VERIFIED_MODEL_ROOT="/tmp/verified-rife",
+        AIVIDUP_VERIFIED_MODEL_PARENT="/tmp/verified-rife",
         AIVIDUP_SKIP_GPU_CHECK="1",
     )
 
     assert r.returncode == 0
     invocations = calls(env)
-    assert len(invocations) == 2
-    assert "--materialize-to /tmp/verified-rife" in invocations[0]
-    assert invocations[1].startswith("-m src.worker ")
-    _, model_dir, entrypoint_started = invocations[1].split("|")
-    assert model_dir == "/tmp/verified-rife/train_log"
+    validator_invocation = next(
+        item
+        for item in invocations
+        if item.startswith("/opt/aividup/validate_rife_manifest.py ")
+    )
+    worker_invocation = next(
+        item
+        for item in invocations
+        if item.startswith("-m src.worker ") and "|" in item
+    )
+    assert "--materialize-to /tmp/verified-rife" in validator_invocation
+    _, model_dir, entrypoint_started = worker_invocation.split("|")
+    assert model_dir == "/tmp/verified-rife/aividup-verified-test/train_log"
     assert float(entrypoint_started) > 0
 
 

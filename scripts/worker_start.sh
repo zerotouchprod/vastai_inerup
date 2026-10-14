@@ -77,12 +77,14 @@ case "$MODEL_MANIFEST_REQUIRED" in
     validator="${AIVIDUP_MODEL_MANIFEST_VALIDATOR:-/opt/aividup/validate_rife_manifest.py}"
     volume_root="${AIVIDUP_MODEL_VOLUME_ROOT:-/workspace/models/rife-v4.26}"
     expected_manifest="${AIVIDUP_EXPECTED_MODEL_MANIFEST:-/opt/aividup/model-manifest.expected.json}"
-    verified_model_root="${AIVIDUP_VERIFIED_MODEL_ROOT:-/tmp/aividup-verified-models}"
-    validator_args=(--volume-root "$volume_root" --expected-manifest "$expected_manifest" --materialize-to "$verified_model_root")
+    verified_model_parent="${AIVIDUP_VERIFIED_MODEL_PARENT:-/tmp}"
+    validator_args=(--volume-root "$volume_root" --expected-manifest "$expected_manifest" --materialize-to "$verified_model_parent")
     if [[ -n "${AIVIDUP_MODEL_MANIFEST_SHA256:-}" ]]; then
       validator_args+=(--expected-sha256 "$AIVIDUP_MODEL_MANIFEST_SHA256")
     fi
-    "$PYTHON" "$validator" "${validator_args[@]}" || die 3 "model manifest validation failed - refusing to take work"
+    validation_output=$("$PYTHON" "$validator" "${validator_args[@]}") || die 3 "model manifest validation failed - refusing to take work"
+    verified_model_root=$(printf '%s' "$validation_output" | "$PYTHON" -c 'import json,pathlib,sys; value=json.load(sys.stdin); parent=pathlib.Path(sys.argv[1]); root=pathlib.Path(value.get("materialized_root", "")); assert root.is_absolute() and root.parent==parent and root.name.startswith("aividup-verified-"); print(root)' "$verified_model_parent") \
+      || die 3 "model validator did not return a private verified scratch path"
     AIVIDUP_RIFE_MODEL_DIR="$verified_model_root/train_log"
     export AIVIDUP_RIFE_MODEL_DIR
     ;;

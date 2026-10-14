@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Fail-closed validation and safe materialization of versioned RIFE volume artifacts."""
+
 from __future__ import annotations
 
 import argparse
@@ -8,7 +9,6 @@ import json
 import os
 import re
 import stat
-import tempfile
 import time
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -114,30 +114,142 @@ def _read_volume_file(
         os.close(file_fd)
 
 
-def _materialize_file(output_root: Path | str, relative_path: str, content: bytes) -> Path:
-    parts = _safe_parts(relative_path)
-    root = Path(output_root).expanduser()
-    if root.is_symlink():
-        raise ValueError("unsafe verified-model output root")
-    root.mkdir(parents=True, exist_ok=True)
-    root = root.resolve(strict=True)
-    target = root.joinpath(*parts)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    if target.is_symlink() or not target.parent.resolve(strict=True).is_relative_to(root):
-        raise ValueError("unsafe verified-model output path")
+def _open_or_create_private_scratch(
+    parent_path: Path | str, prefix: str
+) -> tuple[int, int, str, str]:
+    """Create an exclusively owned 0700 directory under an already trusted parent.
 
-    fd, temporary_name = tempfile.mkstemp(prefix=f".{target.name}.", dir=target.parent)
+    The parent is pinned by fd before creation. Other UIDs cannot enumerate or
+    mutate the resulting scratch tree; processes running as this UID are part
+    of the trusted worker boundary (see docs/RUNPOD_RIFE_PILOT.md).
+    """
+    parent = Path(parent_path).expanduser()
+    if not parent.is_absolute():
+        parent = Path.cwd() / parent
+    parent_fd = _open_volume_root(parent)
+    name = f"{prefix}{os.getpid()}-{os.urandom(16).hex()}"
     try:
-        with os.fdopen(fd, "wb") as output:
-            output.write(content)
-            output.flush()
-            os.fsync(output.fileno())
-        os.chmod(temporary_name, 0o444)
-        os.replace(temporary_name, target)
+        os.mkdir(name, mode=0o700, dir_fd=parent_fd)
+        scratch_fd = os.open(
+            name,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+            dir_fd=parent_fd,
+        )
+        info = os.fstat(scratch_fd)
+        if info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o700:
+            os.close(scratch_fd)
+            raise ValueError(
+                "verified-model scratch ownership or permissions are unsafe"
+            )
+        return scratch_fd, parent_fd, name, str(parent / name)
     except Exception:
-        Path(temporary_name).unlink(missing_ok=True)
+        os.close(parent_fd)
         raise
-    return target
+
+
+def _open_child_directory(parent_fd: int, name: str, *, create: bool) -> int:
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    if create:
+        try:
+            os.mkdir(name, mode=0o700, dir_fd=parent_fd)
+        except FileExistsError:
+            pass
+    try:
+        return os.open(name, flags, dir_fd=parent_fd)
+    except OSError as exc:
+        raise ValueError("unsafe verified-model output path") from exc
+
+
+def _write_verified_at(root_fd: int, parts: tuple[str, ...], content: bytes) -> str:
+    directory_fd = os.dup(root_fd)
+    file_fd = -1
+    try:
+        for component in parts[:-1]:
+            next_fd = _open_child_directory(directory_fd, component, create=True)
+            os.close(directory_fd)
+            directory_fd = next_fd
+        file_fd = os.open(
+            parts[-1],
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+            0o400,
+            dir_fd=directory_fd,
+        )
+        view = memoryview(content)
+        while view:
+            written = os.write(file_fd, view)
+            if written <= 0:
+                raise OSError("short write while materializing verified model")
+            view = view[written:]
+        os.fsync(file_fd)
+        os.fchmod(file_fd, 0o400)
+        os.close(file_fd)
+        file_fd = -1
+
+        # Re-open the directory entry without following links and hash the
+        # bytes actually present there, not just the source buffer.
+        check_fd = os.open(
+            parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=directory_fd
+        )
+        try:
+            actual = bytearray()
+            while True:
+                chunk = os.read(check_fd, 1024 * 1024)
+                if not chunk:
+                    break
+                actual.extend(chunk)
+            if not stat.S_ISREG(os.fstat(check_fd).st_mode) or _sha256(
+                bytes(actual)
+            ) != _sha256(content):
+                raise ValueError("verified model hash mismatch after materialization")
+        finally:
+            os.close(check_fd)
+        return "/".join(parts)
+    finally:
+        if file_fd >= 0:
+            os.close(file_fd)
+        os.close(directory_fd)
+
+
+def _remove_tree_contents(directory_fd: int) -> None:
+    for name in os.listdir(directory_fd):
+        info = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+        if stat.S_ISDIR(info.st_mode):
+            child_fd = os.open(
+                name,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                dir_fd=directory_fd,
+            )
+            try:
+                _remove_tree_contents(child_fd)
+            finally:
+                os.close(child_fd)
+            os.rmdir(name, dir_fd=directory_fd)
+        else:
+            os.unlink(name, dir_fd=directory_fd)
+
+
+def _materialize_file(
+    output_parent: Path | str, relative_path: str, content: bytes
+) -> tuple[Path, str]:
+    parts = _safe_parts(relative_path)
+    root_fd, parent_fd, root_name, root_path = _open_or_create_private_scratch(
+        output_parent, "aividup-verified-"
+    )
+    try:
+        relative = _write_verified_at(root_fd, parts, content)
+        return Path(root_path) / relative, root_path
+    except Exception:
+        # Remove only through the pinned directory FD; symlinks are unlinked,
+        # never traversed. A hostile concurrent change fails cleanup closed.
+        _remove_tree_contents(root_fd)
+        os.close(root_fd)
+        root_fd = -1
+        os.rmdir(root_name, dir_fd=parent_fd)
+        raise
+    finally:
+        if root_fd >= 0:
+            os.close(root_fd)
+        os.close(parent_fd)
 
 
 def verify_bundle(
@@ -155,14 +267,23 @@ def verify_bundle(
         raise ValueError("image-pinned model manifest is unavailable") from exc
     pinned_sha256 = _sha256(expected_bytes)
     if expected_sha256:
-        if not _SHA256_RE.fullmatch(expected_sha256) or pinned_sha256 != expected_sha256:
-            raise ValueError("expected manifest digest does not match the image-pinned manifest")
+        if (
+            not _SHA256_RE.fullmatch(expected_sha256)
+            or pinned_sha256 != expected_sha256
+        ):
+            raise ValueError(
+                "expected manifest digest does not match the image-pinned manifest"
+            )
 
     try:
         manifest: Any = json.loads(expected_bytes)
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise ValueError("image-pinned model manifest is invalid JSON") from exc
-    if not isinstance(manifest, dict) or type(manifest.get("schema_version")) is not int or manifest["schema_version"] != 1:
+    if (
+        not isinstance(manifest, dict)
+        or type(manifest.get("schema_version")) is not int
+        or manifest["schema_version"] != 1
+    ):
         raise ValueError("unsupported model manifest schema")
     if manifest.get("pipeline_version") != _PIPELINE_VERSION:
         raise ValueError("unexpected model pipeline version")
@@ -192,7 +313,9 @@ def verify_bundle(
         except ValueError as exc:
             raise ValueError("unsafe volume manifest path") from exc
         if volume_manifest != expected_bytes:
-            raise ValueError("mounted manifest does not match the image-pinned manifest")
+            raise ValueError(
+                "mounted manifest does not match the image-pinned manifest"
+            )
 
         model_bytes = _read_volume_file(
             root_fd,
@@ -218,9 +341,16 @@ def verify_bundle(
             "verified_files": verified_files,
         }
         if materialize_to is not None:
-            target = _materialize_file(materialize_to, relative_path, model_bytes)
-            result["materialized_files"] = [{"path": str(target), "sha256": model_sha256}]
-            result["verify_materialize_seconds"] = round(time.monotonic() - started_at, 6)
+            target, materialized_root = _materialize_file(
+                materialize_to, relative_path, model_bytes
+            )
+            result["materialized_root"] = materialized_root
+            result["materialized_files"] = [
+                {"path": str(target), "sha256": model_sha256}
+            ]
+            result["verify_materialize_seconds"] = round(
+                time.monotonic() - started_at, 6
+            )
         return result
     finally:
         os.close(root_fd)
@@ -234,7 +364,9 @@ def main() -> int:
         type=Path,
         default=Path("/opt/aividup/model-manifest.expected.json"),
     )
-    parser.add_argument("--expected-sha256", default=os.environ.get("AIVIDUP_MODEL_MANIFEST_SHA256", ""))
+    parser.add_argument(
+        "--expected-sha256", default=os.environ.get("AIVIDUP_MODEL_MANIFEST_SHA256", "")
+    )
     parser.add_argument("--materialize-to", type=Path)
     args = parser.parse_args()
     try:

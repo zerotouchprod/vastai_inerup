@@ -26,8 +26,7 @@ def test_runpod_pilot_image_requires_versioned_volume_and_pins_manifest():
     dockerfile = dockerfile_path.read_text()
 
     assert "AIVIDUP_MODEL_VOLUME_ROOT=/workspace/models/rife-v4.26" in dockerfile
-    assert "AIVIDUP_VERIFIED_MODEL_ROOT=/tmp/aividup-verified-models" in dockerfile
-    assert "AIVIDUP_RIFE_MODEL_DIR=/tmp/aividup-verified-models/train_log" in dockerfile
+    assert "AIVIDUP_VERIFIED_MODEL_PARENT=/tmp" in dockerfile
     assert "AIVIDUP_MODEL_MANIFEST_REQUIRED=1" in dockerfile
     assert "org.opencontainers.image.revision" in dockerfile
     assert "org.zerotouchprod.aividup.pipeline-version" in dockerfile

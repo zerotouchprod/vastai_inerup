@@ -110,3 +110,69 @@ def test_export_refuses_weights_that_do_not_match_manifest(tmp_path):
     with pytest.raises(ValueError, match="model.*(size|sha256) mismatch"):
         export_bundle(weights, manifest, output)
     assert not output.exists()
+
+
+def test_export_rejects_symlinked_final_weight_source(tmp_path):
+    weights, manifest = make_source(tmp_path)
+    alias = tmp_path / "weights-link.pkl"
+    alias.symlink_to(weights)
+
+    with pytest.raises(ValueError, match="symlinks are forbidden"):
+        export_bundle(alias, manifest, tmp_path / "bundle.tar.gz")
+
+
+def test_export_rejects_symlinked_final_manifest_source(tmp_path):
+    weights, manifest = make_source(tmp_path)
+    alias = tmp_path / "manifest-link.json"
+    alias.symlink_to(manifest)
+
+    with pytest.raises(ValueError, match="symlinks are forbidden"):
+        export_bundle(weights, alias, tmp_path / "bundle.tar.gz")
+
+
+def test_export_rejects_symlinked_parent_source_directory(tmp_path):
+    weights, manifest = make_source(tmp_path)
+    repo_alias = tmp_path / "repo-link"
+    repo_alias.symlink_to(weights.parents[1], target_is_directory=True)
+    aliased_weights = repo_alias / "train_log" / "flownet.pkl"
+
+    with pytest.raises(ValueError, match="symlinks are forbidden"):
+        export_bundle(aliased_weights, manifest, tmp_path / "bundle.tar.gz")
+
+
+def test_export_rejects_source_symlink_swap_before_open(tmp_path, monkeypatch):
+    import os
+
+    weights, manifest = make_source(tmp_path)
+    outside = tmp_path / "outside.pkl"
+    outside.write_bytes(weights.read_bytes())
+    real_open = os.open
+    swapped = False
+
+    def swap_source_before_open(path, flags, *args, **kwargs):
+        nonlocal swapped
+        if path == "flownet.pkl" and kwargs.get("dir_fd") is not None and not swapped:
+            weights.unlink()
+            weights.symlink_to(outside)
+            swapped = True
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", swap_source_before_open)
+    with pytest.raises(ValueError, match="symlinks are forbidden"):
+        export_bundle(weights, manifest, tmp_path / "bundle.tar.gz")
+
+
+def test_export_failure_cleans_temporary_bundle(tmp_path, monkeypatch):
+    import os
+
+    weights, manifest = make_source(tmp_path)
+    real_replace = os.replace
+
+    def fail_replace(*_args):
+        raise OSError("injected replace failure")
+
+    monkeypatch.setattr(os, "replace", fail_replace)
+    with pytest.raises(OSError, match="injected replace failure"):
+        export_bundle(weights, manifest, tmp_path / "bundle.tar.gz")
+    assert not list(tmp_path.glob(".bundle.tar.gz.*"))
+    monkeypatch.setattr(os, "replace", real_replace)
