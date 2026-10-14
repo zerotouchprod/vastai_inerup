@@ -15,10 +15,13 @@ on:
       - 'tests/unit/test_bootstrap_reporting.py'
       - 'contracts/worker-api-v1.json'
       - 'tests/unit/test_fps_planning.py'
+      - 'tests/test_worker_image_contract.py'
       - 'docker/Dockerfile.worker'
       - 'docker/Dockerfile.worker.dockerignore'
       - 'requirements-worker.txt'
       - 'scripts/worker_start.sh'
+      - 'scripts/cuda_runtime_preflight.py'
+      - 'scripts/worker_image_acceptance.py'
       - 'scripts/build_worker.sh'
   push:
     branches: [ main ]
@@ -33,10 +36,13 @@ on:
       - 'tests/unit/test_bootstrap_reporting.py'
       - 'contracts/worker-api-v1.json'
       - 'tests/unit/test_fps_planning.py'
+      - 'tests/test_worker_image_contract.py'
       - 'docker/Dockerfile.worker'
       - 'docker/Dockerfile.worker.dockerignore'
       - 'requirements-worker.txt'
       - 'scripts/worker_start.sh'
+      - 'scripts/cuda_runtime_preflight.py'
+      - 'scripts/worker_image_acceptance.py'
       - 'scripts/build_worker.sh'
       - 'RIFEv4.26_0921/**'
 jobs:
@@ -61,7 +67,9 @@ jobs:
           src/infrastructure/processors/rife/native_wrapper.py
           src/shared/fps_planning.py
       - name: Run worker and baseline FPS tests
-        run: python -m pytest tests/unit/test_worker.py tests/unit/test_worker_start.py tests/unit/test_bootstrap_reporting.py tests/unit/test_fps_planning.py -q
+        run: python -m pytest tests/unit/test_worker.py tests/unit/test_worker_start.py tests/unit/test_bootstrap_reporting.py tests/unit/test_fps_planning.py tests/test_worker_image_contract.py -q
+      - name: Run CPU-only worker image acceptance
+        run: python scripts/worker_image_acceptance.py
 
   image:
     needs: tests

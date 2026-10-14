@@ -64,8 +64,10 @@ RUN mkdir -p /opt/rife_models && ln -s /workspace/project/RIFEv4.26_0921/train_l
     && test -s /opt/rife_models/train_log/flownet.pkl
 COPY src/ /workspace/project/src/
 COPY pipeline_v2.py /workspace/project/pipeline_v2.py
+COPY scripts/cuda_runtime_preflight.py /opt/aividup/cuda_runtime_preflight.py
 COPY scripts/worker_start.sh /usr/local/bin/worker_start.sh
-RUN chmod +x /usr/local/bin/worker_start.sh && echo "${GIT_SHA}" > /etc/aividup_revision
+RUN chmod +x /opt/aividup/cuda_runtime_preflight.py /usr/local/bin/worker_start.sh \
+    && echo "${GIT_SHA}" > /etc/aividup_revision
 
 # Fail the BUILD (not a rented GPU) if anything the worker imports is missing.
 # CPU-only builder: CUDA is not available here, so only imports are checked, not model execution.

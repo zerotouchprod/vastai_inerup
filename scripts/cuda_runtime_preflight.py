@@ -46,8 +46,8 @@ def main() -> int:
     except Exception as exc:
         fail("cuda_tensor_probe_failed", error=str(exc), **evidence)
 
-    backend = os.environ.get("AIVIDUP_GPU_PROBE_BACKEND", "realesrgan").strip().lower()
-    if backend == "realesrgan":
+    backend = os.environ.get("AIVIDUP_GPU_PROBE_BACKEND", "all").strip().lower()
+    if backend in {"all", "realesrgan"}:
         try:
             import cv2
             import numpy as np
@@ -90,7 +90,7 @@ def main() -> int:
             raise
         except Exception as exc:
             fail("realesrgan_probe_failed", error=str(exc), **evidence)
-    elif backend == "rife":
+    if backend in {"all", "rife"}:
         try:
             import cv2
             import numpy as np
@@ -115,7 +115,7 @@ def main() -> int:
             raise
         except Exception as exc:
             fail("rife_probe_failed", error=str(exc), **evidence)
-    else:
+    if backend not in {"all", "realesrgan", "rife"}:
         fail("unknown_probe_backend", backend=backend, **evidence)
 
     evidence["decision"] = "ALLOW"

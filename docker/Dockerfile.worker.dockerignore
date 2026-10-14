@@ -6,6 +6,7 @@
 !RIFEv4.26_0921/
 !requirements-worker.txt
 !scripts/worker_start.sh
+!scripts/cuda_runtime_preflight.py
 **/__pycache__
 **/*.pyc
 **/.pytest_cache
