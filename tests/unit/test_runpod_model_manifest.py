@@ -269,6 +269,26 @@ def test_hash_mismatch_after_materialization_cleans_private_scratch(
     assert list(scratch.iterdir()) == []
 
 
+def test_scratch_open_failure_removes_new_directory(tmp_path, monkeypatch):
+    import os
+
+    expected = make_expected_manifest(tmp_path / "expected.json")
+    volume = make_volume(tmp_path / "volume", expected.read_bytes())
+    scratch = tmp_path / "scratch"
+    scratch.mkdir(mode=0o700)
+    real_open = os.open
+
+    def fail_open_scratch(path, flags, *args, **kwargs):
+        if isinstance(path, str) and path.startswith("aividup-verified-"):
+            raise OSError("injected scratch open failure")
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", fail_open_scratch)
+    with pytest.raises(OSError, match="injected scratch open failure"):
+        verify_bundle(volume, expected, materialize_to=scratch)
+    assert list(scratch.iterdir()) == []
+
+
 def test_materialization_write_error_cleans_private_scratch(tmp_path, monkeypatch):
     import os
 

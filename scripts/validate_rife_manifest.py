@@ -128,8 +128,11 @@ def _open_or_create_private_scratch(
         parent = Path.cwd() / parent
     parent_fd = _open_volume_root(parent)
     name = f"{prefix}{os.getpid()}-{os.urandom(16).hex()}"
+    scratch_fd = -1
+    created = False
     try:
         os.mkdir(name, mode=0o700, dir_fd=parent_fd)
+        created = True
         scratch_fd = os.open(
             name,
             os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
@@ -137,14 +140,25 @@ def _open_or_create_private_scratch(
         )
         info = os.fstat(scratch_fd)
         if info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o700:
-            os.close(scratch_fd)
             raise ValueError(
                 "verified-model scratch ownership or permissions are unsafe"
             )
-        return scratch_fd, parent_fd, name, str(parent / name)
+        result = (scratch_fd, parent_fd, name, str(parent / name))
+        scratch_fd = -1
+        parent_fd = -1
+        return result
     except Exception:
-        os.close(parent_fd)
+        if scratch_fd >= 0:
+            try:
+                _remove_tree_contents(scratch_fd)
+            finally:
+                os.close(scratch_fd)
+        if created:
+            os.rmdir(name, dir_fd=parent_fd)
         raise
+    finally:
+        if parent_fd >= 0:
+            os.close(parent_fd)
 
 
 def _open_child_directory(parent_fd: int, name: str, *, create: bool) -> int:
