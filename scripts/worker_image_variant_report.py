@@ -33,6 +33,53 @@ def saved_gzip_bytes(image: str) -> int:
     return total
 
 
+def oci_layer_report(image: str) -> dict[str, Any]:
+    """Read compressed OCI layer sizes when the image is registry-addressable."""
+    if "@" not in image:
+        return {
+            "available": False,
+            "reason": "local image reference has no immutable registry digest",
+        }
+    raw = subprocess.run(
+        ["docker", "buildx", "imagetools", "inspect", image, "--raw"],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    document = json.loads(raw.stdout)
+    selected = document
+    manifest_digest = image.split("@", 1)[1] if "@" in image else None
+    if "manifests" in document:
+        candidates = [
+            item for item in document["manifests"]
+            if item.get("platform", {}).get("os") == "linux"
+            and item.get("platform", {}).get("architecture") == "amd64"
+        ]
+        if len(candidates) != 1:
+            raise RuntimeError(f"expected one linux/amd64 manifest for {image}, got {len(candidates)}")
+        manifest_digest = candidates[0]["digest"]
+        platform_ref = f"{image.split('@', 1)[0]}@{manifest_digest}"
+        platform_raw = subprocess.run(
+            ["docker", "buildx", "imagetools", "inspect", platform_ref, "--raw"],
+            check=True,
+            text=True,
+            capture_output=True,
+        )
+        selected = json.loads(platform_raw.stdout)
+    layers = selected.get("layers", [])
+    sizes = [int(layer["size"]) for layer in layers]
+    if not manifest_digest or not sizes or sum(sizes) <= 0:
+        raise RuntimeError(f"invalid OCI manifest metrics for {image}")
+    return {
+        "available": True,
+        "platform": "linux/amd64",
+        "manifest_digest": manifest_digest,
+        "layer_count": len(sizes),
+        "layer_sizes_bytes": sizes,
+        "compressed_oci_layer_bytes": sum(sizes),
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--baseline", required=True)
@@ -49,6 +96,7 @@ def main() -> int:
                 "image": image,
                 "uncompressed_bytes": data.get("Size"),
                 "compressed_docker_save_gzip_bytes": saved_gzip_bytes(image),
+                "oci": oci_layer_report(image),
                 "entrypoint": data.get("Config", {}).get("Entrypoint"),
                 "cmd": data.get("Config", {}).get("Cmd"),
                 "rootfs_layers": len(data.get("RootFS", {}).get("Layers", [])),
