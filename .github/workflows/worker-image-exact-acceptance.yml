@@ -1,0 +1,54 @@
+name: Exact published worker image acceptance
+
+on:
+  pull_request:
+    paths:
+      - 'scripts/worker_image_container_acceptance.py'
+      - '.github/workflows/worker-image-exact-acceptance.yml'
+      - 'tests/test_worker_image_contract.py'
+      - 'tests/test_worker_container_acceptance.py'
+  workflow_dispatch:
+    inputs:
+      image:
+        description: 'Immutable GHCR image reference'
+        required: false
+        default: 'ghcr.io/zerotouchprod/aividup-worker:2578d59dc0f8179aaea1cde434e6f1dfa2e746fb@sha256:f0bf12f71b4961c54de4b8e218ca75aa28ffdd32e1371cd1fb7aa120539279ef'
+        type: string
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  exact-image-acceptance:
+    name: Pull, unpack, and run exact worker image
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      WORKER_IMAGE: ${{ inputs.image || 'ghcr.io/zerotouchprod/aividup-worker:2578d59dc0f8179aaea1cde434e6f1dfa2e746fb@sha256:f0bf12f71b4961c54de4b8e218ca75aa28ffdd32e1371cd1fb7aa120539279ef' }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run exact-image pull/unpack/runtime acceptance
+        run: |
+          python3 scripts/worker_image_container_acceptance.py \
+            --image "$WORKER_IMAGE" \
+            --evidence evidence/worker-image-acceptance.json
+
+      - name: Run worker contract tests
+        run: python3 -m pytest tests/test_worker_image_contract.py tests/test_worker_container_acceptance.py -q
+
+      - name: Upload acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: exact-worker-image-acceptance-${{ github.run_id }}
+          path: evidence/worker-image-acceptance.json
+          if-no-files-found: warn
