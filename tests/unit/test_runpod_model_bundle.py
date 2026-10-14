@@ -160,6 +160,62 @@ def test_export_rejects_symlinked_parent_source_directory(tmp_path):
         export_bundle(aliased_weights, manifest, tmp_path / "bundle.tar.gz")
 
 
+def test_export_does_not_follow_parent_symlink_swap_after_directory_open(
+    tmp_path, monkeypatch
+):
+    import os
+
+    weights, manifest = make_source(tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "flownet.pkl").write_bytes(b"attacker-controlled weights")
+    output = tmp_path / "bundle.tar.gz"
+    real_open = os.open
+    swap_state = {"parent_fd": None, "swapped": False}
+
+    def rename_parent_after_open(path, flags, *args, **kwargs):
+        fd = real_open(path, flags, *args, **kwargs)
+        if (
+            path == "train_log"
+            and flags & os.O_DIRECTORY
+            and kwargs.get("dir_fd") is not None
+            and not swap_state["swapped"]
+        ):
+            parent_fd = kwargs["dir_fd"]
+            swap_state["parent_fd"] = os.dup(parent_fd)
+            os.rename(
+                "train_log",
+                "train_log.original",
+                src_dir_fd=parent_fd,
+                dst_dir_fd=parent_fd,
+            )
+            os.symlink(outside, "train_log", target_is_directory=True, dir_fd=parent_fd)
+            swap_state["swapped"] = True
+        return fd
+
+    monkeypatch.setattr(os, "open", rename_parent_after_open)
+    try:
+        export_bundle(weights, manifest, output)
+    finally:
+        monkeypatch.setattr(os, "open", real_open)
+        parent_fd = swap_state["parent_fd"]
+        if parent_fd is not None:
+            os.unlink("train_log", dir_fd=parent_fd)
+            os.rename(
+                "train_log.original",
+                "train_log",
+                src_dir_fd=parent_fd,
+                dst_dir_fd=parent_fd,
+            )
+            os.close(parent_fd)
+
+    assert swap_state["swapped"]
+    with tarfile.open(output, "r:gz") as archive:
+        member = archive.extractfile("train_log/flownet.pkl")
+        assert member is not None
+        assert member.read() == b"pinned RIFE weights"
+
+
 def test_export_rejects_source_symlink_swap_before_open(tmp_path, monkeypatch):
     import os
 
