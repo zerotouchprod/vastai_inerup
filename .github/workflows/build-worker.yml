@@ -23,6 +23,10 @@ on:
       - 'scripts/cuda_runtime_preflight.py'
       - 'scripts/worker_image_acceptance.py'
       - 'scripts/build_worker.sh'
+      - 'scripts/worker_image_container_acceptance.py'
+      - 'scripts/worker_image_variant_report.py'
+      - 'docker/Dockerfile.worker.python-base.experiment'
+      - 'tests/test_worker_container_acceptance.py'
   push:
     branches: [ main ]
     paths:
@@ -44,6 +48,10 @@ on:
       - 'scripts/cuda_runtime_preflight.py'
       - 'scripts/worker_image_acceptance.py'
       - 'scripts/build_worker.sh'
+      - 'scripts/worker_image_container_acceptance.py'
+      - 'scripts/worker_image_variant_report.py'
+      - 'docker/Dockerfile.worker.python-base.experiment'
+      - 'tests/test_worker_container_acceptance.py'
       - 'RIFEv4.26_0921/**'
 jobs:
   tests:
@@ -67,7 +75,7 @@ jobs:
           src/infrastructure/processors/rife/native_wrapper.py
           src/shared/fps_planning.py
       - name: Run worker and baseline FPS tests
-        run: python -m pytest tests/unit/test_worker.py tests/unit/test_worker_start.py tests/unit/test_bootstrap_reporting.py tests/unit/test_fps_planning.py tests/test_worker_image_contract.py -q
+        run: python -m pytest tests/unit/test_worker.py tests/unit/test_worker_start.py tests/unit/test_bootstrap_reporting.py tests/unit/test_fps_planning.py tests/test_worker_image_contract.py tests/test_worker_container_acceptance.py -q
       - name: Run CPU-only worker image acceptance
         run: python scripts/worker_image_acceptance.py
 
@@ -96,3 +104,46 @@ jobs:
           tags: ghcr.io/zerotouchprod/aividup-worker:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  variant-experiment:
+    needs: tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Pull exact current baseline
+        run: docker pull --platform linux/amd64 ghcr.io/zerotouchprod/aividup-worker:2578d59dc0f8179aaea1cde434e6f1dfa2e746fb@sha256:f0bf12f71b4961c54de4b8e218ca75aa28ffdd32e1371cd1fb7aa120539279ef
+      - name: Build Python-base candidate without publishing
+        run: >-
+          docker build --platform linux/amd64
+          --file docker/Dockerfile.worker.python-base.experiment
+          --build-arg GIT_SHA=python-base-experiment
+          --tag aividup-worker:python-base-experiment .
+      - name: Compare sizes and metadata
+        run: >-
+          python scripts/worker_image_variant_report.py
+          --baseline ghcr.io/zerotouchprod/aividup-worker:2578d59dc0f8179aaea1cde434e6f1dfa2e746fb@sha256:f0bf12f71b4961c54de4b8e218ca75aa28ffdd32e1371cd1fb7aa120539279ef
+          --candidate aividup-worker:python-base-experiment
+          --output evidence/worker-image-variant-comparison.json
+      - name: Run candidate CPU passthrough acceptance
+        run: >-
+          python scripts/worker_image_container_acceptance.py
+          --image aividup-worker:python-base-experiment
+          --allow-local-tag
+          --evidence evidence/python-base-experiment-acceptance.json
+      - name: Upload variant evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: worker-image-variant-${{ github.run_id }}
+          path: evidence/
+          if-no-files-found: warn

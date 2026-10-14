@@ -1,0 +1,57 @@
+name: Worker image variant experiment
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  compare-python-base:
+    name: Compare current image with Python-base candidate
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      BASELINE_IMAGE: ghcr.io/zerotouchprod/aividup-worker:2578d59dc0f8179aaea1cde434e6f1dfa2e746fb@sha256:f0bf12f71b4961c54de4b8e218ca75aa28ffdd32e1371cd1fb7aa120539279ef
+      CANDIDATE_IMAGE: aividup-worker:python-base-experiment
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull exact current baseline
+        run: docker pull --platform linux/amd64 "$BASELINE_IMAGE"
+
+      - name: Build candidate locally without publishing
+        run: |
+          docker build --platform linux/amd64 \
+            --file docker/Dockerfile.worker.python-base.experiment \
+            --build-arg GIT_SHA=python-base-experiment \
+            --tag "$CANDIDATE_IMAGE" .
+
+      - name: Compare image size and metadata
+        run: |
+          python3 scripts/worker_image_variant_report.py \
+            --baseline "$BASELINE_IMAGE" \
+            --candidate "$CANDIDATE_IMAGE" \
+            --output evidence/worker-image-variant-comparison.json
+
+      - name: Run CPU passthrough acceptance on candidate image
+        run: |
+          python3 scripts/worker_image_container_acceptance.py \
+            --image "$CANDIDATE_IMAGE" \
+            --allow-local-tag \
+            --evidence evidence/python-base-experiment-acceptance.json
+
+      - name: Upload comparison evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: worker-image-variant-comparison-${{ github.run_id }}
+          path: evidence/
+          if-no-files-found: warn

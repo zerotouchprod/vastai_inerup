@@ -1,0 +1,69 @@
+# EXPERIMENT ONLY. Do not use this file for production deployment.
+# Compare against docker/Dockerfile.worker without the NVIDIA CUDA base image.
+FROM python:3.11-slim-bookworm
+
+ARG GIT_SHA=experiment
+LABEL org.opencontainers.image.title="aividup-worker-python-base-experiment" \
+      org.opencontainers.image.source="https://github.com/zerotouchprod/vastai_inerup" \
+      org.opencontainers.image.revision="${GIT_SHA}" \
+      org.opencontainers.image.description="Non-production size/runtime comparison candidate"
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ffmpeg tini curl wget ca-certificates \
+        libglib2.0-0 libgl1 libgomp1 \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:${PATH}"
+RUN pip install --upgrade pip setuptools wheel
+
+# Keep the same CUDA wheel channel and versions as the production candidate.
+RUN pip install torch==2.9.1 torchvision --index-url https://download.pytorch.org/whl/cu126
+
+COPY requirements-worker.txt /tmp/requirements-worker.txt
+RUN pip install -r /tmp/requirements-worker.txt
+
+RUN pip install --no-deps basicsr realesrgan \
+    && F="$(python -c 'import importlib.util as u; print(u.find_spec("basicsr").submodule_search_locations[0])')/data/degradations.py" \
+    && sed -i 's/from torchvision.transforms.functional_tensor import rgb_to_grayscale/from torchvision.transforms.functional import rgb_to_grayscale/' "$F" \
+    && ! grep -q functional_tensor "$F"
+
+RUN mkdir -p /opt/realesrgan_models && cd /opt/realesrgan_models \
+    && wget -q https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.1/RealESRGAN_x2plus.pth \
+    && wget -q https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth \
+    && test "$(stat -c %s RealESRGAN_x2plus.pth)" -gt 30000000 \
+    && test "$(stat -c %s RealESRGAN_x4plus.pth)" -gt 60000000
+
+WORKDIR /workspace/project
+COPY RIFEv4.26_0921/ /workspace/project/RIFEv4.26_0921/
+RUN mkdir -p /opt/rife_models && ln -s /workspace/project/RIFEv4.26_0921/train_log /opt/rife_models/train_log \
+    && test -s /opt/rife_models/train_log/flownet.pkl
+COPY src/ /workspace/project/src/
+COPY pipeline_v2.py /workspace/project/pipeline_v2.py
+COPY scripts/cuda_runtime_preflight.py /opt/aividup/cuda_runtime_preflight.py
+COPY scripts/worker_start.sh /usr/local/bin/worker_start.sh
+RUN chmod +x /opt/aividup/cuda_runtime_preflight.py /usr/local/bin/worker_start.sh \
+    && echo "${GIT_SHA}" > /etc/aividup_revision
+
+RUN python -c "import torch, torchvision, cv2, numpy, yaml, requests, boto3, ffmpeg, pydantic_settings; \
+from basicsr.archs.rrdbnet_arch import RRDBNet; from realesrgan import RealESRGANer; \
+import src.worker.runner, src.presentation.cli; print('worker imports ok, torch', torch.__version__, 'cuda', torch.version.cuda)" \
+    && ffmpeg -hide_banner -encoders 2>/dev/null | grep -q libx264
+
+ENV PYTHONPATH=/workspace/project \
+    USE_NATIVE_PROCESSORS=1 \
+    STRICT_FRAME_COUNT=1 \
+    NVIDIA_VISIBLE_DEVICES=all \
+    NVIDIA_DRIVER_CAPABILITIES=compute,utility,video \
+    TORCH_CUDA_ARCH_LIST="7.5;8.0;8.6;8.7;8.9;9.0;12.0" \
+    AIVIDUP_PROCESSOR=pipeline \
+    AIVIDUP_IDLE_EXIT_SECONDS=300 \
+    AIVIDUP_MAX_LIFETIME_SECONDS=14400
+
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/worker_start.sh"]
