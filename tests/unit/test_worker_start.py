@@ -107,6 +107,52 @@ def test_invalid_config_rejected(env, over):
     assert run(env, **over).returncode == 2
 
 
+def test_required_model_manifest_failure_stops_before_worker(env):
+    make_stub(Path(env["PYTHON"]), f'echo "$@" >> "{env["_counter"]}"\nexit 1\n')
+    r = run(
+        env,
+        AIVIDUP_PROCESSOR="pipeline",
+        AIVIDUP_MODEL_MANIFEST_REQUIRED="1",
+        AIVIDUP_MODEL_VOLUME_ROOT="/runpod-volume/models",
+        AIVIDUP_MODEL_MANIFEST_SHA256="a" * 64,
+        AIVIDUP_SKIP_GPU_CHECK="1",
+    )
+
+    assert r.returncode == 3
+    assert "model manifest validation failed" in r.stdout
+    invocations = calls(env)
+    assert len(invocations) == 1
+    assert "/opt/aividup/validate_rife_manifest.py" in invocations[0]
+    assert "--volume-root /runpod-volume/models" in invocations[0]
+    assert "--expected-sha256" in invocations[0]
+    assert "-m src.worker" not in invocations[0]
+
+
+def test_successful_model_validation_uses_materialized_weights_before_worker(env):
+    make_stub(
+        Path(env["PYTHON"]),
+        f'echo "$@|${{AIVIDUP_RIFE_MODEL_DIR:-unset}}|${{AIVIDUP_ENTRYPOINT_STARTED_UPTIME:-unset}}" >> "{env["_counter"]}"\nexit 0\n',
+    )
+    r = run(
+        env,
+        AIVIDUP_PROCESSOR="pipeline",
+        AIVIDUP_MODEL_MANIFEST_REQUIRED="1",
+        AIVIDUP_MODEL_VOLUME_ROOT="/workspace/models/rife-v4.26",
+        AIVIDUP_VERIFIED_MODEL_ROOT="/tmp/verified-rife",
+        AIVIDUP_SKIP_GPU_CHECK="1",
+    )
+
+    assert r.returncode == 0
+    invocations = calls(env)
+    assert len(invocations) == 2
+    assert "--materialize-to /tmp/verified-rife" in invocations[0]
+    assert invocations[1].startswith("-m src.worker ")
+    _, model_dir, entrypoint_started = invocations[1].split("|")
+    assert model_dir == "/tmp/verified-rife/train_log"
+    assert float(entrypoint_started) > 0
+
+
+
 def test_dry_run_prints_the_command_without_token(env):
     r = run(env, AIVIDUP_DRY_RUN="1", AIVIDUP_IDLE_EXIT_SECONDS="120")
     assert (

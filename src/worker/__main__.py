@@ -5,14 +5,37 @@ import os
 import signal
 import sys
 import uuid
+from pathlib import Path
 
 from src.worker.client import ControlPlaneClient
 from src.worker.processors import PROCESSORS
 from src.worker.runner import Worker
 
 
+def _started_at_from_uptime(
+    now_monotonic: float, entrypoint_uptime: float, current_uptime: float
+) -> float:
+    """Translate the shell entrypoint uptime into this process's monotonic clock."""
+    elapsed = max(0.0, current_uptime - entrypoint_uptime)
+    return now_monotonic - elapsed
+
+
+def _process_started_at() -> float:
+    now = time.monotonic()
+    raw_entrypoint_uptime = os.environ.get("AIVIDUP_ENTRYPOINT_STARTED_UPTIME")
+    if not raw_entrypoint_uptime:
+        return now
+    try:
+        current_uptime = float(Path("/proc/uptime").read_text().split()[0])
+        return _started_at_from_uptime(
+            now, float(raw_entrypoint_uptime), current_uptime
+        )
+    except (OSError, ValueError, IndexError):
+        return now
+
+
 def main() -> int:
-    started = time.monotonic()
+    started = _process_started_at()
     p = argparse.ArgumentParser(
         prog="python -m src.worker", description="AIVIDUP pull worker"
     )
