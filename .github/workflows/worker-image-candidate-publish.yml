@@ -50,7 +50,10 @@ jobs:
         run: |
           digest="$(jq -r '."containerimage.digest"' evidence/build-metadata.json)"
           test "$digest" != "null"
-          test "$digest" = sha256:*
+          case "$digest" in
+            sha256:*) ;;
+            *) echo "Unexpected digest: $digest" >&2; exit 1 ;;
+          esac
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
           echo "candidate_image=$REGISTRY_IMAGE@$digest" >> "$GITHUB_OUTPUT"
 
