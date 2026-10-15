@@ -1,0 +1,233 @@
+name: Publish layered worker on gpu-base (manual, protected)
+
+# Manual only. Builds docker/Dockerfile.worker.on-gpu-base at an explicit commit FROM an explicit gpu-base digest
+# and pushes ONLY ghcr.io/zerotouchprod/aividup-worker:layered-<sha>. Never touches staging/deploy config or other tags.
+# Downstream must use the recorded @sha256 ref. GPU smoke (RIFE + RealESRGAN) on that digest is still required.
+on:
+  workflow_dispatch:
+    inputs:
+      commit_sha:
+        description: "Full 40-char commit SHA (head/ancestor of gpu-base-arch or a PR #24 commit)"
+        required: true
+        type: string
+      base_image:
+        description: "ghcr.io/zerotouchprod/aividup-gpu-base@sha256:<64 hex> (published by gpu-base-publish)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+# One publish at a time across all runs of this workflow.
+concurrency:
+  group: worker-on-gpu-base-publish
+  cancel-in-progress: false
+
+env:
+  ALLOWED_BRANCH: gpu-base-arch
+  ALLOWED_PR: "24"
+  BASE_REPO_PATH: zerotouchprod/aividup-gpu-base
+  REPO_PATH: zerotouchprod/aividup-worker
+  IMAGE: ghcr.io/zerotouchprod/aividup-worker
+  DOCKERFILE: docker/Dockerfile.worker.on-gpu-base
+  ACCEPT: application/vnd.oci.image.index.v1+json,application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.v2+json,application/vnd.docker.distribution.manifest.list.v2+json
+
+jobs:
+  verify-inputs:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      actions: read
+      packages: read
+    env:
+      SHA: ${{ inputs.commit_sha }}
+      BASE_IMAGE: ${{ inputs.base_image }}
+      GH_TOKEN: ${{ github.token }}
+    outputs:
+      base_digest: ${{ steps.base.outputs.digest }}
+    steps:
+      - name: Validate input formats
+        run: |
+          [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "commit_sha must be a full lowercase 40-char SHA"; exit 1; }
+          [[ "$BASE_IMAGE" =~ ^ghcr\.io/zerotouchprod/aividup-gpu-base@sha256:[0-9a-f]{64}$ ]] \
+            || { echo "base_image must be ghcr.io/zerotouchprod/aividup-gpu-base@sha256:<64 hex>"; exit 1; }
+      - name: SHA must be on gpu-base-arch (head or ancestor) or a commit of PR #24
+        run: |
+          set -euo pipefail
+          R="${{ github.repository }}"
+          status=$(gh api "repos/$R/compare/$SHA...$ALLOWED_BRANCH" --jq .status 2>/dev/null || echo error)
+          echo "compare $SHA...$ALLOWED_BRANCH: $status"
+          if [[ "$status" == "identical" || "$status" == "ahead" ]]; then echo "OK: on $ALLOWED_BRANCH"; exit 0; fi
+          if gh api --paginate "repos/$R/pulls/$ALLOWED_PR/commits" --jq '.[].sha' | grep -qx "$SHA"; then
+            echo "OK: commit of PR #$ALLOWED_PR"; exit 0
+          fi
+          echo "REFUSED: $SHA is not on $ALLOWED_BRANCH and not a PR #$ALLOWED_PR commit"; exit 1
+      - name: Base digest must exist in ghcr (fail-closed)
+        id: base
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          D="${BASE_IMAGE#*@}"
+          RT=$(curl -fsS -u "${{ github.actor }}:$TOKEN" "https://ghcr.io/token?service=ghcr.io&scope=repository:$BASE_REPO_PATH:pull" | jq -r .token)
+          [ -n "$RT" ] && [ "$RT" != null ] || { echo "Could not obtain registry token; failing closed"; exit 1; }
+          code=$(curl -sS -o /dev/null -w '%{http_code}' -I -H "Authorization: Bearer $RT" -H "Accept: $ACCEPT" \
+            "https://ghcr.io/v2/$BASE_REPO_PATH/manifests/$D")
+          echo "HEAD $BASE_REPO_PATH/manifests/$D -> HTTP $code"
+          [ "$code" = 200 ] || { echo "Base digest not found or registry error ($code); failing closed"; exit 1; }
+          echo "digest=$D" >> "$GITHUB_OUTPUT"
+      - name: Base must have been produced by a successful gpu-base-publish run (recorded digest artifact)
+        run: |
+          set -euo pipefail
+          D="${BASE_IMAGE#*@}"
+          R="${{ github.repository }}"
+          for run in $(gh api --paginate "repos/$R/actions/workflows/gpu-base-publish.yml/runs?status=success&per_page=100" --jq '.workflow_runs[].id'); do
+            for art in $(gh api "repos/$R/actions/runs/$run/artifacts" --jq '.artifacts[]|select(.name|startswith("gpu-base-publish-"))|select(.expired|not)|.name'); do
+              rm -rf "$RUNNER_TEMP/a" && gh run download "$run" -R "$R" -n "$art" -D "$RUNNER_TEMP/a" >/dev/null 2>&1 || continue
+              rec="$RUNNER_TEMP/a/gpu-base-digest.json"
+              if [ -f "$rec" ] && { [ "$(jq -r .digest "$rec")" = "$D" ] || [ "$(jq -r .amd64_manifest_digest "$rec")" = "$D" ]; }; then
+                echo "OK: $D recorded by gpu-base-publish run $run ($art)"; jq . "$rec"; exit 0
+              fi
+            done
+          done
+          echo "REFUSED: no successful gpu-base-publish run recorded digest $D (or its artifact expired)"; exit 1
+
+  publish:
+    needs: verify-inputs
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    # Protected environment: manual approval by the required reviewer before this job starts.
+    environment: worker-publish
+    permissions:
+      contents: read
+      packages: write
+    env:
+      SHA: ${{ inputs.commit_sha }}
+      BASE_IMAGE: ${{ inputs.base_image }}
+      TAG: layered-${{ inputs.commit_sha }}
+    outputs:
+      worker_digest: ${{ steps.verify.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.commit_sha }}
+          fetch-depth: 1
+      - name: Verify checked-out commit and inputs
+        run: |
+          test "$(git rev-parse HEAD)" = "$SHA"
+          test -f "$DOCKERFILE"
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Refuse to overwrite an existing tag (fail-closed)
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          RT=$(curl -fsS -u "${{ github.actor }}:$TOKEN" "https://ghcr.io/token?service=ghcr.io&scope=repository:$REPO_PATH:pull" | jq -r .token)
+          [ -n "$RT" ] && [ "$RT" != null ] || { echo "Could not obtain registry token; failing closed"; exit 1; }
+          code=$(curl -sS -o /dev/null -w '%{http_code}' -I -H "Authorization: Bearer $RT" -H "Accept: $ACCEPT" \
+            "https://ghcr.io/v2/$REPO_PATH/manifests/$TAG")
+          echo "HEAD manifests/$TAG -> HTTP $code"
+          case "$code" in
+            404) echo "Tag absent; proceeding." ;;
+            200) echo "Tag $TAG already exists; not overwriting."; exit 1 ;;
+            *)   echo "Unexpected status $code; failing closed."; exit 1 ;;
+          esac
+      - name: Build and push layered-<sha> tag only
+        run: |
+          mkdir -p evidence
+          docker buildx build --platform linux/amd64 --provenance=false -f "$DOCKERFILE" \
+            --build-arg BASE_IMAGE="$BASE_IMAGE" --build-arg GIT_SHA="$SHA" \
+            --tag "$IMAGE:$TAG" --metadata-file evidence/build-metadata.json --push .
+      - name: Post-push digest verification (check+push is not atomic)
+        id: verify
+        run: |
+          set -euo pipefail
+          built=$(jq -r '."containerimage.digest"' evidence/build-metadata.json)
+          now=$(docker buildx imagetools inspect "$IMAGE:$TAG" --format '{{json .Manifest}}' | jq -r .digest)
+          echo "built=$built tag_now=$now"
+          [ "$built" = "$now" ] || { echo "Tag digest differs from what this run pushed; failing."; exit 1; }
+          echo "digest=$built" >> "$GITHUB_OUTPUT"
+      - name: Record digests and verify inherited base layers (blob digest + diff_id)
+        env:
+          WORKER_DIGEST: ${{ steps.verify.outputs.digest }}
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 - <<'PY'
+          import json, os, base64, urllib.request
+          def token(repo):
+              req = urllib.request.Request(f"https://ghcr.io/token?service=ghcr.io&scope=repository:{repo}:pull")
+              req.add_header("Authorization", "Basic " + base64.b64encode(f"{os.environ['GITHUB_ACTOR']}:{os.environ['TOKEN']}".encode()).decode())
+              return json.load(urllib.request.urlopen(req))["token"]
+          def get(repo, path, tok):
+              req = urllib.request.Request(f"https://ghcr.io/v2/{repo}/{path}", headers={"Authorization": f"Bearer {tok}", "Accept": os.environ["ACCEPT"]})
+              return json.load(urllib.request.urlopen(req))
+          def image(repo, digest):
+              tok = token(repo); m = get(repo, f"manifests/{digest}", tok)
+              if "manifests" in m:
+                  digest_amd = [x for x in m["manifests"] if x.get("platform", {}).get("architecture") == "amd64"][0]["digest"]
+                  m = get(repo, f"manifests/{digest_amd}", tok)
+              cfg = get(repo, f"blobs/{m['config']['digest']}", tok)
+              return [{"digest": l["digest"], "size": l["size"], "diff_id": d} for l, d in zip(m["layers"], cfg["rootfs"]["diff_ids"])]
+          base_d = os.environ["BASE_IMAGE"].split("@", 1)[1]; worker_d = os.environ["WORKER_DIGEST"]
+          b = image(os.environ["BASE_REPO_PATH"], base_d); w = image(os.environ["REPO_PATH"], worker_d)
+          n = len(b)
+          rows = [{"index": i + 1, "size": l["size"], "blob_same": w[i]["digest"] == l["digest"], "diff_id_same": w[i]["diff_id"] == l["diff_id"]} for i, l in enumerate(b)]
+          ok = n == 16 and len(w) > n and all(r["blob_same"] and r["diff_id_same"] for r in rows)
+          rec = {"worker": f"{os.environ['IMAGE']}@{worker_d}", "worker_tag": f"{os.environ['IMAGE']}:{os.environ['TAG']}",
+                 "base": os.environ["BASE_IMAGE"], "commit_sha": os.environ["SHA"], "base_layer_count": n,
+                 "worker_layer_count": len(w), "worker_total_compressed_bytes": sum(l["size"] for l in w),
+                 "worker_own_bytes": sum(l["size"] for l in w[n:]), "inherited_layers_identical": ok, "layers": rows}
+          json.dump(rec, open("evidence/worker-on-gpu-base-record.json", "w"), indent=2)
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as s:
+              s.write("### Layered worker published (NOT staging)\n")
+              s.write(f"- Worker: `{rec['worker']}` (tag `{rec['worker_tag']}`)\n- Base: `{rec['base']}`\n")
+              s.write(f"- Layers: {len(w)} ({rec['worker_total_compressed_bytes']:,} B); base layers {n}; worker-own {rec['worker_own_bytes']:,} B\n")
+              s.write(f"- First {n} layers equal base (blob + diff_id): **{'YES' if ok else 'NO'}**\n")
+              s.write("- Use the @sha256 ref. GPU smoke (RIFE + RealESRGAN) on this digest is still required.\n")
+          print(json.dumps(rec, indent=2))
+          raise SystemExit(0 if ok else "inherited layers differ from base (or base layer count != 16)")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: worker-on-gpu-base-publish-${{ inputs.commit_sha }}
+          path: evidence/
+
+  fresh-pull-check:
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: read
+    env:
+      REF: ghcr.io/zerotouchprod/aividup-worker@${{ needs.publish.outputs.worker_digest }}
+    steps:
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Pull by digest on fresh runner, inspect, entrypoint + CPU import check
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          docker pull "$REF"
+          docker image inspect "$REF" > evidence/worker-inspect.json
+          jq '{RepoDigests:.[0].RepoDigests, Size:.[0].Size, Entrypoint:.[0].Config.Entrypoint, Cmd:.[0].Config.Cmd, Labels:.[0].Config.Labels, Layers:(.[0].RootFS.Layers|length)}' evidence/worker-inspect.json | tee evidence/worker-inspect-summary.json
+          test "$(jq -c '.[0].Config.Entrypoint' evidence/worker-inspect.json)" = '["/usr/bin/tini","--","/usr/local/bin/worker_start.sh"]'
+          test "$(jq -r '.[0].Config.Labels["org.opencontainers.image.revision"]' evidence/worker-inspect.json)" = "${{ inputs.commit_sha }}"
+          docker run --rm --entrypoint python "$REF" -c "import torch, torchvision, src.worker.runner, src.presentation.cli; from realesrgan import RealESRGANer; print('imports ok', torch.__version__, torchvision.__version__)" | tee evidence/worker-import.txt
+          { echo "### Fresh-runner pull check"; echo "- \`$REF\`"; echo '```'; cat evidence/worker-inspect-summary.json evidence/worker-import.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: worker-on-gpu-base-pull-check-${{ inputs.commit_sha }}
+          path: evidence/
