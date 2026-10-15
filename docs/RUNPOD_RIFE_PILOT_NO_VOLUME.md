@@ -36,7 +36,7 @@ Resolve `image` to the new published `...@sha256:<digest>` after build; do not u
 }
 ```
 
-No `mounts` property means no Network Volume. The Pod needs an isolated test worker API URL/token and one explicitly supplied safe test job; those are intentionally absent pending operational approval.
+No `mounts` property means no Network Volume. The Pod needs an isolated test worker API URL/token and one explicitly supplied safe test job; those are intentionally absent pending operational approval. A fresh read-only Secure GPU catalog query on 2026-10-15 19:26 UTC returned seven GPU types for the queried EU countries, but **did not include RTX 3090**; the earlier RTX 3090/$0.50 quote is stale and must not be treated as current availability or pricing.
 
 ## Deadline caveat / launch gate
 
@@ -46,6 +46,7 @@ Before launch, also confirm current price/availability, calculate total expected
 
 ## Verified here
 
+- Published pilot image: `ghcr.io/zerotouchprod/aividup-worker-runpod-rife-pilot@sha256:c775c62ade2d1851074751d761195aa6ace2895ed51af268b5f877535117475b` (source commit `15fd8abe95ed349c0ae2b34fb1fa2031bf491d6d`, workflow run [38792911620](https://github.com/zerotouchprod/vastai_inerup/actions/runs/38792911620)). GH Actions test job passed; image build/push passed; public registry HEAD verified HTTP 200 and exact digest; image config labels match source and manifest SHA. Existing pilot image digest was not modified.
 - Release asset was downloaded end-to-end with HTTPS redirect; local staged bytes were `24,636,301` and SHA-256 matched exactly. No `.part` file remained; staging parent was mode `0700`.
-- Bootstrap tests exercise valid install, wrong hash, incomplete transfer, HTTP failure, size limit, symlinked parent, repeated invocation, and hand-off to existing worker_start with required manifest gate.
-- No image has been built or pushed yet; no Pod/volume has been created; no GPU inference or production job has run.
+- Bootstrap tests exercise valid install, wrong hash, incomplete transfer, HTTP failure, size limit, symlinked parent, repeated invocation, and hand-off to existing worker_start with required manifest gate: **8 passed**. Combined pilot tests: **66 passed**. CI run above passed the configured worker/test suite and CPU-only image acceptance.
+- No Pod or volume has been created; no GPU inference or production job has run.

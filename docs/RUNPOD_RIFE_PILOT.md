@@ -1,6 +1,8 @@
 # Runpod RIFE-only worker pilot (no production wiring)
 
-This branch prepares a compact AIVIDUP-compatible worker image and a versioned RIFE bundle. It does not select Runpod in Laravel, create a Pod or Network Volume, call the provider API, push an image, run a GPU workload, or change production.
+> **Historical volume-based design:** this document describes the superseded Network Volume pilot. The current no-volume checkpoint-bootstrap plan, image digest, catalog snapshot, and launch gates are in [`RUNPOD_RIFE_PILOT_NO_VOLUME.md`](RUNPOD_RIFE_PILOT_NO_VOLUME.md). Do not use this document as the current Pod recipe.
+
+This branch's original design was volume-based and excluded provider activity; that snapshot is superseded. The current no-volume bootstrap/image approach and present launch blockers are documented in `RUNPOD_RIFE_PILOT_NO_VOLUME.md`. No RunPod Pod/Network Volume has been created and no GPU render or production job has run.
 
 ## Artifact contract
 
