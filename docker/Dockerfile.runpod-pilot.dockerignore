@@ -12,6 +12,7 @@ RIFEv4.26_0921/train_log/*.pkl
 !scripts/worker_start.sh
 !scripts/cuda_runtime_preflight.py
 !scripts/validate_rife_manifest.py
+!scripts/runpod_checkpoint_bootstrap.py
 **/__pycache__
 **/*.pyc
 **/.pytest_cache

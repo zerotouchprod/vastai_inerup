@@ -9,10 +9,10 @@ on:
         type: boolean
         default: false
       worker_sha:
-        description: Pinned, already-verified worker source SHA
+        description: Exact source commit at the selected workflow ref (must equal that commit)
         required: true
         type: string
-        default: "02dad5508e3bc54ea54ed7ae3d0fbe18a3623401"
+        default: ""
   pull_request:
     branches: [ main ]
     paths:
@@ -40,6 +40,8 @@ on:
       - 'scripts/worker_start.sh'
       - 'scripts/cuda_runtime_preflight.py'
       - 'scripts/validate_rife_manifest.py'
+      - 'scripts/runpod_checkpoint_bootstrap.py'
+      - 'tests/unit/test_runpod_checkpoint_bootstrap.py'
       - 'scripts/export_runpod_rife_bundle.py'
       - 'scripts/build_runpod_pilot_worker.sh'
       - 'runpod/pilot/**'
@@ -71,6 +73,8 @@ on:
       - 'scripts/worker_start.sh'
       - 'scripts/cuda_runtime_preflight.py'
       - 'scripts/validate_rife_manifest.py'
+      - 'scripts/runpod_checkpoint_bootstrap.py'
+      - 'tests/unit/test_runpod_checkpoint_bootstrap.py'
       - 'scripts/export_runpod_rife_bundle.py'
       - 'scripts/build_runpod_pilot_worker.sh'
       - 'runpod/pilot/**'
@@ -99,6 +103,7 @@ jobs:
           src/infrastructure/processors/rife/native_wrapper.py
           src/shared/fps_planning.py
           scripts/validate_rife_manifest.py
+          scripts/runpod_checkpoint_bootstrap.py
       - name: Run worker, pilot contract, and model manifest tests
         run: >-
           python -m pytest
@@ -107,7 +112,8 @@ jobs:
           tests/test_worker_image_contract.py tests/test_runpod_worker_image_contract.py
           tests/test_runpod_rife_volume.py tests/test_runpod_rife_code_volume.py
           tests/test_runpod_rife_timing.py
-          tests/unit/test_runpod_model_manifest.py tests/unit/test_runpod_model_bundle.py -q
+          tests/unit/test_runpod_model_manifest.py tests/unit/test_runpod_model_bundle.py
+          tests/unit/test_runpod_checkpoint_bootstrap.py -q
       - name: Run CPU-only worker image acceptance
         run: python scripts/worker_image_acceptance.py
 
@@ -142,7 +148,7 @@ jobs:
     if: >-
       github.event_name == 'pull_request' ||
       (github.event_name == 'workflow_dispatch' && inputs.publish_runpod_pilot == true &&
-      inputs.worker_sha == '02dad5508e3bc54ea54ed7ae3d0fbe18a3623401')
+      inputs.worker_sha == github.sha)
     needs: tests
     runs-on: ubuntu-latest
     permissions:

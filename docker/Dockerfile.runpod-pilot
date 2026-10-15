@@ -30,7 +30,11 @@ RUN pip install --upgrade pip setuptools wheel \
 COPY requirements-runpod-pilot.txt /tmp/requirements-runpod-pilot.txt
 RUN pip install -r /tmp/requirements-runpod-pilot.txt
 
-# The default Runpod Network Volume mount is /workspace. Keep immutable worker code elsewhere.
+# Checkpoint is fetched by the pilot-only bootstrap from an asset-ID URL and SHA-verified.
+ARG RIFE_CHECKPOINT_URL=https://api.github.com/repos/zerotouchprod/vastai_inerup/releases/assets/644883676
+ENV AIVIDUP_RIFE_CHECKPOINT_URL=${RIFE_CHECKPOINT_URL}
+
+# The default Runpod Network Volume mount is /workspace. This pilot uses no Network Volume.
 WORKDIR /opt/aividup/project
 RUN mkdir -p /opt/aividup/project/RIFEv4.26_0921/train_log
 COPY RIFEv4.26_0921/model/ ./RIFEv4.26_0921/model/
@@ -41,10 +45,12 @@ COPY runpod/pilot/rife-v4.26/manifest.json /opt/aividup/model-manifest.expected.
 COPY scripts/validate_rife_manifest.py /opt/aividup/validate_rife_manifest.py
 COPY scripts/cuda_runtime_preflight.py /opt/aividup/cuda_runtime_preflight.py
 COPY scripts/worker_start.sh /opt/aividup/worker_start.sh
+COPY scripts/runpod_checkpoint_bootstrap.py /opt/aividup/runpod_checkpoint_bootstrap.py
 RUN test -n "${MODEL_MANIFEST_SHA256}" \
     && test "$(sha256sum /opt/aividup/model-manifest.expected.json | cut -d' ' -f1)" = "${MODEL_MANIFEST_SHA256}" \
     && python -c 'import json, os; actual=json.load(open("/opt/aividup/model-manifest.expected.json"))["pipeline_version"]; assert actual == os.environ["PIPELINE_VERSION"], "manifest pipeline version differs from image"' \
-    && chmod +x /opt/aividup/worker_start.sh /opt/aividup/cuda_runtime_preflight.py \
+    && chmod +x /opt/aividup/worker_start.sh /opt/aividup/cuda_runtime_preflight.py /opt/aividup/runpod_checkpoint_bootstrap.py \
+    && python -m py_compile /opt/aividup/runpod_checkpoint_bootstrap.py \
     && echo "${GIT_SHA}" > /etc/aividup_revision \
     && python -c "import torch, torchvision, cv2, numpy, yaml, requests, boto3, ffmpeg, pydantic_settings; import src.worker.runner, src.presentation.cli; from src.infrastructure.processors.rife.native import RIFENative" \
     && ffmpeg -hide_banner -encoders 2>/dev/null | grep -q libx264
@@ -68,4 +74,4 @@ ENV AIVIDUP_VERIFIED_MODEL_PARENT=/tmp
 ENV MODE=interp
 ENV AIVIDUP_MODEL_MANIFEST_SHA256=${MODEL_MANIFEST_SHA256}
 
-ENTRYPOINT ["/usr/bin/tini", "--", "/opt/aividup/worker_start.sh"]
+ENTRYPOINT ["/usr/bin/tini", "--", "python3", "/opt/aividup/runpod_checkpoint_bootstrap.py"]
