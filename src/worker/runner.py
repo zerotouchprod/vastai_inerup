@@ -149,9 +149,12 @@ class Worker:
                 timings  # processors may add finer phases (e.g. model_load_s)
             )
             task["_progress_callback"] = lambda current, total: progress.__setitem__(
-                "value", round(100.0 * current / total, 2) if total else 0.0
+                "value", round(current / total, 4) if total else 0.0
             )
             self._processor(task, chunk_in, chunk_out, lost)
+            # Persist the terminal processing progress before completion. The API
+            # contract is a fraction in [0, 1], not a percentage.
+            self._client.heartbeat(attempt_id, progress=progress["value"])
             timings["process_s"], t = round(time.monotonic() - t, 2), time.monotonic()
             if lost.is_set():
                 raise LeaseLost("lost during processing")

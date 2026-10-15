@@ -17,6 +17,7 @@ class FakeClient:
     def __init__(self, tasks=None, lose_after_beats=None):
         self.tasks = list(tasks or [])
         self.beats = 0
+        self.progresses = []
         self.completed = []
         self.failed = []
         self.lose_after_beats = lose_after_beats
@@ -26,6 +27,8 @@ class FakeClient:
 
     def heartbeat(self, attempt_id, progress=None):
         self.beats += 1
+        if progress is not None:
+            self.progresses.append(progress)
         if self.lose_after_beats is not None and self.beats > self.lose_after_beats:
             raise LeaseLost("reaped")
 
@@ -122,6 +125,22 @@ def test_processes_chunk_and_reports_output(source, tmp_path):
     ).stdout.strip()
     assert fps == "60/1"
     assert client.beats >= 1
+
+
+def test_processing_progress_uses_worker_api_fraction_and_reaches_one(source, tmp_path, monkeypatch):
+    def processor(task, src, dst, lost):
+        task["_progress_callback"](1, 1)
+        shutil.copy2(src, dst)
+
+    monkeypatch.setitem(P.PROCESSORS, "progress", processor)
+    client = FakeClient([task(source, tmp_path / "progress.mp4")])
+    Worker(client, "progress", workdir=tmp_path).run_once()
+
+    assert client.failed == []
+    assert client.completed
+    assert client.progresses
+    assert all(0 <= value <= 1 for value in client.progresses)
+    assert client.progresses[-1] == 1.0
 
 
 def test_no_task_returns_false(tmp_path):
