@@ -78,7 +78,7 @@ def test_worker_ci_trigger_paths_cover_pilot_and_existing_assets():
     assert workflow.count("'scripts/export_runpod_rife_bundle.py'") >= 2
 
 
-def test_pilot_build_is_build_only_and_does_not_push():
+def test_pilot_build_only_on_pr_and_publication_is_manual_opt_in():
     build_script = ROOT / "scripts/build_runpod_pilot_worker.sh"
     workflow = ROOT / ".github/workflows/build-worker.yml"
     assert build_script.is_file(), "a local build-only script must be provided"
@@ -88,12 +88,14 @@ def test_pilot_build_is_build_only_and_does_not_push():
     assert "docker build" in script
     assert "docker push" not in script
     assert "ghcr.io" not in script
-    assert "push: false" in workflow.read_text()
+    workflow_text = workflow.read_text()
+    assert "push: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_runpod_pilot == true }}" in workflow_text
+    assert "inputs.worker_sha == github.sha" in workflow_text
+    assert "if: github.event_name != 'workflow_dispatch'" in workflow_text
     script_text = build_script.read_text()
     assert "git rev-parse HEAD" in script_text
     assert "git rev-parse --short HEAD" not in script_text
-    workflow_text = workflow.read_text()
-    exact_sha = "${{ github.event.pull_request.head.sha || github.sha }}"
+    exact_sha = "${{ github.event_name == 'workflow_dispatch' && inputs.worker_sha || github.event.pull_request.head.sha || github.sha }}"
     assert f"ref: {exact_sha}" in workflow_text
     assert f"GIT_SHA={exact_sha}" in workflow_text
     assert f"aividup-worker-runpod-rife-pilot:{exact_sha}" in workflow_text
