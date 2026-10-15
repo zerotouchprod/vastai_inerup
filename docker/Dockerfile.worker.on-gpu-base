@@ -1,0 +1,30 @@
+# Worker image layered on the immutable gpu-base. BASE_IMAGE MUST be a digest reference (…@sha256:…).
+# Only app code + RIFE (code+weights) + revision are added here.
+ARG BASE_IMAGE=ghcr.io/zerotouchprod/aividup-gpu-base@sha256:0000000000000000000000000000000000000000000000000000000000000000
+FROM ${BASE_IMAGE}
+
+WORKDIR /workspace/project
+COPY RIFEv4.26_0921/ /workspace/project/RIFEv4.26_0921/
+RUN mkdir -p /opt/rife_models && ln -s /workspace/project/RIFEv4.26_0921/train_log /opt/rife_models/train_log \
+    && echo "45c7f74156704769dc9f85cfcaf8552e1e926f9399dcfa3a553dee88fac6f53f  /opt/rife_models/train_log/flownet.pkl" | sha256sum -c -
+COPY src/ /workspace/project/src/
+COPY pipeline_v2.py /workspace/project/pipeline_v2.py
+COPY scripts/cuda_runtime_preflight.py /opt/aividup/cuda_runtime_preflight.py
+COPY scripts/worker_start.sh /usr/local/bin/worker_start.sh
+RUN chmod +x /opt/aividup/cuda_runtime_preflight.py /usr/local/bin/worker_start.sh \
+    && cd /workspace/project && python -c "import src.worker.runner, src.presentation.cli; print('worker imports ok')"
+
+ARG GIT_SHA=unknown
+LABEL org.opencontainers.image.title="aividup-worker" \
+      org.opencontainers.image.source="https://github.com/zerotouchprod/vastai_inerup" \
+      org.opencontainers.image.revision="${GIT_SHA}"
+RUN echo "${GIT_SHA}" > /etc/aividup_revision
+
+ENV PYTHONPATH=/workspace/project \
+    USE_NATIVE_PROCESSORS=1 \
+    STRICT_FRAME_COUNT=1 \
+    AIVIDUP_PROCESSOR=pipeline \
+    AIVIDUP_IDLE_EXIT_SECONDS=300 \
+    AIVIDUP_MAX_LIFETIME_SECONDS=14400
+
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/worker_start.sh"]

@@ -1,0 +1,62 @@
+# aividup gpu-base: immutable, code-free runtime base for the GPU worker.
+# Contains: pinned Debian slim + apt runtime, hash-locked torch 2.9.1+cu126 / CUDA wheels, runtime deps,
+# basicsr/realesrgan (patched) and SHA-256-verified Real-ESRGAN weights.
+# Contains NO worker code and NO GIT_SHA, so its layers only change when this file or docker/locks change.
+# Worker images must reference it by digest: FROM ghcr.io/zerotouchprod/aividup-gpu-base@sha256:...
+FROM python:3.11-slim-bookworm@sha256:0a310eeecf4e1f5a0743f9a6520c90c88d089c903ca5fd283f501e3a805f5f89
+
+LABEL org.opencontainers.image.title="aividup-gpu-base" \
+      org.opencontainers.image.source="https://github.com/zerotouchprod/vastai_inerup" \
+      org.opencontainers.image.description="Code-free GPU runtime base (torch 2.9.1+cu126) for aividup worker"
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ffmpeg tini curl wget ca-certificates \
+        libglib2.0-0 libgl1 libgomp1 \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:${PATH}"
+
+COPY docker/locks/worker-bootstrap.lock /tmp/locks/worker-bootstrap.lock
+RUN pip install --require-hashes --no-deps -r /tmp/locks/worker-bootstrap.lock
+
+COPY docker/locks/worker-torch-cu126.lock /tmp/locks/worker-torch-cu126.lock
+RUN pip install --require-hashes --no-deps \
+        --index-url https://download.pytorch.org/whl/cu126 --extra-index-url https://pypi.org/simple \
+        -r /tmp/locks/worker-torch-cu126.lock
+
+COPY docker/locks/worker-runtime.lock /tmp/locks/worker-runtime.lock
+RUN pip install --require-hashes --no-deps -r /tmp/locks/worker-runtime.lock \
+    && pip check
+
+COPY docker/locks/worker-nodeps.lock /tmp/locks/worker-nodeps.lock
+RUN pip install --require-hashes --no-deps -r /tmp/locks/worker-nodeps.lock \
+    && F="$(python -c 'import importlib.util as u; print(u.find_spec("basicsr").submodule_search_locations[0])')/data/degradations.py" \
+    && sed -i 's/from torchvision.transforms.functional_tensor import rgb_to_grayscale/from torchvision.transforms.functional import rgb_to_grayscale/' "$F" \
+    && ! grep -q functional_tensor "$F"
+
+# Real-ESRGAN weights live in the base: upstream-immutable release assets (124 MB), SHA-256 pinned, independent of
+# worker code. Keeping them here means worker releases never re-ship them. RIFE weights stay in the worker image
+# because they are versioned in this repo next to the RIFE code they belong to.
+RUN mkdir -p /opt/realesrgan_models && cd /opt/realesrgan_models \
+    && wget -q https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.1/RealESRGAN_x2plus.pth \
+    && wget -q https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth \
+    && printf '%s  %s\n' \
+        49fafd45f8fd7aa8d31ab2a22d14d91b536c34494a5cfe31eb5d89c2fa266abb RealESRGAN_x2plus.pth \
+        4fa0d38905f75ac06eb49a7951b426670021be3018265fd191d2125df9d682f1 RealESRGAN_x4plus.pth \
+       | sha256sum -c -
+
+RUN python -c "import torch, torchvision, cv2, numpy, yaml, requests, boto3, ffmpeg, pydantic_settings; \
+from basicsr.archs.rrdbnet_arch import RRDBNet; from realesrgan import RealESRGANer; \
+print('gpu-base imports ok, torch', torch.__version__, 'cuda', torch.version.cuda)" \
+    && ffmpeg -hide_banner -encoders 2>/dev/null | grep -q libx264
+
+ENV NVIDIA_VISIBLE_DEVICES=all \
+    NVIDIA_DRIVER_CAPABILITIES=compute,utility,video \
+    TORCH_CUDA_ARCH_LIST="7.5;8.0;8.6;8.7;8.9;9.0;12.0"

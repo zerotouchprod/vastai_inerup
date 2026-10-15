@@ -1,0 +1,3 @@
+# Build context for docker/Dockerfile.gpu-base: lock files only (no worker code).
+*
+!docker/locks/*.lock
