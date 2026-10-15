@@ -2,6 +2,17 @@ name: Build worker image
 
 on:
   workflow_dispatch:
+    inputs:
+      publish_runpod_pilot:
+        description: Publish the public RIFE pilot image to GHCR (opt-in only)
+        required: true
+        type: boolean
+        default: false
+      worker_sha:
+        description: Pinned, already-verified worker source SHA
+        required: true
+        type: string
+        default: "02dad5508e3bc54ea54ed7ae3d0fbe18a3623401"
   pull_request:
     branches: [ main ]
     paths:
@@ -32,6 +43,7 @@ on:
       - 'scripts/export_runpod_rife_bundle.py'
       - 'scripts/build_runpod_pilot_worker.sh'
       - 'runpod/pilot/**'
+      - '.github/workflows/build-worker.yml'
   push:
     branches: [ main ]
     paths:
@@ -68,6 +80,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.worker_sha || github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-python@v7
         with:
           python-version: '3.10'
@@ -98,6 +112,7 @@ jobs:
         run: python scripts/worker_image_acceptance.py
 
   image:
+    if: github.event_name != 'workflow_dispatch'
     needs: tests
     runs-on: ubuntu-latest
     permissions:
@@ -124,32 +139,62 @@ jobs:
           cache-to: type=gha,mode=max
 
   runpod-pilot-image:
-    if: github.event_name != 'push'
+    if: >-
+      github.event_name == 'pull_request' ||
+      (github.event_name == 'workflow_dispatch' && inputs.publish_runpod_pilot == true &&
+      inputs.worker_sha == '02dad5508e3bc54ea54ed7ae3d0fbe18a3623401')
     needs: tests
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      packages: write
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.worker_sha || github.event.pull_request.head.sha || github.sha }}
+      - name: Verify source SHA
+        env:
+          EXPECTED_SHA: ${{ github.event_name == 'workflow_dispatch' && inputs.worker_sha || github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
       - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        if: github.event_name == 'workflow_dispatch' && inputs.publish_runpod_pilot == true
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - name: Pin the model manifest
         id: manifest
         run: echo "sha256=$(sha256sum runpod/pilot/rife-v4.26/manifest.json | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
-      - name: Build, but do not publish, the RIFE-only pilot image
+      - name: Build and optionally publish the pinned RIFE pilot image
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: .
           file: docker/Dockerfile.runpod-pilot
-          push: false
-          load: true
+          push: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_runpod_pilot == true }}
+          load: ${{ github.event_name != 'workflow_dispatch' }}
           build-args: |
-            GIT_SHA=${{ github.event.pull_request.head.sha || github.sha }}
+            GIT_SHA=${{ github.event_name == 'workflow_dispatch' && inputs.worker_sha || github.event.pull_request.head.sha || github.sha }}
             PIPELINE_VERSION=aividup-rife-interp-v1
             MODEL_MANIFEST_SHA256=${{ steps.manifest.outputs.sha256 }}
-          tags: aividup-worker-runpod-rife-pilot:${{ github.event.pull_request.head.sha || github.sha }}
+          tags: ghcr.io/zerotouchprod/aividup-worker-runpod-rife-pilot:${{ github.event_name == 'workflow_dispatch' && inputs.worker_sha || github.event.pull_request.head.sha || github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      - name: Make the package public to prevent private GHCR storage charges
+        if: github.event_name == 'workflow_dispatch' && inputs.publish_runpod_pilot == true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api --method PATCH /user/packages/container/aividup-worker-runpod-rife-pilot/visibility -f visibility=public
+          test "$(gh api /user/packages/container/aividup-worker-runpod-rife-pilot --jq .visibility)" = "public"
+      - name: Record immutable registry digest
+        if: github.event_name == 'workflow_dispatch' && inputs.publish_runpod_pilot == true
+        env:
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+          SOURCE_SHA: ${{ inputs.worker_sha }}
+        run: |
+          printf 'Image: ghcr.io/zerotouchprod/aividup-worker-runpod-rife-pilot@%s\nSource SHA: %s\n' "$IMAGE_DIGEST" "$SOURCE_SHA" >> "$GITHUB_STEP_SUMMARY"
       - name: Report image byte size
-        run: docker image inspect --format='image_bytes={{.Size}}' aividup-worker-runpod-rife-pilot:${{ github.event.pull_request.head.sha || github.sha }}
+        if: github.event_name != 'workflow_dispatch'
+        run: docker image inspect --format='image_bytes={{.Size}}' ghcr.io/zerotouchprod/aividup-worker-runpod-rife-pilot:${{ github.event.pull_request.head.sha || github.sha }}
