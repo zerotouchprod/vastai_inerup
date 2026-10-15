@@ -21,8 +21,11 @@ def manifest(reg, repo, ref):
         index_digest = digest
         amd = [x for x in m["manifests"] if x.get("platform", {}).get("architecture") == "amd64"][0]
         digest, m = get(f"http://{reg}/v2/{repo}/manifests/{amd['digest']}")
-    layers = [{"index": i + 1, "digest": l["digest"], "size": l["size"], "mediaType": l["mediaType"]} for i, l in enumerate(m["layers"])]
-    return {"ref": ref, "index_digest": index_digest, "manifest_digest": digest, "layer_count": len(layers),
+    cfg = json.load(urllib.request.urlopen(f"http://{reg}/v2/{repo}/blobs/{m['config']['digest']}"))
+    diff_ids = cfg.get("rootfs", {}).get("diff_ids", [])
+    layers = [{"index": i + 1, "digest": l["digest"], "diff_id": diff_ids[i] if i < len(diff_ids) else None,
+               "size": l["size"], "mediaType": l["mediaType"]} for i, l in enumerate(m["layers"])]
+    return {"ref": ref, "index_digest": index_digest, "manifest_digest": digest, "config_digest": m["config"]["digest"], "layer_count": len(layers),
             "total_compressed_bytes": sum(l["size"] for l in layers), "layers": layers}
 
 def main():

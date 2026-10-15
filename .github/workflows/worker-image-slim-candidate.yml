@@ -4,6 +4,7 @@ name: Worker image slim candidate (python:3.11-slim, pinned)
 # Scenarios:
 #   a1 = first build (GIT_SHA=sha), a2 = rebuild no changes, a3 = new GIT_SHA same builder (job same-builder)
 #   c1 = new GIT_SHA on clean builder importing GHA BuildKit cache exported by a1 (job clean-builder-gha-cache)
+#   rcA/rcB = clean builder A exports type=registry cache to in-job registry:2; clean builder B imports it (new GIT_SHA)
 #   r1/r2 = SOURCE_DATE_EPOCH=0 + rewrite-timestamp=true on two independent builders, no cache (job reproducible)
 on:
   workflow_dispatch:
@@ -135,8 +136,44 @@ jobs:
           name: slim-${{ matrix.builder }}
           path: evidence/
 
+  registry-cache-two-builders:
+    # Two independent clean buildx instances in one job; cache travels only via the in-job registry:2.
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    services:
+      registry: { image: "registry:2", ports: [ "5000:5000" ] }
+    steps:
+      - uses: actions/checkout@v7
+      - name: Free runner disk
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
+      - name: buildkitd config (plain-http local registry)
+        run: printf '[registry."localhost:5000"]\n  http = true\n  insecure = true\n' > /tmp/buildkitd.toml
+      - name: rcA clean builder A, export type=registry cache (mode=max)
+        run: |
+          docker buildx create --name builder-a --driver docker-container --driver-opt network=host --config /tmp/buildkitd.toml --bootstrap
+          docker buildx build --builder builder-a --platform linux/amd64 -f "$DOCKERFILE" --build-arg GIT_SHA=${{ github.sha }} \
+            --cache-to type=registry,ref=localhost:5000/aividup-worker-buildcache:slim,mode=max,registry.insecure=true \
+            --output type=image,name=$LOCAL:rcA,push=true,registry.insecure=true .
+          docker buildx rm builder-a
+          df -h /
+      - name: rcB independent clean builder B, import registry cache, new GIT_SHA
+        run: |
+          docker buildx create --name builder-b --driver docker-container --driver-opt network=host --config /tmp/buildkitd.toml --bootstrap
+          docker buildx build --builder builder-b --platform linux/amd64 -f "$DOCKERFILE" --build-arg GIT_SHA=rcsha-${{ github.run_id }} \
+            --cache-from type=registry,ref=localhost:5000/aividup-worker-buildcache:slim,registry.insecure=true \
+            --output type=image,name=$LOCAL:rcB,push=true,registry.insecure=true . 2>&1 | tee build-b.log
+          docker buildx rm builder-b
+      - name: Layer report
+        run: |
+          mkdir -p evidence && grep -E 'CACHED|^#[0-9]+ \[' build-b.log > evidence/rcB-cache-hits.txt || true
+          python3 scripts/registry_layer_report.py --repo aividup-worker-slim --tag rcA --tag rcB \
+            --output evidence/layers-registry-cache.json | tee evidence/layers-registry-cache.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: slim-registry-cache, path: evidence/ }
+
   compare:
-    needs: [ same-builder, clean-builder-gha-cache, reproducible ]
+    needs: [ same-builder, clean-builder-gha-cache, reproducible, registry-cache-two-builders ]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -146,7 +183,7 @@ jobs:
       - name: Compare
         run: |
           mkdir -p evidence
-          python3 scripts/layer_stability_compare.py --reference a1 --pair r1:r2 --pair a1:r1 \
+          python3 scripts/layer_stability_compare.py --reference a1 --pair a1:c1 --pair r1:r2 --pair a1:r1 --pair rcA:rcB \
             --output evidence/layer-stability.md all/layers-*.json
           { echo '### Slim candidate layer stability'; cat all/slim-candidate-versions.txt 2>/dev/null | sed 's/^/    /'; echo; cat evidence/layer-stability.md; } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
