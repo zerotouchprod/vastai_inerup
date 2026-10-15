@@ -128,6 +128,13 @@ def pipeline(task: Dict[str, Any], src: Path, dst: Path, lost: threading.Event) 
 
     p = task.get("params", {})
     config = ConfigLoader().load(overrides={"input_url": str(src)})
+    # The worker task is authoritative for processing mode and cancellation.
+    # Do not construct the orchestrator with the config-file default ("both").
+    config.mode = str(task.get("mode", config.mode))
+    if p.get("target_fps") is not None:
+        config.target_fps = p["target_fps"]
+    if p.get("interp_factor") is not None:
+        config.interp_factor = p["interp_factor"]
     config.b2_bucket = config.b2_key = config.b2_secret = (
         None  # never upload from the worker; it copies to `dst`
     )
@@ -157,6 +164,10 @@ def pipeline(task: Dict[str, Any], src: Path, dst: Path, lost: threading.Event) 
         target_fps=p.get("target_fps"),
         interp_factor=p.get("interp_factor", 2.0),
     )
+    if not isinstance(job.config, dict):
+        job.config = {}
+    job.config["cancel_event"] = lost
+    job.config["progress_callback"] = task.get("_progress_callback")
     result = orchestrator.process(job)
     if not getattr(result, "success", True) or not dst.exists():
         raise ProcessorError(
