@@ -1,13 +1,12 @@
 name: Worker image slim candidate (python:3.11-slim, pinned)
 
-# Separate candidate; never replaces the main aividup-worker tag and is not a staging/deploy target.
+# Measurement only. Never pushes to ghcr; never touches staging/deploy.
+# Scenarios:
+#   a1 = first build (GIT_SHA=sha), a2 = rebuild no changes, a3 = new GIT_SHA same builder (job same-builder)
+#   c1 = new GIT_SHA on clean builder importing GHA BuildKit cache exported by a1 (job clean-builder-gha-cache)
+#   r1/r2 = SOURCE_DATE_EPOCH=0 + rewrite-timestamp=true on two independent builders, no cache (job reproducible)
 on:
   workflow_dispatch:
-    inputs:
-      publish:
-        description: "Also push to ghcr as aividup-worker:slim-candidate-<sha> (separate tag)"
-        type: boolean
-        default: false
   pull_request:
     branches: [ main ]
     paths:
@@ -15,86 +14,136 @@ on:
       - 'docker/Dockerfile.worker.python-base.experiment.dockerignore'
       - 'docker/locks/**'
       - 'scripts/registry_layer_report.py'
+      - 'scripts/layer_stability_compare.py'
       - '.github/workflows/worker-image-slim-candidate.yml'
 
 permissions:
   contents: read
-  packages: write
+
+env:
+  DOCKERFILE: docker/Dockerfile.worker.python-base.experiment
+  LOCAL: localhost:5000/aividup-worker-slim
+  CACHE_SCOPE: slim-candidate-${{ github.run_id }}
 
 jobs:
-  build-measure:
+  same-builder:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     services:
-      registry:
-        image: registry:2
-        ports: [ "5000:5000" ]
-    env:
-      DOCKERFILE: docker/Dockerfile.worker.python-base.experiment
-      LOCAL: localhost:5000/aividup-worker-slim
+      registry: { image: "registry:2", ports: [ "5000:5000" ] }
     steps:
       - uses: actions/checkout@v7
       - name: Free runner disk
-        run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
-          df -h /
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
       - uses: docker/setup-buildx-action@v3
-        with:
-          driver-opts: network=host
-
-      - name: Build 1 (push to local registry:2)
+        with: { driver-opts: network=host }
+      - name: a1 first build (exports GHA cache)
         run: |
-          docker buildx build --platform linux/amd64 -f "$DOCKERFILE" \
-            --build-arg GIT_SHA=${{ github.sha }} \
-            --output type=image,name=$LOCAL:build1,push=true,registry.insecure=true .
-
-      - name: Trivial code-only change
-        run: echo "# slim-candidate layer-reuse probe" >> src/worker/__init__.py
-
-      - name: Build 2 (same builder, normal cache, code-only change)
+          docker buildx build --platform linux/amd64 -f "$DOCKERFILE" --build-arg GIT_SHA=${{ github.sha }} \
+            --cache-to type=gha,mode=max,scope=$CACHE_SCOPE \
+            --output type=image,name=$LOCAL:a1,push=true,registry.insecure=true .
+      - name: a2 rebuild, no changes
         run: |
-          docker buildx build --platform linux/amd64 -f "$DOCKERFILE" \
-            --build-arg GIT_SHA=${{ github.sha }} \
-            --output type=image,name=$LOCAL:build2,push=true,registry.insecure=true .
-          git checkout -- src/worker/__init__.py
-
-      - name: Per-layer compressed sizes + layer reuse
+          docker buildx build --platform linux/amd64 -f "$DOCKERFILE" --build-arg GIT_SHA=${{ github.sha }} \
+            --output type=image,name=$LOCAL:a2,push=true,registry.insecure=true .
+      - name: a3 new GIT_SHA, same builder
+        run: |
+          docker buildx build --platform linux/amd64 -f "$DOCKERFILE" --build-arg GIT_SHA=newsha-${{ github.run_id }} \
+            --output type=image,name=$LOCAL:a3,push=true,registry.insecure=true .
+      - name: Layer report
         run: |
           mkdir -p evidence
-          python3 scripts/registry_layer_report.py --repo aividup-worker-slim --tag build1 --tag build2 \
-            --output evidence/slim-candidate-layers.json | tee evidence/slim-candidate-layers.txt
-
+          python3 scripts/registry_layer_report.py --repo aividup-worker-slim --tag a1 --tag a2 --tag a3 \
+            --output evidence/layers-same-builder.json | tee evidence/layers-same-builder.txt
       - name: Versions inside image
         shell: bash
         run: |
           set -o pipefail
-          docker pull $LOCAL:build1
-          docker run --rm --entrypoint python $LOCAL:build1 -c "import sys, torch, torchvision, importlib.metadata as m; \
+          docker pull $LOCAL:a1
+          docker run --rm --entrypoint python $LOCAL:a1 -c "import sys, torch, torchvision, importlib.metadata as m; \
           print('python', sys.version.split()[0]); print('torch', torch.__version__, 'cuda', torch.version.cuda, 'cudnn', torch.backends.cudnn.version()); \
           print('torchvision', torchvision.__version__); print('pip', m.version('pip'), 'setuptools', m.version('setuptools'), 'wheel', m.version('wheel'))" \
             | tee evidence/slim-candidate-versions.txt
-          docker run --rm --entrypoint pip $LOCAL:build1 freeze --all > evidence/slim-candidate-pip-freeze.txt
-          docker image inspect $LOCAL:build1 --format '{{.Size}}' > evidence/slim-candidate-uncompressed-bytes.txt
-
+          docker run --rm --entrypoint cat $LOCAL:a3 /etc/aividup_revision | tee evidence/a3-revision.txt
+          docker run --rm --entrypoint pip $LOCAL:a1 freeze --all > evidence/slim-candidate-pip-freeze.txt
+          docker image inspect $LOCAL:a1 --format '{{.Size}}' > evidence/slim-candidate-uncompressed-bytes.txt
       - name: CPU passthrough acceptance
         run: |
-          python3 scripts/worker_image_container_acceptance.py --image "$LOCAL:build1" --allow-local-tag \
+          python3 scripts/worker_image_container_acceptance.py --image "$LOCAL:a1" --allow-local-tag \
             --evidence evidence/slim-candidate-acceptance.json
-
-      - name: Publish separate candidate tag (manual only)
-        if: github.event_name == 'workflow_dispatch' && inputs.publish
-        run: |
-          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-          docker tag $LOCAL:build1 ghcr.io/zerotouchprod/aividup-worker:slim-candidate-${{ github.sha }}
-          docker push ghcr.io/zerotouchprod/aividup-worker:slim-candidate-${{ github.sha }} | tee evidence/slim-candidate-ghcr-push.txt
-
-      - name: Summary
-        if: always()
-        run: |
-          { echo '### Slim candidate'; echo '```'; cat evidence/slim-candidate-versions.txt evidence/slim-candidate-layers.txt 2>/dev/null; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always()
-        with:
-          name: worker-slim-candidate-${{ github.run_id }}
-          path: evidence/
-          if-no-files-found: warn
+        with: { name: slim-same-builder, path: evidence/ }
+
+  clean-builder-gha-cache:
+    needs: same-builder
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    services:
+      registry: { image: "registry:2", ports: [ "5000:5000" ] }
+    steps:
+      - uses: actions/checkout@v7
+      - name: Free runner disk
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
+      - uses: docker/setup-buildx-action@v3
+        with: { driver-opts: network=host }
+      - name: c1 new GIT_SHA, clean builder, cache-from gha
+        run: |
+          docker buildx build --platform linux/amd64 -f "$DOCKERFILE" --build-arg GIT_SHA=cleansha-${{ github.run_id }} \
+            --cache-from type=gha,scope=$CACHE_SCOPE \
+            --output type=image,name=$LOCAL:c1,push=true,registry.insecure=true . 2>&1 | tee build.log
+          echo "CACHED steps: $(grep -c ' CACHED' build.log || true)"
+      - name: Layer report
+        run: |
+          mkdir -p evidence && grep -E 'CACHED|^#[0-9]+ \[' build.log > evidence/c1-cache-hits.txt || true
+          python3 scripts/registry_layer_report.py --repo aividup-worker-slim --tag c1 \
+            --output evidence/layers-clean-builder.json | tee evidence/layers-clean-builder.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: slim-clean-builder, path: evidence/ }
+
+  reproducible:
+    strategy:
+      fail-fast: false
+      matrix: { builder: [ r1, r2 ] }
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    services:
+      registry: { image: "registry:2", ports: [ "5000:5000" ] }
+    steps:
+      - uses: actions/checkout@v7
+      - name: Free runner disk
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
+      - uses: docker/setup-buildx-action@v3
+        with: { driver-opts: network=host }
+      - name: ${{ matrix.builder }} SOURCE_DATE_EPOCH=0 + rewrite-timestamp, no cache
+        run: |
+          docker buildx version; docker buildx inspect --bootstrap | grep -i buildkit || true
+          docker buildx build --platform linux/amd64 -f "$DOCKERFILE" --no-cache \
+            --build-arg GIT_SHA=${{ github.sha }} --build-arg SOURCE_DATE_EPOCH=0 \
+            --output type=image,name=$LOCAL:${{ matrix.builder }},push=true,registry.insecure=true,rewrite-timestamp=true .
+      - name: Layer report
+        run: |
+          mkdir -p evidence
+          python3 scripts/registry_layer_report.py --repo aividup-worker-slim --tag ${{ matrix.builder }} \
+            --output evidence/layers-${{ matrix.builder }}.json | tee evidence/layers-${{ matrix.builder }}.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: slim-${{ matrix.builder }}, path: evidence/ }
+
+  compare:
+    needs: [ same-builder, clean-builder-gha-cache, reproducible ]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v4
+        with: { pattern: slim-*, path: all, merge-multiple: true }
+      - name: Compare
+        run: |
+          mkdir -p evidence
+          python3 scripts/layer_stability_compare.py --reference a1 --pair r1:r2 --pair a1:r1 \
+            --output evidence/layer-stability.md all/layers-*.json
+          { echo '### Slim candidate layer stability'; cat all/slim-candidate-versions.txt 2>/dev/null | sed 's/^/    /'; echo; cat evidence/layer-stability.md; } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with: { name: slim-layer-stability, path: evidence/ }
