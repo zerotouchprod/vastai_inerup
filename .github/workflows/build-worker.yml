@@ -166,8 +166,44 @@ jobs:
       - name: Pin the model manifest
         id: manifest
         run: echo "sha256=$(sha256sum runpod/pilot/rife-v4.26/manifest.json | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+      - name: Check for an existing anonymously pullable SHA-tag
+        id: existing
+        if: github.event_name == 'workflow_dispatch' && inputs.publish_runpod_pilot == true
+        env:
+          IMAGE_REPO: zerotouchprod/aividup-worker-runpod-rife-pilot
+          SOURCE_SHA: ${{ inputs.worker_sha }}
+        run: |
+          python3 - <<'PY'
+          import json, os, urllib.error, urllib.parse, urllib.request
+
+          repo = os.environ['IMAGE_REPO']
+          source_sha = os.environ['SOURCE_SHA']
+          scope = urllib.parse.urlencode({'scope': f'repository:{repo}:pull'})
+          token = json.load(urllib.request.urlopen(f'https://ghcr.io/token?{scope}', timeout=30))['token']
+          headers = {
+              'Authorization': f'Bearer {token}',
+              'Accept': 'application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json',
+          }
+          request = urllib.request.Request(f'https://ghcr.io/v2/{repo}/manifests/{source_sha}', method='HEAD', headers=headers)
+          try:
+              response = urllib.request.urlopen(request, timeout=30)
+              digest = response.headers.get('Docker-Content-Digest', '')
+              if response.status != 200 or not digest.startswith('sha256:'):
+                  raise RuntimeError('Existing image response lacked an immutable digest')
+              exists = 'true'
+          except urllib.error.HTTPError as error:
+              if error.code not in (401, 404):
+                  raise
+              digest = ''
+              exists = 'false'
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'exists={exists}\n')
+              output.write(f'digest={digest}\n')
+          print(f'public_sha_tag_exists={exists}; digest={digest or "(none)"}')
+          PY
       - name: Build and optionally publish the pinned RIFE pilot image
         id: build
+        if: steps.existing.outputs.exists != 'true'
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -181,17 +217,46 @@ jobs:
           tags: ghcr.io/zerotouchprod/aividup-worker-runpod-rife-pilot:${{ github.event_name == 'workflow_dispatch' && inputs.worker_sha || github.event.pull_request.head.sha || github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-      - name: Make the package public to prevent private GHCR storage charges
+      - name: Resolve immutable registry digest
+        id: registry
         if: github.event_name == 'workflow_dispatch' && inputs.publish_runpod_pilot == true
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EXISTING_DIGEST: ${{ steps.existing.outputs.digest }}
+          BUILT_DIGEST: ${{ steps.build.outputs.digest }}
         run: |
-          gh api --method PATCH /user/packages/container/aividup-worker-runpod-rife-pilot/visibility -f visibility=public
-          test "$(gh api /user/packages/container/aividup-worker-runpod-rife-pilot --jq .visibility)" = "public"
+          digest="${EXISTING_DIGEST:-$BUILT_DIGEST}"
+          test -n "$digest"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+      - name: Verify anonymous registry digest
+        if: github.event_name == 'workflow_dispatch' && inputs.publish_runpod_pilot == true
+        env:
+          IMAGE_REPO: zerotouchprod/aividup-worker-runpod-rife-pilot
+          SOURCE_SHA: ${{ inputs.worker_sha }}
+          EXPECTED_DIGEST: ${{ steps.registry.outputs.digest }}
+        run: |
+          python3 - <<'PY'
+          import json, os, urllib.parse, urllib.request
+
+          repo = os.environ['IMAGE_REPO']
+          source_sha = os.environ['SOURCE_SHA']
+          expected_digest = os.environ['EXPECTED_DIGEST']
+          scope = urllib.parse.urlencode({'scope': f'repository:{repo}:pull'})
+          token = json.load(urllib.request.urlopen(f'https://ghcr.io/token?{scope}', timeout=30))['token']
+          headers = {
+              'Authorization': f'Bearer {token}',
+              'Accept': 'application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json',
+          }
+          request = urllib.request.Request(f'https://ghcr.io/v2/{repo}/manifests/{source_sha}', method='HEAD', headers=headers)
+          response = urllib.request.urlopen(request, timeout=30)
+          actual_digest = response.headers.get('Docker-Content-Digest', '')
+          if response.status != 200 or actual_digest != expected_digest:
+              raise SystemExit(f'Public manifest mismatch: expected={expected_digest}; actual={actual_digest}; status={response.status}')
+          print(f'public_manifest_status={response.status}; digest={actual_digest}; source_sha={source_sha}')
+          PY
       - name: Record immutable registry digest
         if: github.event_name == 'workflow_dispatch' && inputs.publish_runpod_pilot == true
         env:
-          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+          IMAGE_DIGEST: ${{ steps.registry.outputs.digest }}
           SOURCE_SHA: ${{ inputs.worker_sha }}
         run: |
           printf 'Image: ghcr.io/zerotouchprod/aividup-worker-runpod-rife-pilot@%s\nSource SHA: %s\n' "$IMAGE_DIGEST" "$SOURCE_SHA" >> "$GITHUB_STEP_SUMMARY"
