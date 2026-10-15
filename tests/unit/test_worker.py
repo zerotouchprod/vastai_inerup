@@ -127,7 +127,9 @@ def test_processes_chunk_and_reports_output(source, tmp_path):
     assert client.beats >= 1
 
 
-def test_processing_progress_uses_worker_api_fraction_and_reaches_one(source, tmp_path, monkeypatch):
+def test_processing_progress_uses_worker_api_fraction_and_reaches_one(
+    source, tmp_path, monkeypatch
+):
     def processor(task, src, dst, lost):
         task["_progress_callback"](1, 1)
         shutil.copy2(src, dst)
