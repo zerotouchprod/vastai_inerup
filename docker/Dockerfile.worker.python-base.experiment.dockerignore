@@ -1,0 +1,12 @@
+# Build context for docker/Dockerfile.worker.python-base.experiment (BuildKit picks this file up automatically).
+# Only what the worker needs is sent: src/, RIFE v4.26 code+weights, docker/locks/*.lock, scripts/worker_start.sh.
+*
+!src/
+!pipeline_v2.py
+!RIFEv4.26_0921/
+!docker/locks/*.lock
+!scripts/worker_start.sh
+!scripts/cuda_runtime_preflight.py
+**/__pycache__
+**/*.pyc
+**/.pytest_cache

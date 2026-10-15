@@ -1,6 +1,7 @@
 # EXPERIMENT ONLY. Do not use this file for production deployment.
 # Compare against docker/Dockerfile.worker without the NVIDIA CUDA base image.
-FROM python:3.11-slim-bookworm
+# Base pinned by index digest (resolved 2026-10-15) so the base layers are byte-stable.
+FROM python:3.11-slim-bookworm@sha256:0a310eeecf4e1f5a0743f9a6520c90c88d089c903ca5fd283f501e3a805f5f89
 
 ARG GIT_SHA=experiment
 LABEL org.opencontainers.image.title="aividup-worker-python-base-experiment" \
@@ -21,15 +22,23 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:${PATH}"
-RUN pip install --upgrade pip setuptools wheel
+# All Python deps are exact-pinned with hashes (docker/locks, regenerate via scripts/lock_worker_deps.sh)
+# so heavy layers stay byte-stable across code-only rebuilds. No unpinned `pip install --upgrade`.
+COPY docker/locks/worker-bootstrap.lock /tmp/locks/worker-bootstrap.lock
+RUN pip install --require-hashes --no-deps -r /tmp/locks/worker-bootstrap.lock
 
-# Keep the same CUDA wheel channel and versions as the production candidate.
-RUN pip install torch==2.9.1 torchvision --index-url https://download.pytorch.org/whl/cu126
+# torch 2.9.1+cu126 / torchvision 0.24.1+cu126 + nvidia-* cu12 wheels + triton (heavy layer).
+COPY docker/locks/worker-torch-cu126.lock /tmp/locks/worker-torch-cu126.lock
+RUN pip install --require-hashes --no-deps \
+        --index-url https://download.pytorch.org/whl/cu126 --extra-index-url https://pypi.org/simple \
+        -r /tmp/locks/worker-torch-cu126.lock
 
-COPY requirements-worker.txt /tmp/requirements-worker.txt
-RUN pip install -r /tmp/requirements-worker.txt
+COPY docker/locks/worker-runtime.lock /tmp/locks/worker-runtime.lock
+RUN pip install --require-hashes --no-deps -r /tmp/locks/worker-runtime.lock \
+    && pip check
 
-RUN pip install --no-deps basicsr realesrgan \
+COPY docker/locks/worker-nodeps.lock /tmp/locks/worker-nodeps.lock
+RUN pip install --require-hashes --no-deps -r /tmp/locks/worker-nodeps.lock \
     && F="$(python -c 'import importlib.util as u; print(u.find_spec("basicsr").submodule_search_locations[0])')/data/degradations.py" \
     && sed -i 's/from torchvision.transforms.functional_tensor import rgb_to_grayscale/from torchvision.transforms.functional import rgb_to_grayscale/' "$F" \
     && ! grep -q functional_tensor "$F"
