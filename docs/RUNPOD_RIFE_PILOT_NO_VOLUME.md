@@ -46,7 +46,8 @@ Before launch, also confirm current price/availability, calculate total expected
 
 ## Verified here
 
-- Published pilot image: `ghcr.io/zerotouchprod/aividup-worker-runpod-rife-pilot@sha256:c775c62ade2d1851074751d761195aa6ace2895ed51af268b5f877535117475b` (source commit `15fd8abe95ed349c0ae2b34fb1fa2031bf491d6d`, workflow run [38792911620](https://github.com/zerotouchprod/vastai_inerup/actions/runs/38792911620)). GH Actions test job passed; image build/push passed; public registry HEAD verified HTTP 200 and exact digest; image config labels match source and manifest SHA. Existing pilot image digest was not modified.
+- Published pilot image: `ghcr.io/zerotouchprod/aividup-worker-runpod-rife-pilot@sha256:c775c62ade2d1851074751d761195aa6ace2895ed51af268b5f877535117475b` (source commit `15fd8abe95ed349c0ae2b34fb1fa2031bf491d6d`, workflow run [38792911620](https://github.com/zerotouchprod/vastai_inerup/actions/runs/38792911620)). GH Actions test job passed (115 tests); image build/push passed; public registry HEAD verified HTTP 200 and exact digest; image config labels match source and manifest SHA.
+- Previous pilot digest `sha256:8c82f6886c8e19d5cb540ddacccd060bd1c4119acaf98bba70237a11155ee562` and original source-SHA tag still resolve to that same digest (anonymous registry HEAD 200); it was not modified.
 - Release asset was downloaded end-to-end with HTTPS redirect; local staged bytes were `24,636,301` and SHA-256 matched exactly. No `.part` file remained; staging parent was mode `0700`.
 - Bootstrap tests exercise valid install, wrong hash, incomplete transfer, HTTP failure, size limit, symlinked parent, repeated invocation, and hand-off to existing worker_start with required manifest gate: **8 passed**. Combined pilot tests: **66 passed**. CI run above passed the configured worker/test suite and CPU-only image acceptance.
 - No Pod or volume has been created; no GPU inference or production job has run.
