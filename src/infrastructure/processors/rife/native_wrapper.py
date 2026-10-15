@@ -78,6 +78,8 @@ class RIFENativeWrapper(BaseProcessor):
         # Get options
         factor = options.get('factor', 2.0)
         is_intermediate = options.get('_intermediate_stage', False)
+        cancel_event = options.get('cancel_event')
+        progress_callback = options.get('progress_callback')
 
         if is_intermediate:
             self._logger.info(f"Running RIFE (Native Python, intermediate stage): factor={factor}")
@@ -100,13 +102,19 @@ class RIFENativeWrapper(BaseProcessor):
             if target_fps and source_fps:
                 # Arbitrary (non-integer) FPS conversion with fractional timesteps
                 output_frames = self._processor.process_frames_to_fps(
-                    input_frames, output_dir, float(source_fps), float(target_fps)
+                    input_frames,
+                    output_dir,
+                    float(source_fps),
+                    float(target_fps),
+                    progress_callback=progress_callback,
+                    cancel_event=cancel_event,
                 )
             else:
                 output_frames = self._processor.process_frames(
                     input_frames,
                     output_dir,
-                    progress_callback=None  # TODO: Add progress tracking
+                    progress_callback=progress_callback,
+                    cancel_event=cancel_event,
                 )
 
             if not output_frames:

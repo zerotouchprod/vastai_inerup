@@ -313,6 +313,8 @@ class VideoProcessingOrchestrator:
             options = {'factor': int(job.interp_factor), 'job_id': job.job_id}
             if isinstance(job.config, dict):
                 options.update(job.config.get('fractional_fps') or {})
+                options['cancel_event'] = job.config.get('cancel_event')
+                options['progress_callback'] = job.config.get('progress_callback')
                 options['b2_output_key'] = job.config.get('b2_output_key')
                 options['b2_bucket'] = job.config.get('b2_bucket')
             result = self._interpolator.process(frame_paths, output_dir, **options)

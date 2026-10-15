@@ -679,7 +679,8 @@ class RIFENative:
         self,
         input_frames: List[Path],
         output_dir: Path,
-        progress_callback: Optional[callable] = None
+        progress_callback: Optional[callable] = None,
+        cancel_event=None,
     ) -> List[Path]:
         """
         Interpolate frames using RIFE.
@@ -711,6 +712,8 @@ class RIFENative:
 
         # Process pairs
         for idx in range(total_pairs):
+            if cancel_event is not None and cancel_event.is_set():
+                raise RuntimeError("interpolation cancelled")
             frame1_path = input_frames[idx]
             frame2_path = input_frames[idx + 1]
 
@@ -790,6 +793,8 @@ class RIFENative:
         output_dir: Path,
         src_fps: float,
         target_fps: float,
+        progress_callback: Optional[callable] = None,
+        cancel_event=None,
     ) -> List[Path]:
         """
         Resample a frame sequence to an arbitrary target FPS (e.g. 24 -> 60).
@@ -815,6 +820,8 @@ class RIFENative:
         start_time = time.time()
         cache_idx, cache = -1, None  # tensors of the current source pair
         for out_idx, (i, frac) in enumerate(plan, 1):
+            if cancel_event is not None and cancel_event.is_set():
+                raise RuntimeError("interpolation cancelled")
             out_path = output_dir / f"frame_{out_idx:06d}.png"
             if frac == 0.0:
                 try:
@@ -829,6 +836,8 @@ class RIFENative:
                 mid = self._interpolate_pair(cache[0], cache[1], 0, timesteps=[frac])[0]
                 self._save_tensor_as_frame(mid, out_path)
             output_frames.append(out_path)
+            if progress_callback and (out_idx % 10 == 0 or out_idx == len(plan)):
+                progress_callback(out_idx, len(plan))
             if out_idx % 50 == 0 or out_idx == len(plan):
                 elapsed = time.time() - start_time
                 self.logger.info(f"Frame {out_idx}/{len(plan)} | {out_idx / elapsed:.2f} fps" if elapsed > 0 else f"Frame {out_idx}/{len(plan)}")

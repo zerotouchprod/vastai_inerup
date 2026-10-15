@@ -102,11 +102,12 @@ class Worker:
         attempt_id, task = claimed["attempt_id"], claimed["task"]
         interval = self._hb_override or max(1.0, claimed.get("lease_seconds", 300) / 4)
         lost, stop = threading.Event(), threading.Event()
+        progress = {"value": 0.0}
 
         def beat() -> None:
             while not stop.wait(interval):
                 try:
-                    self._client.heartbeat(attempt_id)
+                    self._client.heartbeat(attempt_id, progress=progress["value"])
                 except LeaseLost:
                     log.warning("lease lost for %s - aborting", attempt_id)
                     lost.set()
@@ -146,6 +147,9 @@ class Worker:
             timings["cut_s"], t = round(time.monotonic() - t, 2), time.monotonic()
             task["_timings"] = (
                 timings  # processors may add finer phases (e.g. model_load_s)
+            )
+            task["_progress_callback"] = lambda current, total: progress.__setitem__(
+                "value", round(100.0 * current / total, 2) if total else 0.0
             )
             self._processor(task, chunk_in, chunk_out, lost)
             timings["process_s"], t = round(time.monotonic() - t, 2), time.monotonic()
