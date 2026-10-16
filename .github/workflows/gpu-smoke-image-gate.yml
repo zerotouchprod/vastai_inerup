@@ -51,9 +51,11 @@ jobs:
         run: |
           docker buildx build \
             --progress=plain \
-            --output type=oci,dest=/tmp/gpu-smoke.oci.tar \
+            --output type=oci,dest="$GITHUB_WORKSPACE/evidence/gpu-smoke.oci.tar" \
             --file docker/Dockerfile.gpu-smoke \
             . 2>&1 | tee evidence/docker-oci-build.log
+          test -s "$GITHUB_WORKSPACE/evidence/gpu-smoke.oci.tar"
+          ls -lh "$GITHUB_WORKSPACE/evidence/gpu-smoke.oci.tar"
 
       - name: Verify inherited compressed layers and diff IDs
         run: |
@@ -62,7 +64,7 @@ jobs:
           docker image inspect "$BASE_IMAGE" --format '{{json .RootFS.Layers}}' > /tmp/base-diff-ids.json
           docker image inspect "$SMOKE_IMAGE" --format '{{json .RootFS.Layers}}' > /tmp/smoke-diff-ids.json
           python3 - <<'PY'
-          import json, tarfile
+          import json, os, tarfile
           from pathlib import Path
 
           base = json.loads(Path('/tmp/base-manifest.json').read_text())
@@ -70,7 +72,7 @@ jobs:
               amd64 = next(m for m in base['manifests'] if m.get('platform', {}).get('architecture') == 'amd64')
               raise SystemExit(f'base reference unexpectedly returned an index; resolve descriptor {amd64["digest"]} before comparing')
           base_layers = [x['digest'] for x in base['layers']]
-          with tarfile.open('/tmp/gpu-smoke.oci.tar') as tf:
+          with tarfile.open(Path(os.environ['GITHUB_WORKSPACE']) / 'evidence/gpu-smoke.oci.tar') as tf:
               index = json.loads(tf.extractfile('index.json').read())
               manifest_desc = index['manifests'][0]
               manifest_path = 'blobs/' + manifest_desc['digest'].replace(':', '/')
