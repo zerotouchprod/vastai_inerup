@@ -192,6 +192,41 @@ def test_input_is_served_only_from_the_configured_file(plane):
 # ---------------------------------------------------------------------------
 
 
+def test_sink_persists_and_redacts_preflight_diagnostics(tmp_path):
+    import requests
+
+    source = make_synthetic_input(tmp_path / "input.mp4", seconds=2)
+    output_dir = tmp_path / "worker-output"
+    instance = IsolatedControlPlane(
+        token=TOKEN,
+        input_path=source,
+        port=free_port(),
+        evidence_path=tmp_path / "evidence.json",
+        output_dir=output_dir,
+    )
+    instance.start()
+    try:
+        raw = b"CUDA_RUNTIME_PREFLIGHT_PASS token=" + TOKEN.encode() + b"\nRIFE frame probe PASS\n"
+        response = requests.put(
+            f"{instance.base_url}/sink/diagnostics-boot-1",
+            data=raw,
+            headers={"Authorization": f"Bearer {TOKEN}", "Content-Type": "text/plain"},
+            timeout=10,
+        )
+        assert response.status_code == 200
+        evidence = instance.evidence()
+        assert len(evidence["outputs"]) == 1
+        saved = Path(evidence["outputs"][0]["file"])
+        sanitized = b"CUDA_RUNTIME_PREFLIGHT_PASS token=[REDACTED]\nRIFE frame probe PASS\n"
+        assert saved.is_file()
+        assert saved.read_bytes() == sanitized
+        assert saved.stat().st_mode & 0o777 == 0o600
+        assert evidence["outputs"][0]["bytes"] == len(sanitized)
+        assert evidence["outputs"][0]["sha256"] == hashlib.sha256(sanitized).hexdigest()
+    finally:
+        instance.stop()
+
+
 def test_sink_requires_the_bearer_token(plane):
     import requests
 

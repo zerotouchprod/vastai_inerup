@@ -129,6 +129,19 @@ def test_pod_args_bootstrap_path_exists_inside_the_immutable_image():
     assert "/opt/aividup-runpod-pilot/" not in cmd
 
 
+def test_pod_args_upload_cuda_rife_preflight_stdout_stderr_before_job_claim():
+    args_file = Path(__file__).resolve().parents[2] / "ops" / "runpod-pilot" / "pod-args.json"
+    args = json.loads(controller_module.load_pod_args_file(args_file))
+    cmd = args["cmd"][0]
+    assert "python3-log-wrapper" in cmd
+    assert "/opt/aividup/cuda_runtime_preflight.py" in cmd
+    assert '2> "$AIVIDUP_DIAGNOSTIC_STDERR"' in cmd
+    assert 'AIVIDUP_DIAGNOSTIC_KEY="diagnostics-${AIVIDUP_BOOT_ID}-' in cmd
+    assert "/api/worker/sink/$AIVIDUP_DIAGNOSTIC_KEY" in cmd
+    assert cmd.index("HTTP_STATUS") < cmd.index("python3-log-wrapper")
+    assert cmd.index("python3-log-wrapper") < cmd.index("runpod_checkpoint_bootstrap.py")
+
+
 def test_dry_run_redacts_pod_secrets_and_never_posts(capsys, tmp_path):
     env_file = tmp_path / "pod.env"
     env_file.write_text("\n".join(f"{k}={v}" for k, v in POD_ENV.items()) + "\n")

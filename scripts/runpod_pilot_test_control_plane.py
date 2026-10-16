@@ -26,6 +26,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import secrets
 import shutil
 import subprocess
@@ -179,16 +180,20 @@ class _Handler(BaseHTTPRequestHandler):
         if not self._bearer():
             self._send(401, {"error": "unauthorized"})
             return
+        output_key = path.removeprefix("/api/worker/sink/")
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", output_key):
+            self._send(400, {"error": "invalid output key"})
+            return
         try:
             length = int(self.headers.get("Content-Length") or 0)
         except ValueError:
             self._send(400, {"error": "invalid length"})
             return
-        data = self.rfile.read(length) if length > 0 else b""
         if self.plane.max_output_bytes and length > self.plane.max_output_bytes:
             self._send(413, {"error": "output too large"})
             return
-        self.plane.record_output(str(uuid.uuid4()), data)
+        data = self.rfile.read(length) if length > 0 else b""
+        self.plane.record_output(output_key, data)
         self._send(200, {"ok": True})
 
     # -- route implementations ----------------------------------------
@@ -286,6 +291,7 @@ class IsolatedControlPlane:
         start_seconds: float = 0.0,
         max_output_bytes: int = 256 * 1024 * 1024,
         advertised_base_url: Optional[str] = None,
+        output_dir: Optional[Path] = None,
     ):
         if host not in LOOPBACK_HOSTS:
             raise PlaneRefused(
@@ -316,6 +322,7 @@ class IsolatedControlPlane:
         self.max_jobs = max_jobs
         self.job_id = f"pilot-{uuid.uuid4()}"
         self._evidence_path = Path(evidence_path) if evidence_path else None
+        self.output_dir = Path(output_dir) if output_dir else None
         self._lock = threading.Lock()
         self._state: dict[str, Any] = {
             "claims_served": 0,
@@ -410,10 +417,24 @@ class IsolatedControlPlane:
             self._persist()
 
     def record_output(self, key: str, data: bytes) -> None:
+        if key.startswith("diagnostics-") and self.token:
+            data = data.replace(self.token.encode(), b"[REDACTED]")
+        entry = {"key": key, "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+        if self.output_dir is not None:
+            self.output_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+            os.chmod(self.output_dir, 0o700)
+            suffix = ".log" if key.startswith("diagnostics-") else ".mp4"
+            output_path = self.output_dir / f"{key}{suffix}"
+            temporary = self.output_dir / f".{key}.{uuid.uuid4().hex}.tmp"
+            with temporary.open("xb") as stream:
+                stream.write(data)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.chmod(temporary, 0o600)
+            os.replace(temporary, output_path)
+            entry["file"] = str(output_path)
         with self._lock:
-            self._state["outputs"].append(
-                {"key": key, "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
-            )
+            self._state["outputs"].append(entry)
             self._persist()
 
     # -- lifecycle -----------------------------------------------------
@@ -459,6 +480,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         help="base URL returned in task input/output URLs (e.g. a Pod-side SSH tunnel URL)",
     )
     parser.add_argument("--evidence", type=Path, default=Path("/tmp/aividup-pilot-plane-evidence.json"))
+    parser.add_argument("--output-dir", type=Path, help="durable directory for authenticated sink payloads")
     parser.add_argument("--lease-seconds", type=int, default=300)
     parser.add_argument("--mode", default="interp")
     parser.add_argument("--interp-factor", type=float, default=2.0)
@@ -493,6 +515,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         port=args.port,
         advertised_base_url=args.advertised_base_url,
         evidence_path=args.evidence,
+        output_dir=args.output_dir,
         lease_seconds=args.lease_seconds,
         mode=args.mode,
         params={"interp_factor": args.interp_factor, "target_fps": args.target_fps},

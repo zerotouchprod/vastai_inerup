@@ -23,24 +23,6 @@ from src.worker.client import ControlPlaneClient  # noqa: E402
 from src.worker.runner import Worker  # noqa: E402
 
 
-class OutputCapturingPlane(IsolatedControlPlane):
-    """Persist the actual received PUT body so its digest can be checked independently."""
-
-    def __init__(self, *args, output_dir: Path, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.output_dir = output_dir
-        self.output_paths: dict[str, Path] = {}
-
-    def record_output(self, key: str, data: bytes) -> None:
-        self.output_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-        path = self.output_dir / f"{key}.mp4"
-        temporary = path.with_suffix(".mp4.tmp")
-        temporary.write_bytes(data)
-        os.replace(temporary, path)
-        self.output_paths[key] = path
-        super().record_output(key, data)
-
-
 def wait_for_forward(port: int, process: subprocess.Popen, timeout: float = 20.0) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -86,7 +68,7 @@ def main() -> int:
     output_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
     os.chmod(output_dir, 0o700)
 
-    plane = OutputCapturingPlane(
+    plane = IsolatedControlPlane(
         token=token,
         input_path=args.input,
         host="127.0.0.1",
@@ -124,6 +106,20 @@ def main() -> int:
         if unauthorized.status_code != 401:
             raise AssertionError(f"tunnel auth probe returned HTTP {unauthorized.status_code}, expected 401")
 
+        diagnostic_key = "diagnostics-cpu-e2e"
+        diagnostic_raw = (
+            f"CUDA_RUNTIME_PREFLIGHT_PASS torch_cuda=12.6 token={token}\n"
+            "RIFE frame probe PASS\n"
+        ).encode()
+        diagnostic_response = requests.put(
+            f"{advertised}/sink/{diagnostic_key}",
+            data=diagnostic_raw,
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "text/plain"},
+            timeout=10,
+        )
+        if diagnostic_response.status_code != 200:
+            raise AssertionError(f"diagnostics sink returned HTTP {diagnostic_response.status_code}")
+
         client = ControlPlaneClient(
             advertised,
             token,
@@ -147,17 +143,32 @@ def main() -> int:
             raise AssertionError("expected one claimed and completed task")
         if evidence["failures"]:
             raise AssertionError(f"plane recorded worker failures: {evidence['failures']}")
-        if len(evidence["outputs"]) != 1:
-            raise AssertionError("expected exactly one output PUT")
+        if len(evidence["outputs"]) != 2:
+            raise AssertionError("expected one diagnostics PUT and one video output PUT")
 
-        output_meta = evidence["outputs"][0]
-        output_path = plane.output_paths[output_meta["key"]]
+        attempt_id = evidence["completed"][0]["attempt_id"]
+        output_meta = next(item for item in evidence["outputs"] if item["key"] == attempt_id)
+        diagnostic_meta = next(
+            item for item in evidence["outputs"] if item["key"] == diagnostic_key
+        )
+        output_path = Path(output_meta["file"])
         actual_bytes = output_path.stat().st_size
         actual_sha256 = hashlib.sha256(output_path.read_bytes()).hexdigest()
         if actual_bytes <= 0 or output_meta["bytes"] != actual_bytes:
             raise AssertionError("persisted output is empty or byte count differs from evidence")
         if output_meta["sha256"] != actual_sha256:
             raise AssertionError("persisted output SHA-256 differs from sink evidence")
+
+        diagnostic_path = Path(diagnostic_meta["file"])
+        diagnostic_bytes = diagnostic_path.read_bytes()
+        diagnostic_sha256 = hashlib.sha256(diagnostic_bytes).hexdigest()
+        if token.encode() in diagnostic_bytes or b"[REDACTED]" not in diagnostic_bytes:
+            raise AssertionError("diagnostic log was not redacted")
+        if (
+            diagnostic_sha256 != diagnostic_meta["sha256"]
+            or diagnostic_path.stat().st_mode & 0o777 != 0o600
+        ):
+            raise AssertionError("diagnostic file mode/hash differs from durable evidence")
 
         summary = {
             "result": "PASS",
@@ -167,7 +178,18 @@ def main() -> int:
             "advertised_base_url": advertised,
             "ssh_forward": "PASS",
             "unauthenticated_probe_http": unauthorized.status_code,
-            "flow": ["claim", "ffmpeg_input_cut", "cpu_passthrough", "PUT_output", "complete"],
+            "flow": [
+                "diagnostics_put",
+                "claim",
+                "ffmpeg_input_cut",
+                "cpu_passthrough",
+                "PUT_output",
+                "complete",
+            ],
+            "diagnostics_bytes": len(diagnostic_bytes),
+            "diagnostics_sha256": diagnostic_sha256,
+            "diagnostics_sha256_matches": diagnostic_sha256 == diagnostic_meta["sha256"],
+            "diagnostics_file": str(diagnostic_path),
             "claims_served": evidence["claims_served"],
             "output_bytes": actual_bytes,
             "output_sha256": actual_sha256,

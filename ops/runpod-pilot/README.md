@@ -35,16 +35,17 @@ It will not POST a create request at boot/restart without that file.
   ephemeral container before bootstrap. This changes neither the image nor production code.
 - Pod env/args are loaded from protected config files; controller dry-run redacts all secret keys.
   The RunPod API key is explicitly forbidden from Pod env.
-- The plane binds on the VPS-side `127.0.0.1:8099`; task input/output URLs must instead advertise
-  the Pod-side forwarded endpoint `http://127.0.0.1:18099/api/worker`. Keep these addresses distinct.
+- The plane binds on the VPS-side `127.0.0.1:8099`; task input/output URLs advertise the Pod-side forward at `http://127.0.0.1:18099/api/worker`.
+- Before worker claim, the Pod's Python wrapper captures separate CUDA/RIFE preflight stdout and stderr, uploads their combined text via the authenticated tunnel sink, and fails closed if persistence fails. The plane redacts the worker bearer token, atomically saves `diagnostics-*.log` mode 0600 under `worker-output/`, and records file path, byte count, and SHA-256 in evidence.
 
 ## CPU-only end-to-end through the restricted SSH forward
 
 Run `ops/runpod-pilot/cpu-ssh-forward-e2e.py` on the isolated controller host only after archiving
 any prior plane evidence and ensuring port 8099 is free. It starts a fresh one-job plane, opens the
-real restricted SSH local-forward (`18099 -> host loopback:8099`), and runs the real `Worker` with
-`ffmpeg` plus the CPU-only `passthrough` processor. It verifies claim → input fetch/cut → PUT output
-→ complete, non-zero output bytes, and the captured output SHA-256 against the plane evidence. It
+real restricted SSH local-forward (`18099 -> host loopback:8099`), sends a synthetic preflight log
+through the authenticated sink, then runs the real `Worker` with `ffmpeg` plus the CPU-only
+`passthrough` processor. It verifies claim → input fetch/cut → PUT output → complete, non-zero output
+bytes, redacted durable diagnostics, and captured output SHA-256 against sink evidence. It
 makes no RunPod API call and uses no GPU. Use a new evidence path and output directory per invocation;
 never reset `claims_served` on an already-used plane instance.
 
