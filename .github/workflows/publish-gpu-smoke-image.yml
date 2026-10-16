@@ -93,17 +93,15 @@ jobs:
 
       - name: Resolve and record published digest
         run: |
-          docker buildx imagetools inspect "$IMAGE_TAG" --raw > evidence/published-manifest.json
-          export IMAGE_TAG IMAGE_REPOSITORY
+          docker buildx imagetools inspect "$IMAGE_TAG" --format '{{.Manifest.Digest}}' > evidence/published-digest.txt
+          digest=$(tr -d '\r\n' < evidence/published-digest.txt)
+          test "${digest#sha256:}" != "$digest"
+          export IMAGE_TAG IMAGE_REPOSITORY digest
           python3 - <<'PY'
           import json, os
           from pathlib import Path
-          manifest = json.loads(Path('evidence/published-manifest.json').read_text())
-          digest = manifest.get('digest')
-          if not digest and manifest.get('manifests'):
-              amd64 = next(item for item in manifest['manifests'] if item.get('platform', {}).get('architecture') == 'amd64')
-              digest = amd64['digest']
-          assert digest and digest.startswith('sha256:'), manifest
+          digest = os.environ['digest']
+          assert digest.startswith('sha256:'), digest
           Path('evidence/published-image.json').write_text(json.dumps({'image': os.environ['IMAGE_REPOSITORY'], 'tag': os.environ['IMAGE_TAG'], 'digest': digest, 'platform': 'linux/amd64'}, indent=2) + '\n')
           print(json.dumps({'tag': os.environ['IMAGE_TAG'], 'digest': digest}, sort_keys=True))
           PY
