@@ -29,6 +29,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 POD_ARGS_PATH = REPO_ROOT / "ops" / "runpod-pilot" / "pod-args.json"
 DEFAULT_IMAGE = "ghcr.io/zerotouchprod/aividup-worker-runpod-rife-pilot@sha256:c775c62ade2d1851074751d761195aa6ace2895ed51af268b5f877535117475b"
 SSH_HOST_ALIAS = "195.234.126.233"
+SIDECAR_SUBNET = "195.234.126.232/29"
+SIDECAR_GATEWAY = "195.234.126.234"
 SSH_USER = "aividup-pilot-tunnel"
 SSH_FORWARD_TARGET = "127.0.0.1:8099"
 PLANE_HOST = "127.0.0.1"
@@ -65,9 +67,8 @@ def build_docker_argv(
     env_file: Path,
     *,
     network_name: str,
-    tunnel_ip: str,
 ) -> list[str]:
-    """Translate the pod entrypoint/cmd verbatim, mapping its SSH host to the test sidecar."""
+    """Translate the pod entrypoint/cmd verbatim onto the isolated test Docker network."""
     entrypoint = pod_args.get("entrypoint")
     command = pod_args.get("cmd")
     if not isinstance(entrypoint, list) or not entrypoint or not all(isinstance(x, str) for x in entrypoint):
@@ -78,7 +79,6 @@ def build_docker_argv(
         "docker", "run", "--rm", "--pull=never",
         "--name", f"aividup-pilot-cpu-e2e-{uuid.uuid4().hex[:12]}",
         "--network", network_name,
-        "--add-host", f"{SSH_HOST_ALIAS}:{tunnel_ip}",
         "--env-file", str(env_file),
         "--entrypoint", entrypoint[0],
         image,
@@ -107,7 +107,7 @@ def write_private(path: Path, content: str) -> None:
     os.chmod(path, 0o600)
 
 
-def prepare_tunnel_materials(client_dir: Path, sidecar_dir: Path) -> tuple[Path, str, Path]:
+def prepare_tunnel_materials(client_dir: Path, sidecar_dir: Path) -> tuple[Path, str, str, Path]:
     """Create pinned SSH material for a network-isolated test sidecar."""
     if shutil.which("ssh-keygen") is None:
         raise E2EFailure("openssh-client is required on the CI runner")
@@ -123,6 +123,7 @@ def prepare_tunnel_materials(client_dir: Path, sidecar_dir: Path) -> tuple[Path,
     if len(host_public) < 2:
         raise E2EFailure("could not derive temporary SSH host public key")
     pinned_host_key = f"{SSH_HOST_ALIAS} {host_public[0]} {host_public[1]}"
+    fingerprint = run_checked(["ssh-keygen", "-lf", str(host_key)]).stdout.split()[1]
     key_entry = f'no-agent-forwarding,no-X11-forwarding,no-pty,permitopen="{SSH_FORWARD_TARGET}" {public_key}'
     write_private(sidecar_dir / "authorized_keys", key_entry)
 
@@ -158,7 +159,7 @@ def prepare_tunnel_materials(client_dir: Path, sidecar_dir: Path) -> tuple[Path,
         ]
     )
     write_private(config, config_text)
-    return client_key, pinned_host_key, config
+    return client_key, pinned_host_key, fingerprint, config
 
 
 def build_sidecar_command(sidecar_dir: Path, artifact_dir: Path) -> str:
@@ -181,6 +182,7 @@ def build_sidecar_command(sidecar_dir: Path, artifact_dir: Path) -> str:
         "rm -rf /var/lib/apt/lists/*",
         "install -d -m 0755 /run/sshd",
         f"install -o root -g root -m 0600 {quote(str(sidecar_dir / 'host_ed25519'))} /run/ssh_host_ed25519",
+        "ssh-keygen -lf /run/ssh_host_ed25519",
         f"useradd --system --user-group --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin {SSH_USER}",
         f"/usr/sbin/sshd -t -f {quote(str(config))}",
         f"/usr/sbin/sshd -D -e -f {quote(str(config))} &",
@@ -208,7 +210,8 @@ def build_sidecar_argv(
 ) -> list[str]:
     command = build_sidecar_command(sidecar_dir, artifact_dir)
     return [
-        "docker", "run", "--detach", "--name", container_name, "--network", network_name,
+        "docker", "run", "--detach", "--name", container_name,
+        "--network", network_name, "--ip", SSH_HOST_ALIAS,
         "--mount", f"type=bind,source={sidecar_dir},target={sidecar_dir},readonly",
         "--mount", f"type=bind,source={artifact_dir},target={artifact_dir}",
         "--entrypoint", "/usr/bin/tini", image, "--", "/bin/bash", "-lc", command,
@@ -394,7 +397,8 @@ def main(argv: list[str] | None = None) -> int:
         plane_script = sidecar_dir / "runpod_pilot_test_control_plane.py"
         shutil.copy2(REPO_ROOT / "scripts" / "runpod_pilot_test_control_plane.py", plane_script)
         os.chmod(plane_script, 0o400)
-        client_key, pinned_host_key, _sshd_config = prepare_tunnel_materials(client_dir, sidecar_dir)
+        client_key, pinned_host_key, host_key_fingerprint, _sshd_config = prepare_tunnel_materials(client_dir, sidecar_dir)
+        summary["pinned_host_key_fingerprint"] = host_key_fingerprint
 
         env_file = client_dir / "pod.env"
         env = {
@@ -408,13 +412,18 @@ def main(argv: list[str] | None = None) -> int:
         }
         write_private(env_file, "".join(f"{key}={value}\n" for key, value in env.items()))
 
-        run_checked(["docker", "network", "create", network_name])
+        run_checked([
+            "docker", "network", "create", "--driver", "bridge",
+            "--subnet", SIDECAR_SUBNET, "--gateway", SIDECAR_GATEWAY, network_name,
+        ])
         network_created = True
         sidecar_argv = build_sidecar_argv(args.image, sidecar_name, network_name, sidecar_dir, artifact_dir)
         run_checked(sidecar_argv, timeout=300)
         sidecar_started = True
         wait_for_sidecar_ready(sidecar_name)
         tunnel_ip = get_container_ip(sidecar_name, network_name)
+        if tunnel_ip != SSH_HOST_ALIAS:
+            raise E2EFailure(f"sidecar IP {tunnel_ip} does not match the worker's literal SSH target {SSH_HOST_ALIAS}")
 
         pod_args = json.loads(POD_ARGS_PATH.read_text(encoding="utf-8"))
         docker_argv = build_docker_argv(
@@ -422,7 +431,6 @@ def main(argv: list[str] | None = None) -> int:
             args.image,
             env_file,
             network_name=network_name,
-            tunnel_ip=tunnel_ip,
         )
         docker_argv[docker_argv.index("--name") + 1] = worker_name
         summary["pod_args_sha256"] = hashlib.sha256(POD_ARGS_PATH.read_bytes()).hexdigest()
