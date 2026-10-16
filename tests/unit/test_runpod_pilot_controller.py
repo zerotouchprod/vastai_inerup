@@ -114,6 +114,7 @@ def make_controller(tmp_path, api, clock, **over):
         image=IMAGE,
         deadline_seconds=DEADLINE_SECONDS,
         poll_seconds=30,
+        continue_ambiguous_create=False,
         clock=clock.time,
         sleeper=clock.sleep,
     )
@@ -146,6 +147,16 @@ def test_create_persists_pod_id_and_absolute_deadline(tmp_path):
     assert report["exit_code"] == 0
     assert report["pod_id"] == "pod-new-1"
     assert api.deletes and api.deletes[0][0] == "pod-new-1"
+
+
+def test_controller_refreshes_persisted_heartbeat_while_watching(tmp_path):
+    clock = FakeClock(1_200_000)
+    api = FakeApi(clock)
+    make_controller(tmp_path, api, clock, deadline_seconds=60, poll_seconds=30).run()
+
+    state = load_state(tmp_path)
+    assert state["phase"] == "done"
+    assert state["controller_heartbeat_at"] >= state["deadline_at"]
 
 
 def test_state_is_written_before_the_create_request(tmp_path):
@@ -205,19 +216,78 @@ def test_ambiguous_create_does_not_repeat_post_and_adopts_pod(tmp_path):
     assert api.deletes and api.deletes[0][0] == "pod-adopted"
 
 
-def test_ambiguous_create_without_orphan_ends_clean(tmp_path):
+def test_ambiguous_create_without_visible_pod_is_unresolved_not_success(tmp_path):
     clock = FakeClock(3_000_000)
-    api = FakeApi(clock)  # create fails and nothing was created
+    api = FakeApi(clock)  # create may have landed; provider inventory currently lags
     api.create_error = AmbiguousCreate("gateway timeout")
 
     report = make_controller(tmp_path, api, clock).run()
 
-    assert api.posts == 1
-    assert api.lists >= 2, "inventory must be re-checked before declaring no pod"
+    assert api.posts == 1, "an ambiguous create must never be retried blindly"
+    assert api.lists >= 2, "inventory must be polled repeatedly before raising an alert"
     assert report["pod_id"] is None
-    assert report["exit_code"] == 0
-    assert load_state(tmp_path)["phase"] == "no_pod"
+    assert report["exit_code"] == UNRESOLVED_EXIT_CODE
+    assert report["verified_absent"] is False
+    assert load_state(tmp_path)["phase"] == "unresolved"
+    assert load_state(tmp_path)["create_outcome_unknown"] is True
     assert api.deletes == []
+
+
+def test_late_pod_after_ambiguous_create_restart_is_adopted_and_deleted(tmp_path):
+    clock = FakeClock(3_100_000)
+    api = FakeApi(clock)
+    api.create_error = AmbiguousCreate("gateway timeout")
+    first = make_controller(tmp_path, api, clock).run()
+    assert first["exit_code"] == UNRESOLVED_EXIT_CODE
+    assert api.posts == 1
+
+    # Provider inventory becomes consistent after the controller has already
+    # exited once and systemd is about to restart it with --resume.
+    created_at = clock.now - 1900
+    api.pods["pod-late"] = {
+        "id": "pod-late",
+        "name": NAME,
+        "createdAt": _iso(created_at),
+        "status": "RUNNING",
+    }
+    second = make_controller(tmp_path, api, clock).run(resume=True)
+
+    assert api.posts == 1, "resume must reconcile, never re-create"
+    assert second["pod_id"] == "pod-late"
+    assert second["exit_code"] == 0
+    assert second["verified_absent"] is True
+    assert api.deletes[-1][0] == "pod-late"
+    assert load_state(tmp_path)["phase"] == "done"
+
+
+def test_ambiguous_create_keeps_polling_until_late_pod_appears(tmp_path):
+    clock = FakeClock(3_200_000)
+
+    class ProviderWithDelayedVisibility(FakeApi):
+        def list_pods(self):
+            self.lists += 1
+            # preflight (1) + first bounded reconcile window; only then show it.
+            if self.lists == len(__import__("scripts.runpod_pilot_controller", fromlist=["DEFAULT_RECONCILE_BACKOFF"]).DEFAULT_RECONCILE_BACKOFF) + 2:
+                self.pods["pod-delayed"] = {
+                    "id": "pod-delayed",
+                    "name": NAME,
+                    "createdAt": _iso(self.clock.now - 1900),
+                    "status": "RUNNING",
+                }
+            return self._all()
+
+    api = ProviderWithDelayedVisibility(clock)
+    api.create_error = AmbiguousCreate("timeout, result unknown")
+
+    report = make_controller(
+        tmp_path, api, clock, continue_ambiguous_create=True, ambiguous_retry_seconds=0
+    ).run()
+
+    assert api.posts == 1, "late visibility must not cause a second POST"
+    assert report["pod_id"] == "pod-delayed"
+    assert report["verified_absent"] is True
+    assert report["exit_code"] == 0
+    assert api.deletes[-1][0] == "pod-delayed"
 
 
 def test_ambiguous_create_with_unreachable_inventory_refuses(tmp_path):

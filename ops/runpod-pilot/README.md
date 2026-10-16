@@ -7,14 +7,21 @@ It will not POST a create request at boot/restart without that file.
 ## Supervision and durable recovery
 
 - Controller state + `create-attempted` latch: `/var/lib/aividup-runpod-pilot/` (`StateDirectoryMode=0700`, outside `/tmp`).
-- `Restart=on-failure`, `RestartSec=15s`.
+- `Restart=on-failure`, `RestartSec=15s`, `StartLimitIntervalSec=300s`, `StartLimitBurst=5`.
 - Wrapper chooses initial create only when there is no latch. Once the first attempt begins,
   restarts always pass `--resume`; if the latch exists but state is missing, it **refuses** instead
   of issuing a second POST.
+- An ambiguous POST is never replayed. After a bounded 67-second inventory search, the controller
+  remains in-process in `unresolved` and rechecks every 60 seconds indefinitely; if a late Pod
+  appears it adopts the provider `createdAt` deadline and deletes it. A hard crash restarts via
+  `--resume`; five repeated process failures in five minutes trip the start limit and the watchdog
+  alerts, instead of causing an infinite rapid restart loop.
 - Unit requires the isolated plane, uses the immutable image digest, `1800s` deadline, RTX 3090
   EU-CZ-1, no Network Volume, and restarts cannot extend provider `createdAt + 1800s`.
-- `OnFailure` writes a durable alert marker and critical journal record. A Hermes no-agent watchdog
-  delivers one Telegram alert per attempt ID.
+- `OnFailure` writes a durable marker on terminal failures. The independent Hermes watchdog also
+  checks systemd `ActiveState`/`NRestarts`, ambiguous state, and controller heartbeat age every minute.
+  A real local systemd test observed that `OnFailure` did not run on an automatic restart; the
+  independent watchdog detected `NRestarts=1` and alerted while the fake Pod was still live.
 
 ## Private network path
 
@@ -35,9 +42,9 @@ It will not POST a create request at boot/restart without that file.
 - `aividup-pilot-plane.service` is enabled and running on `127.0.0.1:8099`; synthetic input is 2 seconds and all credentials/config are in `/etc/aividup-runpod-pilot/` with mode 0600/0700.
 - SSH has the dedicated `aividup-pilot-tunnel` account; effective sshd policy is `AllowTcpForwarding local`, `PermitOpen 127.0.0.1:8099`, `ForceCommand /usr/sbin/nologin`, no PTY/agent/X11. The private key is only in the protected Pod env file and host config. No extra public HTTP port was opened.
 - The host-side SSH tunnel was exercised through localhost: it reaches the plane, unauthenticated claims return 401, forwarding to port 22 is denied, remote forwarding is denied.
-- `aividup-runpod-pilot.service` is enabled with `Restart=on-failure`, but `ConditionPathExists=/etc/aividup-runpod-pilot/GO` evaluates false. No GO marker, state file, or create latch exists; controller is inactive and cannot POST.
-- Hermes job `aividup-runpod-pilot-teardown-alert` checks the systemd OnFailure marker every minute and sends one Telegram alert per attempt ID.
-- No RunPod resources were created. Live read-only inventory **2026-10-16 06:01 UTC**: 0 Pods, 0 Network Volumes; Secure RTX 3090 EU-CZ-1 still LOW at $0.50/h. The earlier 05:04 catalog (used to choose this GPU) is documented above; re-check again immediately before the separately approved launch.
+- `aividup-runpod-pilot.service` is enabled with `Restart=on-failure`, `StartLimitIntervalSec=300s`, `StartLimitBurst=5`, but `ConditionPathExists=/etc/aividup-runpod-pilot/GO` evaluates false. No GO marker, state file, or create latch exists; controller is inactive and cannot POST.
+- Hermes job `aividup-runpod-pilot-teardown-alert` checks `ActiveState`, `NRestarts`, ambiguous state, heartbeat age, and the durable `OnFailure` marker every minute; empty path is silent. The manual no-GPU systemd integration test proved one restart→resume→watchdog alert while fake Pod was live, followed by fake deletion; no RunPod API call occurred.
+- No RunPod resources were created. Last read-only inventory **2026-10-16 06:06 UTC**: 0 Pods, 0 Network Volumes; Secure RTX 3090 EU-CZ-1 LOW at $0.50/h. Subsequent local work used only fake provider; re-check before any separately approved launch.
 
 The only unverified network fact is whether a future RunPod Pod can make outbound TCP/22 to vps1748. Proving that from the provider requires a RunPod compute resource; no GPU or CPU Pod is authorised for that check. The first explicitly approved GPU run will fail closed before checkpoint download if the SSH tunnel cannot establish, and the external controller still owns the absolute 30-minute teardown deadline.
 
@@ -55,8 +62,9 @@ The only unverified network fact is whether a future RunPod Pod can make outboun
 5. Build `/etc/aividup-runpod-pilot/pod.env` (0600): isolated API URL, the plane's test bearer token,
    random worker lease/boot IDs, SSH private key in base64, pinned host-key line. Do not include
    `RUNPOD_API_KEY`.
-6. Install `pod-args.json` (0644): entrypoint/cmd starts the outbound SSH tunnel, tests local
-   forwarding, unsets key material, then runs the existing checkpoint bootstrap.
+6. Install `pod-args.json` (0644): entrypoint/cmd starts the outbound SSH tunnel, requires an HTTP 401
+   response through the forwarded channel before checkpoint bootstrap, unsets key material, then
+   invokes the existing bootstrap.
 7. Start/enable the plane unit. Verify unauthenticated `/claim` gives 401 on host loopback and
    through the SSH forward. This does not consume the one job.
 8. Install/enable the controller unit but leave `/etc/aividup-runpod-pilot/GO` **absent**. A

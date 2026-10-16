@@ -88,15 +88,25 @@ class Impersonator(BaseHTTPRequestHandler):
         scenario = type(self).scenario
         payload = self._json()
         mode = scenario.get("create", "ok")
-        if mode == "server_error":
+        if mode in {"server_error", "timeout"}:
             if scenario.get("create_lands"):
                 scenario.setdefault("pods", {})["pod-http-1"] = {
                     "id": "pod-http-1",
                     "name": payload["name"],
-                    "createdAt": "2026-10-16T05:00:00.000Z",
+                    "createdAt": _now_iso(),
                     "status": "RUNNING",
                 }
-            self._send(500, {"error": "internal"})
+            self._send(408 if mode == "timeout" else 500, {"error": "ambiguous"})
+            return
+        if mode == "missing_id":
+            pod = {
+                "id": "pod-http-1",
+                "name": payload["name"],
+                "createdAt": _now_iso(),
+                "status": "RUNNING",
+            }
+            scenario.setdefault("pods", {})["pod-http-1"] = pod
+            self._send(201, {"name": payload["name"]})
             return
         if mode == "rejected":
             self._send(422, {"error": "invalid gpu"})
@@ -156,6 +166,7 @@ def build(tmp_path, provider, **over):
         poll_seconds=0.05,
         gpu_id="NVIDIA GeForce RTX 3090",
         data_centre="EU-CZ-1",
+        continue_ambiguous_create=False,
         sleeper=time.sleep,
     )
     kwargs.update(FAST_BACKOFFS)
@@ -177,6 +188,12 @@ def test_client_reads_the_documented_inventory_envelope(provider):
     assert [p["id"] for p in RunPodApi("k", base_url=provider).list_pods()] == ["pod-a"]
     Impersonator.scenario["inventory_bare_list"] = True
     assert [p["id"] for p in RunPodApi("k", base_url=provider).list_pods()] == ["pod-a"]
+
+
+def test_client_maps_408_create_to_ambiguous(provider):
+    Impersonator.scenario["create"] = "timeout"
+    with pytest.raises(AmbiguousCreate):
+        RunPodApi("k", base_url=provider).create_pod({"name": NAME, "image": IMAGE})
 
 
 def test_client_maps_500_create_to_ambiguous(provider):
@@ -226,6 +243,18 @@ def test_controller_recovers_a_pod_created_by_an_ambiguous_http_create(tmp_path,
     assert len(posts) == 1, "the controller must not re-POST an ambiguous create"
     assert report["pod_id"] == "pod-http-1"
     assert report["verified_absent"] is True
+
+
+def test_controller_reconciles_a_success_body_missing_the_id_without_repost(tmp_path, provider):
+    Impersonator.scenario["create"] = "missing_id"
+
+    report = build(tmp_path, provider).run()
+
+    posts = [c for c in Impersonator.calls if c[0] == "POST"]
+    assert len(posts) == 1
+    assert report["pod_id"] == "pod-http-1"
+    assert report["verified_absent"] is True
+    assert report["exit_code"] == 0
 
 
 def test_controller_reports_unresolved_when_http_delete_fails(tmp_path, provider):

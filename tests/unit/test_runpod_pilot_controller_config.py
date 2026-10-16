@@ -97,6 +97,16 @@ def test_pod_args_file_rejects_group_or_world_writable_command(tmp_path):
         controller_module.load_pod_args_file(args_file)
 
 
+def test_pod_args_http_probes_plane_before_bootstrap():
+    args_file = Path(__file__).resolve().parents[2] / "ops" / "runpod-pilot" / "pod-args.json"
+    args = json.loads(controller_module.load_pod_args_file(args_file))
+    cmd = args["cmd"][0]
+    assert "curl" in cmd
+    assert "/api/worker/claim" in cmd
+    assert "401" in cmd
+    assert cmd.index("HTTP_STATUS") < cmd.index("runpod_checkpoint_bootstrap.py")
+
+
 def test_dry_run_redacts_pod_secrets_and_never_posts(capsys, tmp_path):
     env_file = tmp_path / "pod.env"
     env_file.write_text("\n".join(f"{k}={v}" for k, v in POD_ENV.items()) + "\n")

@@ -52,7 +52,7 @@ RECONCILE_ATTEMPTS = 4
 # inside a couple of minutes even when the provider refuses every delete.
 DEFAULT_VERIFY_BACKOFF = (0.5, 1.0, 2.0, 2.0, 2.0)
 DEFAULT_DELETE_BACKOFF = (1.0, 2.0, 3.0, 5.0, 8.0, 10.0)
-DEFAULT_RECONCILE_BACKOFF = (1.0, 2.0, 4.0, 8.0)
+DEFAULT_RECONCILE_BACKOFF = (2.0, 5.0, 10.0, 20.0, 30.0, 30.0)
 CLEAN_EXIT_CODE = 0
 UNRESOLVED_EXIT_CODE = 1
 REFUSED_EXIT_CODE = 2
@@ -113,8 +113,9 @@ class RunPodApi:
         except urllib.error.HTTPError as error:
             body = error.read()
             status = error.code
-            if status >= 500 or status == 429:
-                # Server-side failure after the request was accepted: ambiguous.
+            if status >= 500 or status in {408, 429}:
+                # A timeout, throttling response, or server failure may arrive
+                # after the provider accepted the create. Never classify it as safe to replay.
                 raise AmbiguousCreate(f"create returned HTTP {status}") from error
             raise PilotError(
                 f"create rejected with HTTP {status}: {body[:400].decode(errors='replace')}"
@@ -234,6 +235,8 @@ class PilotController:
         pod_disk_gb: int = 20,
         env: Optional[dict] = None,
         pod_args: Optional[str] = None,
+        continue_ambiguous_create: bool = True,
+        ambiguous_retry_seconds: float = 60.0,
         clock: Callable[[], float] = time.time,
         sleeper: Callable[[float], None] = time.sleep,
         logger: Callable[[str], None] = lambda message: print(message, flush=True),
@@ -262,6 +265,8 @@ class PilotController:
         if any(not isinstance(k, str) or not isinstance(v, str) for k, v in self._env.items()):
             raise PilotError("Pod environment must be string key/value pairs")
         self._pod_args = _validate_pod_args(pod_args) if pod_args else None
+        self._continue_ambiguous_create = bool(continue_ambiguous_create)
+        self._ambiguous_retry_seconds = max(0.1, float(ambiguous_retry_seconds))
         self._clock = clock
         self._sleep = sleeper
         self._log = logger
@@ -350,8 +355,16 @@ class PilotController:
         state["phase"] = "watching"
 
     def _reconcile_after_ambiguous_create(self, state: dict) -> Optional[dict]:
-        """Find the Pod our create may have produced, by our unique name only."""
+        """Find a late Pod by unique name; inventory absence is never proof of no create."""
+        state["create_outcome_unknown"] = True
+        state["phase"] = "ambiguous_create_pending"
+        self._store.save(state)
+        checks_before = int(state.get("ambiguous_inventory_checks", 0))
         for attempt, delay in enumerate(self._reconcile_backoff):
+            state["ambiguous_inventory_checks"] = checks_before + attempt + 1
+            state["controller_heartbeat_at"] = self._clock()
+            state["last_inventory_check_at"] = _iso(self._clock())
+            self._store.save(state)
             pods = self._inventory()
             found = self._find_by_name(pods)
             if found is not None:
@@ -360,21 +373,62 @@ class PilotController:
                 self._sleep(delay)
         return None
 
+    def _wait_for_ambiguous_create_resolution(self, state: dict) -> dict:
+        """Continue reconciling indefinitely until the unknown create is found.
+
+        Inventory absence is not proof after a short eventual-consistency window.
+        Keeping this process alive also keeps the external systemd controller from
+        cycling forever; its independent watchdog alerts while this state is unresolved.
+        """
+        state["create_outcome_unknown"] = True
+        state["phase"] = "unresolved"
+        self._store.save(state)
+        while True:
+            state["controller_heartbeat_at"] = self._clock()
+            state["last_inventory_check_at"] = _iso(self._clock())
+            state["ambiguous_inventory_checks"] = int(state.get("ambiguous_inventory_checks", 0)) + 1
+            self._store.save(state)
+            try:
+                found = self._find_by_name(self._inventory())
+            except Exception as error:  # noqa: BLE001 - an outage still cannot prove absence
+                state["last_reconcile_error"] = type(error).__name__
+                self._store.save(state)
+                self._log(
+                    "UNRESOLVED: inventory unavailable after ambiguous create; "
+                    "will keep reconciling without another POST"
+                )
+                self._sleep(self._ambiguous_retry_seconds)
+                continue
+            if found is not None:
+                self._log(f"late-created pod {found.get('id')} appeared; adopting for deadline teardown")
+                return found
+            self._log(
+                "UNRESOLVED: no pod visible yet after ambiguous create; "
+                "will keep reconciling without another POST"
+            )
+            self._sleep(self._ambiguous_retry_seconds)
+
     def _create(self, state: dict) -> None:
         state["_create_requested_epoch"] = self._clock()
         state["create_requested_at"] = _utc_now_iso()
+        state["controller_heartbeat_at"] = self._clock()
         state["phase"] = "creating"
         self._store.save(state)  # durable intent BEFORE the request
         self._log(f"creating one pod name={self._pod_name} image={self._image}")
         try:
             pod = self._api.create_pod(self.build_payload())
+            if not isinstance(pod, dict) or not pod.get("id"):
+                raise AmbiguousCreate("create returned success without a pod id")
         except AmbiguousCreate as error:
             self._log(f"create is ambiguous ({error}); reconciling by name, never re-POSTing")
+            state["create_outcome_unknown"] = True
+            state["phase"] = "ambiguous_create_pending"
+            self._store.save(state)
             try:
                 found = self._reconcile_after_ambiguous_create(state)
             except Exception as reconcile_error:  # noqa: BLE001
-                # The create outcome is unknown and we cannot even read inventory:
-                # report UNRESOLVED so a human checks the provider console.
+                # The create outcome is unknown and inventory is unavailable.
+                # Preserve the ambiguity so --resume keeps reconciling forever.
                 state["phase"] = "unresolved"
                 state["notes"] = [
                     *state.get("notes", []),
@@ -383,20 +437,32 @@ class PilotController:
                 self._store.save(state)
                 self._log(
                     "create outcome unknown and inventory unreadable; "
-                    "check the provider console for a stray pod"
+                    "preserving the Pod name and resuming inventory reconciliation"
                 )
+                if self._continue_ambiguous_create:
+                    found = self._wait_for_ambiguous_create_resolution(state)
+                    self._adopt(state, found)
+                    self._store.save(state)
+                    return
                 return
             if found is None:
-                self._log("no pod with our name exists; treating the create as not created")
-                state["phase"] = "no_pod"
-                state["pod_id"] = None
+                state["phase"] = "unresolved"
+                state["notes"] = [
+                    *state.get("notes", []),
+                    "create result ambiguous; inventory did not yet show the pod",
+                ]
                 self._store.save(state)
-                return
+                if self._continue_ambiguous_create:
+                    found = self._wait_for_ambiguous_create_resolution(state)
+                else:
+                    self._log(
+                        "UNRESOLVED: create outcome still ambiguous; no re-POST. "
+                        "test mode will return for systemd --resume"
+                    )
+                    return
             self._adopt(state, found)
             self._store.save(state)
             return
-        if not isinstance(pod, dict) or not pod.get("id"):
-            raise PilotError("create returned no pod id")
         self._adopt(state, pod)
         self._store.save(state)
 
@@ -405,6 +471,8 @@ class PilotController:
         deadline = float(state["deadline_at"])
         inventory_errors = 0
         while True:
+            state["controller_heartbeat_at"] = self._clock()
+            self._store.save(state)
             now = self._clock()
             remaining = deadline - now
             if remaining <= 0:
@@ -435,6 +503,8 @@ class PilotController:
         deleted = False
         attempts = len(self._delete_backoff)
         for attempt in range(1, attempts + 1):
+            state["controller_heartbeat_at"] = self._clock()
+            self._store.save(state)
             try:
                 self._api.delete_pod(pod_id)
                 deleted = True
@@ -484,8 +554,12 @@ class PilotController:
                 reason = (
                     f"state records live pod {pod_id}; rerun with --resume to repossess it"
                 )
-            elif not pod_id and state.get("phase") == "creating":
-                reason = "state records an in-flight create; rerun with --resume to reconcile it"
+            elif not pod_id and (
+                state.get("phase") == "creating"
+                or state.get("create_outcome_unknown")
+                or state.get("phase") == "no_pod"
+            ):
+                reason = "state records an in-flight or ambiguous create; rerun with --resume to reconcile it"
             else:
                 reason = None
             if reason:
@@ -519,6 +593,58 @@ class PilotController:
                 state.pop("_create_requested_epoch", None)
                 self._store.save(state)
                 return self._report(state, verified_absent=True, exit_code=CLEAN_EXIT_CODE)
+
+        # Older controller versions could mark an ambiguous POST as `no_pod`
+        # after only a few early inventory misses. That state is not proof of
+        # absence; upgrade it to the durable unknown-create reconciliation path.
+        if state is not None and not state.get("pod_id") and state.get("phase") == "no_pod":
+            state["create_outcome_unknown"] = True
+            state["phase"] = "unresolved"
+            state.setdefault("notes", []).append(
+                "legacy no_pod state came from an ambiguous create; inventory must be reconciled again"
+            )
+            self._store.save(state)
+
+        # A process may die after writing the pre-POST intent but before saving
+        # the response. `creating` with no ID is also ambiguous: never replay it.
+        if state is not None and not state.get("pod_id") and state.get("phase") == "creating":
+            state["create_outcome_unknown"] = True
+            state["phase"] = "ambiguous_create_pending"
+            self._store.save(state)
+
+        needs_ambiguous_reconcile = (
+            state is not None
+            and not state.get("pod_id")
+            and bool(state.get("create_outcome_unknown"))
+            and state.get("phase") in {"ambiguous_create_pending", "unresolved"}
+        )
+        if needs_ambiguous_reconcile:
+            try:
+                found = self._reconcile_after_ambiguous_create(state)
+            except Exception as error:  # noqa: BLE001
+                state["phase"] = "unresolved"
+                state["last_reconcile_error"] = type(error).__name__
+                self._store.save(state)
+                if self._continue_ambiguous_create:
+                    found = self._wait_for_ambiguous_create_resolution(state)
+                    self._adopt(state, found)
+                    self._store.save(state)
+                else:
+                    return self._report(state, verified_absent=False, exit_code=UNRESOLVED_EXIT_CODE)
+            if found is None:
+                state["phase"] = "unresolved"
+                state["last_reconcile_at"] = _utc_now_iso()
+                self._store.save(state)
+                if self._continue_ambiguous_create:
+                    found = self._wait_for_ambiguous_create_resolution(state)
+                else:
+                    self._log(
+                        "UNRESOLVED: create outcome still ambiguous; no re-POST. "
+                        "systemd --resume will continue inventory reconciliation."
+                    )
+                    return self._report(state, verified_absent=False, exit_code=UNRESOLVED_EXIT_CODE)
+            self._adopt(state, found)
+            self._store.save(state)
 
         # Recompute the deadline without ever extending it.
         if state.get("pod_id"):

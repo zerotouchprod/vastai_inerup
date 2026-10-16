@@ -40,16 +40,10 @@ It owns the whole lifetime of one disposable Pod.
 
 - **Durable identity.** The attempt (name, image, deadline) is written to an atomic `0600` state
   file *before* the create request; the provider Pod id is written the moment it is known.
-- **Ambiguous create never retried.** RunPod's published create schema has no idempotency key, so
-  a timeout/5xx is treated as ambiguous: the controller re-reads inventory and adopts the Pod by
-  its unique name. A definite 4xx is a refusal with no Pod created.
-- **Absolute deadline.** `deadline = provider createdAt + 1800s`, persisted. A restart re-reads the
-  stored deadline; a skewed local clock can never extend it. The provider exposes no Pod TTL, so
-  this controller — not the Pod — is the enforcement mechanism.
-- **Fail-loud teardown.** Deletion is retried and every attempt is followed by an inventory
-  re-check. Absence must be *proven*; otherwise the run reports `unresolved` and exits non-zero.
-- **Single-Pod discipline.** The controller refuses to run if any Pod already exists, and refuses
-  without `--resume` if its state file records a live Pod.
+- **Ambiguous create never retried.** RunPod's create schema has no idempotency key. On timeout/408/429/5xx, a successful body without a Pod ID, or a crash after the pre-POST intent, the durable state is `create_outcome_unknown`; the controller never re-POSTs. It polls inventory by the unique Pod name for an initial ~67 seconds. If still not visible, it remains alive in `unresolved` and rechecks every 60 seconds indefinitely (including across `--resume`); a late Pod is adopted using provider `createdAt` and immediately torn down if its absolute deadline has elapsed. If inventory remains unavailable indefinitely, the watchdog alerts and manual provider-console action may still be needed.
+- **Absolute deadline.** `deadline = provider createdAt + 1800s`, persisted. A restart re-reads the stored deadline; a skewed local clock can never extend it. The provider exposes no Pod TTL, so this controller — not the Pod — is the enforcement mechanism.
+- **Fail-loud teardown.** Deletion is retried and every attempt is followed by an inventory re-check. Absence must be *proven*; otherwise the run reports `unresolved` and exits non-zero instead of claiming success.
+- **Single-Pod discipline.** The controller refuses to run if any Pod already exists, and refuses without `--resume` if its state file records a live or ambiguous create.
 
 Worst-case overshoot past the deadline is bounded by the configured backoffs
 (6 attempts x ~7.5 s of absence checks + 29 s of delete backoff) at **~74 s**.
@@ -79,17 +73,21 @@ refuses the second option unless the operator acknowledges it.
 - Controller and isolated plane are installed under systemd on `vps1748`.
 - Plane is **active** on `127.0.0.1:8099` only. A dedicated SSH account/key provides a local forward to that loopback port; effective sshd policy denies shell, PTY, agent/X11, remote forwarding, and all forward targets except `127.0.0.1:8099`.
 - The local SSH tunnel was exercised: unauthenticated claim through the tunnel returned 401; a forwarded port-22 target and reverse forwarding were both denied. The single test job was not claimed.
-- Controller unit is enabled with `Restart=on-failure`, `RestartSec=15s`, persistent `StateDirectory`, `OnFailure` alert, and a restart wrapper that passes `--resume` after the durable create latch. `/etc/aividup-runpod-pilot/GO` is absent; systemd reports `ConditionResult=no`, controller inactive. No GO marker, state file, or create latch exists; **no create request can be issued**.
-- Protected Pod env loader accepts only `AIVIDUP_*`, requires mode 0600, refuses the RunPod API key; Pod args accept only an `entrypoint`/`cmd` JSON object and reject group/world-writable files. A real controller `--dry-run` of the deployed config passed; worker token and private SSH key were redacted.
-- Hermes job `aividup-runpod-pilot-teardown-alert` checks the systemd OnFailure marker every minute and sends one Telegram alert per attempt ID; it ran successfully with no false alert. The alert handler's dedupe logic was exercised (first alert emitted, duplicate silent).
-- Local pilot tests after the protected env/args change: **125 passed**. Exact branch CI run [38859178898](https://github.com/zerotouchprod/vastai_inerup/actions/runs/38859178898) on `ad88469` passed **167 tests**; both image jobs were skipped. Anonymous GHCR HEAD still returns HTTP 200 for the requested immutable image digest.
-- The one-time RunPod SSH path remains unverified from provider-side networks. No CPU or GPU Pod was created to test outbound TCP/22. The GPU run will fail before checkpoint download if this path is unavailable, while the external controller still owns the absolute 30-minute teardown deadline.
+- Controller unit is enabled with `Restart=on-failure`, `RestartSec=15s`, `StartLimitIntervalSec=300s`, `StartLimitBurst=5`, persistent `StateDirectory`, and a restart wrapper that passes `--resume` after the durable create latch. `/etc/aividup-runpod-pilot/GO` is absent; systemd reports `ConditionResult=no`, controller inactive. No GO marker, state file, or create latch exists; **no create request can be issued**.
+- Ambiguous create never re-POSTs. After the initial bounded search the controller keeps the same process alive with durable `unresolved` state and polls once/minute until it finds the late Pod; crash recovery repeats this via `--resume`. Repeated process crashes are bounded to five per five-minute window.
+- A no-network systemd fake-provider integration test exercised crash→restart→`--resume`: `NRestarts=1`, fake create count 1, fake Pod removed/verified absent, and the independent watchdog emitted a critical alert while the fake Pod was still live. A prior unit with `OnFailure` attached did not emit its marker on an automatic restart; the independent watchdog is primary for restart detection, with `OnFailure` retained for terminal failure.
+- Protected Pod env loader accepts only `AIVIDUP_*`, requires mode 0600, refuses the RunPod API key; Pod args accept only an `entrypoint`/`cmd` JSON object and reject group/world-writable files. The actual dry-run of the deployed config passed; secrets were redacted. The Pod startup script now requires an HTTP 401 probe through the tunnel before checkpoint bootstrap.
+- Hermes alert job checks `NRestarts`, service state, controller heartbeat age, ambiguous state, and the durable `OnFailure` marker every minute; empty/no-alert path is silent.
+- Local pilot suite after the fixes: **139 passed in 46.15s**. The prior CI run predates these fixes and must be rerun with image publication disabled. The published image digest is unchanged.
+- The one-time RunPod SSH path remains unverified from provider-side networks. No CPU or GPU Pod was created to test outbound TCP/22. The GPU run will fail before checkpoint download if this path is unavailable, while the external controller owns the absolute 30-minute teardown deadline.
 - Live provider snapshot at 2026-10-16 06:06 UTC: 0 Pods, 0 Network Volumes; RTX 3090 Secure/EU-CZ-1 `$0.50/h`, availability LOW. Recheck immediately before launch.
 
 | Check | Result |
 |---|---|
-| Controller behaviour, 17 tests (fake clock/provider) | **PASS** — ambiguous create, delete failure, restart, inventory re-check, deadline absoluteness, single-Pod refusal |
-| Controller over real HTTP, 12 tests (local REST v2 impersonator) | **PASS** — includes 500-create recovery with exactly one POST, 500-delete → unresolved, delete-that-landed-but-returned-500, refusal before POST |
+| Controller behavior, 20 tests (fake clock/provider) | **PASS** — ambiguous create, late visibility during `--resume`, bounded DELETE, absolute deadline, heartbeat and single-Pod refusal |
+| Controller over real HTTP, 14 tests (local REST v2 impersonator) | **PASS** — 500/408/malformed create recovery without duplicate POST, delete failures, inventory verification |
+| Protected Pod configuration, 7 tests | **PASS** — owner-only env file, API key exclusion, command-file permission checks, dry-run redaction and HTTP readiness probe |
+| Independent watchdog, 8 tests | **PASS** — GO gating, active/failure states, restart count, stale heartbeat and deduplication |
 | Isolated plane, 17 tests (incl. real `Worker` + `ControlPlaneClient` end-to-end on CPU with `passthrough`) | **PASS** — one job served, then permanently 204 |
 | Mutation check (auth disabled, job guard disabled) | **5 tests fail** — the tests genuinely detect the breakage |
 | Checkpoint bootstrap vs the live Release asset | **PASS** — 24,636,301 bytes, SHA-256 `45c7f741…f53f`, mode 0400, scratch 0700 |

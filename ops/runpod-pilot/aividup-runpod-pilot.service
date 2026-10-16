@@ -6,7 +6,8 @@ Wants=network-online.target
 # Explicit manual arm is required; no Pod can be created on boot or by accidental restart.
 ConditionPathExists=/etc/aividup-runpod-pilot/GO
 OnFailure=aividup-runpod-pilot-alert.service
-StartLimitIntervalSec=0
+StartLimitIntervalSec=300s
+StartLimitBurst=5
 
 [Service]
 Type=simple

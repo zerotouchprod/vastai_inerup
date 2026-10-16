@@ -1,7 +1,7 @@
 #!/bin/sh
 # Called by systemd OnFailure; the Hermes one-minute watchdog delivers this marker to Telegram.
 set -eu
-STATE_DIR=/var/lib/aividup-runpod-pilot
+STATE_DIR=${AIVIDUP_PILOT_STATE_DIR:-/var/lib/aividup-runpod-pilot}
 mkdir -p "$STATE_DIR"
 chmod 0700 "$STATE_DIR"
 INCIDENT="unknown-$(date -u +%Y%m%dT%H%M%SZ)"

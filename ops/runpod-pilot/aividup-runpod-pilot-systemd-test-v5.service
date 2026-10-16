@@ -1,0 +1,29 @@
+[Unit]
+Description=No-network systemd crash/resume/watchdog test using a persistent fake provider (v5)
+After=network.target
+StartLimitIntervalSec=60s
+StartLimitBurst=2
+
+[Service]
+Type=exec
+User=informaten
+Group=informaten
+StateDirectory=aividup-runpod-pilot-systemd-test-v5
+StateDirectoryMode=0700
+Environment=AIVIDUP_PILOT_STATE_DIR=/var/lib/aividup-runpod-pilot-systemd-test-v5
+Environment=AIVIDUP_PILOT_UNIT=aividup-runpod-pilot-systemd-test-v5.service
+Environment=AIVIDUP_PILOT_GO_FILE=/var/lib/aividup-runpod-pilot-systemd-test-v5/GO
+ExecStart=/usr/bin/python3 /opt/aividup-runpod-pilot/systemd-recovery-test.py
+Restart=on-failure
+RestartSec=1s
+TimeoutStartSec=30s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+ReadWritePaths=/var/lib/aividup-runpod-pilot-systemd-test-v5
