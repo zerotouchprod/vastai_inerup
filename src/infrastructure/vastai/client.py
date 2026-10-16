@@ -15,7 +15,7 @@ from src.infrastructure.vastai.verified_machine_pool import (
     load_machine_pool,
 )
 
-from src.domain.vastai import IVastClient, VastOffer, VastInstance, VastInstanceConfig
+from src.domain.vastai import VastOffer, VastInstance, VastInstanceConfig
 from src.domain.exceptions import VideoProcessingError
 
 try:
@@ -261,7 +261,10 @@ class VastAIClient:
             if result:
                 cheapest = result[0]
                 self.logger.info(
-                    f"Cheapest: ${cheapest.price_per_hour:.3f}/hr, {cheapest.gpu_name}, {cheapest.vram_mb/1024:.0f}GB VRAM"
+                    "Cheapest: "
+                    f"${cheapest.price_per_hour:.3f}/hr, "
+                    f"{cheapest.gpu_name}, "
+                    f"{cheapest.vram_mb / 1024:.0f}GB VRAM"
                 )
 
             return result
@@ -342,7 +345,7 @@ class VastAIClient:
                 self.logger.error(
                     f"Unexpected response type: {type(response)}, data: {response}"
                 )
-                raise VideoProcessingError(f"Invalid API response format")
+                raise VideoProcessingError("Invalid API response format")
 
             if not instances:
                 self.logger.warning(
@@ -355,7 +358,7 @@ class VastAIClient:
             # Validate required fields
             if not data or not isinstance(data, dict):
                 self.logger.error(f"Invalid instance data: {data}")
-                raise VideoProcessingError(f"Invalid instance data structure")
+                raise VideoProcessingError("Invalid instance data structure")
 
             return VastInstance(
                 id=data.get("id", instance_id),

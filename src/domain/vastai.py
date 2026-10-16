@@ -6,7 +6,6 @@ Domain layer for Vast.ai integration (SOLID).
 
 from dataclasses import dataclass
 from typing import Optional, Dict, Any, List, Protocol
-from datetime import datetime
 
 
 @dataclass
