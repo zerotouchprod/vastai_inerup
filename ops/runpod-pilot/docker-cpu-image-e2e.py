@@ -127,15 +127,14 @@ def prepare_temporary_sshd(secret_dir: Path) -> tuple[Path, Path, Path, str, str
     pinned_host_key = f"{SSH_HOST_ALIAS} {host_public[0]} {host_public[1]}"
 
     home = secret_dir / "ssh-home"
-    authorized_keys = home / ".ssh" / "authorized_keys"
+    home.mkdir(mode=0o700)
+    ssh_dir = home / ".ssh"
+    ssh_dir.mkdir(mode=0o700)
+    authorized_keys = ssh_dir / "authorized_keys"
     key_entry = f'no-agent-forwarding,no-X11-forwarding,no-pty,permitopen="{SSH_FORWARD_TARGET}" {public_key}'
-    authorized_source = secret_dir / "authorized_keys"
-    write_private(authorized_source, key_entry)
-    run_checked(["sudo", "-n", "useradd", "--system", "--user-group", "--create-home", "--home-dir", str(home), "--shell", "/usr/sbin/nologin", SSH_USER])
+    write_private(authorized_keys, key_entry)
+    run_checked(["sudo", "-n", "useradd", "--system", "--user-group", "--no-create-home", "--home-dir", str(home), "--shell", "/usr/sbin/nologin", SSH_USER])
     try:
-        run_checked(["sudo", "-n", "install", "-d", "-o", SSH_USER, "-g", SSH_USER, "-m", "0700", str(home / ".ssh")])
-        run_checked(["sudo", "-n", "install", "-o", SSH_USER, "-g", SSH_USER, "-m", "0600", str(authorized_source), str(authorized_keys)])
-
         config = secret_dir / "sshd_config"
         config_text = "\n".join(
             [
