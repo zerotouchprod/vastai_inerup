@@ -285,6 +285,7 @@ class IsolatedControlPlane:
         params: Optional[dict] = None,
         start_seconds: float = 0.0,
         max_output_bytes: int = 256 * 1024 * 1024,
+        advertised_base_url: Optional[str] = None,
     ):
         if host not in LOOPBACK_HOSTS:
             raise PlaneRefused(
@@ -303,6 +304,9 @@ class IsolatedControlPlane:
         self.input_sha256 = hashlib.sha256(self.input_path.read_bytes()).hexdigest()
         self.host = host
         self.port = port
+        self.advertised_base_url = (
+            advertised_base_url.rstrip("/") if advertised_base_url else None
+        )
         self.lease_seconds = lease_seconds
         self.mode = mode
         self.params = dict(params or {})
@@ -349,7 +353,7 @@ class IsolatedControlPlane:
             return True
 
     def build_task(self, attempt_id: str) -> dict:
-        base = self.base_url
+        base = self.advertised_base_url or self.base_url
         return {
             "attempt_id": attempt_id,
             "job_id": self.job_id,
@@ -450,6 +454,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--input", type=Path)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8099)
+    parser.add_argument(
+        "--advertised-base-url",
+        help="base URL returned in task input/output URLs (e.g. a Pod-side SSH tunnel URL)",
+    )
     parser.add_argument("--evidence", type=Path, default=Path("/tmp/aividup-pilot-plane-evidence.json"))
     parser.add_argument("--lease-seconds", type=int, default=300)
     parser.add_argument("--mode", default="interp")
@@ -483,6 +491,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         input_path=args.input,
         host="127.0.0.1" if target_host not in LOOPBACK_HOSTS else target_host,
         port=args.port,
+        advertised_base_url=args.advertised_base_url,
         evidence_path=args.evidence,
         lease_seconds=args.lease_seconds,
         mode=args.mode,

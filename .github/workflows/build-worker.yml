@@ -126,6 +126,7 @@ jobs:
           scripts/runpod_pilot_test_control_plane.py
           ops/runpod-pilot/alert-watch.py
           ops/runpod-pilot/systemd-recovery-test.py
+          ops/runpod-pilot/cpu-ssh-forward-e2e.py
       - name: Run worker, pilot contract, and model manifest tests
         run: >-
           python -m pytest

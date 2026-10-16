@@ -119,6 +119,29 @@ def test_job_is_not_parameterisable_from_the_network(plane):
     assert "/etc" not in json.dumps(body)
 
 
+def test_job_uses_advertised_base_url_for_input_and_output_over_a_tunnel(tmp_path):
+    source = make_synthetic_input(tmp_path / "input.mp4", seconds=2)
+    server_port = free_port()
+    advertised = "http://127.0.0.1:18099/api/worker"
+    instance = IsolatedControlPlane(
+        token=TOKEN,
+        input_path=source,
+        host="127.0.0.1",
+        port=server_port,
+        advertised_base_url=advertised,
+    )
+    instance.start()
+    try:
+        # The VPS-side server listener stays on server_port; only the returned URLs
+        # are addressed through the Pod-side SSH-forward listener at :18099.
+        assert instance.base_url == f"http://127.0.0.1:{server_port}/api/worker"
+        task = post(f"{instance.base_url}/claim", identity()).json()["task"]
+        assert task["input_url"].startswith(f"{advertised}/input/")
+        assert task["output"]["url"].startswith(f"{advertised}/sink/")
+    finally:
+        instance.stop()
+
+
 def test_claim_echoes_the_exact_lease_identity(plane):
     claimed = identity()
     task = post(f"{plane.base_url}/claim", claimed).json()
