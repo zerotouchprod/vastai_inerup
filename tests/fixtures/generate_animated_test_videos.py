@@ -388,17 +388,6 @@ class SyntheticVideoGenerator:
                 thickness,
             )
 
-            # Add frame indicator
-            cv2.putText(
-                frame,
-                f"Frame {i}",
-                (10, 30),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.7,
-                (100, 100, 100),
-                1,
-            )
-
             frames.append(frame)
 
         return self._save_video_with_audio(frames, output_path)
