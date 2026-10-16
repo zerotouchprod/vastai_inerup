@@ -88,6 +88,11 @@ def run_checked(command: list[str], *, timeout: int = 60) -> subprocess.Complete
     return result
 
 
+def ensure_sshd_privsep_dir() -> None:
+    """Create OpenSSH's runtime directory on minimal hosted runners."""
+    run_checked(["sudo", "-n", "install", "-d", "-o", "root", "-g", "root", "-m", "0755", "/run/sshd"])
+
+
 def write_private(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -163,6 +168,7 @@ def prepare_temporary_sshd(secret_dir: Path) -> tuple[Path, Path, Path, str, str
             ]
         )
         write_private(config, config_text)
+        ensure_sshd_privsep_dir()
         run_checked(["sudo", "-n", "/usr/sbin/sshd", "-t", "-f", str(config)])
         return client_key, host_key, config, pinned_host_key, str(home)
     except Exception:

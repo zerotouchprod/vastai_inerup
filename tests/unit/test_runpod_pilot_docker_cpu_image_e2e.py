@@ -19,6 +19,16 @@ def load_runner():
     return module
 
 
+def test_temporary_sshd_runtime_dir_is_created_idempotently(monkeypatch):
+    runner = load_runner()
+    calls = []
+    monkeypatch.setattr(runner, "run_checked", lambda command, **kwargs: calls.append(command))
+
+    runner.ensure_sshd_privsep_dir()
+
+    assert calls == [["sudo", "-n", "install", "-d", "-o", "root", "-g", "root", "-m", "0755", "/run/sshd"]]
+
+
 def test_docker_command_uses_exact_pod_args_without_gpu_or_volume_mounts(tmp_path):
     runner = load_runner()
     pod_args = json.loads(POD_ARGS_PATH.read_text())
