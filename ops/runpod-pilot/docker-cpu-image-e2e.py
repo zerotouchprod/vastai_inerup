@@ -107,7 +107,7 @@ def write_private(path: Path, content: str) -> None:
     os.chmod(path, 0o600)
 
 
-def prepare_tunnel_materials(client_dir: Path, sidecar_dir: Path) -> tuple[Path, str, str, Path]:
+def prepare_tunnel_materials(client_dir: Path, sidecar_dir: Path) -> tuple[Path, str, str, str, Path]:
     """Create pinned SSH material for a network-isolated test sidecar."""
     if shutil.which("ssh-keygen") is None:
         raise E2EFailure("openssh-client is required on the CI runner")
@@ -119,11 +119,12 @@ def prepare_tunnel_materials(client_dir: Path, sidecar_dir: Path) -> tuple[Path,
     os.chmod(host_key, 0o600)
 
     public_key = client_key.with_suffix(".pub").read_text(encoding="utf-8").strip()
+    client_key_fingerprint = run_checked(["ssh-keygen", "-lf", str(client_key.with_suffix(".pub"))]).stdout.split()[1]
     host_public = run_checked(["ssh-keygen", "-y", "-f", str(host_key)]).stdout.strip().split()
     if len(host_public) < 2:
         raise E2EFailure("could not derive temporary SSH host public key")
     pinned_host_key = f"{SSH_HOST_ALIAS} {host_public[0]} {host_public[1]}"
-    fingerprint = run_checked(["ssh-keygen", "-lf", str(host_key)]).stdout.split()[1]
+    host_key_fingerprint = run_checked(["ssh-keygen", "-lf", str(host_key)]).stdout.split()[1]
     key_entry = f'no-agent-forwarding,no-X11-forwarding,no-pty,permitopen="{SSH_FORWARD_TARGET}" {public_key}'
     write_private(sidecar_dir / "authorized_keys", key_entry)
 
@@ -134,7 +135,7 @@ def prepare_tunnel_materials(client_dir: Path, sidecar_dir: Path) -> tuple[Path,
             "ListenAddress 0.0.0.0",
             "HostKey /run/ssh_host_ed25519",
             "PidFile /run/sshd.pid",
-            f"AuthorizedKeysFile {sidecar_dir / 'authorized_keys'}",
+            f"AuthorizedKeysFile /home/{SSH_USER}/.ssh/authorized_keys",
             "PasswordAuthentication no",
             "KbdInteractiveAuthentication no",
             "PubkeyAuthentication yes",
@@ -148,8 +149,8 @@ def prepare_tunnel_materials(client_dir: Path, sidecar_dir: Path) -> tuple[Path,
             "PermitTunnel no",
             "PermitTTY no",
             "UsePAM no",
-            "StrictModes no",
-            "LogLevel VERBOSE",
+            "StrictModes yes",
+            "LogLevel DEBUG1",
             f"Match User {SSH_USER}",
             "    ForceCommand /usr/sbin/nologin",
             "    PermitTTY no",
@@ -159,7 +160,7 @@ def prepare_tunnel_materials(client_dir: Path, sidecar_dir: Path) -> tuple[Path,
         ]
     )
     write_private(config, config_text)
-    return client_key, pinned_host_key, fingerprint, config
+    return client_key, pinned_host_key, host_key_fingerprint, client_key_fingerprint, config
 
 
 def build_sidecar_command(sidecar_dir: Path, artifact_dir: Path) -> str:
@@ -183,7 +184,10 @@ def build_sidecar_command(sidecar_dir: Path, artifact_dir: Path) -> str:
         "install -d -m 0755 /run/sshd",
         f"install -o root -g root -m 0600 {quote(str(sidecar_dir / 'host_ed25519'))} /run/ssh_host_ed25519",
         "ssh-keygen -lf /run/ssh_host_ed25519",
-        f"useradd --system --user-group --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin {SSH_USER}",
+        f"ssh-keygen -lf {quote(str(sidecar_dir / 'authorized_keys'))}",
+        f"useradd --system --user-group --create-home --home-dir /home/{SSH_USER} --shell /usr/sbin/nologin {SSH_USER}",
+        f"install -d -o {SSH_USER} -g {SSH_USER} -m 0700 /home/{SSH_USER}/.ssh",
+        f"install -o {SSH_USER} -g {SSH_USER} -m 0600 {quote(str(sidecar_dir / 'authorized_keys'))} /home/{SSH_USER}/.ssh/authorized_keys",
         "PASSWORD_HASH=$(python3 -c 'import crypt,secrets; print(crypt.crypt(secrets.token_urlsafe(32), crypt.mksalt(crypt.METHOD_SHA512)))')",
         f"usermod --password \"$PASSWORD_HASH\" {SSH_USER}",
         "unset PASSWORD_HASH",
@@ -372,6 +376,19 @@ def main(argv: list[str] | None = None) -> int:
         "network_volume_requested": False,
         "tunnel_topology": "worker -> isolated Docker sidecar SSHD -> sidecar loopback plane",
     }
+    save_json(
+        evidence_path,
+        {
+            "claims_served": 0,
+            "bootstrap_stages": [],
+            "heartbeats": 0,
+            "outputs": [],
+            "diagnostic_stages": [],
+            "completed": [],
+            "failures": [],
+            "claims": [],
+        },
+    )
     token = secrets.token_urlsafe(32)
     secret_temp = tempfile.TemporaryDirectory(prefix="aividup-pilot-cpu-secrets-")
     secret_root = Path(secret_temp.name)
@@ -400,8 +417,9 @@ def main(argv: list[str] | None = None) -> int:
         plane_script = sidecar_dir / "runpod_pilot_test_control_plane.py"
         shutil.copy2(REPO_ROOT / "scripts" / "runpod_pilot_test_control_plane.py", plane_script)
         os.chmod(plane_script, 0o400)
-        client_key, pinned_host_key, host_key_fingerprint, _sshd_config = prepare_tunnel_materials(client_dir, sidecar_dir)
+        client_key, pinned_host_key, host_key_fingerprint, client_key_fingerprint, _sshd_config = prepare_tunnel_materials(client_dir, sidecar_dir)
         summary["pinned_host_key_fingerprint"] = host_key_fingerprint
+        summary["client_key_fingerprint"] = client_key_fingerprint
 
         env_file = client_dir / "pod.env"
         env = {

@@ -28,16 +28,21 @@ def test_sidecar_ssh_materials_restrict_forwarding_to_loopback_plane(tmp_path):
     client_dir.mkdir()
     sidecar_dir.mkdir()
 
-    client_key, pinned_host_key, host_key_fingerprint, config = runner.prepare_tunnel_materials(client_dir, sidecar_dir)
+    client_key, pinned_host_key, host_key_fingerprint, client_key_fingerprint, config = runner.prepare_tunnel_materials(client_dir, sidecar_dir)
 
     assert client_key.is_file()
     assert pinned_host_key.startswith("195.234.126.233 ssh-ed25519 ")
     assert host_key_fingerprint.startswith("SHA256:")
+    assert client_key_fingerprint.startswith("SHA256:")
     assert "PermitOpen 127.0.0.1:8099" in config.read_text()
+    assert f"AuthorizedKeysFile /home/{runner.SSH_USER}/.ssh/authorized_keys" in config.read_text()
+    assert "StrictModes yes" in config.read_text()
     assert "HostKey /run/ssh_host_ed25519" in config.read_text()
     authorized = (sidecar_dir / "authorized_keys").read_text()
     assert 'permitopen="127.0.0.1:8099"' in authorized
     assert "no-pty" in authorized and "no-agent-forwarding" in authorized
+    allowed_fp = runner.run_checked(["ssh-keygen", "-lf", str(sidecar_dir / "authorized_keys")]).stdout.split()[1]
+    assert client_key_fingerprint == allowed_fp
 
 
 def test_sidecar_command_has_valid_shell_and_runs_plane_with_sshd(tmp_path):
@@ -49,6 +54,8 @@ def test_sidecar_command_has_valid_shell_and_runs_plane_with_sshd(tmp_path):
     assert "openssh-server" in command
     assert "policy-rc.d" in command
     assert "install -o root -g root -m 0600" in command
+    assert f"install -d -o {runner.SSH_USER} -g {runner.SSH_USER}" in command
+    assert f"install -o {runner.SSH_USER} -g {runner.SSH_USER} -m 0600" in command
     assert 'usermod --password "$PASSWORD_HASH"' in command
     assert "sshd -D -e" in command
     assert "--host 127.0.0.1 --port 8099" in command
