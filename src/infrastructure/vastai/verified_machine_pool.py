@@ -47,7 +47,11 @@ class MachinePool:
     def __init__(self, records: Iterable[dict[str, Any] | MachineRecord]):
         self._records: dict[int, MachineRecord] = {}
         for record in records:
-            item = record if isinstance(record, MachineRecord) else MachineRecord.from_dict(record)
+            item = (
+                record
+                if isinstance(record, MachineRecord)
+                else MachineRecord.from_dict(record)
+            )
             self._records[item.machine_id] = item
 
     def machine(self, machine_id: int) -> MachineRecord:
@@ -61,21 +65,30 @@ class MachinePool:
             if record.is_compatible(environment)
         )
 
-    def filter_offers(self, offers: Iterable[dict[str, Any]], environment: PoolEnvironment) -> list[dict[str, Any]]:
+    def filter_offers(
+        self, offers: Iterable[dict[str, Any]], environment: PoolEnvironment
+    ) -> list[dict[str, Any]]:
         allowed = set(self.allowed_machine_ids(environment))
         return [offer for offer in offers if offer.get("machine_id") in allowed]
 
     def record_probe(self, **fields: Any) -> MachineRecord:
         machine = MachineRecord.from_dict(fields)
         if machine.status == "verified" and (
-            machine.last_result != "PASS" or not machine.cleanup_confirmed or not machine.last_pass_at
+            machine.last_result != "PASS"
+            or not machine.cleanup_confirmed
+            or not machine.last_pass_at
         ):
-            raise ValueError("verified requires PASS, cleanup_confirmed, and last_pass_at")
+            raise ValueError(
+                "verified requires PASS, cleanup_confirmed, and last_pass_at"
+            )
         self._records[machine.machine_id] = machine
         return machine
 
     def to_dict(self) -> dict[str, Any]:
-        return {"version": 1, "pool": [record.__dict__ for record in self._records.values()]}
+        return {
+            "version": 1,
+            "pool": [record.__dict__ for record in self._records.values()],
+        }
 
 
 def load_machine_pool(path: str | Path) -> MachinePool:

@@ -7,8 +7,12 @@ from src.infrastructure.vastai.verified_machine_pool import (
     load_machine_pool,
 )
 
-
-POOL_PATH = Path(os.environ.get("VAST_POOL_PATH", Path(__file__).parents[1] / "config" / "vast_verified_machine_pool.json"))
+POOL_PATH = Path(
+    os.environ.get(
+        "VAST_POOL_PATH",
+        Path(__file__).parents[1] / "config" / "vast_verified_machine_pool.json",
+    )
+)
 
 
 def test_failed_machine_is_cooldown_with_environment_fingerprint():
@@ -68,9 +72,12 @@ def test_production_returns_only_verified_environment_compatible_machines():
     assert pool.allowed_machine_ids(
         PoolEnvironment("sha256:good", "12.6", "2.9.1+cu126")
     ) == [10]
-    assert pool.allowed_machine_ids(
-        PoolEnvironment("sha256:missing", "12.6", "2.9.1+cu126")
-    ) == []
+    assert (
+        pool.allowed_machine_ids(
+            PoolEnvironment("sha256:missing", "12.6", "2.9.1+cu126")
+        )
+        == []
+    )
 
 
 def test_filter_offers_uses_machine_id_not_offer_or_instance_id():
@@ -95,7 +102,9 @@ def test_filter_offers_uses_machine_id_not_offer_or_instance_id():
         {"id": 1002, "instance_id": 9002, "machine_id": 99},
     ]
 
-    assert pool.filter_offers(offers, PoolEnvironment("sha256:good", "12.6", "2.9.1+cu126")) == [offers[0]]
+    assert pool.filter_offers(
+        offers, PoolEnvironment("sha256:good", "12.6", "2.9.1+cu126")
+    ) == [offers[0]]
 
     pool = MachinePool([])
 

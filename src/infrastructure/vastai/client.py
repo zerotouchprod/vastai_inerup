@@ -9,19 +9,19 @@ import time
 from typing import List, Dict, Any, Optional
 import logging
 
-from src.infrastructure.vastai.verified_machine_pool import MachinePool, PoolEnvironment, load_machine_pool
-
-from src.domain.vastai import (
-    IVastClient,
-    VastOffer,
-    VastInstance,
-    VastInstanceConfig
+from src.infrastructure.vastai.verified_machine_pool import (
+    MachinePool,
+    PoolEnvironment,
+    load_machine_pool,
 )
+
+from src.domain.vastai import IVastClient, VastOffer, VastInstance, VastInstanceConfig
 from src.domain.exceptions import VideoProcessingError
 
 try:
     import requests
     from requests.exceptions import RequestException
+
     REQUESTS_AVAILABLE = True
 except ImportError:
     REQUESTS_AVAILABLE = False
@@ -38,7 +38,7 @@ class VastAIClient:
         self,
         api_key: Optional[str] = None,
         api_base: Optional[str] = None,
-        logger: Optional[logging.Logger] = None
+        logger: Optional[logging.Logger] = None,
     ):
         """
         Initialize Vast.ai client.
@@ -49,22 +49,32 @@ class VastAIClient:
             logger: Logger instance
         """
         if not REQUESTS_AVAILABLE:
-            raise ImportError("requests library required. Install: pip install requests")
+            raise ImportError(
+                "requests library required. Install: pip install requests"
+            )
 
-        self.api_key = api_key or os.getenv('VAST_API_KEY')
+        self.api_key = api_key or os.getenv("VAST_API_KEY")
         if not self.api_key:
             raise ValueError("VAST_API_KEY not set")
 
-        self.api_base = api_base or os.getenv('VAST_API_BASE', 'https://api.vast.ai/v0')
+        self.api_base = api_base or os.getenv("VAST_API_BASE", "https://api.vast.ai/v0")
         self.logger = logger or logging.getLogger(__name__)
         pool_path = os.getenv("VAST_VERIFIED_MACHINE_POOL_PATH")
-        self.verified_machine_pool: Optional[MachinePool] = load_machine_pool(pool_path) if pool_path else None
+        self.verified_machine_pool: Optional[MachinePool] = (
+            load_machine_pool(pool_path) if pool_path else None
+        )
         self.verified_pool_environment: Optional[PoolEnvironment] = None
         if self.verified_machine_pool is not None:
-            required = ("VAST_WORKER_IMAGE_DIGEST", "VAST_CUDA_VERSION", "VAST_PYTORCH_VERSION")
+            required = (
+                "VAST_WORKER_IMAGE_DIGEST",
+                "VAST_CUDA_VERSION",
+                "VAST_PYTORCH_VERSION",
+            )
             missing = [name for name in required if not os.getenv(name)]
             if missing:
-                raise ValueError(f"verified machine pool requires environment: {', '.join(missing)}")
+                raise ValueError(
+                    f"verified machine pool requires environment: {', '.join(missing)}"
+                )
             self.verified_pool_environment = PoolEnvironment(
                 worker_digest=os.environ["VAST_WORKER_IMAGE_DIGEST"],
                 cuda_version=os.environ["VAST_CUDA_VERSION"],
@@ -73,16 +83,13 @@ class VastAIClient:
 
         # Setup session
         self.session = requests.Session()
-        self.session.headers.update({
-            'Accept': 'application/json',
-        })
+        self.session.headers.update(
+            {
+                "Accept": "application/json",
+            }
+        )
 
-    def _request(
-        self,
-        method: str,
-        endpoint: str,
-        **kwargs
-    ) -> Dict[str, Any]:
+    def _request(self, method: str, endpoint: str, **kwargs) -> Dict[str, Any]:
         """
         Make API request.
 
@@ -100,9 +107,9 @@ class VastAIClient:
         url = f"{self.api_base.rstrip('/')}/{endpoint.lstrip('/')}"
 
         # Add API key to params
-        params = kwargs.get('params', {})
-        params['api_key'] = self.api_key
-        kwargs['params'] = params
+        params = kwargs.get("params", {})
+        params["api_key"] = self.api_key
+        kwargs["params"] = params
 
         try:
             response = self.session.request(method, url, **kwargs)
@@ -120,7 +127,7 @@ class VastAIClient:
         min_reliability: float = 0.9,
         limit: int = 10,
         host_whitelist: List[int] = None,
-        host_blacklist: List[int] = None
+        host_blacklist: List[int] = None,
     ) -> List[VastOffer]:
         """Search for available GPU offers."""
         self.logger.info(
@@ -130,81 +137,97 @@ class VastAIClient:
 
         # Build query
         query = {
-            'verified': {'eq': True},
-            'external': {'eq': False},
-            'rentable': {'eq': True},
-            'disk_space': {'gte': 50},
-            'total_flops': {'gte': 1.0},
-            'gpu_ram': {'gte': min_vram_gb * 1024},  # Convert to MB
-            'dph_total': {'lte': max_price},
-            'reliability2': {'gte': min_reliability},
-            'inet_down': {'gte': 100},
-            'inet_up': {'gte': 100},
+            "verified": {"eq": True},
+            "external": {"eq": False},
+            "rentable": {"eq": True},
+            "disk_space": {"gte": 50},
+            "total_flops": {"gte": 1.0},
+            "gpu_ram": {"gte": min_vram_gb * 1024},  # Convert to MB
+            "dph_total": {"lte": max_price},
+            "reliability2": {"gte": min_reliability},
+            "inet_down": {"gte": 100},
+            "inet_up": {"gte": 100},
         }
 
         try:
             import json
+
             response = self._request(
-                'GET',
-                'bundles',
+                "GET",
+                "bundles",
                 params={
-                    'q': json.dumps(query),  # Vast.ai expects JSON string
-                    'limit': limit,
-                }
+                    "q": json.dumps(query),  # Vast.ai expects JSON string
+                    "limit": limit,
+                },
             )
 
-            offers = response.get('offers', [])
+            offers = response.get("offers", [])
 
             if self.verified_machine_pool is not None:
                 assert self.verified_pool_environment is not None
-                offers = self.verified_machine_pool.filter_offers(offers, self.verified_pool_environment)
+                offers = self.verified_machine_pool.filter_offers(
+                    offers, self.verified_pool_environment
+                )
                 if not offers:
-                    self.logger.warning("No environment-compatible verified Vast machines are available; refusing fallback")
+                    self.logger.warning(
+                        "No environment-compatible verified Vast machines are available; refusing fallback"
+                    )
 
             result = []
             for offer_data in offers:
                 try:
                     # Client-side filtering (Vast.ai API sometimes ignores filters)
-                    price = offer_data.get('dph_total', 999)
-                    host_id = offer_data.get('host_id', 0)
+                    price = offer_data.get("dph_total", 999)
+                    host_id = offer_data.get("host_id", 0)
 
                     # Host whitelist/blacklist filtering
                     if host_whitelist and host_id not in host_whitelist:
-                        self.logger.debug(f"Skipping offer {offer_data['id']}: host {host_id} not in whitelist")
+                        self.logger.debug(
+                            f"Skipping offer {offer_data['id']}: host {host_id} not in whitelist"
+                        )
                         continue
 
                     if host_blacklist and host_id in host_blacklist:
-                        self.logger.debug(f"Skipping offer {offer_data['id']}: host {host_id} in blacklist")
+                        self.logger.debug(
+                            f"Skipping offer {offer_data['id']}: host {host_id} in blacklist"
+                        )
                         continue
 
                     # Skip if price too high
                     if price > max_price:
-                        self.logger.debug(f"Skipping offer {offer_data['id']}: price ${price:.3f} > ${max_price}")
+                        self.logger.debug(
+                            f"Skipping offer {offer_data['id']}: price ${price:.3f} > ${max_price}"
+                        )
                         continue
 
                     # Skip if not enough VRAM
-                    vram_gb = offer_data.get('gpu_ram', 0) / 1024
+                    vram_gb = offer_data.get("gpu_ram", 0) / 1024
                     if vram_gb < min_vram_gb:
-                        self.logger.debug(f"Skipping offer {offer_data['id']}: VRAM {vram_gb:.1f}GB < {min_vram_gb}GB")
+                        self.logger.debug(
+                            f"Skipping offer {offer_data['id']}: VRAM {vram_gb:.1f}GB < {min_vram_gb}GB"
+                        )
                         continue
 
                     # Skip if reliability too low
-                    reliability = offer_data.get('reliability2', 0)
+                    reliability = offer_data.get("reliability2", 0)
                     if reliability < min_reliability:
-                        self.logger.debug(f"Skipping offer {offer_data['id']}: reliability {reliability:.2f} < {min_reliability}")
+                        self.logger.debug(
+                            f"Skipping offer {offer_data['id']}: reliability {reliability:.2f} < {min_reliability}"
+                        )
                         continue
 
                     offer = VastOffer(
-                        id=offer_data['id'],
-                        gpu_name=offer_data.get('gpu_name', 'Unknown'),
-                        num_gpus=offer_data.get('num_gpus', 1),
-                        total_flops=offer_data.get('total_flops', 0),
-                        vram_mb=offer_data.get('gpu_ram', 0),
+                        id=offer_data["id"],
+                        gpu_name=offer_data.get("gpu_name", "Unknown"),
+                        num_gpus=offer_data.get("num_gpus", 1),
+                        total_flops=offer_data.get("total_flops", 0),
+                        vram_mb=offer_data.get("gpu_ram", 0),
                         price_per_hour=price,
                         reliability=reliability,
-                        inet_up=offer_data.get('inet_up', 0),
-                        inet_down=offer_data.get('inet_down', 0),
-                        storage_cost=offer_data.get('storage_cost', 0),
+                        inet_up=offer_data.get("inet_up", 0),
+                        inet_down=offer_data.get("inet_down", 0),
+                        storage_cost=offer_data.get("storage_cost", 0),
+                        machine_id=offer_data.get("machine_id"),
                     )
                     result.append(offer)
 
@@ -222,7 +245,9 @@ class VastAIClient:
             self.logger.info(f"Found {len(result)} matching offers (after filtering)")
             if result:
                 cheapest = result[0]
-                self.logger.info(f"Cheapest: ${cheapest.price_per_hour:.3f}/hr, {cheapest.gpu_name}, {cheapest.vram_mb/1024:.0f}GB VRAM")
+                self.logger.info(
+                    f"Cheapest: ${cheapest.price_per_hour:.3f}/hr, {cheapest.gpu_name}, {cheapest.vram_mb/1024:.0f}GB VRAM"
+                )
 
             return result
 
@@ -231,49 +256,40 @@ class VastAIClient:
             raise
 
     def create_instance(
-        self,
-        offer_id: int,
-        config: VastInstanceConfig
+        self, offer_id: int, config: VastInstanceConfig
     ) -> VastInstance:
         """Create instance from offer."""
         self.logger.info(f"Creating instance from offer #{offer_id}")
 
         # Build request payload
         payload = {
-            'client_id': 'me',
-            'image': config.image,
-            'env': config.env,
-            'disk': config.disk,
-            'runtype': config.runtype,  # oneshot = run once, do not restart
+            "client_id": "me",
+            "image": config.image,
+            "env": config.env,
+            "disk": config.disk,
+            "runtype": config.runtype,  # oneshot = run once, do not restart
         }
 
         if config.args_str:
-            payload['args_str'] = config.args_str
+            payload["args_str"] = config.args_str
 
         if config.onstart:
-            payload['onstart'] = config.onstart
+            payload["onstart"] = config.onstart
 
         if config.label:
-            payload['label'] = config.label
+            payload["label"] = config.label
 
         try:
-            response = self._request(
-                'PUT',
-                f'asks/{offer_id}',
-                json=payload
-            )
+            response = self._request("PUT", f"asks/{offer_id}", json=payload)
 
-            instance_id = response.get('new_contract')
+            instance_id = response.get("new_contract")
             if not instance_id:
                 raise VideoProcessingError("No instance ID in response")
 
             self.logger.info(f"Created instance #{instance_id}")
 
             # Return instance
-            return VastInstance(
-                id=instance_id,
-                status='created'
-            )
+            return VastInstance(id=instance_id, status="created")
 
         except Exception as e:
             self.logger.error(f"Create instance failed: {e}")
@@ -282,22 +298,23 @@ class VastAIClient:
     def get_instance(self, instance_id: int) -> VastInstance:
         """Get instance details."""
         try:
-            response = self._request(
-                'GET',
-                f'instances/{instance_id}'
-            )
+            response = self._request("GET", f"instances/{instance_id}")
 
             # Handle different response formats
             if isinstance(response, dict):
-                instances = response.get('instances', [])
+                instances = response.get("instances", [])
             elif isinstance(response, list):
                 instances = response
             else:
-                self.logger.error(f"Unexpected response type: {type(response)}, data: {response}")
+                self.logger.error(
+                    f"Unexpected response type: {type(response)}, data: {response}"
+                )
                 raise VideoProcessingError(f"Invalid API response format")
 
             if not instances:
-                self.logger.warning(f"Instance #{instance_id} not found in API response")
+                self.logger.warning(
+                    f"Instance #{instance_id} not found in API response"
+                )
                 raise VideoProcessingError(f"Instance #{instance_id} not found")
 
             data = instances[0] if isinstance(instances, list) else instances
@@ -308,14 +325,14 @@ class VastAIClient:
                 raise VideoProcessingError(f"Invalid instance data structure")
 
             return VastInstance(
-                id=data.get('id', instance_id),
-                status=data.get('status_msg', 'unknown'),
-                actual_status=data.get('actual_status', 'unknown'),
-                ssh_host=data.get('ssh_host'),
-                ssh_port=data.get('ssh_port'),
-                gpu_name=data.get('gpu_name'),
-                num_gpus=data.get('num_gpus'),
-                price_per_hour=data.get('dph_total'),
+                id=data.get("id", instance_id),
+                status=data.get("status_msg", "unknown"),
+                actual_status=data.get("actual_status", "unknown"),
+                ssh_host=data.get("ssh_host"),
+                ssh_port=data.get("ssh_port"),
+                gpu_name=data.get("gpu_name"),
+                num_gpus=data.get("num_gpus"),
+                price_per_hour=data.get("dph_total"),
             )
 
         except VideoProcessingError:
@@ -340,19 +357,20 @@ class VastAIClient:
         try:
             # Step 1: Request logs (returns temp download URL)
             response = self._request(
-                'PUT',
-                f'instances/request_logs/{instance_id}/',
-                data={'tail': str(tail)}
+                "PUT",
+                f"instances/request_logs/{instance_id}/",
+                data={"tail": str(tail)},
             )
 
             # Step 2: Get download URL
-            temp_url = response.get('temp_download_url')
+            temp_url = response.get("temp_download_url")
             if not temp_url:
                 self.logger.debug(f"No temp_download_url in response: {response}")
                 return ""
 
             # Step 3: Download logs from temp URL
             import requests
+
             log_response = requests.get(temp_url, timeout=10)
             log_response.raise_for_status()
 
@@ -367,10 +385,7 @@ class VastAIClient:
         self.logger.info(f"Destroying instance #{instance_id}")
 
         try:
-            self._request(
-                'DELETE',
-                f'instances/{instance_id}'
-            )
+            self._request("DELETE", f"instances/{instance_id}")
 
             self.logger.info(f"Destroyed instance #{instance_id}")
             return True
@@ -384,11 +399,7 @@ class VastAIClient:
         self.logger.info(f"Stopping instance #{instance_id}")
 
         try:
-            self._request(
-                'PUT',
-                f'instances/{instance_id}',
-                json={'state': 'stopped'}
-            )
+            self._request("PUT", f"instances/{instance_id}", json={"state": "stopped"})
 
             self.logger.info(f"Stopped instance #{instance_id}")
             return True
@@ -398,10 +409,7 @@ class VastAIClient:
             return False
 
     def wait_for_running(
-        self,
-        instance_id: int,
-        timeout: int = 300,
-        poll_interval: int = 10
+        self, instance_id: int, timeout: int = 300, poll_interval: int = 10
     ) -> VastInstance:
         """Wait for instance to be running."""
         self.logger.info(f"Waiting for instance #{instance_id} to be running...")
@@ -437,4 +445,3 @@ class VastAIClient:
                 self.logger.warning(f"Error checking instance status: {e}")
 
             time.sleep(poll_interval)
-

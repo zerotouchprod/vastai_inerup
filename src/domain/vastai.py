@@ -22,6 +22,7 @@ class VastOffer:
     inet_up: float
     inet_down: float
     storage_cost: float
+    machine_id: Optional[int] = None
 
     def __str__(self) -> str:
         return (
