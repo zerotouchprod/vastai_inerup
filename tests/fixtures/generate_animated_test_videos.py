@@ -42,12 +42,13 @@ class SyntheticVideoGenerator:
         self.fps = fps
         self.width, self.height = resolution
 
-        logger.info(f"SyntheticVideoGenerator initialized ({self.width}x{self.height} @ {fps}fps)")
+        logger.info(
+            f"SyntheticVideoGenerator initialized ({self.width}x{self.height} @ {fps}fps)"
+        )
 
-    def create_ticker_tape_video(self,
-                                 output_path: Path,
-                                 duration: float = 5.0,
-                                 text: str = "BREAKING NEWS") -> bool:
+    def create_ticker_tape_video(
+        self, output_path: Path, duration: float = 5.0, text: str = "BREAKING NEWS"
+    ) -> bool:
         """
         Scenario 1: Ticker Tape (Бегущая строка)
 
@@ -88,16 +89,24 @@ class SyntheticVideoGenerator:
 
             # Draw text
             cv2.putText(
-                frame, text,
+                frame,
+                text,
                 (current_x, y_position),
-                font, font_scale, text_color, thickness
+                font,
+                font_scale,
+                text_color,
+                thickness,
             )
 
             # Add frame number indicator (top-left)
             cv2.putText(
-                frame, f"Frame {i}",
+                frame,
+                f"Frame {i}",
                 (10, 30),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (100, 100, 100), 1
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (100, 100, 100),
+                1,
             )
 
             frames.append(frame)
@@ -105,10 +114,9 @@ class SyntheticVideoGenerator:
         # Save video with audio
         return self._save_video_with_audio(frames, output_path)
 
-    def create_karaoke_video(self,
-                            output_path: Path,
-                            duration: float = 5.0,
-                            text: str = "KARAOKE TEXT") -> bool:
+    def create_karaoke_video(
+        self, output_path: Path, duration: float = 5.0, text: str = "KARAOKE TEXT"
+    ) -> bool:
         """
         Scenario 2: Karaoke (Смена цвета)
 
@@ -138,8 +146,8 @@ class SyntheticVideoGenerator:
         # Color progression (BGR format)
         colors = [
             (255, 255, 255),  # White (start)
-            (0, 255, 255),    # Yellow (middle)
-            (0, 0, 255)       # Red (end)
+            (0, 255, 255),  # Yellow (middle)
+            (0, 0, 255),  # Red (end)
         ]
 
         for i in range(total_frames):
@@ -160,29 +168,38 @@ class SyntheticVideoGenerator:
 
             # Draw text with current color
             cv2.putText(
-                frame, text,
+                frame,
+                text,
                 (x_position, y_position),
-                font, font_scale, color, thickness
+                font,
+                font_scale,
+                color,
+                thickness,
             )
 
             # Add color indicator (top-left)
             cv2.putText(
-                frame, f"Frame {i}",
+                frame,
+                f"Frame {i}",
                 (10, 30),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (100, 100, 100), 1
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (100, 100, 100),
+                1,
             )
 
             # Add color bar indicator (top-right)
-            cv2.rectangle(frame, (self.width - 100, 10), (self.width - 10, 40), color, -1)
+            cv2.rectangle(
+                frame, (self.width - 100, 10), (self.width - 10, 40), color, -1
+            )
 
             frames.append(frame)
 
         return self._save_video_with_audio(frames, output_path)
 
-    def create_shake_video(self,
-                          output_path: Path,
-                          duration: float = 5.0,
-                          text: str = "STABLE TEXT") -> bool:
+    def create_shake_video(
+        self, output_path: Path, duration: float = 5.0, text: str = "STABLE TEXT"
+    ) -> bool:
         """
         Scenario 3: Shake (Дрожание камеры)
 
@@ -220,7 +237,9 @@ class SyntheticVideoGenerator:
         # Draw text on base frame
         text_x = (self.width + 100) // 2 - 150
         text_y = (self.height + 100) // 2
-        cv2.putText(base_frame, text, (text_x, text_y), font, font_scale, text_color, thickness)
+        cv2.putText(
+            base_frame, text, (text_x, text_y), font, font_scale, text_color, thickness
+        )
 
         # Generate shake motion
         shake_amplitude = 10  # pixels
@@ -229,25 +248,35 @@ class SyntheticVideoGenerator:
             # Calculate shake offset (sine wave for smooth shake)
             t = i / self.fps
             offset_x = int(shake_amplitude * np.sin(t * 2 * np.pi * 2))  # 2 Hz
-            offset_y = int(shake_amplitude * np.cos(t * 2 * np.pi * 3))  # 3 Hz (different freq)
+            offset_y = int(
+                shake_amplitude * np.cos(t * 2 * np.pi * 3)
+            )  # 3 Hz (different freq)
 
             # Crop shaken frame from base
             crop_x = 50 + offset_x
             crop_y = 50 + offset_y
-            frame = base_frame[crop_y:crop_y+self.height, crop_x:crop_x+self.width].copy()
+            frame = base_frame[
+                crop_y : crop_y + self.height, crop_x : crop_x + self.width
+            ].copy()
 
             # Add frame indicator
-            cv2.putText(frame, f"Frame {i}", (10, 30),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (100, 100, 100), 1)
+            cv2.putText(
+                frame,
+                f"Frame {i}",
+                (10, 30),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (100, 100, 100),
+                1,
+            )
 
             frames.append(frame)
 
         return self._save_video_with_audio(frames, output_path)
 
-    def create_fade_video(self,
-                         output_path: Path,
-                         duration: float = 5.0,
-                         text: str = "FADING TEXT") -> bool:
+    def create_fade_video(
+        self, output_path: Path, duration: float = 5.0, text: str = "FADING TEXT"
+    ) -> bool:
         """
         Scenario 4: Fade (Исчезновение)
 
@@ -288,24 +317,37 @@ class SyntheticVideoGenerator:
 
             # Create text overlay with alpha
             overlay = frame.copy()
-            cv2.putText(overlay, text, (x_position, y_position),
-                       font, font_scale, text_color, thickness)
+            cv2.putText(
+                overlay,
+                text,
+                (x_position, y_position),
+                font,
+                font_scale,
+                text_color,
+                thickness,
+            )
 
             # Blend overlay with base frame
             cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0, frame)
 
             # Add frame indicator and alpha value
-            cv2.putText(frame, f"Frame {i} | Alpha {alpha:.2f}", (10, 30),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (100, 100, 100), 1)
+            cv2.putText(
+                frame,
+                f"Frame {i} | Alpha {alpha:.2f}",
+                (10, 30),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (100, 100, 100),
+                1,
+            )
 
             frames.append(frame)
 
         return self._save_video_with_audio(frames, output_path)
 
-    def create_static_control_video(self,
-                                   output_path: Path,
-                                   duration: float = 3.0,
-                                   text: str = "STATIC TEXT") -> bool:
+    def create_static_control_video(
+        self, output_path: Path, duration: float = 3.0, text: str = "STATIC TEXT"
+    ) -> bool:
         """
         Control scenario: Static text (no motion, no color change).
         Tests baseline v2.0 compatibility.
@@ -336,19 +378,34 @@ class SyntheticVideoGenerator:
             frame = np.zeros((self.height, self.width, 3), dtype=np.uint8)
 
             # Draw static text
-            cv2.putText(frame, text, (x_position, y_position),
-                       font, font_scale, text_color, thickness)
+            cv2.putText(
+                frame,
+                text,
+                (x_position, y_position),
+                font,
+                font_scale,
+                text_color,
+                thickness,
+            )
 
             # Add frame indicator
-            cv2.putText(frame, f"Frame {i}", (10, 30),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (100, 100, 100), 1)
+            cv2.putText(
+                frame,
+                f"Frame {i}",
+                (10, 30),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (100, 100, 100),
+                1,
+            )
 
             frames.append(frame)
 
         return self._save_video_with_audio(frames, output_path)
 
-    def _interpolate_color(self, color1: Tuple[int, int, int],
-                          color2: Tuple[int, int, int], t: float) -> Tuple[int, int, int]:
+    def _interpolate_color(
+        self, color1: Tuple[int, int, int], color2: Tuple[int, int, int], t: float
+    ) -> Tuple[int, int, int]:
         """
         Interpolate between two BGR colors.
 
@@ -365,7 +422,9 @@ class SyntheticVideoGenerator:
         r = int(color1[2] * (1 - t) + color2[2] * t)
         return (b, g, r)
 
-    def _save_video_with_audio(self, frames: List[np.ndarray], output_path: Path) -> bool:
+    def _save_video_with_audio(
+        self, frames: List[np.ndarray], output_path: Path
+    ) -> bool:
         """
         Save frames as video with audio track (440Hz sine wave).
 
@@ -387,7 +446,7 @@ class SyntheticVideoGenerator:
         temp_video = output_path.parent / f"temp_{output_path.name}"
 
         h, w = frames[0].shape[:2]
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
         out = cv2.VideoWriter(str(temp_video), fourcc, self.fps, (w, h))
 
         for frame in frames:
@@ -399,14 +458,20 @@ class SyntheticVideoGenerator:
         duration = len(frames) / self.fps
 
         cmd = [
-            'ffmpeg', '-y',
-            '-i', str(temp_video),
-            '-f', 'lavfi',
-            '-i', f'sine=frequency=440:duration={duration}',
-            '-c:v', 'copy',
-            '-c:a', 'aac',
-            '-shortest',
-            str(output_path)
+            "ffmpeg",
+            "-y",
+            "-i",
+            str(temp_video),
+            "-f",
+            "lavfi",
+            "-i",
+            f"sine=frequency=440:duration={duration}",
+            "-c:v",
+            "copy",
+            "-c:a",
+            "aac",
+            "-shortest",
+            str(output_path),
         ]
 
         try:
@@ -453,41 +518,31 @@ def generate_all_test_videos(output_dir: Path = None):
     # 1. Ticker Tape (Linear Pan)
     logger.info("\n=== Scenario 1: Ticker Tape ===")
     generator.create_ticker_tape_video(
-        output_dir / "01_ticker_tape.mp4",
-        duration=5.0,
-        text="BREAKING NEWS"
+        output_dir / "01_ticker_tape.mp4", duration=5.0, text="BREAKING NEWS"
     )
 
     # 2. Karaoke (Color Change)
     logger.info("\n=== Scenario 2: Karaoke ===")
     generator.create_karaoke_video(
-        output_dir / "02_karaoke.mp4",
-        duration=5.0,
-        text="KARAOKE TEXT"
+        output_dir / "02_karaoke.mp4", duration=5.0, text="KARAOKE TEXT"
     )
 
     # 3. Shake (Camera Shake)
     logger.info("\n=== Scenario 3: Shake ===")
     generator.create_shake_video(
-        output_dir / "03_shake.mp4",
-        duration=5.0,
-        text="STABLE TEXT"
+        output_dir / "03_shake.mp4", duration=5.0, text="STABLE TEXT"
     )
 
     # 4. Fade (Alpha Fade)
     logger.info("\n=== Scenario 4: Fade ===")
     generator.create_fade_video(
-        output_dir / "04_fade.mp4",
-        duration=5.0,
-        text="FADING TEXT"
+        output_dir / "04_fade.mp4", duration=5.0, text="FADING TEXT"
     )
 
     # 5. Static Control
     logger.info("\n=== Scenario 5: Static Control ===")
     generator.create_static_control_video(
-        output_dir / "05_static_control.mp4",
-        duration=3.0,
-        text="STATIC TEXT"
+        output_dir / "05_static_control.mp4", duration=3.0, text="STATIC TEXT"
     )
 
     logger.info(f"\n✅ All test videos generated in: {output_dir.absolute()}")
@@ -501,6 +556,5 @@ def generate_all_test_videos(output_dir: Path = None):
     logger.info("| 05_static_control.mp4| ❌ No  | ❌ No  | 'static'                |")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     generate_all_test_videos()
-
