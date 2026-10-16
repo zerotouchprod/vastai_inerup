@@ -1,53 +1,152 @@
-# RTX 3090 RunPod RIFE pilot — prepared, not launched
+# RunPod RIFE pilot — one isolated run, no Network Volume
 
-## Scope and safety
+Status: **prepared, not launched.** No Pod, Network Volume, or paid resource exists.
+This document is the operator runbook and the GO/NO-GO record for the single pilot run.
 
-- One RTX 3090 Secure Pod, preferred placement `EU-CZ-1`; no Network Volume, retries = 0.
-- No Pod or other paid RunPod resource may be created until separately approved.
-- Image startup downloads the pinned checkpoint to a fresh `0700` directory on ephemeral container storage, validates bytes, then hands off to the existing `/opt/aividup/worker_start.sh` with `AIVIDUP_MODEL_VOLUME_ROOT` overridden. `AIVIDUP_MODEL_MANIFEST_REQUIRED=1` remains enforced; worker_start runs the existing strict manifest validator before accepting work.
-- No production job endpoint/token is included in the image. A dedicated isolated test control-plane/job and approved test input are required before a real render; a dry run is not a render.
+## 1. Selected GPU (live catalog, Secure Cloud)
 
-## Immutable model source
+Read-only `GET /v2/catalog/gpus?include=AVAILABILITY&product=POD&cloud=SECURE`, **2026-10-16 05:04 UTC**:
 
-- GitHub Release asset ID `644883676` in public repository `zerotouchprod/vastai_inerup`; retrieval endpoint: `https://api.github.com/repos/zerotouchprod/vastai_inerup/releases/assets/644883676` with `Accept: application/octet-stream`.
-- Release tag: `rife-v4.26-checkpoint-sha256-45c7f74156704769dc9f85cfcaf8552e1e926f9399dcfa3a553dee88fac6f53f`.
-- The source is an asset-ID URL rather than the mismatching upstream Google Drive link. Download redirects remain HTTPS and payload SHA/size are independently checked, so replacement/corruption fails closed.
-- Checkpoint: `RIFEv4.26_0921/train_log/flownet.pkl`, 24,636,301 bytes, SHA-256 `45c7f74156704769dc9f85cfcaf8552e1e926f9399dcfa3a553dee88fac6f53f`.
-- Pinned manifest SHA-256: `edcc8d3f80bb3fd8cc154903cf3e18af94309ce80ebe04eb9b9066dc8ecafa87`.
+| GPU | VRAM | $/hr | Availability | Listed CUDA hosts | DC |
+|---|---|---|---|---|---|
+| **RTX 3090 — selected** | 24 GB | **0.50** | LOW | 13.0, 13.3 | EU-CZ-1, EUR-IS-2 |
+| RTX 4090 — fallback | 24 GB | 0.89 | MEDIUM | 12.8, 13.0, 13.2 | EU-RO-1 (MEDIUM) |
+| RTX A4000 — **unavailable** | 16 GB | 0.25 | **NONE** | — | — |
 
-## Pod request shape (do not POST until separate GO)
+Decision: **RTX 3090, EU-CZ-1, one Pod.** It is the cheapest suitable option, has 24 GB VRAM,
+and Ampere SM 8.6 is inside the image's `TORCH_CUDA_ARCH_LIST="7.5;8.0;8.6;8.7;8.9;9.0;12.0"`.
+RTX A4000 is not rentable at all. RTX 4090 stays the fallback if the 3090 offer disappears
+(availability is LOW and volatile; re-check immediately before launch).
 
-Resolve `image` to the new published `...@sha256:<digest>` after build; do not use a mutable tag. Re-fetch catalog immediately before authorized launch and require a Secure RTX 3090 entry listing `EU-CZ-1`; catalog `LOW` is volatile. Suggested API v2 request shape, to be validated against the then-current schema/catalog:
+**Residual CUDA risk (unresolved by design):** the catalog lists no CUDA 12.6 host for the
+RTX 3090 — the hosts advertise 13.0/13.3. A CUDA 12.6 container normally runs on a newer
+driver, but `cuda_runtime_preflight.py` executes real kernels, so compatibility is proven
+only by the authorized run itself. This cannot be settled without a paid GPU.
 
-```json
-{
-  "name": "aividup-rife-rtx3090-pilot",
-  "cloud": "SECURE",
-  "dataCenterIds": ["EU-CZ-1"],
-  "gpu": {"id": "NVIDIA GeForce RTX 3090", "count": 1},
-  "image": "ghcr.io/zerotouchprod/aividup-worker-runpod-rife-pilot@sha256:<new-digest>",
-  "disk": 20,
-  "env": {
-    "AIVIDUP_MAX_RESTARTS": "0",
-    "AIVIDUP_MAX_LIFETIME_SECONDS": "1800",
-    "AIVIDUP_IDLE_EXIT_SECONDS": "1800",
-    "AIVIDUP_MODEL_MANIFEST_REQUIRED": "1"
-  }
-}
+## 2. Immutable image (unchanged)
+
+```
+ghcr.io/zerotouchprod/aividup-worker-runpod-rife-pilot@sha256:c775c62ade2d1851074751d761195aa6ace2895ed51af268b5f877535117475b
 ```
 
-No `mounts` property means no Network Volume. The Pod needs an isolated test worker API URL/token and one explicitly supplied safe test job; those are intentionally absent pending operational approval. A fresh read-only Secure GPU catalog query on 2026-10-15 19:26 UTC returned seven GPU types for the queried EU countries, but **did not include RTX 3090**; the earlier RTX 3090/$0.50 quote is stale and must not be treated as current availability or pricing.
+Source commit `15fd8abe95ed349c0ae2b34fb1fa2031bf491d6d`; image labels match the source revision
+and the pinned manifest SHA `edcc8d3f80bb3fd8cc154903cf3e18af94309ce80ebe04eb9b9066dc8ecafa87`.
+This pilot adds **no** other model, no image optimisation, and no production lifecycle change.
 
-## Deadline caveat / launch gate
+## 3. External one-shot controller (`scripts/runpod_pilot_controller.py`)
 
-The inspected RunPod REST v2 `CreatePodRequest` schema has no Pod TTL/maximum-lifetime field. `AIVIDUP_MAX_LIFETIME_SECONDS=1800` limits the worker process, not the provider Pod or its billing. Therefore this request alone does **not** enforce an absolute 30-minute Pod deadline. Before any launch, an external, independently running watchdog must record the successful Pod creation time and terminate that exact Pod by `createdAt + 30 minutes`, with no create retries and a bounded API retry policy for deletion. The watchdog must remain active even if the worker/container exits. If that watchdog cannot be attached to the launch operation, NO-GO.
+A standalone stdlib-only process with no link to the GPU Pod, the queue, or the application.
+It owns the whole lifetime of one disposable Pod.
 
-Before launch, also confirm current price/availability, calculate total expected cost including disk/transfer/billing granularity, and obtain separate explicit spend authorization. A `$1.25` planning target is not a provider-enforced cap.
+- **Durable identity.** The attempt (name, image, deadline) is written to an atomic `0600` state
+  file *before* the create request; the provider Pod id is written the moment it is known.
+- **Ambiguous create never retried.** RunPod's published create schema has no idempotency key, so
+  a timeout/5xx is treated as ambiguous: the controller re-reads inventory and adopts the Pod by
+  its unique name. A definite 4xx is a refusal with no Pod created.
+- **Absolute deadline.** `deadline = provider createdAt + 1800s`, persisted. A restart re-reads the
+  stored deadline; a skewed local clock can never extend it. The provider exposes no Pod TTL, so
+  this controller — not the Pod — is the enforcement mechanism.
+- **Fail-loud teardown.** Deletion is retried and every attempt is followed by an inventory
+  re-check. Absence must be *proven*; otherwise the run reports `unresolved` and exits non-zero.
+- **Single-Pod discipline.** The controller refuses to run if any Pod already exists, and refuses
+  without `--resume` if its state file records a live Pod.
 
-## Verified here
+Worst-case overshoot past the deadline is bounded by the configured backoffs
+(6 attempts x ~7.5 s of absence checks + 29 s of delete backoff) at **~74 s**.
 
-- Published pilot image: `ghcr.io/zerotouchprod/aividup-worker-runpod-rife-pilot@sha256:c775c62ade2d1851074751d761195aa6ace2895ed51af268b5f877535117475b` (source commit `15fd8abe95ed349c0ae2b34fb1fa2031bf491d6d`, workflow run [38792911620](https://github.com/zerotouchprod/vastai_inerup/actions/runs/38792911620)). GH Actions test job passed (115 tests); image build/push passed; public registry HEAD verified HTTP 200 and exact digest; image config labels match source and manifest SHA.
-- Previous pilot digest `sha256:8c82f6886c8e19d5cb540ddacccd060bd1c4119acaf98bba70237a11155ee562` and original source-SHA tag still resolve to that same digest (anonymous registry HEAD 200); it was not modified.
-- Release asset was downloaded end-to-end with HTTPS redirect; local staged bytes were `24,636,301` and SHA-256 matched exactly. No `.part` file remained; staging parent was mode `0700`.
-- Bootstrap tests exercise valid install, wrong hash, incomplete transfer, HTTP failure, size limit, symlinked parent, repeated invocation, and hand-off to existing worker_start with required manifest gate: **8 passed**. Combined pilot tests: **66 passed**. CI run above passed the configured worker/test suite and CPU-only image acceptance.
-- No Pod or volume has been created; no GPU inference or production job has run.
+## 4. Isolated test control plane (`scripts/runpod_pilot_test_control_plane.py`)
+
+A throwaway stand-in for the worker API, so the pod never touches production: no application code,
+no database, no queue, no object storage, no outbound calls.
+
+- Implements only the six endpoints in `contracts/worker-api-v1.json`, plus a local input file and a
+  local result sink.
+- **Bearer token on everything.** The token is generated into an owner-only file
+  (`--init-token`) and is never printed.
+- **Exactly one job, ever.** After the single claim the plane answers 204 forever.
+- **The job is not parameterisable from the network.** Input clip (generated locally with ffmpeg),
+  cut range, mode, and destination are fixed at start-up; no request field selects a path or URL.
+- **Loopback by default.** Binding elsewhere requires an explicit `--allow-non-loopback`.
+
+Open operational decision at launch: the Pod must reach the plane. Either keep loopback and expose
+it through a tunnel, or bind explicitly with `--allow-non-loopback` plus a firewall rule. The code
+refuses the second option unless the operator acknowledges it.
+
+## 5. Verification performed (no GPU used)
+
+| Check | Result |
+|---|---|
+| Controller behaviour, 17 tests (fake clock/provider) | **PASS** — ambiguous create, delete failure, restart, inventory re-check, deadline absoluteness, single-Pod refusal |
+| Controller over real HTTP, 12 tests (local REST v2 impersonator) | **PASS** — includes 500-create recovery with exactly one POST, 500-delete → unresolved, delete-that-landed-but-returned-500, refusal before POST |
+| Isolated plane, 17 tests (incl. real `Worker` + `ControlPlaneClient` end-to-end on CPU with `passthrough`) | **PASS** — one job served, then permanently 204 |
+| Mutation check (auth disabled, job guard disabled) | **5 tests fail** — the tests genuinely detect the breakage |
+| Checkpoint bootstrap vs the live Release asset | **PASS** — 24,636,301 bytes, SHA-256 `45c7f741…f53f`, mode 0400, scratch 0700 |
+| Bootstrap rejects a mismatching checkpoint hash | **PASS** — refused, no model materialised |
+| Bootstrap rejects a mismatching manifest pin | **PASS** — refused before download |
+| Live read-only client against the provider API | **PASS** — 0 Pods, 404 → `None`, no key leak |
+| Full pilot suite | **98 passed** |
+
+Two real defects were found and fixed by these tests: a resumed controller reconciled a Pod but
+never adopted it (would have orphaned an unmanaged Pod), and `int(deadline_seconds)` silently
+collapsed a sub-second deadline to zero (would have deleted a Pod immediately).
+
+## 6. Estimate
+
+Per-second billing; container disk `$0.10/GB/month`; official docs state **no fees for data ingress
+or egress**. No Network Volume, so no persistent-storage charge.
+
+| Item | RTX 3090 (selected) | RTX 4090 (fallback) |
+|---|---|---|
+| GPU, 1800 s | $0.250000 | $0.445000 |
+| Container disk, 20 GB, 1800 s | $0.001369 | $0.001369 |
+| Transfer | $0.00 | $0.00 |
+| **Expected total** | **$0.2514** | **$0.4464** |
+| **Worst case (deadline + 74 s teardown)** | **$0.2617** | **$0.4647** |
+
+The 24.6 MB checkpoint is fetched from a public GitHub Release asset, so that bandwidth is GitHub's,
+not RunPod's. The `$1.25` figure is a *planning target only* — it is not a provider-enforced cap and
+not an authorisation to spend. For contrast, leaving a 3090 running to the image's own 4-hour
+`AIVIDUP_MAX_LIFETIME_SECONDS` would cost ~$2.00, which is exactly why the external deadline exists.
+
+## 7. Launch sequence (only after separate explicit approval)
+
+```bash
+# 0. Re-check the catalog immediately; abort if RTX 3090 / EU-CZ-1 is gone.
+# 1. Start the isolated plane (loopback + tunnel, or explicit non-loopback).
+python3 scripts/runpod_pilot_test_control_plane.py --init-token /secure/path/plane.token
+python3 scripts/runpod_pilot_test_control_plane.py --make-input /secure/path/input.mp4 --seconds 2
+python3 scripts/runpod_pilot_test_control_plane.py \
+  --token-file /secure/path/plane.token --input /secure/path/input.mp4 \
+  --port 8099 --evidence /secure/path/plane-evidence.json
+
+# 2. Run the controller under process supervision so a crash cannot orphan the Pod.
+python3 scripts/runpod_pilot_controller.py \
+  --state-file /var/lib/aividup-pilot/state.json \
+  --pod-name aividup-rife-pilot-$(openssl rand -hex 4) \
+  --image ghcr.io/zerotouchprod/aividup-worker-runpod-rife-pilot@sha256:c775c62ade2d1851074751d761195aa6ace2895ed51af268b5f877535117475b \
+  --gpu "NVIDIA GeForce RTX 3090" --data-centre EU-CZ-1 \
+  --deadline-seconds 1800
+# on restart after any crash: the same command plus --resume
+```
+
+Success requires: a completed attempt with worker timings, non-zero output bytes received by the
+local sink, and `verified_absent: true` with exit code 0.
+
+## 8. GO / NO-GO
+
+**GO for the pilot run — conditional on all of the following, none of which this branch may self-authorise:**
+
+1. Explicit spend approval for a bounded RTX 3090 run (~$0.26 worst case).
+2. The controller running under supervision (systemd/tmux) with `--resume` documented, so a crash
+   cannot orphan the Pod; provider has no TTL.
+3. A decision on how the Pod reaches the isolated plane (loopback + tunnel, or explicit
+   `--allow-non-loopback` + firewall).
+4. The isolated plane's token file and evidence path living outside the repository.
+5. A final catalog re-check confirming a Secure RTX 3090 offer in EU-CZ-1.
+
+**NO-GO for anything else:** no production endpoint, no production job, no Network Volume, no second
+model, no image optimisation, no production lifecycle change.
+
+Accepted residual risks: CUDA 12.6 on a host advertising 13.x is unproven until the run itself;
+availability is LOW and may vanish between the check and the launch; the controller is the only
+deadline enforcement, so its host must actually stay alive.
