@@ -3,7 +3,7 @@
 FROM nvidia/cuda:12.6.0-cudnn-runtime-ubuntu22.04
 
 ARG GIT_SHA=unknown
-ARG PIPELINE_VERSION=aividup-rife-esrgan-both-v1
+ARG PIPELINE_VERSION=aividup-rife-interp-v1
 ARG MODEL_MANIFEST_SHA256
 ARG REALESRGAN_X2PLUS_SHA256
 LABEL org.opencontainers.image.title="aividup-worker-runpod-rife-esrgan-pilot" \

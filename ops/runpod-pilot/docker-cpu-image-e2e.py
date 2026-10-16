@@ -82,7 +82,7 @@ def is_trusted_pilot_image_labels(labels: Any, *, require_dual_model: bool = Fal
     return (
         title == "aividup-worker-runpod-rife-esrgan-pilot"
         and labels.get("org.zerotouchprod.aividup.pipeline-version")
-        == "aividup-rife-esrgan-both-v1"
+        == "aividup-rife-interp-v1"
         and isinstance(labels.get("org.zerotouchprod.aividup.realesrgan-x2plus-sha256"), str)
         and re.fullmatch(
             r"[0-9a-f]{64}",

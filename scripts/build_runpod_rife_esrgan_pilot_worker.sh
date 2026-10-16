@@ -5,7 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 GIT_SHA="${GIT_SHA:-$(git rev-parse HEAD)}"
-PIPELINE_VERSION="aividup-rife-esrgan-both-v1"
+PIPELINE_VERSION="aividup-rife-interp-v1"
 MANIFEST="runpod/pilot/rife-esrgan/manifest.json"
 MODEL_MANIFEST_SHA256="$(sha256sum "$MANIFEST" | cut -d' ' -f1)"
 REALESRGAN_X2PLUS_SHA256="$(tr -d '[:space:]' < runpod/pilot/rife-esrgan/realesrgan-x2plus.sha256)"

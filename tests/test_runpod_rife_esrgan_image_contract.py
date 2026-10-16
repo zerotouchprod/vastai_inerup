@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -32,6 +33,10 @@ def test_combined_image_includes_basicsr_import_dependencies():
 def test_combined_image_has_a_pipeline_manifest_and_local_build_script():
     manifest = ROOT / "runpod/pilot/rife-esrgan/manifest.json"
     assert manifest.is_file(), "combined image must pin its RIFE pipeline manifest"
+    manifest_data = json.loads(manifest.read_text())
+    assert manifest_data["pipeline_version"] == "aividup-rife-interp-v1"
+    dockerfile = (ROOT / "docker/Dockerfile.runpod-rife-esrgan-pilot").read_text()
+    assert "PIPELINE_VERSION=aividup-rife-interp-v1" in dockerfile
     build_script = ROOT / "scripts/build_runpod_rife_esrgan_pilot_worker.sh"
     assert build_script.is_file(), "a local build-only helper must exist"
     script = build_script.read_text()

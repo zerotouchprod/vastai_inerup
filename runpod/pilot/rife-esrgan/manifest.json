@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "pipeline_version": "aividup-rife-esrgan-both-v1",
+  "pipeline_version": "aividup-rife-interp-v1",
   "model_id": "RIFE-v4.26",
   "files": [
     {

@@ -133,7 +133,7 @@ def test_cpu_runner_requires_known_source_title_and_revision_for_local_image():
         "org.opencontainers.image.source": "https://github.com/zerotouchprod/vastai_inerup",
         "org.opencontainers.image.title": "aividup-worker-runpod-rife-esrgan-pilot",
         "org.opencontainers.image.revision": "a" * 40,
-        "org.zerotouchprod.aividup.pipeline-version": "aividup-rife-esrgan-both-v1",
+        "org.zerotouchprod.aividup.pipeline-version": "aividup-rife-interp-v1",
         "org.zerotouchprod.aividup.realesrgan-x2plus-sha256": "b" * 64,
     }
     assert runner.is_trusted_pilot_image_labels(trusted, require_dual_model=True)

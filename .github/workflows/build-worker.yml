@@ -414,7 +414,7 @@ jobs:
           load: ${{ github.event_name != 'workflow_dispatch' || inputs.publish_dual_model_runpod_pilot == false }}
           build-args: |
             GIT_SHA=${{ github.event_name == 'workflow_dispatch' && inputs.worker_sha || github.event.pull_request.head.sha || github.sha }}
-            PIPELINE_VERSION=aividup-rife-esrgan-both-v1
+            PIPELINE_VERSION=aividup-rife-interp-v1
             MODEL_MANIFEST_SHA256=${{ steps.models.outputs.rife_manifest_sha256 }}
             REALESRGAN_X2PLUS_SHA256=${{ steps.models.outputs.realesrgan_x2plus_sha256 }}
           tags: ghcr.io/zerotouchprod/aividup-worker-runpod-rife-pilot:${{ github.event_name == 'workflow_dispatch' && inputs.worker_sha || github.event.pull_request.head.sha || github.sha }}
