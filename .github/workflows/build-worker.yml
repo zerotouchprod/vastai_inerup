@@ -127,6 +127,7 @@ jobs:
           tests/unit/test_runpod_model_manifest.py tests/unit/test_runpod_model_bundle.py
           tests/unit/test_runpod_checkpoint_bootstrap.py
           tests/unit/test_runpod_pilot_controller.py tests/unit/test_runpod_pilot_controller_http.py
+          tests/unit/test_runpod_pilot_controller_config.py
           tests/unit/test_runpod_pilot_test_control_plane.py -q
       - name: Run CPU-only worker image acceptance
         run: python scripts/worker_image_acceptance.py

@@ -1,0 +1,15 @@
+[Unit]
+Description=AIVIDUP RunPod pilot controller failure alert marker
+
+[Service]
+Type=oneshot
+User=informaten
+Group=informaten
+StateDirectory=aividup-runpod-pilot
+StateDirectoryMode=0700
+ExecStart=/usr/local/libexec/aividup-runpod-pilot-alert
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/aividup-runpod-pilot

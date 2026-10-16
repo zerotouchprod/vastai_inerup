@@ -34,6 +34,7 @@ import argparse
 import datetime as _dt
 import json
 import os
+import re
 import stat
 import sys
 import time
@@ -232,6 +233,7 @@ class PilotController:
         data_centre: Optional[str] = None,
         pod_disk_gb: int = 20,
         env: Optional[dict] = None,
+        pod_args: Optional[str] = None,
         clock: Callable[[], float] = time.time,
         sleeper: Callable[[float], None] = time.sleep,
         logger: Callable[[str], None] = lambda message: print(message, flush=True),
@@ -257,6 +259,9 @@ class PilotController:
         self._data_centre = data_centre
         self._disk = pod_disk_gb
         self._env = dict(env or {})
+        if any(not isinstance(k, str) or not isinstance(v, str) for k, v in self._env.items()):
+            raise PilotError("Pod environment must be string key/value pairs")
+        self._pod_args = _validate_pod_args(pod_args) if pod_args else None
         self._clock = clock
         self._sleep = sleeper
         self._log = logger
@@ -280,6 +285,8 @@ class PilotController:
             payload["gpu"] = {"id": self._gpu_id, "count": 1}
         if self._data_centre:
             payload["dataCenterIds"] = [self._data_centre]
+        if self._pod_args:
+            payload["args"] = self._pod_args
         return payload
 
     # -- inventory helpers --------------------------------------------
@@ -580,6 +587,96 @@ def _iso(epoch: float) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Protected Pod configuration
+# ---------------------------------------------------------------------------
+
+
+_POD_ENV_KEY = re.compile(r"^[A-Z][A-Z0-9_]{0,127}$")
+
+
+def load_pod_env_file(path: Path) -> dict[str, str]:
+    """Load owner-only Pod variables; never permit the RunPod API key into the Pod."""
+    path = Path(path)
+    try:
+        info = path.lstat()
+    except OSError as error:
+        raise PilotError(f"cannot stat Pod env file: {type(error).__name__}") from error
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+        raise PilotError("Pod env file must be a regular non-symlink file")
+    if stat.S_IMODE(info.st_mode) & 0o077:
+        raise PilotError("Pod env file must be mode 0600 (no group/world permissions)")
+    if info.st_size > 32 * 1024:
+        raise PilotError("Pod env file is over 32 KiB")
+
+    values: dict[str, str] = {}
+    for number, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        key, separator, value = line.partition("=")
+        if not separator or not _POD_ENV_KEY.fullmatch(key):
+            raise PilotError(f"invalid Pod env assignment on line {number}")
+        if not key.startswith("AIVIDUP_"):
+            raise PilotError(f"Pod env key not permitted on line {number}")
+        if key in values:
+            raise PilotError(f"duplicate Pod env key on line {number}")
+        if "\n" in value or "\r" in value:
+            raise PilotError(f"multiline Pod env value not permitted on line {number}")
+        values[key] = value
+    return values
+
+
+def load_pod_args_file(path: Path) -> str:
+    """Read a RunPod `args` JSON object; restrict it to entrypoint/cmd arrays."""
+    path = Path(path)
+    try:
+        info = path.lstat()
+    except OSError as error:
+        raise PilotError(f"cannot stat Pod args file: {type(error).__name__}") from error
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+        raise PilotError("Pod args file must be a regular non-symlink file")
+    if stat.S_IMODE(info.st_mode) & 0o022:
+        raise PilotError("Pod args file must not be group/world writable")
+    if info.st_size > 16 * 1024:
+        raise PilotError("Pod args file is over 16 KiB")
+    raw = path.read_text(encoding="utf-8")
+    return _validate_pod_args(raw)
+
+
+def _validate_pod_args(raw: str) -> str:
+    if not isinstance(raw, str) or len(raw.encode()) > 16 * 1024:
+        raise PilotError("Pod args must be a JSON string no larger than 16 KiB")
+    try:
+        value = json.loads(raw)
+    except ValueError as error:
+        raise PilotError("Pod args must be valid JSON") from error
+    if not isinstance(value, dict) or set(value) - {"entrypoint", "cmd"}:
+        raise PilotError("Pod args JSON may contain only entrypoint and cmd")
+    if "entrypoint" not in value or "cmd" not in value:
+        raise PilotError("Pod args JSON must specify entrypoint and cmd")
+    if any(
+        not isinstance(value[key], list)
+        or not value[key]
+        or any(not isinstance(item, str) or "\x00" in item for item in value[key])
+        for key in ("entrypoint", "cmd")
+    ):
+        raise PilotError("Pod args entrypoint/cmd must be non-empty string arrays")
+    return raw
+
+
+def redact_pod_payload(payload: dict) -> dict:
+    """Return a display-only copy with token, password, and private-key env redacted."""
+    safe = json.loads(json.dumps(payload))
+    env = safe.get("env", {})
+    if isinstance(env, dict):
+        for key in list(env):
+            upper = key.upper()
+            if any(secret_word in upper for secret_word in ("TOKEN", "SECRET", "PASSWORD", "PRIVATE_KEY")):
+                env[key] = "[REDACTED]"
+    return safe
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -607,6 +704,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--poll-seconds", type=float, default=30.0)
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--dry-run", action="store_true", help="print the payload and exit")
+    parser.add_argument("--pod-env-file", type=Path, help="owner-only file of AIVIDUP_* values")
+    parser.add_argument("--pod-args-file", type=Path, help="JSON file for RunPod entrypoint/cmd override")
     parser.add_argument("--api-key-file", default="/home/informaten/runpod.env")
     args = parser.parse_args(argv)
 
@@ -617,6 +716,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         "AIVIDUP_MODEL_MANIFEST_REQUIRED": "1",
     }
     try:
+        if args.pod_env_file:
+            env.update(load_pod_env_file(args.pod_env_file))
+        pod_args = load_pod_args_file(args.pod_args_file) if args.pod_args_file else None
         if args.dry_run:
             controller = PilotController(
                 api=None,
@@ -628,8 +730,9 @@ def main(argv: Optional[list[str]] = None) -> int:
                 data_centre=args.data_centre,
                 pod_disk_gb=args.disk_gb,
                 env=env,
+                pod_args=pod_args,
             )
-            print(json.dumps(controller.build_payload(), indent=2, sort_keys=True))
+            print(json.dumps(redact_pod_payload(controller.build_payload()), indent=2, sort_keys=True))
             return CLEAN_EXIT_CODE
         controller = PilotController(
             api=RunPodApi(load_api_key(args)),
@@ -642,6 +745,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             data_centre=args.data_centre,
             pod_disk_gb=args.disk_gb,
             env=env,
+            pod_args=pod_args,
         )
         report = controller.run(resume=args.resume)
     except PilotError as error:

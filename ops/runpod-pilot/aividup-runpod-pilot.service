@@ -1,0 +1,35 @@
+[Unit]
+Description=AIVIDUP one-shot RunPod RIFE GPU pilot controller
+Requires=aividup-pilot-plane.service
+After=network-online.target aividup-pilot-plane.service
+Wants=network-online.target
+# Explicit manual arm is required; no Pod can be created on boot or by accidental restart.
+ConditionPathExists=/etc/aividup-runpod-pilot/GO
+OnFailure=aividup-runpod-pilot-alert.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=informaten
+Group=informaten
+StateDirectory=aividup-runpod-pilot
+StateDirectoryMode=0700
+WorkingDirectory=/var/lib/aividup-runpod-pilot
+ExecStart=/usr/local/libexec/aividup-runpod-pilot-supervise
+Restart=on-failure
+RestartSec=15s
+KillSignal=SIGINT
+TimeoutStopSec=120s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+ReadWritePaths=/var/lib/aividup-runpod-pilot
+
+[Install]
+WantedBy=multi-user.target
