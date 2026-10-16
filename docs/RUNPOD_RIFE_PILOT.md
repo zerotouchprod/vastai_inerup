@@ -2,7 +2,7 @@
 
 > **Historical volume-based design:** this document describes the superseded Network Volume pilot. The current no-volume checkpoint-bootstrap plan, image digest, catalog snapshot, and launch gates are in [`RUNPOD_RIFE_PILOT_NO_VOLUME.md`](RUNPOD_RIFE_PILOT_NO_VOLUME.md). Do not use this document as the current Pod recipe.
 
-This branch's original design was volume-based and excluded provider activity; that snapshot is superseded. The current no-volume bootstrap/image approach and present launch blockers are documented in `RUNPOD_RIFE_PILOT_NO_VOLUME.md`. No RunPod Pod/Network Volume has been created and no GPU render or production job has run.
+At the time this superseded volume-based design was drafted, no RunPod Pod/Network Volume or GPU render had been created. The no-volume GPU pilot has since run; use `ops/runpod-pilot/README.md` for current host state and evidence.
 
 ## Artifact contract
 
@@ -41,7 +41,9 @@ Record these separately; do not call one aggregate duration “image pull” or 
 1. **Provision-to-container-start proxy:** record client `create-requested-at`, Runpod `createdAt`/`startedAt`, and first worker container log timestamp. Current API documentation exposes Pod lifecycle/status timestamps but does not document a dedicated Docker pull/unpack duration; report this as a provisioning/startup proxy, not pure image pull time.[2]
 2. **Bundle verification/materialization:** collect `verify_materialize_seconds` from the manifest validator; it includes secure volume reads, checksum verification and copying exact bytes to scratch.
 3. **RIFE model initialization:** collect `RIFE_MODEL_LOAD_SECONDS` with its `phase` (`preflight` or `worker`); the former certifies the CUDA/RIFE probe, the latter records the worker’s own load.
-4. **Time to first claim:** collect existing `boot_to_claim_s` and bootstrap/claim events. In the pilot, the launcher captures `/proc/uptime` at entrypoint and the worker maps it into its monotonic clock, so this interval includes manifest materialization, CUDA/RIFE preflight and Python startup through first claim, but excludes provider provisioning/image pull.
+4. **Time to first claim:** collect `boot_to_claim_s` and bootstrap/claim events. The worker computes `claimed_at - process_started_at`; in this pilot, `worker_start.sh` captures `/proc/uptime` before manifest validation, then `src/worker/__main__.py` maps it into the process monotonic clock. Therefore this interval covers manifest validation/materialization, CUDA/RIFE preflight, Python worker startup and first claim, but excludes provider provisioning/image pull **and the earlier PodArgs setup** (apt install, SSH tunnel/HTTP probe, checkpoint bootstrap). Never label it `createdAt→claim`.
+
+**Run #4 timing evidence (2026-10-16):** RunPod `createdAt=16:46:29.810Z`; first accepted restricted SSH tunnel at `16:49:17.076622Z`, so `createdAt→first tunnel=167.267s`. This is a cold-start/provisioning proxy, not pure image-pull time. `boot_to_claim_s=3.22s` is the later worker-launcher interval above. The control-plane `claims` evidence has no absolute claim timestamp, so this run does **not** provide exact `createdAt→claim`; add durable `claim_received_at` instrumentation before comparing full-path claim latency across providers.
 
 Run first on a new Pod with the versioned volume, then create another Pod with the same volume on an independently identified different GPU host in a compatible volume location. If host identity cannot be confirmed from provider metadata, mark the cache comparison inconclusive; do not infer Network Volume benefit from a same-host Docker cache hit. Runpod documents that GPU choices depend on volume location, so both Pods must use a confirmed compatible location.[1]
 
@@ -55,7 +57,7 @@ The worker must use the real AIVIDUP pull protocol. The image-only CI/CPU protoc
 - Runpod exposes separate Pod and Network Volume billing-history endpoints; the published examples return time-bucketed records/totals, but the response schemas do not specify a final-settlement marker. A terminated Pod or empty active-Pod inventory is not proof that all charges are reconciled; keep the related reservation controlled until both billing windows are reconciled.[4][5]
 - Pilot completion requires: adapter/mock invariants PASS; independent review of exact SHA PASS; immutable image digest recorded; model manifest/checksums PASS; CUDA/RIFE probe PASS; one real valid output; second startup on a confirmed different host with the same volume; provider inventory confirms no live Pod; compute, volume and transfer charges reconciled with no unresolved amount.
 
-The Runpod API adapter already present in the AIVIDUP repository is intentionally untouched in this branch. Adapter integration, production selection, any Vast fallback and any paid Runpod resource are separate later decisions. No paid GPU or Network Volume is authorized by this branch; the first bounded pilot still requires a separate financial GO.
+The Runpod API adapter already present in the AIVIDUP repository is intentionally untouched. Adapter integration, production selection, and any Vast fallback remain separate decisions. Run #4 consumed one explicit GO; any further paid GPU or Network Volume requires a new financial GO.
 
 ## Sources
 
