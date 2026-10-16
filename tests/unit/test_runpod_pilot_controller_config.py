@@ -107,6 +107,28 @@ def test_pod_args_http_probes_plane_before_bootstrap():
     assert cmd.index("HTTP_STATUS") < cmd.index("runpod_checkpoint_bootstrap.py")
 
 
+def test_pod_args_bootstrap_path_exists_inside_the_immutable_image():
+    """Regression: the live pilot ran a host-only bootstrap path, so the container crash-looped.
+
+    The path in the Pod args must be a destination the pilot Dockerfile actually copies.
+    """
+    root = Path(__file__).resolve().parents[2]
+    dockerfile = (root / "docker" / "Dockerfile.runpod-pilot").read_text()
+    destinations = [
+        line.split()[-1]
+        for line in dockerfile.splitlines()
+        if line.startswith("COPY scripts/runpod_checkpoint_bootstrap.py ")
+    ]
+    assert destinations, "the pilot image must copy the bootstrap script into the image"
+
+    args = json.loads(
+        controller_module.load_pod_args_file(root / "ops" / "runpod-pilot" / "pod-args.json")
+    )
+    cmd = args["cmd"][0]
+    assert any(destination in cmd for destination in destinations)
+    assert "/opt/aividup-runpod-pilot/" not in cmd
+
+
 def test_dry_run_redacts_pod_secrets_and_never_posts(capsys, tmp_path):
     env_file = tmp_path / "pod.env"
     env_file.write_text("\n".join(f"{k}={v}" for k, v in POD_ENV.items()) + "\n")
