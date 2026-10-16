@@ -175,6 +175,19 @@ class TestVastInstanceConfig:
         assert result["label"] == "my-job"
         assert result["runtype"] == "oneshot"  # Default value
 
+    def test_config_to_dict_includes_private_image_login_without_printing_it(self):
+        """Private GHCR auth belongs in the Vast payload when configured."""
+        config = VastInstanceConfig(
+            image="ghcr.io/example/smoke@sha256:abc",
+            disk=10,
+            env={},
+            image_login="-u user -p secret ghcr.io",
+        )
+
+        result = config.to_dict()
+
+        assert result["image_login"] == "-u user -p secret ghcr.io"
+
     def test_config_to_dict_without_optional_fields(self):
         """Test converting config to dict without optional fields."""
         config = VastInstanceConfig(
@@ -196,6 +209,28 @@ class TestVastInstanceConfig:
 
 class TestVastAIClientBasic:
     """Test VastAIClient basic functionality (without complex API mocking)."""
+
+    def test_create_instance_sends_private_image_login(self, monkeypatch):
+        client = VastAIClient(api_key="test_api_key")
+        captured = {}
+
+        def fake_request(method, endpoint, **kwargs):
+            captured.update(kwargs["json"])
+            return {"new_contract": 12345}
+
+        monkeypatch.setattr(client, "_request", fake_request)
+        config = VastInstanceConfig(
+            image="ghcr.io/example/smoke@sha256:abc",
+            disk=10,
+            env={},
+            image_login="-u user -p secret ghcr.io",
+        )
+
+        instance = client.create_instance(987, config)
+
+        assert instance.id == 12345
+        assert captured["image_login"] == "-u user -p secret ghcr.io"
+        assert captured["runtype"] == "oneshot"
 
     def test_initialization_with_api_key(self):
         """Test client initialization with API key."""

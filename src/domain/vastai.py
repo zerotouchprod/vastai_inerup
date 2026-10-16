@@ -62,6 +62,7 @@ class VastInstanceConfig:
     image: str
     disk: int  # GB
     env: Dict[str, str]
+    image_login: Optional[str] = None
     args_str: Optional[str] = None  # Shell command to execute (legacy: was 'cmd')
     onstart: Optional[str] = None
     label: Optional[str] = None
@@ -80,6 +81,9 @@ class VastInstanceConfig:
             'env': self.env,
             'runtype': self.runtype,
         }
+
+        if self.image_login:
+            result['image_login'] = self.image_login
 
         # Add optional fields only if set
         if self.args_str:

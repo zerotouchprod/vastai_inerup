@@ -226,6 +226,9 @@ class VastAIClient:
             'runtype': config.runtype,  # oneshot = run once, do not restart
         }
 
+        if config.image_login:
+            payload['image_login'] = config.image_login
+
         if config.args_str:
             payload['args_str'] = config.args_str
 

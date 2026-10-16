@@ -22,5 +22,17 @@ def test_smoke_runner_has_cpu_gate_preflight_and_single_result_contract():
     assert "GPU_SMOKE_RESULT " in text
     assert text.count("GPU_SMOKE_RESULT ") == 1
     assert "GPU_SMOKE_CPU_ONLY" in text
-    assert "else 1" in text
+    assert "return 1" in text
+    assert "return 2" in text
     assert "raise SystemExit(main())" in text
+
+
+def test_smoke_runner_writes_atomic_detail_and_short_summary_contract():
+    text = RUNNER.read_text()
+    assert "GPU_SMOKE_RESULT_PATH" in text
+    assert "os.replace" in text
+    assert '"cuda_pass"' in text
+    assert '"rife_pass"' in text
+    assert '"realesrgan_pass"' in text
+    assert '"error_code"' in text
+    assert 'INCONCLUSIVE' in text
