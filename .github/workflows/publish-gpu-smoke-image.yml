@@ -1,0 +1,117 @@
+name: Publish GPU smoke image
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: Type PUBLISH_GPU_SMOKE to authorize GHCR publication
+        required: true
+        type: string
+      source_ref:
+        description: Git ref to publish (defaults to the selected ref)
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: gpu-smoke-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish immutable GPU smoke image
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment:
+      name: gpu-smoke-publish
+    env:
+      BASE_IMAGE: ghcr.io/zerotouchprod/aividup-worker@sha256:50de56d6768ec37751e5c446ac4e034d5d451ffe01f3e147340c79925c113879
+      IMAGE_REPOSITORY: ghcr.io/zerotouchprod/aividup-gpu-smoke
+    steps:
+      - name: Require explicit publication confirmation
+        if: inputs.confirm != 'PUBLISH_GPU_SMOKE'
+        run: |
+          echo 'Refusing publication: confirmation string mismatch.'
+          exit 1
+
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.source_ref || github.ref }}
+
+      - name: Set up Buildx container driver
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install test dependencies
+        run: python3 -m pip install --disable-pip-version-check --quiet pytest
+
+      - name: Run smoke runner contract tests
+        run: pytest -q --confcutdir=tests/gpu_smoke tests/test_gpu_smoke_runner_contract.py
+
+      - name: Build and CPU-gate the exact image before publication
+        run: |
+          mkdir -p evidence
+          docker buildx build \
+            --progress=plain \
+            --tag gpu-smoke:publish \
+            --load \
+            --file docker/Dockerfile.gpu-smoke \
+            . 2>&1 | tee evidence/docker-build.log
+          docker run --rm --network none -e GPU_SMOKE_CPU_ONLY=1 gpu-smoke:publish \
+            | tee evidence/gpu-smoke-cpu-stdout.txt
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          line = next(x for x in Path('evidence/gpu-smoke-cpu-stdout.txt').read_text().splitlines() if x.startswith('GPU_SMOKE_RESULT '))
+          result = json.loads(line.split(' ', 1)[1])
+          assert result.get('status') == 'CPU_ONLY_PASS', result
+          assert result.get('entrypoint', '').endswith('/gpu_smoke.py'), result
+          Path('evidence/gpu-smoke-cpu-result.json').write_text(json.dumps(result, indent=2) + '\n')
+          PY
+
+      - name: Publish immutable commit tag
+        run: |
+          TAG="gpu-smoke-${GITHUB_SHA}"
+          docker buildx build \
+            --progress=plain \
+            --platform linux/amd64 \
+            --file docker/Dockerfile.gpu-smoke \
+            --tag "$IMAGE_REPOSITORY:$TAG" \
+            --push \
+            . 2>&1 | tee evidence/docker-publish.log
+          echo "IMAGE_TAG=$IMAGE_REPOSITORY:$TAG" >> "$GITHUB_ENV"
+
+      - name: Resolve and record published digest
+        run: |
+          docker buildx imagetools inspect "$IMAGE_TAG" --raw > evidence/published-manifest.json
+          export IMAGE_TAG IMAGE_REPOSITORY
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          manifest = json.loads(Path('evidence/published-manifest.json').read_text())
+          digest = manifest.get('digest')
+          if not digest and manifest.get('manifests'):
+              amd64 = next(item for item in manifest['manifests'] if item.get('platform', {}).get('architecture') == 'amd64')
+              digest = amd64['digest']
+          assert digest and digest.startswith('sha256:'), manifest
+          Path('evidence/published-image.json').write_text(json.dumps({'image': os.environ['IMAGE_REPOSITORY'], 'tag': os.environ['IMAGE_TAG'], 'digest': digest, 'platform': 'linux/amd64'}, indent=2) + '\n')
+          print(json.dumps({'tag': os.environ['IMAGE_TAG'], 'digest': digest}, sort_keys=True))
+          PY
+
+      - name: Upload publication evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gpu-smoke-publish-${{ github.run_id }}
+          path: evidence/
+          if-no-files-found: warn
