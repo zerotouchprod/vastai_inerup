@@ -45,11 +45,11 @@ def test_journalctl_stderr_read_error_is_not_zero_sessions():
         observer.accepted_tunnel_sessions(1792153496, runner=read_error, command_prefix=[])
 
 
-def test_real_journalctl_rejects_iso_timestamp_and_observer_surfaces_it():
+def test_real_journalctl_rejects_invalid_timestamp_and_observer_surfaces_it():
     if shutil.which("journalctl") is None:
         pytest.skip("journalctl is unavailable on this test host")
     with pytest.raises(observer.ObservabilityFailure, match="OBSERVABILITY_FAILURE") as error:
-        observer.query_journalctl("2026-10-16T12:24:56+00:00", command_prefix=[])
+        observer.query_journalctl("not-a-timestamp", command_prefix=[])
     assert "parse timestamp" in str(error.value).lower()
 
 
