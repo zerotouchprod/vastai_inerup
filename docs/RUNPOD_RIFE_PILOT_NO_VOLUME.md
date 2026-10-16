@@ -81,10 +81,10 @@ refuses the second option unless the operator acknowledges it.
 - The local SSH tunnel was exercised: unauthenticated claim through the tunnel returned 401; a forwarded port-22 target and reverse forwarding were both denied. The single test job was not claimed.
 - Controller unit is enabled with `Restart=on-failure`, `RestartSec=15s`, persistent `StateDirectory`, `OnFailure` alert, and a restart wrapper that passes `--resume` after the durable create latch. `/etc/aividup-runpod-pilot/GO` is absent; systemd reports `ConditionResult=no`, controller inactive. No GO marker, state file, or create latch exists; **no create request can be issued**.
 - Protected Pod env loader accepts only `AIVIDUP_*`, requires mode 0600, refuses the RunPod API key; Pod args accept only an `entrypoint`/`cmd` JSON object and reject group/world-writable files. A real controller `--dry-run` of the deployed config passed; worker token and private SSH key were redacted.
-- Hermes job `aividup-runpod-pilot-teardown-alert` checks the systemd OnFailure marker every minute and sends one Telegram alert per attempt ID; the alert handler's dedupe logic was exercised (first alert emitted, duplicate silent).
-- Local pilot tests after the protected env/args change: **125 passed**.
+- Hermes job `aividup-runpod-pilot-teardown-alert` checks the systemd OnFailure marker every minute and sends one Telegram alert per attempt ID; it ran successfully with no false alert. The alert handler's dedupe logic was exercised (first alert emitted, duplicate silent).
+- Local pilot tests after the protected env/args change: **125 passed**. Exact branch CI run [38859178898](https://github.com/zerotouchprod/vastai_inerup/actions/runs/38859178898) on `ad88469` passed **167 tests**; both image jobs were skipped. Anonymous GHCR HEAD still returns HTTP 200 for the requested immutable image digest.
 - The one-time RunPod SSH path remains unverified from provider-side networks. No CPU or GPU Pod was created to test outbound TCP/22. The GPU run will fail before checkpoint download if this path is unavailable, while the external controller still owns the absolute 30-minute teardown deadline.
-- Live provider snapshot at 2026-10-16 06:04 UTC: 0 Pods, 0 Network Volumes; RTX 3090 Secure/EU-CZ-1 `$0.50/h`, availability LOW. Recheck immediately before launch.
+- Live provider snapshot at 2026-10-16 06:06 UTC: 0 Pods, 0 Network Volumes; RTX 3090 Secure/EU-CZ-1 `$0.50/h`, availability LOW. Recheck immediately before launch.
 
 | Check | Result |
 |---|---|
