@@ -5,6 +5,7 @@ The CPU-only mode is a no-rent entrypoint contract check. GPU mode runs the
 real preflight and model inference, then emits exactly one machine-readable
 result line.
 """
+
 import json
 import os
 import subprocess
@@ -14,7 +15,9 @@ import time
 import traceback
 from pathlib import Path
 
-EXPECTED_DIGEST = "sha256:50de56d6768ec37751e5c446ac4e034d5d451ffe01f3e147340c79925c113879"
+EXPECTED_DIGEST = (
+    "sha256:50de56d6768ec37751e5c446ac4e034d5d451ffe01f3e147340c79925c113879"
+)
 PREFLIGHT = Path("/opt/aividup/cuda_runtime_preflight.py")
 
 
@@ -27,7 +30,11 @@ def run_preflight():
             timeout=120,
             check=False,
         )
-        return {"exit_code": p.returncode, "stdout_tail": p.stdout[-1000:], "stderr_tail": p.stderr[-1000:]}
+        return {
+            "exit_code": p.returncode,
+            "stdout_tail": p.stdout[-1000:],
+            "stderr_tail": p.stderr[-1000:],
+        }
     except Exception as exc:
         return {"exit_code": None, "error": type(exc).__name__ + ": " + str(exc)}
 
@@ -43,7 +50,13 @@ def main():
     try:
         if os.environ.get("GPU_SMOKE_CPU_ONLY") == "1":
             preflight = run_preflight()
-            result.update({"status": "CPU_ONLY_PASS", "reason": "CPU-only entrypoint reached; CUDA absence is expected", "preflight": preflight})
+            result.update(
+                {
+                    "status": "CPU_ONLY_PASS",
+                    "reason": "CPU-only entrypoint reached; CUDA absence is expected",
+                    "preflight": preflight,
+                }
+            )
             return emit(result)
 
         preflight = run_preflight()
@@ -77,31 +90,57 @@ def main():
             frames.mkdir()
             for i in range(3):
                 image = np.zeros((128, 128, 3), dtype=np.uint8)
-                cv2.rectangle(image, (12 + i * 20, 32), (52 + i * 20, 72), (0, 200, 255), -1)
+                cv2.rectangle(
+                    image, (12 + i * 20, 32), (52 + i * 20, 72), (0, 200, 255), -1
+                )
                 cv2.circle(image, (64, 96), 18, (255, 80, 20), -1)
                 cv2.imwrite(str(frames / f"frame_{i:06d}.png"), image)
             input_frames = sorted(frames.glob("*.png"))
 
-            out48 = RIFENative(factor=2.0, device="cuda").process_frames_to_fps(input_frames, root / "rife48", 24.0, 48.0)
-            out60 = RIFENative(factor=2.0, device="cuda").process_frames_to_fps(input_frames, root / "rife60", 24.0, 60.0)
+            out48 = RIFENative(factor=2.0, device="cuda").process_frames_to_fps(
+                input_frames, root / "rife48", 24.0, 48.0
+            )
+            out60 = RIFENative(factor=2.0, device="cuda").process_frames_to_fps(
+                input_frames, root / "rife60", 24.0, 60.0
+            )
             result["rife_24_to_48_frames"] = len(out48)
             result["rife_24_to_60_frames"] = len(out60)
             result["rife_pass"] = len(out48) == 6 and len(out60) == 8
             mid = cv2.imread(str(out60[1]))
             first = cv2.imread(str(input_frames[0]))
             second = cv2.imread(str(input_frames[1]))
-            result["rife_intermediate_changed"] = bool(np.mean(cv2.absdiff(mid, first)) > 0 and np.mean(cv2.absdiff(mid, second)) > 0)
+            result["rife_intermediate_changed"] = bool(
+                np.mean(cv2.absdiff(mid, first)) > 0
+                and np.mean(cv2.absdiff(mid, second)) > 0
+            )
 
             upscale = {}
             for scale in (2, 4):
-                out = RealESRGANNative(scale=scale, tile_size=64, half=True, device="cuda").process_frames([input_frames[0]], root / f"realesrgan_x{scale}")
+                out = RealESRGANNative(
+                    scale=scale, tile_size=64, half=True, device="cuda"
+                ).process_frames([input_frames[0]], root / f"realesrgan_x{scale}")
                 image = cv2.imread(str(out[0]), cv2.IMREAD_COLOR)
                 key = f"realesrgan_x{scale}"
-                upscale[key] = {"width": int(image.shape[1]), "height": int(image.shape[0]), "pass": bool(image.shape[1] == 128 * scale and image.shape[0] == 128 * scale)}
+                upscale[key] = {
+                    "width": int(image.shape[1]),
+                    "height": int(image.shape[0]),
+                    "pass": bool(
+                        image.shape[1] == 128 * scale and image.shape[0] == 128 * scale
+                    ),
+                }
             result["realesrgan"] = upscale
             result["realesrgan_pass"] = all(v["pass"] for v in upscale.values())
-            result["peak_vram_mb"] = round(torch.cuda.max_memory_allocated() / 1024**2, 2)
-            result["status"] = "PASS" if result["cuda_matmul_finite"] and result["rife_pass"] and result["rife_intermediate_changed"] and result["realesrgan_pass"] else "FAIL"
+            result["peak_vram_mb"] = round(
+                torch.cuda.max_memory_allocated() / 1024**2, 2
+            )
+            result["status"] = (
+                "PASS"
+                if result["cuda_matmul_finite"]
+                and result["rife_pass"]
+                and result["rife_intermediate_changed"]
+                and result["realesrgan_pass"]
+                else "FAIL"
+            )
             if result["status"] == "FAIL":
                 result["reason"] = "one or more inference assertions failed"
     except Exception as exc:
