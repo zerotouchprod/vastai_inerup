@@ -9,7 +9,10 @@ DIGEST = "ghcr.io/zerotouchprod/aividup-worker@sha256:50de56d6768ec37751e5c446ac
 def test_smoke_runner_is_pinned_and_overrides_worker_entrypoint():
     text = DOCKERFILE.read_text()
     assert f"FROM {DIGEST}" in text
-    assert 'ENTRYPOINT ["/usr/bin/tini", "--", "python", "/opt/aividup/gpu_smoke.py"]' in text
+    assert (
+        'ENTRYPOINT ["/usr/bin/tini", "--", "python", "/opt/aividup/gpu_smoke.py"]'
+        in text
+    )
     assert "worker_start.sh" not in text
 
 
