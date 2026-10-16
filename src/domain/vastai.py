@@ -12,6 +12,7 @@ from datetime import datetime
 @dataclass
 class VastOffer:
     """Vast.ai GPU offer."""
+
     id: int
     gpu_name: str
     num_gpus: int
@@ -34,6 +35,7 @@ class VastOffer:
 @dataclass
 class VastInstance:
     """Vast.ai instance."""
+
     id: int
     status: str
     ssh_host: Optional[str] = None
@@ -46,12 +48,12 @@ class VastInstance:
     @property
     def is_running(self) -> bool:
         """Check if instance is running."""
-        return self.actual_status == 'running'
+        return self.actual_status == "running"
 
     @property
     def is_terminated(self) -> bool:
         """Check if instance is terminated/stopped."""
-        return self.status in ('stopped', 'exited')
+        return self.status in ("stopped", "exited")
 
     def __str__(self) -> str:
         return f"Instance #{self.id} ({self.status})"
@@ -60,13 +62,14 @@ class VastInstance:
 @dataclass
 class VastInstanceConfig:
     """Configuration for creating Vast.ai instance."""
+
     image: str
     disk: int  # GB
     env: Dict[str, str]
     args_str: Optional[str] = None  # Shell command to execute (legacy: was 'cmd')
     onstart: Optional[str] = None
     label: Optional[str] = None
-    runtype: str = 'oneshot'  # Run once, do not restart on failure
+    runtype: str = "oneshot"  # Run once, do not restart on failure
 
     # Resource requirements
     min_vram_gb: float = 8.0
@@ -76,19 +79,19 @@ class VastInstanceConfig:
     def to_dict(self) -> Dict[str, Any]:
         """Convert to API request dict."""
         result = {
-            'image': self.image,
-            'disk': self.disk,
-            'env': self.env,
-            'runtype': self.runtype,
+            "image": self.image,
+            "disk": self.disk,
+            "env": self.env,
+            "runtype": self.runtype,
         }
 
         # Add optional fields only if set
         if self.args_str:
-            result['args_str'] = self.args_str
+            result["args_str"] = self.args_str
         if self.onstart:
-            result['onstart'] = self.onstart
+            result["onstart"] = self.onstart
         if self.label:
-            result['label'] = self.label
+            result["label"] = self.label
 
         return result
 
@@ -101,7 +104,7 @@ class IVastClient(Protocol):
         min_vram_gb: float = 8.0,
         max_price: float = 0.5,
         min_reliability: float = 0.9,
-        limit: int = 10
+        limit: int = 10,
     ) -> List[VastOffer]:
         """
         Search for available GPU offers.
@@ -118,9 +121,7 @@ class IVastClient(Protocol):
         ...
 
     def create_instance(
-        self,
-        offer_id: int,
-        config: VastInstanceConfig
+        self, offer_id: int, config: VastInstanceConfig
     ) -> VastInstance:
         """
         Create instance from offer.
@@ -159,10 +160,7 @@ class IVastClient(Protocol):
         ...
 
     def wait_for_running(
-        self,
-        instance_id: int,
-        timeout: int = 300,
-        poll_interval: int = 10
+        self, instance_id: int, timeout: int = 300, poll_interval: int = 10
     ) -> VastInstance:
         """
         Wait for instance to be running.
@@ -179,4 +177,3 @@ class IVastClient(Protocol):
             TimeoutError: If timeout reached
         """
         ...
-
