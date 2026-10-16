@@ -28,6 +28,18 @@ def test_journalctl_since_formats_supported_local_timestamp():
     assert len(formatted) == 19
 
 
+def test_query_journalctl_defaults_to_direct_group_read_not_sudo():
+    commands = []
+
+    def successful(command, **kwargs):
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    observer.query_journalctl("2026-10-16 16:00:00", runner=successful)
+    assert commands[0][0] == "journalctl"
+    assert "sudo" not in commands[0]
+
+
 def test_journal_query_error_is_not_interpreted_as_zero_sessions():
     def failed(command, **kwargs):
         assert "--since" in command
@@ -144,13 +156,43 @@ def test_observer_timeout_detects_no_tunnel_before_cuda():
     assert reason == "STAGE_TIMEOUT: tunnel_ready was not recorded within 300 seconds of create"
 
 
-def test_stop_controller_command_error_is_observability_failure(monkeypatch):
-    def missing_systemctl(*args, **kwargs):
-        raise FileNotFoundError("systemctl missing")
+def test_stop_controller_signals_verified_parent_with_sigint_without_sudo(monkeypatch):
+    import signal
 
-    monkeypatch.setattr(observer.subprocess, "run", missing_systemctl)
+    monkeypatch.setattr(observer.os, "getppid", lambda: 4242)
+    monkeypatch.setattr(observer, "controller_parent_matches", lambda pid: pid == 4242, raising=False)
+    signals = []
+    monkeypatch.setattr(observer.os, "kill", lambda pid, sig: signals.append((pid, sig)))
+    monkeypatch.setattr(
+        observer.subprocess,
+        "run",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("sudo/systemctl must not be called")),
+    )
+
+    result = observer.stop_controller("aividup-runpod-pilot.service")
+
+    assert result.returncode == 0
+    assert signals == [(4242, signal.SIGINT)]
+
+
+def test_controller_unit_grants_journal_read_group_without_disabling_nnp():
+    unit = Path(__file__).resolve().parents[2] / "ops" / "runpod-pilot" / "aividup-runpod-pilot.service"
+    content = unit.read_text()
+    assert "SupplementaryGroups=systemd-journal" in content
+    assert "NoNewPrivileges=true" in content
+    assert "NoNewPrivileges=false" not in content
+
+
+def test_stop_controller_refuses_unverified_parent(monkeypatch):
+    monkeypatch.setattr(observer.os, "getppid", lambda: 4243)
+    monkeypatch.setattr(observer, "controller_parent_matches", lambda pid: False)
+    signals = []
+    monkeypatch.setattr(observer.os, "kill", lambda pid, sig: signals.append((pid, sig)))
+
     with pytest.raises(observer.ObservabilityFailure, match="OBSERVABILITY_FAILURE"):
         observer.stop_controller("aividup-runpod-pilot.service")
+
+    assert signals == []
 
 
 def test_incident_persistence_survives_missing_logger(tmp_path, monkeypatch):

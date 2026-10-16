@@ -13,6 +13,7 @@ StartLimitBurst=5
 Type=simple
 User=informaten
 Group=informaten
+SupplementaryGroups=systemd-journal
 StateDirectory=aividup-runpod-pilot
 StateDirectoryMode=0700
 WorkingDirectory=/var/lib/aividup-runpod-pilot

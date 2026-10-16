@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import re
+import signal
 import stat
 import subprocess
 import time
@@ -30,7 +31,7 @@ def query_journalctl(
     since: str,
     *,
     runner: Callable = subprocess.run,
-    command_prefix: tuple[str, ...] | list[str] = ("sudo", "-n"),
+    command_prefix: tuple[str, ...] | list[str] = (),
 ) -> str:
     command = [
         *command_prefix,
@@ -58,7 +59,7 @@ def accepted_tunnel_sessions(
     started_at: float,
     *,
     runner: Callable = subprocess.run,
-    command_prefix: tuple[str, ...] | list[str] = ("sudo", "-n"),
+    command_prefix: tuple[str, ...] | list[str] = (),
 ) -> list[float]:
     since = format_journal_since(started_at)
     text = query_journalctl(since, runner=runner, command_prefix=command_prefix)
@@ -240,25 +241,34 @@ def persist_incident(state_file: Path, incident_id: str, reason: str) -> Path:
     return record_path
 
 
-def stop_controller(unit: str) -> subprocess.CompletedProcess:
+def controller_parent_matches(pid: int) -> bool:
+    """Confirm the observer's parent is the controller exec'd by its supervisor shell."""
+    if pid <= 1:
+        return False
     try:
-        result = subprocess.run(
-            ["sudo", "-n", "systemctl", "stop", unit],
-            capture_output=True,
-            text=True,
-            timeout=150,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
+        command_line = Path(f"/proc/{pid}/cmdline").read_bytes()
+    except OSError:
+        return False
+    return b"runpod_pilot_controller.py" in command_line
+
+
+def stop_controller(unit: str) -> subprocess.CompletedProcess:
+    if unit != "aividup-runpod-pilot.service":
+        raise ObservabilityFailure(f"OBSERVABILITY_FAILURE: refusing unexpected controller unit {unit}")
+    controller_pid = os.getppid()
+    if not controller_parent_matches(controller_pid):
         raise ObservabilityFailure(
-            f"OBSERVABILITY_FAILURE: could not stop controller unit {unit}: {exc}"
+            f"OBSERVABILITY_FAILURE: observer parent pid {controller_pid} is not the pilot controller"
+        )
+    try:
+        os.kill(controller_pid, signal.SIGINT)
+    except OSError as exc:
+        raise ObservabilityFailure(
+            f"OBSERVABILITY_FAILURE: could not signal controller pid {controller_pid}: {exc}"
         ) from exc
-    if result.returncode != 0:
-        raise ObservabilityFailure(
-            f"OBSERVABILITY_FAILURE: could not stop controller unit {unit}: "
-            f"{(result.stderr or result.stdout).strip()[:500]}"
-        )
-    return result
+    return subprocess.CompletedProcess(
+        ["signal", "SIGINT", str(controller_pid)], 0, "", ""
+    )
 
 
 def _read_json(path: Path) -> dict:
