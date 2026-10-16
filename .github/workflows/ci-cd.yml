@@ -121,7 +121,7 @@ jobs:
 
     - name: Run integration tests
       run: |
-        pytest tests/test_integration_real_videos.py \
+        pytest tests/test_animated_classification.py \
                -v -m "integration and not slow" \
                --tb=short
 
