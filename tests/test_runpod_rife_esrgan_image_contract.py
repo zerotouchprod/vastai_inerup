@@ -133,5 +133,7 @@ def test_controller_supervisor_accepts_only_configured_immutable_image_ref():
     assert '--image "$IMAGE_REF"' in script
     assert '--disk-gb 40' in script
     assert "AIVIDUP_RUNPOD_POD_NAME" in script
+    assert "AIVIDUP_PILOT_PLANE_EVIDENCE" in script
+    assert '--plane-evidence "$PLANE_EVIDENCE"' in script
     unit = (ROOT / "ops/runpod-pilot/aividup-runpod-pilot.service").read_text()
     assert "EnvironmentFile=-/etc/aividup-runpod-pilot/controller.env" in unit

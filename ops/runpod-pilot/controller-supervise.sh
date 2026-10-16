@@ -7,6 +7,14 @@ ATTEMPT_LATCH="$STATE_DIR/create-attempted"
 DEFAULT_IMAGE_REF=ghcr.io/zerotouchprod/aividup-worker-runpod-rife-pilot@sha256:c775c62ade2d1851074751d761195aa6ace2895ed51af268b5f877535117475b
 IMAGE_REF="${AIVIDUP_RUNPOD_IMAGE_REF:-$DEFAULT_IMAGE_REF}"
 POD_NAME="${AIVIDUP_RUNPOD_POD_NAME:-aividup-rife-pilot-one-shot}"
+PLANE_EVIDENCE="${AIVIDUP_PILOT_PLANE_EVIDENCE:-$STATE_DIR/plane-evidence.json}"
+case "$PLANE_EVIDENCE" in
+    "$STATE_DIR"/*) ;;
+    *)
+        logger -p daemon.crit -t aividup-runpod-pilot 'refusing plane evidence outside state directory'
+        exit 64
+        ;;
+esac
 if ! /usr/bin/python3 - "$IMAGE_REF" <<'PY'
 import re
 import sys
@@ -33,7 +41,7 @@ fi
 OBSERVER_STARTED_AT=$(/usr/bin/date +%s)
 /usr/bin/python3 /opt/aividup-runpod-pilot/crash-loop-observer.py \
     --state-file "$STATE_FILE" \
-    --plane-evidence "$STATE_DIR/plane-evidence.json" \
+    --plane-evidence "$PLANE_EVIDENCE" \
     --started-at-epoch "$OBSERVER_STARTED_AT" \
     --unit aividup-runpod-pilot.service &
 
