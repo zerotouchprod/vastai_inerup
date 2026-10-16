@@ -1,0 +1,96 @@
+# syntax=docker/dockerfile:1.6
+# Combined RunPod pilot image: real RIFE interpolation + Real-ESRGAN x2 upscale.
+FROM nvidia/cuda:12.6.0-cudnn-runtime-ubuntu22.04
+
+ARG GIT_SHA=unknown
+ARG PIPELINE_VERSION=aividup-rife-esrgan-both-v1
+ARG MODEL_MANIFEST_SHA256
+ARG REALESRGAN_X2PLUS_SHA256
+LABEL org.opencontainers.image.title="aividup-worker-runpod-rife-esrgan-pilot" \
+      org.opencontainers.image.source="https://github.com/zerotouchprod/vastai_inerup" \
+      org.opencontainers.image.revision="${GIT_SHA}" \
+      org.zerotouchprod.aividup.pipeline-version="${PIPELINE_VERSION}" \
+      org.zerotouchprod.aividup.model-manifest-sha256="${MODEL_MANIFEST_SHA256}" \
+      org.zerotouchprod.aividup.realesrgan-x2plus-sha256="${REALESRGAN_X2PLUS_SHA256}"
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3 python3-pip python3-venv ffmpeg tini curl ca-certificates \
+        libglib2.0-0 libgl1 libgomp1 \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+RUN python3 -m venv /opt/venv
+ENV PATH="/opt/venv/bin:${PATH}"
+RUN pip install --upgrade pip setuptools wheel \
+    && pip install torch==2.9.1 torchvision --index-url https://download.pytorch.org/whl/cu126
+
+COPY requirements-worker.txt /tmp/requirements-worker.txt
+RUN pip install -r /tmp/requirements-worker.txt
+
+# Pin the Real-ESRGAN Python assets and x2 weights in the image; no paid-Pod downloads.
+RUN pip install --no-deps basicsr realesrgan \
+    && F="$(python -c 'import importlib.util as u; print(u.find_spec("basicsr").submodule_search_locations[0])')/data/degradations.py" \
+    && sed -i 's/from torchvision.transforms.functional_tensor import rgb_to_grayscale/from torchvision.transforms.functional import rgb_to_grayscale/' "$F" \
+    && ! grep -q functional_tensor "$F"
+
+COPY runpod/pilot/rife-esrgan/realesrgan-x2plus.sha256 /opt/aividup/realesrgan-x2plus.sha256
+RUN test -n "${REALESRGAN_X2PLUS_SHA256}" \
+    && mkdir -p /opt/realesrgan_models \
+    && curl --fail --location --retry 3 --retry-delay 2 --connect-timeout 15 --max-time 180 \
+       https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.1/RealESRGAN_x2plus.pth \
+       --output /opt/realesrgan_models/RealESRGAN_x2plus.pth \
+    && EXPECTED="$(tr -d '[:space:]' < /opt/aividup/realesrgan-x2plus.sha256)" \
+    && test "$EXPECTED" = "${REALESRGAN_X2PLUS_SHA256}" \
+    && test "$(sha256sum /opt/realesrgan_models/RealESRGAN_x2plus.pth | cut -d' ' -f1)" = "$EXPECTED" \
+    && test -s /opt/realesrgan_models/RealESRGAN_x2plus.pth
+
+ARG RIFE_CHECKPOINT_URL=https://api.github.com/repos/zerotouchprod/vastai_inerup/releases/assets/644883676
+ENV AIVIDUP_RIFE_CHECKPOINT_URL=${RIFE_CHECKPOINT_URL}
+
+WORKDIR /opt/aividup/project
+RUN mkdir -p /opt/aividup/project/RIFEv4.26_0921/train_log
+COPY RIFEv4.26_0921/model/ ./RIFEv4.26_0921/model/
+COPY RIFEv4.26_0921/train_log/*.py ./RIFEv4.26_0921/train_log/
+COPY src/ ./src/
+COPY pipeline_v2.py ./pipeline_v2.py
+COPY runpod/pilot/rife-esrgan/manifest.json /opt/aividup/model-manifest.expected.json
+COPY scripts/validate_rife_manifest.py /opt/aividup/validate_rife_manifest.py
+COPY scripts/cuda_runtime_preflight.py /opt/aividup/cuda_runtime_preflight.py
+COPY scripts/worker_start.sh /opt/aividup/worker_start.sh
+COPY scripts/runpod_checkpoint_bootstrap.py /opt/aividup/runpod_checkpoint_bootstrap.py
+ARG RIFE_CHECKPOINT_SHA256=45c7f74156704769dc9f85cfcaf8552e1e926f9399dcfa3a553dee88fac6f53f
+RUN test -n "${MODEL_MANIFEST_SHA256}" \
+    && test "$(sha256sum /opt/aividup/model-manifest.expected.json | cut -d' ' -f1)" = "${MODEL_MANIFEST_SHA256}" \
+    && python -c 'import json, os; actual=json.load(open("/opt/aividup/model-manifest.expected.json"))["pipeline_version"]; assert actual == os.environ["PIPELINE_VERSION"], "manifest pipeline version differs from image"' \
+    && chmod +x /opt/aividup/worker_start.sh /opt/aividup/cuda_runtime_preflight.py /opt/aividup/runpod_checkpoint_bootstrap.py \
+    && python -m py_compile /opt/aividup/runpod_checkpoint_bootstrap.py \
+    && actual_rife_sha="$(python -c 'import json; print(json.load(open("/opt/aividup/model-manifest.expected.json"))["files"][0]["sha256"])')" \
+    && test "$actual_rife_sha" = "${RIFE_CHECKPOINT_SHA256}" \
+    && python -c 'from pathlib import Path; import torch, torchvision, cv2, numpy, yaml, requests, boto3, ffmpeg, pydantic_settings; from basicsr.archs.rrdbnet_arch import RRDBNet; from realesrgan import RealESRGANer; from src.worker.runner import Worker; from src.presentation.cli import create_orchestrator_from_config; from src.infrastructure.processors.rife.native import RIFENative; assert Path("/opt/realesrgan_models/RealESRGAN_x2plus.pth").is_file()' \
+    && ffmpeg -hide_banner -encoders 2>/dev/null | grep -q libx264
+
+ENV PYTHONPATH=/opt/aividup/project \
+    USE_NATIVE_PROCESSORS=1 \
+    STRICT_FRAME_COUNT=1 \
+    NVIDIA_VISIBLE_DEVICES=all \
+    NVIDIA_DRIVER_CAPABILITIES=compute,utility,video \
+    TORCH_CUDA_ARCH_LIST="7.5;8.0;8.6;8.7;8.9;9.0;12.0" \
+    AIVIDUP_PROCESSOR=pipeline \
+    AIVIDUP_GPU_PROBE_BACKEND=all \
+    AIVIDUP_REALESRGAN_WEIGHTS=/opt/realesrgan_models/RealESRGAN_x2plus.pth \
+    AIVIDUP_MODEL_VOLUME_ROOT=/workspace/models/rife-v4.26 \
+    AIVIDUP_RIFE_CODE_DIR=/opt/aividup/project/RIFEv4.26_0921 \
+    AIVIDUP_MODEL_MANIFEST_REQUIRED=1 \
+    AIVIDUP_PIPELINE_VERSION=${PIPELINE_VERSION} \
+    AIVIDUP_IDLE_EXIT_SECONDS=300 \
+    AIVIDUP_MAX_LIFETIME_SECONDS=14400 \
+    AIVIDUP_VERIFIED_MODEL_PARENT=/tmp \
+    AIVIDUP_MODEL_MANIFEST_SHA256=${MODEL_MANIFEST_SHA256} \
+    MODE=both
+
+ENTRYPOINT ["/usr/bin/tini", "--", "python3", "/opt/aividup/runpod_checkpoint_bootstrap.py"]

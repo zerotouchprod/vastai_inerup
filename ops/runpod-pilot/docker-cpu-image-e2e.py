@@ -13,6 +13,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 import secrets
 import shlex
 import shutil
@@ -44,6 +45,51 @@ EXPECTED_STAGES = [
     "worker_started",
     "cuda_preflight",
 ]
+DUAL_PILOT_IMAGE_RE = re.compile(
+    r"ghcr\.io/zerotouchprod/aividup-worker-runpod-rife-pilot@sha256:[0-9a-f]{64}"
+)
+LOCAL_IMAGE_ID_RE = re.compile(r"sha256:[0-9a-f]{64}")
+IMAGE_SOURCE = "https://github.com/zerotouchprod/vastai_inerup"
+PILOT_IMAGE_TITLES = {
+    "aividup-worker-runpod-rife-pilot",
+    "aividup-worker-runpod-rife-esrgan-pilot",
+}
+
+
+def is_allowed_image_ref(image: str) -> bool:
+    """Accept only the original RIFE digest, a dual-pilot digest, or local image ID."""
+    return image == DEFAULT_IMAGE or bool(DUAL_PILOT_IMAGE_RE.fullmatch(image)) or bool(
+        LOCAL_IMAGE_ID_RE.fullmatch(image)
+    )
+
+
+def is_trusted_pilot_image_labels(labels: Any, *, require_dual_model: bool = False) -> bool:
+    """Check immutable OCI provenance before running an image in the CPU tunnel test."""
+    if not isinstance(labels, dict):
+        return False
+    title = labels.get("org.opencontainers.image.title")
+    revision = labels.get("org.opencontainers.image.revision")
+    source = labels.get("org.opencontainers.image.source")
+    if (
+        source != IMAGE_SOURCE
+        or title not in PILOT_IMAGE_TITLES
+        or not isinstance(revision, str)
+        or re.fullmatch(r"[0-9a-f]{40}", revision) is None
+    ):
+        return False
+    if not require_dual_model:
+        return True
+    return (
+        title == "aividup-worker-runpod-rife-esrgan-pilot"
+        and labels.get("org.zerotouchprod.aividup.pipeline-version")
+        == "aividup-rife-esrgan-both-v1"
+        and isinstance(labels.get("org.zerotouchprod.aividup.realesrgan-x2plus-sha256"), str)
+        and re.fullmatch(
+            r"[0-9a-f]{64}",
+            labels["org.zerotouchprod.aividup.realesrgan-x2plus-sha256"],
+        )
+        is not None
+    )
 
 
 class E2EFailure(RuntimeError):
@@ -163,7 +209,15 @@ def prepare_tunnel_materials(client_dir: Path, sidecar_dir: Path) -> tuple[Path,
     return client_key, pinned_host_key, host_key_fingerprint, client_key_fingerprint, config
 
 
-def build_sidecar_command(sidecar_dir: Path, artifact_dir: Path) -> str:
+def build_sidecar_command(
+    sidecar_dir: Path,
+    artifact_dir: Path,
+    *,
+    mode: str = "interp",
+    scale: float = 2.0,
+    interp_factor: float = 2.0,
+    strategy: str = "interp-then-upscale",
+) -> str:
     """Start a restricted SSHD and the one-job plane in the same container namespace."""
     quote = shlex.quote
     plane_script = sidecar_dir / "runpod_pilot_test_control_plane.py"
@@ -198,7 +252,8 @@ def build_sidecar_command(sidecar_dir: Path, artifact_dir: Path) -> str:
             f"python3 {quote(str(plane_script))} --token-file {quote(str(token_file))} "
             f"--input {quote(str(input_path))} --host 127.0.0.1 --port {PLANE_PORT} "
             f"--advertised-base-url {quote(ADVERTISED_URL)} --evidence {quote(str(evidence_path))} "
-            f"--output-dir {quote(str(output_dir))} --mode interp --interp-factor 2.0 &"
+            f"--output-dir {quote(str(output_dir))} --mode {quote(mode)} --scale {quote(str(scale))} "
+            f"--interp-factor {quote(str(interp_factor))} --strategy {quote(strategy)} &"
         ),
         "PLANE_PID=$!",
         "shutdown() { status=$?; trap - EXIT INT TERM; kill \"$PLANE_PID\" \"$SSHD_PID\" 2>/dev/null || true; wait \"$PLANE_PID\" 2>/dev/null || true; wait \"$SSHD_PID\" 2>/dev/null || true; exit \"$status\"; }",
@@ -214,8 +269,20 @@ def build_sidecar_argv(
     network_name: str,
     sidecar_dir: Path,
     artifact_dir: Path,
+    *,
+    mode: str = "interp",
+    scale: float = 2.0,
+    interp_factor: float = 2.0,
+    strategy: str = "interp-then-upscale",
 ) -> list[str]:
-    command = build_sidecar_command(sidecar_dir, artifact_dir)
+    command = build_sidecar_command(
+        sidecar_dir,
+        artifact_dir,
+        mode=mode,
+        scale=scale,
+        interp_factor=interp_factor,
+        strategy=strategy,
+    )
     return [
         "docker", "run", "--detach", "--name", container_name,
         "--network", network_name, "--ip", SSH_HOST_ALIAS,
@@ -362,6 +429,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--artifact-dir", type=Path, required=True)
     parser.add_argument("--image", default=DEFAULT_IMAGE)
+    parser.add_argument("--mode", choices=("interp", "both"), default="interp")
+    parser.add_argument("--scale", type=float, default=2.0)
+    parser.add_argument("--interp-factor", type=float, default=2.0)
+    parser.add_argument("--strategy", choices=("interp-then-upscale", "upscale-then-interp"), default="interp-then-upscale")
     parser.add_argument("--container-timeout", type=int, default=900)
     args = parser.parse_args(argv)
     artifact_dir = args.artifact_dir.resolve()
@@ -371,6 +442,10 @@ def main(argv: list[str] | None = None) -> int:
     output_dir = artifact_dir / "plane-output"
     summary: dict[str, Any] = {
         "image": args.image,
+        "mode": args.mode,
+        "scale": args.scale,
+        "interp_factor": args.interp_factor,
+        "strategy": args.strategy,
         "runpod_api_called": False,
         "gpu_requested": False,
         "network_volume_requested": False,
@@ -403,13 +478,30 @@ def main(argv: list[str] | None = None) -> int:
     sidecar_started = False
 
     try:
-        if args.image != DEFAULT_IMAGE:
-            raise E2EFailure("image override is forbidden; use the pinned immutable digest")
+        if not is_allowed_image_ref(args.image):
+            raise E2EFailure("image override must be the pinned pilot digest or a local immutable image ID")
         if shutil.which("docker") is None:
             raise E2EFailure("Docker CLI is unavailable")
-        image_check = subprocess.run(["docker", "image", "inspect", args.image], capture_output=True, text=True, check=False)
+        image_check = subprocess.run(
+            ["docker", "image", "inspect", "--format", "{{json .Config.Labels}}", args.image],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
         if image_check.returncode != 0:
             raise E2EFailure("pinned image is not present locally; CI must pull it by digest before this script")
+        try:
+            image_labels = json.loads(image_check.stdout or "{}")
+        except json.JSONDecodeError as exc:
+            raise E2EFailure("image labels are not valid JSON") from exc
+        if not is_trusted_pilot_image_labels(image_labels, require_dual_model=args.mode == "both"):
+            raise E2EFailure("image labels do not prove this repository's pinned model build")
+        summary["image_title"] = image_labels["org.opencontainers.image.title"]
+        summary["image_revision"] = image_labels["org.opencontainers.image.revision"]
+        summary["pipeline_version"] = image_labels.get("org.zerotouchprod.aividup.pipeline-version")
+        summary["realesrgan_x2plus_sha256"] = image_labels.get(
+            "org.zerotouchprod.aividup.realesrgan-x2plus-sha256"
+        )
 
         plane_module = load_plane_module()
         input_path = plane_module.make_synthetic_input(sidecar_dir / "input.mp4", seconds=2.0)
@@ -438,7 +530,17 @@ def main(argv: list[str] | None = None) -> int:
             "--subnet", SIDECAR_SUBNET, "--gateway", SIDECAR_GATEWAY, network_name,
         ])
         network_created = True
-        sidecar_argv = build_sidecar_argv(args.image, sidecar_name, network_name, sidecar_dir, artifact_dir)
+        sidecar_argv = build_sidecar_argv(
+            args.image,
+            sidecar_name,
+            network_name,
+            sidecar_dir,
+            artifact_dir,
+            mode=args.mode,
+            scale=args.scale,
+            interp_factor=args.interp_factor,
+            strategy=args.strategy,
+        )
         run_checked(sidecar_argv, timeout=300)
         sidecar_started = True
         wait_for_sidecar_ready(sidecar_name)

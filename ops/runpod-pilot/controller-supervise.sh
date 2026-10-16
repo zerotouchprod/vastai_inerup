@@ -4,6 +4,18 @@ set -eu
 STATE_DIR=/var/lib/aividup-runpod-pilot
 STATE_FILE="$STATE_DIR/state.json"
 ATTEMPT_LATCH="$STATE_DIR/create-attempted"
+DEFAULT_IMAGE_REF=ghcr.io/zerotouchprod/aividup-worker-runpod-rife-pilot@sha256:c775c62ade2d1851074751d761195aa6ace2895ed51af268b5f877535117475b
+IMAGE_REF="${AIVIDUP_RUNPOD_IMAGE_REF:-$DEFAULT_IMAGE_REF}"
+POD_NAME="${AIVIDUP_RUNPOD_POD_NAME:-aividup-rife-pilot-one-shot}"
+if ! /usr/bin/python3 - "$IMAGE_REF" <<'PY'
+import re
+import sys
+sys.exit(0 if re.fullmatch(r"ghcr\.io/zerotouchprod/aividup-worker-runpod-rife-pilot@sha256:[0-9a-f]{64}", sys.argv[1]) else 1)
+PY
+then
+    logger -p daemon.crit -t aividup-runpod-pilot 'refusing non-pinned RunPod image reference'
+    exit 64
+fi
 
 if [ -e "$ATTEMPT_LATCH" ]; then
     if [ ! -s "$STATE_FILE" ]; then
@@ -27,11 +39,12 @@ OBSERVER_STARTED_AT=$(/usr/bin/date +%s)
 
 exec /usr/bin/python3 /opt/aividup-runpod-pilot/runpod_pilot_controller.py \
     --state-file "$STATE_FILE" \
-    --pod-name aividup-rife-pilot-one-shot \
-    --image ghcr.io/zerotouchprod/aividup-worker-runpod-rife-pilot@sha256:c775c62ade2d1851074751d761195aa6ace2895ed51af268b5f877535117475b \
+    --pod-name "$POD_NAME" \
+    --image "$IMAGE_REF" \
     --gpu 'NVIDIA GeForce RTX 4090' \
     --data-centre EU-RO-1 \
     --deadline-seconds 1800 \
+    --disk-gb 40 \
     --poll-seconds 15 \
     --pod-env-file /etc/aividup-runpod-pilot/pod.env \
     --pod-args-file /etc/aividup-runpod-pilot/pod-args.json \

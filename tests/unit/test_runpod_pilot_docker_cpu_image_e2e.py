@@ -98,3 +98,47 @@ def test_docker_command_uses_exact_pod_args_without_gpu_or_host_mounts(tmp_path)
     assert ipaddress.ip_address("195.234.126.233") in ipaddress.ip_network(runner.SIDECAR_SUBNET)
     assert "--gpus" not in argv
     assert "-v" not in argv and "--volume" not in argv
+
+
+def test_cpu_runner_accepts_only_pinned_pilot_digest_or_local_image_id():
+    runner = load_runner()
+    dual_digest = "ghcr.io/zerotouchprod/aividup-worker-runpod-rife-pilot@sha256:" + "a" * 64
+
+    assert runner.is_allowed_image_ref(dual_digest)
+    assert runner.is_allowed_image_ref("sha256:" + "b" * 64)
+    assert not runner.is_allowed_image_ref("ghcr.io/other/image@sha256:" + "a" * 64)
+    assert not runner.is_allowed_image_ref("ghcr.io/zerotouchprod/aividup-worker-runpod-rife-pilot:latest")
+
+
+def test_sidecar_command_can_serialize_both_model_mode_parameters(tmp_path):
+    runner = load_runner()
+    command = runner.build_sidecar_command(
+        tmp_path / "sidecar",
+        tmp_path / "artifacts",
+        mode="both",
+        scale=2.0,
+        interp_factor=2.0,
+        strategy="interp-then-upscale",
+    )
+
+    assert "--mode both" in command
+    assert "--scale 2.0" in command
+    assert "--interp-factor 2.0" in command
+    assert "--strategy interp-then-upscale" in command
+
+
+def test_cpu_runner_requires_known_source_title_and_revision_for_local_image():
+    runner = load_runner()
+    trusted = {
+        "org.opencontainers.image.source": "https://github.com/zerotouchprod/vastai_inerup",
+        "org.opencontainers.image.title": "aividup-worker-runpod-rife-esrgan-pilot",
+        "org.opencontainers.image.revision": "a" * 40,
+        "org.zerotouchprod.aividup.pipeline-version": "aividup-rife-esrgan-both-v1",
+        "org.zerotouchprod.aividup.realesrgan-x2plus-sha256": "b" * 64,
+    }
+    assert runner.is_trusted_pilot_image_labels(trusted, require_dual_model=True)
+    assert runner.is_trusted_pilot_image_labels({**trusted, "org.opencontainers.image.title": "aividup-worker-runpod-rife-pilot"})
+    assert not runner.is_trusted_pilot_image_labels({**trusted, "org.opencontainers.image.title": "aividup-worker-runpod-rife-pilot"}, require_dual_model=True)
+    assert not runner.is_trusted_pilot_image_labels({**trusted, "org.opencontainers.image.source": "https://example.invalid/foreign"})
+    assert not runner.is_trusted_pilot_image_labels({**trusted, "org.opencontainers.image.revision": "latest"})
+    assert not runner.is_trusted_pilot_image_labels({**trusted, "org.zerotouchprod.aividup.realesrgan-x2plus-sha256": "bad"}, require_dual_model=True)

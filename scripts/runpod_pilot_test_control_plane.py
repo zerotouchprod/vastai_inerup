@@ -485,6 +485,16 @@ class IsolatedControlPlane:
 # ---------------------------------------------------------------------------
 
 
+def task_params_from_cli(args: argparse.Namespace) -> dict[str, Any]:
+    """Build the explicit processing parameters serialized into a pilot task."""
+    return {
+        "scale": args.scale,
+        "interp_factor": args.interp_factor,
+        "target_fps": args.target_fps,
+        "strategy": args.strategy,
+    }
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--init-token", type=Path, help="generate an owner-only token file and exit")
@@ -501,8 +511,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--evidence", type=Path, default=Path("/tmp/aividup-pilot-plane-evidence.json"))
     parser.add_argument("--output-dir", type=Path, help="durable directory for authenticated sink payloads")
     parser.add_argument("--lease-seconds", type=int, default=300)
-    parser.add_argument("--mode", default="interp")
+    parser.add_argument("--mode", choices=("interp", "both"), default="interp")
+    parser.add_argument("--scale", type=float, default=2.0)
     parser.add_argument("--interp-factor", type=float, default=2.0)
+    parser.add_argument("--strategy", choices=("interp-then-upscale", "upscale-then-interp"), default="interp-then-upscale")
     parser.add_argument("--target-fps", type=int, default=None)
     parser.add_argument(
         "--allow-non-loopback",
@@ -537,7 +549,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         output_dir=args.output_dir,
         lease_seconds=args.lease_seconds,
         mode=args.mode,
-        params={"interp_factor": args.interp_factor, "target_fps": args.target_fps},
+        params=task_params_from_cli(args),
     )
     if target_host not in LOOPBACK_HOSTS:
         # Explicit acknowledgement: bind on the requested interface instead.

@@ -13,6 +13,16 @@ on:
         required: true
         type: boolean
         default: false
+      publish_dual_model_runpod_pilot:
+        description: Publish the combined RIFE + Real-ESRGAN pilot image to the existing public GHCR pilot package
+        required: true
+        type: boolean
+        default: false
+      cpu_dual_model_image_e2e:
+        description: Run the combined image + mode=both pod-args over CPU-only SSH E2E (no RunPod)
+        required: true
+        type: boolean
+        default: false
       worker_sha:
         description: Exact source commit at the selected workflow ref (must equal that commit)
         required: true
@@ -27,6 +37,7 @@ on:
       - 'src/infrastructure/processors/rife/native_wrapper.py'
       - 'src/shared/fps_planning.py'
       - 'tests/unit/test_worker.py'
+      - 'tests/unit/test_worker_task_mapping.py'
       - 'tests/unit/test_worker_start.py'
       - 'tests/unit/test_bootstrap_reporting.py'
       - 'tests/unit/test_fps_planning.py'
@@ -40,6 +51,8 @@ on:
       - 'docker/Dockerfile.worker.dockerignore'
       - 'docker/Dockerfile.runpod-pilot'
       - 'docker/Dockerfile.runpod-pilot.dockerignore'
+      - 'docker/Dockerfile.runpod-rife-esrgan-pilot'
+      - 'docker/Dockerfile.runpod-rife-esrgan-pilot.dockerignore'
       - 'requirements-worker.txt'
       - 'requirements-runpod-pilot.txt'
       - 'scripts/worker_start.sh'
@@ -57,6 +70,7 @@ on:
       - 'tests/unit/test_runpod_pilot_test_control_plane.py'
       - 'scripts/export_runpod_rife_bundle.py'
       - 'scripts/build_runpod_pilot_worker.sh'
+      - 'scripts/build_runpod_rife_esrgan_pilot_worker.sh'
       - 'runpod/pilot/**'
       - '.github/workflows/build-worker.yml'
   push:
@@ -68,6 +82,7 @@ on:
       - 'src/infrastructure/processors/rife/native_wrapper.py'
       - 'src/shared/fps_planning.py'
       - 'tests/unit/test_worker.py'
+      - 'tests/unit/test_worker_task_mapping.py'
       - 'tests/unit/test_worker_start.py'
       - 'tests/unit/test_bootstrap_reporting.py'
       - 'tests/unit/test_fps_planning.py'
@@ -81,6 +96,8 @@ on:
       - 'docker/Dockerfile.worker.dockerignore'
       - 'docker/Dockerfile.runpod-pilot'
       - 'docker/Dockerfile.runpod-pilot.dockerignore'
+      - 'docker/Dockerfile.runpod-rife-esrgan-pilot'
+      - 'docker/Dockerfile.runpod-rife-esrgan-pilot.dockerignore'
       - 'requirements-worker.txt'
       - 'requirements-runpod-pilot.txt'
       - 'scripts/worker_start.sh'
@@ -98,6 +115,7 @@ on:
       - 'tests/unit/test_runpod_pilot_test_control_plane.py'
       - 'scripts/export_runpod_rife_bundle.py'
       - 'scripts/build_runpod_pilot_worker.sh'
+      - 'scripts/build_runpod_rife_esrgan_pilot_worker.sh'
       - 'runpod/pilot/**'
       - 'RIFEv4.26_0921/**'
 jobs:
@@ -115,7 +133,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ffmpeg
       - name: Install test dependencies
-        run: pip install pytest "numpy<2" "opencv-python-headless<5" requests pyyaml
+        run: pip install pytest "numpy<2" "opencv-python-headless<5" requests pyyaml "pydantic>=2"
       - name: Compile worker runtime and its pipeline dependencies
         run: >-
           python -m compileall -q
@@ -135,9 +153,10 @@ jobs:
       - name: Run worker, pilot contract, and model manifest tests
         run: >-
           python -m pytest
-          tests/unit/test_worker.py tests/unit/test_worker_start.py
+          tests/unit/test_worker.py tests/unit/test_worker_task_mapping.py tests/unit/test_worker_start.py
           tests/unit/test_bootstrap_reporting.py tests/unit/test_fps_planning.py
           tests/test_worker_image_contract.py tests/test_runpod_worker_image_contract.py
+          tests/test_runpod_rife_esrgan_image_contract.py
           tests/test_runpod_rife_volume.py tests/test_runpod_rife_code_volume.py
           tests/test_runpod_rife_timing.py
           tests/unit/test_runpod_model_manifest.py tests/unit/test_runpod_model_bundle.py
@@ -303,6 +322,172 @@ jobs:
       - name: Report image byte size
         if: github.event_name != 'workflow_dispatch'
         run: docker image inspect --format='image_bytes={{.Size}}' ghcr.io/zerotouchprod/aividup-worker-runpod-rife-pilot:${{ github.event.pull_request.head.sha || github.sha }}
+
+  runpod-rife-esrgan-pilot-image:
+    if: >-
+      github.event_name == 'pull_request' ||
+      (github.event_name == 'workflow_dispatch' && inputs.worker_sha == github.sha &&
+      (inputs.publish_dual_model_runpod_pilot == true || inputs.cpu_dual_model_image_e2e == true))
+    needs: tests
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.worker_sha || github.event.pull_request.head.sha || github.sha }}
+      - name: Verify source SHA
+        env:
+          EXPECTED_SHA: ${{ github.event_name == 'workflow_dispatch' && inputs.worker_sha || github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+      - name: Install ffmpeg and SSH key tooling
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg openssh-client
+      - name: Verify Docker runner
+        run: docker info --format 'docker_server={{.ServerVersion}}'
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        if: github.event_name == 'workflow_dispatch' && inputs.publish_dual_model_runpod_pilot == true
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Pin both model assets
+        id: models
+        run: |
+          echo "rife_manifest_sha256=$(sha256sum runpod/pilot/rife-esrgan/manifest.json | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "realesrgan_x2plus_sha256=$(tr -d '[:space:]' < runpod/pilot/rife-esrgan/realesrgan-x2plus.sha256)" >> "$GITHUB_OUTPUT"
+      - name: Check for an existing public SHA-tag
+        id: existing
+        if: github.event_name == 'workflow_dispatch' && inputs.publish_dual_model_runpod_pilot == true
+        env:
+          IMAGE_REPO: zerotouchprod/aividup-worker-runpod-rife-pilot
+          SOURCE_SHA: ${{ inputs.worker_sha }}
+        run: |
+          python3 - <<'PY'
+          import json, os, urllib.error, urllib.parse, urllib.request
+          repo = os.environ['IMAGE_REPO']
+          source_sha = os.environ['SOURCE_SHA']
+          scope = urllib.parse.urlencode({'scope': f'repository:{repo}:pull'})
+          token = json.load(urllib.request.urlopen(f'https://ghcr.io/token?{scope}', timeout=30))['token']
+          headers = {
+              'Authorization': f'Bearer {token}',
+              'Accept': 'application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json',
+          }
+          request = urllib.request.Request(f'https://ghcr.io/v2/{repo}/manifests/{source_sha}', method='HEAD', headers=headers)
+          try:
+              response = urllib.request.urlopen(request, timeout=30)
+              digest = response.headers.get('Docker-Content-Digest', '')
+              if response.status != 200 or not digest.startswith('sha256:'):
+                  raise RuntimeError('Existing image response lacked an immutable digest')
+              exists = 'true'
+          except urllib.error.HTTPError as error:
+              if error.code not in (401, 404):
+                  raise
+              digest, exists = '', 'false'
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'exists={exists}\n')
+              output.write(f'digest={digest}\n')
+          print(f'public_sha_tag_exists={exists}; digest={digest or "(none)"}')
+          PY
+      - name: Build or publish combined RIFE + Real-ESRGAN image
+        id: dual_build
+        if: steps.existing.outputs.exists != 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.runpod-rife-esrgan-pilot
+          push: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_dual_model_runpod_pilot == true }}
+          load: ${{ github.event_name != 'workflow_dispatch' || inputs.publish_dual_model_runpod_pilot == false }}
+          build-args: |
+            GIT_SHA=${{ github.event_name == 'workflow_dispatch' && inputs.worker_sha || github.event.pull_request.head.sha || github.sha }}
+            PIPELINE_VERSION=aividup-rife-esrgan-both-v1
+            MODEL_MANIFEST_SHA256=${{ steps.models.outputs.rife_manifest_sha256 }}
+            REALESRGAN_X2PLUS_SHA256=${{ steps.models.outputs.realesrgan_x2plus_sha256 }}
+          tags: ghcr.io/zerotouchprod/aividup-worker-runpod-rife-pilot:${{ github.event_name == 'workflow_dispatch' && inputs.worker_sha || github.event.pull_request.head.sha || github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Resolve immutable registry digest
+        id: dual_registry
+        if: github.event_name == 'workflow_dispatch' && inputs.publish_dual_model_runpod_pilot == true
+        env:
+          EXISTING_DIGEST: ${{ steps.existing.outputs.digest }}
+          BUILT_DIGEST: ${{ steps.dual_build.outputs.digest }}
+        run: |
+          digest="${EXISTING_DIGEST:-$BUILT_DIGEST}"
+          test -n "$digest"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+      - name: Verify anonymous registry digest
+        if: github.event_name == 'workflow_dispatch' && inputs.publish_dual_model_runpod_pilot == true
+        env:
+          IMAGE_REPO: zerotouchprod/aividup-worker-runpod-rife-pilot
+          SOURCE_SHA: ${{ inputs.worker_sha }}
+          EXPECTED_DIGEST: ${{ steps.dual_registry.outputs.digest }}
+        run: |
+          python3 - <<'PY'
+          import json, os, urllib.parse, urllib.request
+          repo = os.environ['IMAGE_REPO']
+          source_sha = os.environ['SOURCE_SHA']
+          expected_digest = os.environ['EXPECTED_DIGEST']
+          scope = urllib.parse.urlencode({'scope': f'repository:{repo}:pull'})
+          token = json.load(urllib.request.urlopen(f'https://ghcr.io/token?{scope}', timeout=30))['token']
+          headers = {
+              'Authorization': f'Bearer {token}',
+              'Accept': 'application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json',
+          }
+          request = urllib.request.Request(f'https://ghcr.io/v2/{repo}/manifests/{source_sha}', method='HEAD', headers=headers)
+          response = urllib.request.urlopen(request, timeout=30)
+          actual_digest = response.headers.get('Docker-Content-Digest', '')
+          if response.status != 200 or actual_digest != expected_digest:
+              raise SystemExit(f'Public manifest mismatch: expected={expected_digest}; actual={actual_digest}; status={response.status}')
+          print(f'public_manifest_status={response.status}; digest={actual_digest}; source_sha={source_sha}')
+          PY
+      - name: Record immutable dual-model image
+        if: github.event_name == 'workflow_dispatch' && inputs.publish_dual_model_runpod_pilot == true
+        env:
+          IMAGE_DIGEST: ${{ steps.dual_registry.outputs.digest }}
+          SOURCE_SHA: ${{ inputs.worker_sha }}
+        run: |
+          printf 'Image: ghcr.io/zerotouchprod/aividup-worker-runpod-rife-pilot@%s\nSource SHA: %s\nModels: RIFE v4.26 + RealESRGAN x2plus\n' "$IMAGE_DIGEST" "$SOURCE_SHA" >> "$GITHUB_STEP_SUMMARY"
+      - name: Prepare exact CPU E2E image reference
+        id: dual_e2e_image
+        if: github.event_name == 'pull_request' || inputs.cpu_dual_model_image_e2e == true
+        env:
+          PUBLISH: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_dual_model_runpod_pilot == true }}
+          IMAGE_REPO: ghcr.io/zerotouchprod/aividup-worker-runpod-rife-pilot
+          IMAGE_TAG: ghcr.io/zerotouchprod/aividup-worker-runpod-rife-pilot:${{ github.event_name == 'workflow_dispatch' && inputs.worker_sha || github.event.pull_request.head.sha || github.sha }}
+          EXISTING_DIGEST: ${{ steps.existing.outputs.digest }}
+          BUILT_DIGEST: ${{ steps.dual_build.outputs.digest }}
+        run: |
+          if [ "$PUBLISH" = "true" ]; then
+            digest="${EXISTING_DIGEST:-$BUILT_DIGEST}"
+            test -n "$digest"
+            image="$IMAGE_REPO@$digest"
+            docker pull "$image"
+          else
+            image="$(docker image inspect --format='{{.Id}}' "$IMAGE_TAG")"
+          fi
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+          echo "cpu_e2e_image=$image"
+      - name: Run combined image over mode=both CPU SSH E2E
+        if: github.event_name == 'pull_request' || inputs.cpu_dual_model_image_e2e == true
+        run: >-
+          python ops/runpod-pilot/docker-cpu-image-e2e.py
+          --artifact-dir "${{ runner.temp }}/aividup-pilot-rife-esrgan-cpu-e2e"
+          --image "${{ steps.dual_e2e_image.outputs.image }}"
+          --mode both --scale 2 --interp-factor 2 --strategy interp-then-upscale
+      - uses: actions/upload-artifact@v4
+        if: always() && (github.event_name == 'pull_request' || inputs.cpu_dual_model_image_e2e == true)
+        with:
+          name: runpod-rife-esrgan-pilot-cpu-e2e
+          path: ${{ runner.temp }}/aividup-pilot-rife-esrgan-cpu-e2e/
+          if-no-files-found: warn
+          retention-days: 7
 
   runpod-pilot-cpu-image-e2e:
     if: >-

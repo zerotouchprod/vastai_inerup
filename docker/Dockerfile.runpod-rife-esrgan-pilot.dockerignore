@@ -1,0 +1,26 @@
+# RunPod RIFE + Real-ESRGAN pilot image: source only, no model weights in build context.
+*
+!src/
+!pipeline_v2.py
+!RIFEv4.26_0921/
+RIFEv4.26_0921/train_log/*.pkl
+!requirements-runpod-pilot.txt
+!requirements-worker.txt
+!runpod/
+!runpod/pilot/
+!runpod/pilot/rife-esrgan/
+!runpod/pilot/rife-esrgan/manifest.json
+!runpod/pilot/rife-esrgan/realesrgan-x2plus.sha256
+!scripts/
+!scripts/worker_start.sh
+!scripts/cuda_runtime_preflight.py
+!scripts/validate_rife_manifest.py
+!scripts/runpod_checkpoint_bootstrap.py
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/*.pkl
+**/*.pth
+**/*.ckpt
+**/*.safetensors
+**/*.onnx

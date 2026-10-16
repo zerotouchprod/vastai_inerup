@@ -17,6 +17,7 @@ SupplementaryGroups=systemd-journal
 StateDirectory=aividup-runpod-pilot
 StateDirectoryMode=0700
 WorkingDirectory=/var/lib/aividup-runpod-pilot
+EnvironmentFile=-/etc/aividup-runpod-pilot/controller.env
 ExecStart=/usr/local/libexec/aividup-runpod-pilot-supervise
 Restart=on-failure
 RestartSec=15s

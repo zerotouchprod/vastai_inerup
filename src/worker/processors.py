@@ -119,14 +119,29 @@ def ffmpeg_filter(
     run_cmd(cmd, lost)
 
 
+def task_to_job(task: Dict[str, Any], src: Path):
+    """Map the worker contract into the domain job without dropping pipeline parameters."""
+    from src.domain.models import Job
+
+    params = task.get("params", {})
+    return Job(
+        job_id=task["attempt_id"],
+        input_url=str(src),
+        mode=task["mode"],
+        scale=params.get("scale", 2.0),
+        target_fps=params.get("target_fps"),
+        interp_factor=params.get("interp_factor", 2.0),
+        strategy=params.get("strategy", "interp-then-upscale"),
+    )
+
+
 def pipeline(task: Dict[str, Any], src: Path, dst: Path, lost: threading.Event) -> None:
     """Real GPU path: the project's orchestrator on the chunk, output copied to `dst`. Needs the GPU image."""
     import shutil
-    from src.domain.models import Job, UploadResult
+    from src.domain.models import UploadResult
     from src.infrastructure.config.loader import ConfigLoader
     from src.presentation.cli import create_orchestrator_from_config
 
-    p = task.get("params", {})
     config = ConfigLoader().load(overrides={"input_url": str(src)})
     config.b2_bucket = config.b2_key = config.b2_secret = (
         None  # never upload from the worker; it copies to `dst`
@@ -149,14 +164,7 @@ def pipeline(task: Dict[str, Any], src: Path, dst: Path, lost: threading.Event) 
         time.monotonic() - t0, 2
     )  # wiring/model objects, before frames flow
     orchestrator._uploader = CopyUploader()
-    job = Job(
-        job_id=task["attempt_id"],
-        input_url=str(src),
-        mode=task["mode"],
-        scale=p.get("scale", 2.0),
-        target_fps=p.get("target_fps"),
-        interp_factor=p.get("interp_factor", 2.0),
-    )
+    job = task_to_job(task, src)
     result = orchestrator.process(job)
     if not getattr(result, "success", True) or not dst.exists():
         raise ProcessorError(

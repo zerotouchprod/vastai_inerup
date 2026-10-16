@@ -71,6 +71,9 @@ def test_worker_ci_trigger_paths_cover_pilot_and_existing_assets():
         "contracts/worker-api-v1.json",
         "scripts/worker_image_acceptance.py",
         "scripts/build_worker.sh",
+        "docker/Dockerfile.runpod-rife-esrgan-pilot",
+        "scripts/build_runpod_rife_esrgan_pilot_worker.sh",
+        "tests/unit/test_worker_task_mapping.py",
     ):
         assert workflow.count(f"'{path}'") >= 2
     assert "tests/unit/test_runpod_model_bundle.py" in workflow

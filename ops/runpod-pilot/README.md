@@ -80,6 +80,23 @@ If the 4090 Pod is deleted promptly at its configured 1800-second deadline, the 
 
 The exact image still installs `openssh-client` dynamically with `apt-get` at startup. CPU E2E reached the tunnel successfully, but this remains an external apt-repository dependency and has not been baked into a newly published image.
 
+## Dual-model RunPod pilot candidate (preflight; no GPU run)
+
+The next candidate uses the user-provided source byte-identically, outside Git:
+
+- Path: `/var/lib/aividup-runpod-pilot/benchmark-inputs/aa1f836226fa0a5e0a68f84a74ed1e7a5cc887272207ddb1f4141f6722d41c83/input.mp4`
+- SHA-256: `aa1f836226fa0a5e0a68f84a74ed1e7a5cc887272207ddb1f4141f6722d41c83`
+- H.264/AAC, portrait **540×960 (not 720p)**, 33.941333 s, 995 video frames, VFR; ffprobe reports nominal `60/1` and average `746250/25451` fps. File size 15,272,108 bytes.
+- Task parameters: `mode=both`, `scale=2`, `interp_factor=2`, `strategy=interp-then-upscale`, no explicit target FPS. This means RIFE interpolation first, then Real-ESRGAN x2plus upscale. Output characteristics and runtime remain unmeasured.
+
+The separate `Dockerfile.runpod-rife-esrgan-pilot` bakes the x2plus package/model into the image and checks its pinned SHA-256 (`49fafd45f8fd7aa8d31ab2a22d14d91b536c34494a5cfe31eb5d89c2fa266abb`). The RIFE checkpoint remains manifest-verified through the existing no-volume bootstrap. The earlier RIFE-only image digest remains unchanged.
+
+The PR CPU E2E builds the combined image locally (`push: false`) and runs the exact PodArgs through a temporary restricted SSH tunnel with a **synthetic 2-second clip** and `mode=both`. On CPU it must stop at `cuda_unavailable`, with zero claims. This verifies image imports/assets, bootstrap, tunnel and diagnostics only; it does not test CUDA, either model's GPU inference, or the supplied full clip. The user video is never uploaded to GitHub.
+
+The tracked plane unit now reads non-secret per-run parameters from `plane.env`; see `plane.env.example`. Before rearming, preserve the already-consumed Run #4 evidence, use separate evidence/output paths, and keep the plane loopback-only. The controller remains gated by `/etc/aividup-runpod-pilot/GO`; do not create that file until the exact GPU cap is approved.
+
+Proposed paid-run envelope for later approval: Secure RTX 4090 / EU-RO-1, 40 GB container disk, 1,800-second controller deadline, 15-second polling, no Network Volume, no retries/re-rent. The deadline is best-effort, not a provider-enforced TTL or spend hard cap; teardown delay can add charges. Check the then-current offer and calculate the final cap before arming.
+
 ## Original setup procedure (historical reference; vps1748 already prepared)
 
 This checklist documents the one-time isolated host setup; do not rerun it on vps1748 before another paid attempt. The plane job has been consumed, controller GO is absent, and run #4 state/evidence are archived.
@@ -111,8 +128,4 @@ This checklist documents the one-time isolated host setup; do not rerun it on vp
 
 ## Remaining limit
 
-CPU tunnel E2E and run #4 RIFE interpolation succeeded. GPU worker timings are available for this
-single small fixture only; no general throughput claim is justified. The next paid attempt remains
-blocked until the observer can read the journal and stop the controller under `NoNewPrivileges=true`
-without losing the one-Pod teardown guarantee. Keep `/etc/aividup-runpod-pilot/GO` absent until that
-fix is tested and a new explicit GO is given.
+Run #4 proves one real RIFE interpolation on a two-second fixture only; it is not a full-video benchmark or broad throughput claim. The NNP-safe observer fix is verified by host systemd smoke and CI run `38938170944`; that blocker is resolved. Run #4's GO is consumed, the controller remains inactive and `/etc/aividup-runpod-pilot/GO` must stay absent. The dual-model candidate above is still preflight-only: CPU CI does not certify CUDA/RIFE/Real-ESRGAN GPU inference. A new paid run requires the combined image/plane preflight and an explicit runtime/spend cap; provider-side TTL is not enforced.
