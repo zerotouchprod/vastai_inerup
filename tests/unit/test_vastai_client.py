@@ -175,6 +175,19 @@ class TestVastInstanceConfig:
         assert result["label"] == "my-job"
         assert result["runtype"] == "oneshot"  # Default value
 
+    def test_config_to_dict_includes_private_image_login_without_printing_it(self):
+        """Private GHCR auth belongs in the Vast payload when configured."""
+        config = VastInstanceConfig(
+            image="ghcr.io/example/smoke@sha256:abc",
+            disk=10,
+            env={},
+            image_login="-u user -p secret ghcr.io",
+        )
+
+        result = config.to_dict()
+
+        assert result["image_login"] == "-u user -p secret ghcr.io"
+
     def test_config_to_dict_without_optional_fields(self):
         """Test converting config to dict without optional fields."""
         config = VastInstanceConfig(

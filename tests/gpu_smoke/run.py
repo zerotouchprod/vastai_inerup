@@ -18,7 +18,15 @@ from pathlib import Path
 EXPECTED_DIGEST = (
     "sha256:50de56d6768ec37751e5c446ac4e034d5d451ffe01f3e147340c79925c113879"
 )
-PREFLIGHT = Path("/opt/aividup/cuda_runtime_preflight.py")
+PREFLIGHT = Path(
+    os.environ.get("GPU_SMOKE_PREFLIGHT_PATH", "/opt/aividup/cuda_runtime_preflight.py")
+)
+RESULT_PATH = Path(
+    os.environ.get("GPU_SMOKE_RESULT_PATH", "/workspace/gpu-smoke-result.json")
+)
+DIAGNOSTIC_PATH = Path(
+    os.environ.get("GPU_SMOKE_DIAGNOSTIC_PATH", "/workspace/gpu-smoke-diagnostics.json")
+)
 
 
 def run_preflight():
@@ -39,9 +47,53 @@ def run_preflight():
         return {"exit_code": None, "error": type(exc).__name__ + ": " + str(exc)}
 
 
+def _atomic_write_json(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, sort_keys=True, indent=2)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def _summary(result: dict) -> dict:
+    status = result.get("status") or "INCONCLUSIVE"
+    return {
+        "status": status,
+        "cuda_pass": result.get("cuda_matmul_finite") if status != "CPU_ONLY_PASS" else None,
+        "rife_pass": result.get("rife_pass"),
+        "realesrgan_pass": result.get("realesrgan_pass"),
+        "elapsed_seconds": result.get("elapsed_seconds"),
+        "error_code": result.get("error_code"),
+        "worker_digest": result.get("worker_digest"),
+        "entrypoint": result.get("entrypoint"),
+        "gpu_name": result.get("gpu_name"),
+    }
+
+
 def emit(result):
-    print("GPU_SMOKE_RESULT " + json.dumps(result, sort_keys=True), flush=True)
-    return 0 if result.get("status") in {"PASS", "CPU_ONLY_PASS"} else 1
+    summary = _summary(result)
+    try:
+        _atomic_write_json(DIAGNOSTIC_PATH, result)
+        _atomic_write_json(RESULT_PATH, summary)
+    except Exception as exc:
+        summary = {
+            **summary,
+            "status": "INCONCLUSIVE",
+            "error_code": "RESULT_WRITE_FAILED",
+        }
+    print("GPU_SMOKE_RESULT " + json.dumps(summary, sort_keys=True), flush=True)
+    if summary["status"] in {"PASS", "CPU_ONLY_PASS"}:
+        return 0
+    if summary["status"] == "INCONCLUSIVE":
+        return 2
+    return 1
 
 
 def main():
@@ -57,11 +109,13 @@ def main():
                     "preflight": preflight,
                 }
             )
+            result["elapsed_seconds"] = round(time.time() - started, 3)
             return emit(result)
 
         preflight = run_preflight()
         result["preflight"] = preflight
         if preflight.get("exit_code") != 0:
+            result["error_code"] = "CUDA_PREFLIGHT_FAILED"
             raise RuntimeError("cuda_runtime_preflight failed")
 
         import cv2
@@ -72,6 +126,7 @@ def main():
         result["cuda_device_count"] = int(torch.cuda.device_count())
         result["cuda_version"] = torch.version.cuda
         if not result["cuda_available"]:
+            result["error_code"] = "CUDA_UNAVAILABLE"
             raise RuntimeError("CUDA unavailable")
         result["gpu_name"] = torch.cuda.get_device_name(0)
         x = torch.randn((1024, 1024), device="cuda")
@@ -145,6 +200,7 @@ def main():
                 result["reason"] = "one or more inference assertions failed"
     except Exception as exc:
         result["status"] = "FAIL"
+        result.setdefault("error_code", "INFERENCE_EXCEPTION")
         result["reason"] = type(exc).__name__ + ": " + str(exc)
         result["traceback"] = traceback.format_exc()
     finally:
