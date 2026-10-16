@@ -49,6 +49,7 @@ def test_sidecar_command_has_valid_shell_and_runs_plane_with_sshd(tmp_path):
     assert "openssh-server" in command
     assert "policy-rc.d" in command
     assert "install -o root -g root -m 0600" in command
+    assert 'usermod --password "$PASSWORD_HASH"' in command
     assert "sshd -D -e" in command
     assert "--host 127.0.0.1 --port 8099" in command
 
