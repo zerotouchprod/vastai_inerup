@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
+import stat
 import subprocess
 import time
 from datetime import datetime
@@ -80,6 +82,63 @@ def accepted_tunnel_sessions(
     return sorted(matches)
 
 
+STARTUP_STAGES = (
+    "tunnel_ready",
+    "http_probe_pass",
+    "bootstrap_started",
+    "checkpoint_verified",
+    "worker_started",
+    "cuda_preflight",
+)
+
+
+def diagnostic_stage_records(plane: dict) -> list[dict]:
+    """Read structured stages or reconstruct them from the older sink-output schema."""
+    structured = plane.get("diagnostic_stages")
+    if structured:
+        if not isinstance(structured, list):
+            raise ObservabilityFailure("OBSERVABILITY_FAILURE: malformed diagnostic_stages list")
+        return structured
+
+    outputs = plane.get("outputs", [])
+    if not isinstance(outputs, list):
+        raise ObservabilityFailure("OBSERVABILITY_FAILURE: malformed plane outputs list")
+    records = []
+    for item in outputs:
+        if not isinstance(item, dict):
+            raise ObservabilityFailure("OBSERVABILITY_FAILURE: malformed plane output entry")
+        key = str(item.get("key", ""))
+        if not key.startswith("diagnostics-"):
+            continue
+        key_stage = next((stage for stage in STARTUP_STAGES if f"-{stage}-" in f"-{key}-"), None)
+        if key_stage is None:
+            continue
+        raw_path = item.get("file")
+        if not raw_path:
+            raise ObservabilityFailure(f"OBSERVABILITY_FAILURE: stage output has no file: {key}")
+        path = Path(str(raw_path))
+        try:
+            content = path.read_bytes()
+            file_stat = path.stat()
+        except OSError as exc:
+            raise ObservabilityFailure(f"OBSERVABILITY_FAILURE: cannot read stage file {key}: {exc}") from exc
+        marker = re.search(rb"(?m)^AIVIDUP_PILOT_STAGE=([a-z_]+)$", content)
+        if not marker or marker.group(1).decode() != key_stage:
+            raise ObservabilityFailure(f"OBSERVABILITY_FAILURE: stage marker/key mismatch: {key}")
+        if item.get("bytes") is not None and int(item["bytes"]) != len(content):
+            raise ObservabilityFailure(f"OBSERVABILITY_FAILURE: stage byte count mismatch: {key}")
+        if item.get("sha256") and hashlib.sha256(content).hexdigest() != item["sha256"]:
+            raise ObservabilityFailure(f"OBSERVABILITY_FAILURE: stage hash mismatch: {key}")
+        if stat.S_IMODE(file_stat.st_mode) != 0o600:
+            raise ObservabilityFailure(f"OBSERVABILITY_FAILURE: stage file mode is not 0600: {key}")
+        try:
+            recorded = float(item.get("recorded_at_epoch") or item.get("received_at_epoch") or file_stat.st_mtime)
+        except (TypeError, ValueError) as exc:
+            raise ObservabilityFailure(f"OBSERVABILITY_FAILURE: invalid stage timestamp: {key}") from exc
+        records.append({"stage": key_stage, "recorded_at_epoch": recorded, "key": key})
+    return records
+
+
 def stage_timeout_reason(state: dict, plane: dict, *, now: float) -> Optional[str]:
     """Return a fail-closed reason when an expected startup stage stops progressing."""
     start = state.get("_create_requested_epoch") or state.get("provider_created_at")
@@ -95,7 +154,7 @@ def stage_timeout_reason(state: dict, plane: dict, *, now: float) -> Optional[st
     except (TypeError, ValueError) as exc:
         raise ObservabilityFailure("OBSERVABILITY_FAILURE: invalid create reservation timestamp") from exc
 
-    stages = plane.get("diagnostic_stages") or []
+    stages = diagnostic_stage_records(plane)
     latest: dict[str, float] = {}
     for item in stages:
         try:

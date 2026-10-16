@@ -163,6 +163,48 @@ def test_incident_persistence_survives_missing_logger(tmp_path, monkeypatch):
     assert (tmp_path / "alert-pending").read_text().strip() == "attempt-log-test"
 
 
+def test_observer_uses_legacy_plane_outputs_for_stage_progress(tmp_path):
+    import hashlib
+    import os
+    import time
+
+    now = time.time()
+    stage_file = tmp_path / "tunnel-ready.log"
+    content = b"AIVIDUP_PILOT_STAGE=tunnel_ready\n"
+    stage_file.write_bytes(content)
+    os.chmod(stage_file, 0o600)
+    os.utime(stage_file, (now - 61, now - 61))
+    plane = {
+        "diagnostic_stages": [],
+        "outputs": [{
+            "key": "diagnostics-boot-tunnel_ready-7",
+            "file": str(stage_file),
+            "bytes": len(content),
+            "sha256": hashlib.sha256(content).hexdigest(),
+        }],
+    }
+    reason = observer.stage_timeout_reason({"provider_created_at": now - 180}, plane, now=now)
+    assert reason == "STAGE_TIMEOUT: http_probe_pass was not recorded within 60 seconds after tunnel_ready"
+
+
+def test_observer_rejects_missing_legacy_stage_file_as_observability_failure(tmp_path):
+    plane = {
+        "diagnostic_stages": [],
+        "outputs": [{
+            "key": "diagnostics-boot-tunnel_ready-7",
+            "file": str(tmp_path / "missing.log"),
+            "bytes": 10,
+            "sha256": "0" * 64,
+        }],
+    }
+    try:
+        observer.stage_timeout_reason({"provider_created_at": 1_000.0}, plane, now=1_001.0)
+    except observer.ObservabilityFailure as exc:
+        assert "OBSERVABILITY_FAILURE" in str(exc)
+    else:
+        raise AssertionError("missing legacy stage file must not be treated as no stage")
+
+
 def test_observer_stage_timeout_names_first_missing_transition():
     state = {"provider_created_at": 1_000.0}
     plane = {
