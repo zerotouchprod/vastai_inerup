@@ -1,0 +1,127 @@
+name: GPU smoke image gate
+
+on:
+  pull_request:
+    paths:
+      - 'docker/Dockerfile.gpu-smoke'
+      - 'tests/gpu_smoke/**'
+      - 'tests/test_gpu_smoke_runner_contract.py'
+      - '.github/workflows/gpu-smoke-image-gate.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  build-and-cpu-gate:
+    name: Build smoke image and run CPU-only gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      BASE_IMAGE: ghcr.io/zerotouchprod/aividup-worker@sha256:50de56d6768ec37751e5c446ac4e034d5d451ffe01f3e147340c79925c113879
+      SMOKE_IMAGE: aividup-gpu-smoke:ci
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Buildx container driver
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR for private base image
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install test dependencies
+        run: python3 -m pip install --disable-pip-version-check --quiet pytest
+
+      - name: Run smoke runner contract tests
+        run: pytest -q --confcutdir=tests/gpu_smoke tests/test_gpu_smoke_runner_contract.py
+
+      - name: Build smoke image locally (never push)
+        run: |
+          mkdir -p evidence
+          docker buildx build \
+            --progress=plain \
+            --tag "$SMOKE_IMAGE" \
+            --load \
+            --file docker/Dockerfile.gpu-smoke \
+            . 2>&1 | tee evidence/docker-build.log
+
+      - name: Export OCI image for compressed-layer verification
+        run: |
+          docker buildx build \
+            --progress=plain \
+            --output type=oci,dest="$GITHUB_WORKSPACE/evidence/gpu-smoke.oci.tar" \
+            --file docker/Dockerfile.gpu-smoke \
+            . 2>&1 | tee evidence/docker-oci-build.log
+          test -s "$GITHUB_WORKSPACE/evidence/gpu-smoke.oci.tar"
+          ls -lh "$GITHUB_WORKSPACE/evidence/gpu-smoke.oci.tar"
+
+      - name: Verify inherited compressed layers and diff IDs
+        run: |
+          docker pull "$BASE_IMAGE"
+          docker buildx imagetools inspect "$BASE_IMAGE" --raw > /tmp/base-manifest.json
+          docker image inspect "$BASE_IMAGE" --format '{{json .RootFS.Layers}}' > /tmp/base-diff-ids.json
+          docker image inspect "$SMOKE_IMAGE" --format '{{json .RootFS.Layers}}' > /tmp/smoke-diff-ids.json
+          python3 - <<'PY'
+          import json, os, tarfile
+          from pathlib import Path
+
+          base = json.loads(Path('/tmp/base-manifest.json').read_text())
+          if 'manifests' in base:
+              amd64 = next(m for m in base['manifests'] if m.get('platform', {}).get('architecture') == 'amd64')
+              raise SystemExit(f'base reference unexpectedly returned an index; resolve descriptor {amd64["digest"]} before comparing')
+          base_layers = [x['digest'] for x in base['layers']]
+          with tarfile.open(Path(os.environ['GITHUB_WORKSPACE']) / 'evidence/gpu-smoke.oci.tar') as tf:
+              index = json.loads(tf.extractfile('index.json').read())
+              manifest_desc = index['manifests'][0]
+              manifest_path = 'blobs/' + manifest_desc['digest'].replace(':', '/')
+              smoke = json.loads(tf.extractfile(manifest_path).read())
+          smoke_layers = [x['digest'] for x in smoke['layers']]
+          base_diff = json.loads(Path('/tmp/base-diff-ids.json').read_text())
+          smoke_diff = json.loads(Path('/tmp/smoke-diff-ids.json').read_text())
+          assert len(base_layers) == 25, len(base_layers)
+          assert smoke_layers[:25] == base_layers, 'compressed inherited layers differ'
+          assert smoke_diff[:25] == base_diff, 'inherited diff_ids differ'
+          report = {'base_layer_count': len(base_layers), 'smoke_layer_count': len(smoke_layers), 'inherited_compressed_layers_identical': True, 'inherited_diff_ids_identical': True}
+          Path('evidence/layer-verification.json').write_text(json.dumps(report, indent=2) + '\n')
+          print(json.dumps(report, sort_keys=True))
+          PY
+
+      - name: Run built image in CPU-only mode
+        run: |
+          set -o pipefail
+          docker run --rm \
+            --network none \
+            -e GPU_SMOKE_CPU_ONLY=1 \
+            "$SMOKE_IMAGE" | tee evidence/gpu-smoke-cpu-stdout.txt
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          line = next(x for x in Path('evidence/gpu-smoke-cpu-stdout.txt').read_text().splitlines() if x.startswith('GPU_SMOKE_RESULT '))
+          result = json.loads(line.split(' ', 1)[1])
+          assert result['status'] == 'CPU_ONLY_PASS', result
+          assert result['entrypoint'].endswith('/gpu_smoke.py'), result
+          Path('evidence/gpu-smoke-cpu-result.json').write_text(json.dumps(result, indent=2) + '\n')
+          print(json.dumps({'status': result['status'], 'entrypoint': result['entrypoint']}, sort_keys=True))
+          PY
+
+      - name: Inspect image and verify no production credentials are required
+        run: |
+          docker image inspect "$SMOKE_IMAGE" > evidence/docker-inspect.json
+          ! grep -E 'AIVIDUP_API_URL|AIVIDUP_WORKER_TOKEN|CONTAINER_API_KEY|VAST_API_KEY' tests/gpu_smoke/run.py
+
+      - name: Remove local OCI archive before artifact upload
+        if: always()
+        run: rm -f evidence/gpu-smoke.oci.tar
+
+      - name: Upload Docker gate evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gpu-smoke-image-gate-${{ github.run_id }}
+          path: evidence/
+          if-no-files-found: warn

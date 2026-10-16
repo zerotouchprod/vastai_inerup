@@ -1,0 +1,218 @@
+name: Publish GPU smoke image
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: Type PUBLISH_GPU_SMOKE to authorize GHCR publication
+        required: true
+        type: string
+      source_ref:
+        description: Git ref to publish (defaults to the selected ref)
+        required: false
+        default: ''
+        type: string
+
+concurrency:
+  group: gpu-smoke-publish
+  cancel-in-progress: false
+
+env:
+  BASE_IMAGE: ghcr.io/zerotouchprod/aividup-worker@sha256:50de56d6768ec37751e5c446ac4e034d5d451ffe01f3e147340c79925c113879
+  IMAGE_REPOSITORY: ghcr.io/zerotouchprod/aividup-gpu-smoke
+
+jobs:
+  verify:
+    name: Verify source and CPU gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Require explicit publication confirmation
+        if: inputs.confirm != 'PUBLISH_GPU_SMOKE'
+        run: |
+          set -euo pipefail
+          echo 'Refusing publication: confirmation string mismatch.'
+          exit 1
+
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.source_ref || github.ref }}
+          fetch-depth: 0
+
+      - name: Resolve checked-out source SHA
+        run: |
+          set -euo pipefail
+          SOURCE_SHA=$(git rev-parse HEAD)
+          test "${#SOURCE_SHA}" -eq 40
+          echo "SOURCE_SHA=$SOURCE_SHA" >> "$GITHUB_ENV"
+          printf '%s\n' "$SOURCE_SHA" > source-sha.txt
+
+      - name: Set up Buildx container driver
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR for base image
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install test dependencies
+        run: |
+          set -euo pipefail
+          python3 -m pip install --disable-pip-version-check --quiet pytest
+
+      - name: Run smoke runner contract tests
+        run: |
+          set -euo pipefail
+          pytest -q --confcutdir=tests/gpu_smoke tests/test_gpu_smoke_runner_contract.py
+
+      - name: Build and CPU-gate the checked-out source
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          docker buildx build \
+            --progress=plain \
+            --tag gpu-smoke:publish \
+            --load \
+            --file docker/Dockerfile.gpu-smoke \
+            . 2>&1 | tee evidence/docker-build.log
+          docker run --rm --network none -e GPU_SMOKE_CPU_ONLY=1 gpu-smoke:publish \
+            | tee evidence/gpu-smoke-cpu-stdout.txt
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          line = next(x for x in Path('evidence/gpu-smoke-cpu-stdout.txt').read_text().splitlines() if x.startswith('GPU_SMOKE_RESULT '))
+          result = json.loads(line.split(' ', 1)[1])
+          assert result.get('status') == 'CPU_ONLY_PASS', result
+          assert result.get('entrypoint', '').endswith('/gpu_smoke.py'), result
+          Path('evidence/gpu-smoke-cpu-result.json').write_text(json.dumps(result, indent=2) + '\n')
+          PY
+
+      - name: Upload verified source evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: gpu-smoke-verified-source-${{ github.run_id }}
+          path: |
+            source-sha.txt
+            evidence/
+          if-no-files-found: error
+
+  publish:
+    name: Publish immutable GPU smoke image
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment:
+      name: gpu-smoke-publish
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.source_ref || github.ref }}
+          fetch-depth: 0
+
+      - name: Download verified source evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: gpu-smoke-verified-source-${{ github.run_id }}
+          path: verified/
+
+      - name: Reconfirm exact checked-out source SHA
+        run: |
+          set -euo pipefail
+          source_sha=$(git rev-parse HEAD)
+          verified_sha=$(tr -d '\r\n' < verified/source-sha.txt)
+          test "$source_sha" = "$verified_sha"
+          test "${#source_sha}" -eq 40
+          echo "SOURCE_SHA=$source_sha" >> "$GITHUB_ENV"
+          echo "IMAGE_TAG=$IMAGE_REPOSITORY:gpu-smoke-$source_sha" >> "$GITHUB_ENV"
+
+      - name: Require explicit publication confirmation
+        if: inputs.confirm != 'PUBLISH_GPU_SMOKE'
+        run: |
+          set -euo pipefail
+          echo 'Refusing publication: confirmation string mismatch.'
+          exit 1
+
+      - name: Set up Buildx container driver
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Refuse overwrite of immutable tag
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          repo="${IMAGE_REPOSITORY#ghcr.io/}"
+          token=$(curl --fail-with-body --silent --show-error \
+            --user "${GITHUB_ACTOR}:${GHCR_TOKEN}" \
+            "https://ghcr.io/token?service=ghcr.io&scope=repository:${repo}:pull" \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])')
+          status=$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+            -H "Authorization: Bearer ${token}" \
+            -H 'Accept: application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json' \
+            "https://ghcr.io/v2/${repo}/manifests/gpu-smoke-${SOURCE_SHA}")
+          case "$status" in
+            404) ;;
+            200) echo 'Refusing overwrite: immutable smoke tag already exists.'; exit 1 ;;
+            *) echo "Refusing publication: unexpected GHCR tag lookup status ${status}."; exit 1 ;;
+          esac
+
+      - name: Publish exact checked-out source and capture build digest
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          docker buildx build \
+            --progress=plain \
+            --platform linux/amd64 \
+            --file docker/Dockerfile.gpu-smoke \
+            --tag "$IMAGE_TAG" \
+            --metadata-file evidence/build-metadata.json \
+            --push \
+            . 2>&1 | tee evidence/docker-publish.log
+
+      - name: Verify registry digest equals build digest
+        run: |
+          set -euo pipefail
+          build_digest=$(python3 - <<'PY'
+          import json
+          from pathlib import Path
+          metadata = json.loads(Path('evidence/build-metadata.json').read_text())
+          digest = metadata.get('containerimage.digest')
+          if not digest:
+              raise SystemExit('containerimage.digest missing from build metadata')
+          print(digest)
+          PY
+          )
+          published_digest=$(docker buildx imagetools inspect "$IMAGE_TAG" --format '{{.Manifest.Digest}}')
+          test "$build_digest" = "$published_digest"
+          printf '%s\n' "$published_digest" > evidence/published-digest.txt
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          digest = Path('evidence/published-digest.txt').read_text().strip()
+          assert digest.startswith('sha256:'), digest
+          Path('evidence/published-image.json').write_text(json.dumps({'image': os.environ['IMAGE_REPOSITORY'], 'tag': os.environ['IMAGE_TAG'], 'digest': digest, 'build_digest': digest, 'source_sha': os.environ['SOURCE_SHA'], 'platform': 'linux/amd64'}, indent=2) + '\n')
+          PY
+
+      - name: Upload publication evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gpu-smoke-publish-${{ github.run_id }}
+          path: |
+            verified/
+            evidence/
+          if-no-files-found: warn

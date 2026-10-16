@@ -1,0 +1,9 @@
+# syntax=docker/dockerfile:1.6
+# Temporary image for isolated GPU runtime validation only.
+# It inherits the immutable worker exactly and changes only the entrypoint.
+FROM ghcr.io/zerotouchprod/aividup-worker@sha256:50de56d6768ec37751e5c446ac4e034d5d451ffe01f3e147340c79925c113879
+
+COPY tests/gpu_smoke/run.py /opt/aividup/gpu_smoke.py
+RUN chmod 0555 /opt/aividup/gpu_smoke.py
+
+ENTRYPOINT ["/usr/bin/tini", "--", "python", "/opt/aividup/gpu_smoke.py"]
