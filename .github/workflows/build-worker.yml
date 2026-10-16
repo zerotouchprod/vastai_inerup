@@ -320,12 +320,10 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: '3.11'
-      - name: Install ffmpeg and temporary SSH server support
+      - name: Install ffmpeg and SSH key tooling
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg openssh-server
-          sudo systemctl stop ssh.service 2>/dev/null || true
-          sudo systemctl stop sshd.service 2>/dev/null || true
+          sudo apt-get install -y ffmpeg openssh-client
       - name: Verify source and CPU Docker headroom
         env:
           EXPECTED_SHA: ${{ inputs.worker_sha }}

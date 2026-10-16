@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import subprocess
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -19,29 +20,57 @@ def load_runner():
     return module
 
 
-def test_temporary_sshd_runtime_dir_is_created_idempotently(monkeypatch):
+def test_sidecar_ssh_materials_restrict_forwarding_to_loopback_plane(tmp_path):
     runner = load_runner()
-    calls = []
-    monkeypatch.setattr(runner, "run_checked", lambda command, **kwargs: calls.append(command))
+    client_dir = tmp_path / "client"
+    sidecar_dir = tmp_path / "sidecar"
+    client_dir.mkdir()
+    sidecar_dir.mkdir()
 
-    runner.ensure_sshd_privsep_dir()
+    client_key, pinned_host_key, config = runner.prepare_tunnel_materials(client_dir, sidecar_dir)
 
-    assert calls == [["sudo", "-n", "install", "-d", "-o", "root", "-g", "root", "-m", "0755", "/run/sshd"]]
+    assert client_key.is_file()
+    assert pinned_host_key.startswith("195.234.126.233 ssh-ed25519 ")
+    assert "PermitOpen 127.0.0.1:8099" in config.read_text()
+    assert "HostKey /run/ssh_host_ed25519" in config.read_text()
+    authorized = (sidecar_dir / "authorized_keys").read_text()
+    assert 'permitopen="127.0.0.1:8099"' in authorized
+    assert "no-pty" in authorized and "no-agent-forwarding" in authorized
 
 
-def test_docker_command_uses_exact_pod_args_without_gpu_or_volume_mounts(tmp_path):
+def test_sidecar_command_has_valid_shell_and_runs_plane_with_sshd(tmp_path):
+    runner = load_runner()
+    command = runner.build_sidecar_command(tmp_path / "sidecar", tmp_path / "artifacts")
+    result = subprocess.run(["bash", "-n"], input=command, capture_output=True, text=True, check=False)
+
+    assert result.returncode == 0, result.stderr
+    assert "openssh-server" in command
+    assert "policy-rc.d" in command
+    assert "install -o root -g root -m 0600" in command
+    assert "sshd -D -e" in command
+    assert "--host 127.0.0.1 --port 8099" in command
+
+
+def test_docker_command_uses_exact_pod_args_without_gpu_or_host_mounts(tmp_path):
     runner = load_runner()
     pod_args = json.loads(POD_ARGS_PATH.read_text())
     env_file = tmp_path / "pod.env"
 
     image = "ghcr.io/zerotouchprod/aividup-worker-runpod-rife-pilot@sha256:c775c62ade2d1851074751d761195aa6ace2895ed51af268b5f877535117475b"
-    argv = runner.build_docker_argv(pod_args, image, env_file)
+    argv = runner.build_docker_argv(
+        pod_args,
+        image,
+        env_file,
+        network_name="pilot-e2e-net",
+        tunnel_ip="172.22.0.2",
+    )
 
     image_index = argv.index(image)
     assert argv[image_index + 1 :] == pod_args["entrypoint"][1:] + pod_args["cmd"]
     assert argv[argv.index("--entrypoint") + 1] == pod_args["entrypoint"][0]
     assert argv[argv.index("--env-file") + 1] == str(env_file)
+    assert argv[argv.index("--network") + 1] == "pilot-e2e-net"
     assert "--add-host" in argv
-    assert argv[argv.index("--add-host") + 1] == "195.234.126.233:host-gateway"
+    assert argv[argv.index("--add-host") + 1] == "195.234.126.233:172.22.0.2"
     assert "--gpus" not in argv
     assert "-v" not in argv and "--volume" not in argv
