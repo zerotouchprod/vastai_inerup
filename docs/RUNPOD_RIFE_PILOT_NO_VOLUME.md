@@ -260,3 +260,26 @@ Durable evidence is under `/var/lib/aividup-runpod-pilot/cpu-e2e-2026-10-16/` (`
 `evidence.json`, output MP4); raw run #2 plane evidence is preserved under `archive/run-2/`.
 Total estimated paid spend across runs #1 and #2 is **≈$0.323**, not a final provider invoice.
 The controller GO gate remains closed; a third paid GPU rental is **not authorized**.
+
+## 13. Preflight stdout/stderr persistence for a future GPU attempt
+
+Commit `43e98d1` adds a Python wrapper in the Pod args that intercepts exactly the image's
+`/opt/aividup/cuda_runtime_preflight.py` invocation. It captures stdout and stderr separately,
+combines them for transport, and PUTs the log through the already-open authenticated SSH tunnel to
+the isolated plane sink **before the worker can claim a job**. The sink redacts the worker bearer
+token, atomically writes a mode-0600 `diagnostics-*.log` under
+`/var/lib/aividup-runpod-pilot/worker-output/`, and records path, bytes and SHA-256 in the plane
+evidence. If this PUT fails, the wrapper exits 74 and the worker does not proceed to claim.
+
+CPU-only real-forward E2E verified the diagnostics sink and persistence/redaction: an 83-byte
+synthetic CUDA/RIFE preflight log was saved with SHA-256
+`40ea931eac06e95070ff7bb1c6f71b3ca81995d01b967c2c29b29dcb571b39db`, matching evidence; the bearer
+token is absent from the file. The same run completed the 2-second ffmpeg → CPU passthrough → PUT →
+complete chain. This proves the tunnel/sink/persistence path, **not** that a future GPU Pod will emit
+or pass CUDA/RIFE logs.
+
+At 2026-10-16 12:08 UTC the fresh unused plane job is
+`pilot-3bfa9c78-e205-4eb7-b9f8-b19aa835dbb9`; evidence path is
+`/var/lib/aividup-runpod-pilot/plane-evidence.json` and is not yet created because the job has not
+been claimed. Secure RTX 4090 EU-RO-1 was LOW at `$0.89/h`; provider inventory had 0 Pods. Controller
+GO remains absent and inactive. **GPU run #3 is awaiting separate explicit spend approval.**
