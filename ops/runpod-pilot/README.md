@@ -52,25 +52,22 @@ The unit regression test deliberately separates the server listener port from th
 client URL and checks both returned URLs (`input_url` and `output.url`).
 
 
-## Current host state (vps1748, prepared only)
+## Current host state (vps1748, after paid runs #1–#2 and the CPU-only tunnel E2E)
 
 - `/opt/aividup-runpod-pilot/` contains the root-owned read-only controller and isolated-plane scripts.
-- `aividup-pilot-plane.service` is enabled and running on `127.0.0.1:8099`; synthetic input is 2 seconds and all credentials/config are in `/etc/aividup-runpod-pilot/` with mode 0600/0700.
-- SSH has the dedicated `aividup-pilot-tunnel` account; effective sshd policy is `AllowTcpForwarding local`, `PermitOpen 127.0.0.1:8099`, `ForceCommand /usr/sbin/nologin`, no PTY/agent/X11. The private key is only in the protected Pod env file and host config. No extra public HTTP port was opened.
+- `aividup-pilot-plane.service` is enabled and running on `127.0.0.1:8099`; it advertises task URLs at `http://127.0.0.1:18099/api/worker` for the Pod-side forward. The two addresses are intentionally distinct.
+- SSH has the dedicated `aividup-pilot-tunnel` account; effective sshd policy is `AllowTcpForwarding local`, `PermitOpen 127.0.0.1:8099`, `ForceCommand /usr/sbin/nologin`, no PTY/agent/X11. The private key remains protected. No extra public HTTP port was opened.
 - The host-side SSH tunnel was exercised through localhost: it reaches the plane, unauthenticated claims return 401, forwarding to port 22 is denied, remote forwarding is denied.
-- `aividup-runpod-pilot.service` is enabled with `Restart=on-failure`, `StartLimitIntervalSec=300s`, `StartLimitBurst=5`, but `ConditionPathExists=/etc/aividup-runpod-pilot/GO` evaluates false. No GO marker, state file, or create latch exists; controller is inactive and cannot POST.
-- Hermes job `aividup-runpod-pilot-teardown-alert` checks `ActiveState`, `NRestarts`, ambiguous state, heartbeat age, and the durable `OnFailure` marker every minute; empty path is silent. The manual no-GPU systemd integration test proved one restart→resume→watchdog alert while fake Pod was live, followed by fake deletion; no RunPod API call occurred.
-- No RunPod resources were created. Last read-only inventory **2026-10-16 06:06 UTC**: 0 Pods, 0 Network Volumes; Secure RTX 3090 EU-CZ-1 LOW at $0.50/h. Subsequent local work used only fake provider; re-check before any separately approved launch.
-- **Run #1 executed 2026-10-16 10:04:42–10:23:47 UTC** under a separate spend approval that moved to the
-  documented fallback after the RTX 3090 offer vanished (RTX 4090 Secure, EU-RO-1, $0.89/h): Pod
-  `kx35gksg1mtjfz`, ≈**$0.284**, `verified_absent: true`, controller exit 0, 0 Pods / 0 Network Volumes
-  after. Outbound TCP/22 from the Pod **works** (62 accepted tunnel sessions); the run died on a
-  host-only bootstrap path in `pod-args.json` (fixed, with a regression test — see
-  `docs/RUNPOD_RIFE_PILOT_NO_VOLUME.md` §9–§10). Cuda/RIFE remains unverified on a real GPU. `GO` is
-  absent again; the write-once `create-attempted` latch, `state.json`, and `run1-evidence.json` remain
-  in `/var/lib/aividup-runpod-pilot/` as the audit trail.
+- `aividup-runpod-pilot.service` is enabled but inactive; `/etc/aividup-runpod-pilot/GO` is absent. The controller state/latch for run #2 are retained (`phase=done`, `verified_absent=true`); run #1 state/latch/evidence are preserved under `archive/run-1/`. No new create request can occur without a fresh explicit GO.
+- Hermes job `aividup-runpod-pilot-teardown-alert` checks `ActiveState`, `NRestarts`, ambiguous state, heartbeat age, and the durable `OnFailure` marker every minute. The independent observer also stopped run #2 immediately after the isolated plane recorded `input_invalid`.
+- Provider inventory after run #2: **0 Pods**. No Network Volume was requested or created; the volumes REST path returns 404 on this account/API endpoint.
+- **Run #1** (2026-10-16 10:04:42–10:23:47 UTC): documented fallback RTX 4090 Secure/EU-RO-1, `$0.89/h`; Pod `kx35gksg1mtjfz`, approx **$0.284**, `verified_absent=true`. Outbound TCP/22 worked; failure was the host-only bootstrap path, since fixed (see `docs/RUNPOD_RIFE_PILOT_NO_VOLUME.md` §9–§10).
+- **Run #2** (2026-10-16 11:03:23–11:06:01 UTC): one RTX 4090 Secure/EU-RO-1 Pod `sztqbrmskj4z0k`; approx **$0.039**. Tunnel and worker startup succeeded; worker claimed the one job, then input read/cut failed with `input_invalid`. Control-flow indicates **CUDA/RIFE preflight probable pass** (the worker polls only after it passes); real two-second-video RIFE/output is **not tested**. Observer stopped the controller immediately; `verified_absent=true`, inventory 0. Evidence is in `/var/lib/aividup-runpod-pilot/run2-evidence.json`, plus archived raw plane evidence at `archive/run-2/plane-evidence.json`.
+- Source diagnosis: both `input_url` and `output.url` were generated from the VPS listener `127.0.0.1:8099`; the Pod-side tunnel endpoint is `127.0.0.1:18099`. Fixed in commit `7b6f602` by adding `advertised_base_url`, keeping bind/listen on 8099 and advertising 18099 for both task URLs.
+- **CPU-only real SSH-forward E2E PASS** after the fix: fresh one-shot task, real host SSH key accepted, unauthenticated probe 401, `claim → ffmpeg input cut → CPU passthrough → PUT → complete`; 1 claimed/completed, 0 failures. Output **35,249 bytes**, SHA-256 `8c747834ac5b4f420ff7afa25f4b188cec1b86ba0d95ba93bcbb70b46312bf0a` matches sink evidence. Timings: cut 0.31s, process 0.00s, verify 0.13s, upload 0.01s, work 0.51s. Full evidence: `/var/lib/aividup-runpod-pilot/cpu-e2e-2026-10-16/summary.json` and `evidence.json`.
+- No third paid rental has been authorized. Controller remains inactive and the GO file absent; production and production jobs remain untouched.
 
-The outbound TCP/22 question is now **answered**: the Pod reached `vps1748:22` and the restricted tunnel plus the pre-bootstrap HTTP 401 probe both worked in run #1. The first explicitly approved GPU run will still fail closed before checkpoint download if the tunnel cannot establish, and the external controller still owns the absolute 30-minute teardown deadline.
+The Pod-side outbound TCP/22 path is now proven by both paid runs; the restricted tunnel and 401 pre-bootstrap probe also pass in the CPU-only forward E2E. The application-level tunnel URL mismatch found in run #2 is fixed and the full CPU worker flow passed. Still unverified: RIFE processing of the real two-second clip on GPU, and provider-side output path under an actual GPU worker. No third paid launch is authorized; a separate GO is required.
 
 ## Setup order (one-time; no RunPod API POST)
 
@@ -99,9 +96,8 @@ The outbound TCP/22 question is now **answered**: the Pod reached `vps1748:22` a
 
 ## Remaining limit
 
-The SSH/tunnel itself can be verified from this host and the controller can be verified over a
-local HTTP impersonator. **This does not prove RunPod's outbound TCP/22 route** without a RunPod
-resource. The first authorized GPU run will perform an SSH handshake before checkpoint download;
-if it fails, the external controller still deletes the Pod at the absolute deadline. If policy
-requires network reachability proven *before* any GPU spend, a free CPU RunPod test would be needed,
-but that is a paid provider resource and is not authorized here.
+The network tunnel and task URL path now both pass a real CPU-only end-to-end test. The real GPU
+job has not yet completed: CUDA/RIFE preflight in run #2 is **PROBABLE_PASS** from worker control
+flow, but RIFE on the two-second video, non-zero output from GPU inference, and GPU worker timings
+remain **NOT TESTED**. Run #2 was the last authorized GPU rental; any further paid attempt requires
+its own explicit GO. Keep `/etc/aividup-runpod-pilot/GO` absent until then.

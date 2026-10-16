@@ -206,3 +206,57 @@ Regression test `tests/unit/test_runpod_pilot_controller_config.py::test_pod_arg
 derives the expected path from the Dockerfile `COPY` destination and asserts the Pod args use it and
 never reference a host-only `/opt/aividup-runpod-pilot/` path. No GPU-side test could have caught
 this class of defect; the container filesystem was the only place it could show up.
+
+## 11. Live run #2 — 2026-10-16 (startup passed; video input failed)
+
+The second separately approved Pod used RTX 4090 Secure / EU-RO-1 at `$0.89/h`, the same immutable
+image and checkpoint, 1800-second absolute deadline, no volume, one Pod and no retries.
+
+| Fact | Result |
+|---|---|
+| Pod / attempt | `sztqbrmskj4z0k` / `5f19bbaebd529def` |
+| provider `createdAt` / controller stop | 11:03:23.618 / 11:06:01 UTC |
+| cold start (`createdAt` → accepted SSH tunnel) | **150.382 s** |
+| bootstrap stages / job claim | `started`, `ready`; exactly one job claimed |
+| worker failure | `input_invalid`; ffmpeg failed reading/cutting the input; no output/completion |
+| immediate teardown | independent observer saw plane failure, stopped controller; one DELETE; `verified_absent: true`, controller exit 0, provider inventory 0 Pods |
+| wall time / cost estimate | 157.382 s / **≈$0.03903** (GPU + estimated disk; not an invoice) |
+
+**CUDA/RIFE preflight: PROBABLE_PASS (control-flow evidence).** With pipeline mode and GPU checks
+not disabled, `worker_start.sh` executes `cuda_runtime_preflight.py` before polling for a job. The
+configured RIFE probe invokes `RIFENative.process_frames` on a two-frame synthetic clip. Reaching
+and claiming the job is strong evidence that both gates passed, but the Pod's raw stdout was not
+retrievable after teardown (provider GET/log endpoints returned 404). **RIFE_VIDEO_E2E: NOT_TESTED**:
+the real two-second task failed before RIFE processed its frames.
+
+### Root cause: task URLs advertised the server's private listener
+
+`IsolatedControlPlane.base_url` is the VPS listener `http://127.0.0.1:8099/api/worker`. The Pod,
+however, reaches that service through its own SSH-forward listener at
+`http://127.0.0.1:18099/api/worker`. `build_task()` used the VPS base URL for **both** `input_url`
+and `output.url`; input therefore pointed at a Pod-local port with no listener, and output would
+have been equally unreachable. This matches the `input_invalid` failure, although the exact ffmpeg
+stderr is unavailable and the specific failed request cannot be proven from Pod logs.
+
+Fixed in commit `7b6f602`: new `advertised_base_url` is separate from bind/listen address; service
+still binds `127.0.0.1:8099` but task URLs advertise `127.0.0.1:18099` for both input and output.
+Regression test explicitly uses different listener/advertised ports and checks both returned URLs.
+
+## 12. CPU-only end-to-end over the real restricted SSH forward
+
+A fresh one-shot plane/task was used; the run #2 evidence was archived first, not reset. The actual
+restricted SSH local-forward and production `Worker` class were exercised on the controller host.
+No RunPod API call, Pod, GPU, or production job was involved.
+
+| Stage | Result |
+|---|---|
+| server bind / advertised task URL | `127.0.0.1:8099` / `127.0.0.1:18099` |
+| SSH forward / unauthorized probe | **PASS** / HTTP 401 |
+| claim → ffmpeg input cut → CPU passthrough → PUT → complete | **PASS**, exactly one claimed and completed; zero failures |
+| output | **35,249 bytes**, SHA-256 `8c747834ac5b4f420ff7afa25f4b188cec1b86ba0d95ba93bcbb70b46312bf0a`; independently re-read from the captured output file and matches sink evidence |
+| timings | boot-to-claim 0.08s; cut 0.31s; passthrough 0.00s; verify 0.13s; upload 0.01s; work 0.51s; full E2E 0.588s |
+
+Durable evidence is under `/var/lib/aividup-runpod-pilot/cpu-e2e-2026-10-16/` (`summary.json`,
+`evidence.json`, output MP4); raw run #2 plane evidence is preserved under `archive/run-2/`.
+Total estimated paid spend across runs #1 and #2 is **≈$0.323**, not a final provider invoice.
+The controller GO gate remains closed; a third paid GPU rental is **not authorized**.
