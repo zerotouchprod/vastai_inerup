@@ -84,7 +84,9 @@ refuses the second option unless the operator acknowledges it.
 | Bootstrap rejects a mismatching checkpoint hash | **PASS** — refused, no model materialised |
 | Bootstrap rejects a mismatching manifest pin | **PASS** — refused before download |
 | Live read-only client against the provider API | **PASS** — 0 Pods, 404 → `None`, no key leak |
-| Full pilot suite | **98 passed** |
+| Full pilot suite, locally | **98 passed** |
+| CI gate on tooling commit `dcc9069`, run [38854835769](https://github.com/zerotouchprod/vastai_inerup/actions/runs/38854835769) | **161 passed**; image jobs correctly skipped, published digests unchanged |
+| Provider inventory after all preparation | 0 Pods, 0 Network Volumes |
 
 Two real defects were found and fixed by these tests: a resumed controller reconciled a Pod but
 never adopted it (would have orphaned an unmanaged Pod), and `int(deadline_seconds)` silently
