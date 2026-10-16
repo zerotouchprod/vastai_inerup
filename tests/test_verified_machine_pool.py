@@ -137,3 +137,25 @@ def test_filter_offers_uses_machine_id_not_offer_or_instance_id():
     assert pool.allowed_machine_ids(
         PoolEnvironment("sha256:x", "12.6", "2.9.1+cu126")
     ) == [20]
+
+
+def test_enforced_client_rejects_direct_unknown_offer_id(monkeypatch, tmp_path):
+    pool_path = tmp_path / "pool.json"
+    pool_path.write_text('{"version": 1, "pool": []}')
+    monkeypatch.setenv("VAST_VERIFIED_MACHINE_POOL_ENFORCED", "1")
+    monkeypatch.setenv("VAST_VERIFIED_MACHINE_POOL_PATH", str(pool_path))
+    monkeypatch.setenv("VAST_WORKER_IMAGE_DIGEST", "sha256:good")
+    monkeypatch.setenv("VAST_CUDA_VERSION", "12.6")
+    monkeypatch.setenv("VAST_PYTORCH_VERSION", "2.9.1+cu126")
+
+    from src.domain.exceptions import VideoProcessingError
+    from src.domain.vastai import VastInstanceConfig
+    from src.infrastructure.vastai.client import VastAIClient
+
+    client = VastAIClient(api_key="test-key")
+    try:
+        client.create_instance(999, VastInstanceConfig(image="x", disk=1, env={}))
+    except VideoProcessingError as error:
+        assert "verified machine pool" in str(error)
+    else:
+        raise AssertionError("unknown offer ID must be rejected before API PUT")

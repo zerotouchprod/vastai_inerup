@@ -60,9 +60,21 @@ class VastAIClient:
         self.api_base = api_base or os.getenv("VAST_API_BASE", "https://api.vast.ai/v0")
         self.logger = logger or logging.getLogger(__name__)
         pool_path = os.getenv("VAST_VERIFIED_MACHINE_POOL_PATH")
+        self.verified_pool_enforced = (
+            os.getenv("VAST_VERIFIED_MACHINE_POOL_ENFORCED", "0") == "1"
+        )
+        if self.verified_pool_enforced and not pool_path:
+            raise ValueError(
+                "verified machine pool enforcement requires VAST_VERIFIED_MACHINE_POOL_PATH"
+            )
         self.verified_machine_pool: Optional[MachinePool] = (
             load_machine_pool(pool_path) if pool_path else None
         )
+        if self.verified_pool_enforced and self.verified_machine_pool is None:
+            raise ValueError(
+                "verified machine pool enforcement requires a readable pool"
+            )
+        self.authorized_offers: dict[int, dict[str, Any]] = {}
         self.verified_pool_environment: Optional[PoolEnvironment] = None
         if self.verified_machine_pool is not None:
             required = (
@@ -168,6 +180,9 @@ class VastAIClient:
                 offers = self.verified_machine_pool.filter_offers(
                     offers, self.verified_pool_environment
                 )
+                self.authorized_offers = {
+                    int(offer["id"]): offer for offer in offers if "id" in offer
+                }
                 if not offers:
                     self.logger.warning(
                         "No environment-compatible verified Vast machines are available; refusing fallback"
@@ -260,6 +275,24 @@ class VastAIClient:
     ) -> VastInstance:
         """Create instance from offer."""
         self.logger.info(f"Creating instance from offer #{offer_id}")
+
+        # Direct callers cannot bypass verified-machine admission by supplying an offer ID.
+        if self.verified_pool_enforced:
+            offer = self.authorized_offers.get(int(offer_id))
+            if (
+                offer is None
+                or self.verified_machine_pool is None
+                or self.verified_pool_environment is None
+            ):
+                raise VideoProcessingError(
+                    "offer is not authorized by the verified machine pool"
+                )
+            if not self.verified_machine_pool.allows_offer(
+                offer, self.verified_pool_environment
+            ):
+                raise VideoProcessingError(
+                    "offer certification no longer matches the verified machine pool"
+                )
 
         # Build request payload
         payload = {

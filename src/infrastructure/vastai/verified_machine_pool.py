@@ -71,6 +71,9 @@ class MachinePool:
         allowed = set(self.allowed_machine_ids(environment))
         return [offer for offer in offers if offer.get("machine_id") in allowed]
 
+    def allows_offer(self, offer: dict[str, Any], environment: PoolEnvironment) -> bool:
+        return bool(self.filter_offers([offer], environment))
+
     def record_probe(self, **fields: Any) -> MachineRecord:
         machine = MachineRecord.from_dict(fields)
         if machine.status == "verified" and (
