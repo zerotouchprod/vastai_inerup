@@ -8,6 +8,11 @@ on:
         required: true
         type: boolean
         default: false
+      cpu_image_e2e:
+        description: Run exact immutable image + pod-args on a CPU runner through a temporary SSH tunnel (no RunPod)
+        required: true
+        type: boolean
+        default: false
       worker_sha:
         description: Exact source commit at the selected workflow ref (must equal that commit)
         required: true
@@ -44,8 +49,7 @@ on:
       - 'tests/unit/test_runpod_checkpoint_bootstrap.py'
       - 'scripts/runpod_pilot_controller.py'
       - 'scripts/runpod_pilot_test_control_plane.py'
-      - 'ops/runpod-pilot/alert-watch.py'
-      - 'ops/runpod-pilot/systemd-recovery-test.py'
+      - 'ops/runpod-pilot/**'
       - 'tests/unit/test_runpod_pilot_controller.py'
       - 'tests/unit/test_runpod_pilot_controller_http.py'
       - 'tests/unit/test_runpod_pilot_controller_config.py'
@@ -86,8 +90,7 @@ on:
       - 'tests/unit/test_runpod_checkpoint_bootstrap.py'
       - 'scripts/runpod_pilot_controller.py'
       - 'scripts/runpod_pilot_test_control_plane.py'
-      - 'ops/runpod-pilot/alert-watch.py'
-      - 'ops/runpod-pilot/systemd-recovery-test.py'
+      - 'ops/runpod-pilot/**'
       - 'tests/unit/test_runpod_pilot_controller.py'
       - 'tests/unit/test_runpod_pilot_controller_http.py'
       - 'tests/unit/test_runpod_pilot_controller_config.py'
@@ -125,6 +128,8 @@ jobs:
           scripts/runpod_pilot_controller.py
           scripts/runpod_pilot_test_control_plane.py
           ops/runpod-pilot/alert-watch.py
+          ops/runpod-pilot/crash-loop-observer.py
+          ops/runpod-pilot/docker-cpu-image-e2e.py
           ops/runpod-pilot/systemd-recovery-test.py
           ops/runpod-pilot/cpu-ssh-forward-e2e.py
       - name: Run worker, pilot contract, and model manifest tests
@@ -140,6 +145,8 @@ jobs:
           tests/unit/test_runpod_pilot_controller.py tests/unit/test_runpod_pilot_controller_http.py
           tests/unit/test_runpod_pilot_controller_config.py
           tests/unit/test_runpod_pilot_alert_watch.py
+          tests/unit/test_runpod_pilot_crash_loop_observer.py
+          tests/unit/test_runpod_pilot_docker_cpu_image_e2e.py
           tests/unit/test_runpod_pilot_test_control_plane.py -q
       - name: Run CPU-only worker image acceptance
         run: python scripts/worker_image_acceptance.py
@@ -296,3 +303,52 @@ jobs:
       - name: Report image byte size
         if: github.event_name != 'workflow_dispatch'
         run: docker image inspect --format='image_bytes={{.Size}}' ghcr.io/zerotouchprod/aividup-worker-runpod-rife-pilot:${{ github.event.pull_request.head.sha || github.sha }}
+
+  runpod-pilot-cpu-image-e2e:
+    if: >-
+      github.event_name == 'workflow_dispatch' && inputs.cpu_image_e2e == true &&
+      inputs.publish_runpod_pilot == false && inputs.worker_sha == github.sha
+    needs: tests
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.worker_sha }}
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+      - name: Install ffmpeg and temporary SSH server support
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg openssh-server
+          sudo systemctl stop ssh.service 2>/dev/null || true
+          sudo systemctl stop sshd.service 2>/dev/null || true
+      - name: Verify source and CPU Docker headroom
+        env:
+          EXPECTED_SHA: ${{ inputs.worker_sha }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          python - <<'PY'
+          import shutil
+          free = shutil.disk_usage('/').free
+          print(f'runner_root_free_bytes={free}')
+          if free < 20_000_000_000:
+              raise SystemExit('insufficient ephemeral runner disk for the 5.98GB compressed immutable image')
+          PY
+          docker info --format 'docker_server={{.ServerVersion}}'
+      - name: Pull the published immutable image (no build or publish)
+        run: docker pull ghcr.io/zerotouchprod/aividup-worker-runpod-rife-pilot@sha256:c775c62ade2d1851074751d761195aa6ace2895ed51af268b5f877535117475b
+      - name: Run exact pod-args over a temporary restricted SSH tunnel on CPU
+        run: >-
+          python ops/runpod-pilot/docker-cpu-image-e2e.py
+          --artifact-dir "${{ runner.temp }}/aividup-pilot-cpu-e2e"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: runpod-pilot-cpu-image-e2e
+          path: ${{ runner.temp }}/aividup-pilot-cpu-e2e/
+          if-no-files-found: warn
+          retention-days: 7

@@ -18,6 +18,13 @@ else
     set --
 fi
 
+OBSERVER_STARTED_AT=$(/usr/bin/date +%s)
+/usr/bin/python3 /opt/aividup-runpod-pilot/crash-loop-observer.py \
+    --state-file "$STATE_FILE" \
+    --plane-evidence "$STATE_DIR/plane-evidence.json" \
+    --started-at-epoch "$OBSERVER_STARTED_AT" \
+    --unit aividup-runpod-pilot.service &
+
 exec /usr/bin/python3 /opt/aividup-runpod-pilot/runpod_pilot_controller.py \
     --state-file "$STATE_FILE" \
     --pod-name aividup-rife-pilot-one-shot \

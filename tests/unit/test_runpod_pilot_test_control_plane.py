@@ -192,6 +192,43 @@ def test_input_is_served_only_from_the_configured_file(plane):
 # ---------------------------------------------------------------------------
 
 
+def test_sink_records_bootstrap_stage_markers_in_order(tmp_path):
+    import requests
+
+    source = make_synthetic_input(tmp_path / "input.mp4", seconds=2)
+    instance = IsolatedControlPlane(
+        token=TOKEN,
+        input_path=source,
+        port=free_port(),
+        evidence_path=tmp_path / "evidence.json",
+        output_dir=tmp_path / "worker-output",
+    )
+    instance.start()
+    stages = [
+        "tunnel_ready",
+        "http_probe_pass",
+        "bootstrap_started",
+        "checkpoint_verified",
+        "worker_started",
+        "cuda_preflight",
+    ]
+    try:
+        for stage in stages:
+            response = requests.put(
+                f"{instance.base_url}/sink/diagnostics-boot-{stage}",
+                data=f"AIVIDUP_PILOT_STAGE={stage}\n".encode(),
+                headers={"Authorization": f"Bearer {TOKEN}", "Content-Type": "text/plain"},
+                timeout=10,
+            )
+            assert response.status_code == 200
+        evidence = instance.evidence()
+        assert [item["stage"] for item in evidence["diagnostic_stages"]] == stages
+        assert evidence["claims_served"] == 0
+        assert all(Path(item["file"]).is_file() for item in evidence["diagnostic_stages"])
+    finally:
+        instance.stop()
+
+
 def test_sink_persists_and_redacts_preflight_diagnostics(tmp_path):
     import requests
 

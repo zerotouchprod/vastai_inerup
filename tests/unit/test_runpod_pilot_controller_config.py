@@ -129,6 +129,40 @@ def test_pod_args_bootstrap_path_exists_inside_the_immutable_image():
     assert "/opt/aividup-runpod-pilot/" not in cmd
 
 
+def test_supervisor_starts_fail_closed_observer_before_controller():
+    supervisor = Path(__file__).resolve().parents[2] / "ops" / "runpod-pilot" / "controller-supervise.sh"
+    text = supervisor.read_text()
+    observer = text.index("crash-loop-observer.py")
+    controller = text.index("exec /usr/bin/python3 /opt/aividup-runpod-pilot/runpod_pilot_controller.py")
+    assert observer < controller
+    assert "--state-file \"$STATE_FILE\"" in text
+
+
+def test_pod_args_report_all_bootstrap_stages_in_order():
+    args_file = Path(__file__).resolve().parents[2] / "ops" / "runpod-pilot" / "pod-args.json"
+    args = json.loads(controller_module.load_pod_args_file(args_file))
+    cmd = args["cmd"][0]
+    steps = [
+        "report_stage tunnel_ready",
+        "report_stage http_probe_pass",
+        "report_stage bootstrap_started",
+        "AIVIDUP_PILOT_STAGE=checkpoint_verified",
+        "report_stage worker_started",
+        "report_stage cuda_preflight",
+    ]
+    positions = [cmd.index(step) for step in steps]
+    assert positions == sorted(positions)
+    assert cmd.count("report_stage tunnel_ready") == 1
+    assert cmd.count("report_stage http_probe_pass") == 1
+    assert cmd.count("report_stage bootstrap_started") == 1
+    assert cmd.count("AIVIDUP_PILOT_STAGE=checkpoint_verified") == 1
+    assert cmd.count("report_stage worker_started") == 1
+    assert cmd.count("report_stage cuda_preflight") == 1
+    assert cmd.count("python3 /opt/aividup/runpod_checkpoint_bootstrap.py") == 1
+    assert "--worker-start" in cmd
+    assert "$TUNNEL_DIR/worker-start-wrapper.sh" in cmd
+
+
 def test_pod_args_upload_cuda_rife_preflight_stdout_stderr_before_job_claim():
     args_file = Path(__file__).resolve().parents[2] / "ops" / "runpod-pilot" / "pod-args.json"
     args = json.loads(controller_module.load_pod_args_file(args_file))
@@ -136,8 +170,8 @@ def test_pod_args_upload_cuda_rife_preflight_stdout_stderr_before_job_claim():
     assert "python3-log-wrapper" in cmd
     assert "/opt/aividup/cuda_runtime_preflight.py" in cmd
     assert '2> "$AIVIDUP_DIAGNOSTIC_STDERR"' in cmd
-    assert 'AIVIDUP_DIAGNOSTIC_KEY="diagnostics-${AIVIDUP_BOOT_ID}-' in cmd
-    assert "/api/worker/sink/$AIVIDUP_DIAGNOSTIC_KEY" in cmd
+    assert 'diagnostics-${AIVIDUP_BOOT_ID}-cuda-preflight-' in cmd
+    assert '/api/worker/sink/diagnostics-${AIVIDUP_BOOT_ID}-cuda-preflight-' in cmd
     assert cmd.index("HTTP_STATUS") < cmd.index("python3-log-wrapper")
     assert cmd.index("python3-log-wrapper") < cmd.index("runpod_checkpoint_bootstrap.py")
 

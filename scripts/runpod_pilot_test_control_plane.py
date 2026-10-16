@@ -32,6 +32,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 import urllib.parse
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -329,6 +330,7 @@ class IsolatedControlPlane:
             "bootstrap_stages": [],
             "heartbeats": 0,
             "outputs": [],
+            "diagnostic_stages": [],
             "completed": [],
             "failures": [],
             "claims": [],
@@ -419,7 +421,13 @@ class IsolatedControlPlane:
     def record_output(self, key: str, data: bytes) -> None:
         if key.startswith("diagnostics-") and self.token:
             data = data.replace(self.token.encode(), b"[REDACTED]")
-        entry = {"key": key, "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+        recorded_at = time.time()
+        entry = {
+            "key": key,
+            "bytes": len(data),
+            "sha256": hashlib.sha256(data).hexdigest(),
+            "received_at_epoch": recorded_at,
+        }
         if self.output_dir is not None:
             self.output_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
             os.chmod(self.output_dir, 0o700)
@@ -433,8 +441,19 @@ class IsolatedControlPlane:
             os.chmod(temporary, 0o600)
             os.replace(temporary, output_path)
             entry["file"] = str(output_path)
+        stages = re.findall(rb"(?m)^AIVIDUP_PILOT_STAGE=([a-z][a-z0-9_]*)\s*$", data)
         with self._lock:
             self._state["outputs"].append(entry)
+            for raw_stage in stages:
+                self._state["diagnostic_stages"].append(
+                    {
+                        "stage": raw_stage.decode("ascii"),
+                        "key": key,
+                        "file": entry.get("file"),
+                        "sha256": entry["sha256"],
+                        "recorded_at_epoch": recorded_at,
+                    }
+                )
             self._persist()
 
     # -- lifecycle -----------------------------------------------------
