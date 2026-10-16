@@ -9,6 +9,8 @@ import time
 from typing import List, Dict, Any, Optional
 import logging
 
+from src.infrastructure.vastai.verified_machine_pool import MachinePool, PoolEnvironment, load_machine_pool
+
 from src.domain.vastai import (
     IVastClient,
     VastOffer,
@@ -55,6 +57,19 @@ class VastAIClient:
 
         self.api_base = api_base or os.getenv('VAST_API_BASE', 'https://api.vast.ai/v0')
         self.logger = logger or logging.getLogger(__name__)
+        pool_path = os.getenv("VAST_VERIFIED_MACHINE_POOL_PATH")
+        self.verified_machine_pool: Optional[MachinePool] = load_machine_pool(pool_path) if pool_path else None
+        self.verified_pool_environment: Optional[PoolEnvironment] = None
+        if self.verified_machine_pool is not None:
+            required = ("VAST_WORKER_IMAGE_DIGEST", "VAST_CUDA_VERSION", "VAST_PYTORCH_VERSION")
+            missing = [name for name in required if not os.getenv(name)]
+            if missing:
+                raise ValueError(f"verified machine pool requires environment: {', '.join(missing)}")
+            self.verified_pool_environment = PoolEnvironment(
+                worker_digest=os.environ["VAST_WORKER_IMAGE_DIGEST"],
+                cuda_version=os.environ["VAST_CUDA_VERSION"],
+                pytorch_version=os.environ["VAST_PYTORCH_VERSION"],
+            )
 
         # Setup session
         self.session = requests.Session()
@@ -139,6 +154,12 @@ class VastAIClient:
             )
 
             offers = response.get('offers', [])
+
+            if self.verified_machine_pool is not None:
+                assert self.verified_pool_environment is not None
+                offers = self.verified_machine_pool.filter_offers(offers, self.verified_pool_environment)
+                if not offers:
+                    self.logger.warning("No environment-compatible verified Vast machines are available; refusing fallback")
 
             result = []
             for offer_data in offers:

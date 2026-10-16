@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "pool": [
+    {
+      "machine_id": 18551,
+      "status": "cooldown",
+      "last_result": "STARTUP_TIMEOUT",
+      "worker_digest": "sha256:50de56d6768ec37751e5c446ac4e034d5d451ffe01f3e147340c79925c113879",
+      "cuda_version": "12.6",
+      "pytorch_version": "2.9.1+cu126",
+      "gpu_model": "RTX A4000",
+      "last_pass_at": null,
+      "evidence_ref": "vast-smoke/2026-10-16/instance-56224313",
+      "cleanup_confirmed": true,
+      "notes": "Offer 49383451; running/loading/running without smoke markers. Not classified as hardware failure."
+    }
+  ]
+}
