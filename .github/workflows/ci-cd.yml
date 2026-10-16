@@ -91,8 +91,11 @@ jobs:
     needs: unit-tests
     if: >-
       github.event_name != 'pull_request' ||
-      !startsWith(github.event.pull_request.head.ref, 'worker/') &&
-      !startsWith(github.event.pull_request.head.ref, 'fix/worker-')
+      (
+        github.event.pull_request.head.ref != 'fix/gpu-smoke-publish-split' &&
+        !startsWith(github.event.pull_request.head.ref, 'worker/') &&
+        !startsWith(github.event.pull_request.head.ref, 'fix/worker-')
+      )
 
     steps:
     - uses: actions/checkout@v7
