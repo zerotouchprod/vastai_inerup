@@ -57,6 +57,7 @@ jobs:
 
       - name: Verify inherited compressed layers and diff IDs
         run: |
+          docker pull "$BASE_IMAGE"
           docker buildx imagetools inspect "$BASE_IMAGE" --raw > /tmp/base-manifest.json
           docker image inspect "$BASE_IMAGE" --format '{{json .RootFS.Layers}}' > /tmp/base-diff-ids.json
           docker image inspect "$SMOKE_IMAGE" --format '{{json .RootFS.Layers}}' > /tmp/smoke-diff-ids.json
