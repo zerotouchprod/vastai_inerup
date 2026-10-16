@@ -80,22 +80,24 @@ If the 4090 Pod is deleted promptly at its configured 1800-second deadline, the 
 
 The exact image still installs `openssh-client` dynamically with `apt-get` at startup. CPU E2E reached the tunnel successfully, but this remains an external apt-repository dependency and has not been baked into a newly published image.
 
-## Dual-model RunPod pilot candidate (preflight; no GPU run)
+## Run #5 — dual-model full-source attempt and CPU transport follow-up
 
-The next candidate uses the user-provided source byte-identically, outside Git:
+Input provenance (user source remains outside Git and byte-identical):
 
-- Path: `/var/lib/aividup-runpod-pilot/benchmark-inputs/aa1f836226fa0a5e0a68f84a74ed1e7a5cc887272207ddb1f4141f6722d41c83/input.mp4`
-- SHA-256: `aa1f836226fa0a5e0a68f84a74ed1e7a5cc887272207ddb1f4141f6722d41c83`
-- H.264/AAC, portrait **540×960 (not 720p)**, 33.941333 s, 995 video frames, VFR; ffprobe reports nominal `60/1` and average `746250/25451` fps. File size 15,272,108 bytes.
-- Task parameters: `mode=both`, `scale=2`, `interp_factor=2`, `strategy=interp-then-upscale`, no explicit target FPS. This means RIFE interpolation first, then Real-ESRGAN x2plus upscale. Output characteristics and runtime remain unmeasured.
+- `/var/lib/aividup-runpod-pilot/benchmark-inputs/aa1f836226fa0a5e0a68f84a74ed1e7a5cc887272207ddb1f4141f6722d41c83/input.mp4`
+- SHA-256 `aa1f836226fa0a5e0a68f84a74ed1e7a5cc887272207ddb1f4141f6722d41c83`, H.264/AAC, portrait 540×960 (**not 720p**), 33.941333 s, 995 frames, VFR, 15,272,108 bytes.
+- Task: `mode=both`, RIFE interpolation factor 2, RealESRGAN x2plus scale 2, `interp-then-upscale`; expected 1080×1920, about 1,989 output frames. Full render was not produced.
 
-The separate `Dockerfile.runpod-rife-esrgan-pilot` bakes the x2plus package/model into the image and checks its pinned SHA-256 (`49fafd45f8fd7aa8d31ab2a22d14d91b536c34494a5cfe31eb5d89c2fa266abb`). The RIFE checkpoint remains manifest-verified through the existing no-volume bootstrap. Its manifest/OCI `pipeline-version` deliberately remains `aividup-rife-interp-v1`, the bootstrap's required RIFE checkpoint contract; dual processing is selected separately by the task's `mode=both`. The image's dual-model title and x2plus SHA label distinguish it from the previous RIFE-only digest.
+The worker image was published to the existing public pilot package and immutable digest verified:
+`ghcr.io/zerotouchprod/aividup-worker-runpod-rife-pilot@sha256:171a64d66b601be90345215331e28217ab808b5a120ec2fb6cd1eb6729b63811` (source SHA `0d7e12b7bcf722e25c2c74ab8f7bd91a45be8630`). CI run `38962348376` passed image build, anonymous registry verification, and CPU SSH E2E. The CPU E2E used a synthetic fixture, expected `cuda_unavailable`, and did not certify GPU inference.
 
-The PR CPU E2E builds the combined image locally (`push: false`) and runs the exact PodArgs through a temporary restricted SSH tunnel with a **synthetic 2-second clip** and `mode=both`. On CPU it must stop at `cuda_unavailable`, with zero claims. This verifies image imports/assets, bootstrap, tunnel and diagnostics only; it does not test CUDA, either model's GPU inference, or the supplied full clip. The user video is never uploaded to GitHub.
+One paid RunPod attempt (authorized separately): Secure RTX 4090 / EU-RO-1, 40GB ephemeral disk, 1,800-second best-effort deadline, no network volume, no retry/rerent. Pod `4q76x3q8ao8o9n` claimed one task. CUDA micro-preflight returned `ALLOW` on RTX 4090 (CC 8.9, Torch 2.9.1+cu126, CUDA 12.6); its result contains RealESRGAN 16×16→32×32 and RIFE 2→3-frame probes, although the final scalar `backend` label is `rife` because it reports the last backend. Non-fatal RIFE device-introspection warnings were recorded.
 
-The tracked plane unit now reads non-secret per-run parameters from `plane.env`; see `plane.env.example`. `controller.env` must carry the published immutable image ref, the new pod name, and `AIVIDUP_PILOT_PLANE_EVIDENCE` pointing to the same fresh evidence file; it must not contain `RUNPOD_API_KEY`. The supervisor rejects non-digest images and evidence paths outside the pilot state directory. Before rearming, preserve the already-consumed Run #4 evidence, use separate evidence/output paths, and keep the plane loopback-only. The controller remains gated by `/etc/aividup-runpod-pilot/GO`; do not create that file until the exact GPU cap is approved.
+The full video task then failed `input_invalid` before inference completed. FFmpeg saw an HTTP stream with expected length 15,272,108 bytes but received only 48 bytes (`stream 0, offset 0x30: partial file`). No media output was produced. A direct loopback GET returned all 15,272,108 bytes and the expected SHA, while a no-GPU full-input CPU E2E over the restricted SSH forward reproduced the same 48-byte short-read. The failure is localized to the forwarded FFmpeg/media-input path, not source corruption; the exact transport/Range fault was not proven in this run.
 
-Proposed paid-run envelope for later approval: Secure RTX 4090 / EU-RO-1, 40 GB container disk, 1,800-second controller deadline, 15-second polling, no Network Volume, no retries/re-rent. The deadline is best-effort, not a provider-enforced TTL or spend hard cap; teardown delay can add charges. Check the then-current offer and calculate the final cap before arming.
+A no-cost fix was added to the isolated plane input endpoint to honor single byte-range requests. A subsequent full-source CPU SSH-forward E2E passed: 1 claim, 1 completion, zero failures, `runpod_api_called=false`, `gpu_used=false`, input SHA matched; passthrough output was 21,699,774 bytes (SHA `44bb548f61727206856abbc6a2f9d7493c8fd80a4f60fb7ad78165380fa1ce5`). This validates the local stream fix only; it is not a model render and no second Pod was created.
+
+Controller evidence after Run #5: one claim, zero completions, one `input_invalid`; one delete attempt, `verified_absent=true`, inventory 0. Create-to-verified-absent was about 197.713s; estimated GPU+40GB disk cost ≈$0.04918, **not an invoice**. The user-approved $1 tolerated-spend target was not exceeded by this estimate. GO was archived at `archive/run-5-dual-model-input-invalid-20261016T211217Z/GO.authorization`; controller and plane services are inactive, active GO absent, and the Run #4 archive/manifest were unchanged. Do not retry or rent again without a fresh explicit GO.
 
 ## Original setup procedure (historical reference; vps1748 already prepared)
 
@@ -128,4 +130,4 @@ This checklist documents the one-time isolated host setup; do not rerun it on vp
 
 ## Remaining limit
 
-Run #4 proves one real RIFE interpolation on a two-second fixture only; it is not a full-video benchmark or broad throughput claim. The NNP-safe observer fix is verified by host systemd smoke and CI run `38938170944`; that blocker is resolved. Run #4's GO is consumed, the controller remains inactive and `/etc/aividup-runpod-pilot/GO` must stay absent. The dual-model candidate above is still preflight-only: CPU CI does not certify CUDA/RIFE/Real-ESRGAN GPU inference. A new paid run requires the combined image/plane preflight and an explicit runtime/spend cap; provider-side TTL is not enforced.
+Run #4 remains the only completed full RIFE render; Run #5 passed **tiny GPU micro-probes** for both models but failed before full-video processing. The worker got only 48/15,272,108 input bytes over the SSH-forwarded FFmpeg path. A Range-support fix and full-input CPU SSH E2E pass exist in the current worktree, but the updated plane script is not yet installed/committed. No output render is verified. The one approved Pod was deleted and inventory is 0; its GO was archived, controller/plane are inactive, and state/latch are consumed. **No retry without a new explicit GO**; before a new paid run, commit/install the Range fix, recreate a fresh one-shot plane, and recheck GPU backend probes, price, deadline, and spend risk. RunPod has no provider-enforced TTL.

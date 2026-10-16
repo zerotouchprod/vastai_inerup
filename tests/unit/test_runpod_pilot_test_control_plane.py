@@ -187,6 +187,19 @@ def test_input_is_served_only_from_the_configured_file(plane):
     assert requests.get(f"{plane.base_url}/input/../evidence.json", timeout=20).status_code in (404, 400)
 
 
+def test_input_honors_single_byte_range_for_ffmpeg(plane):
+    import requests
+
+    url=f"{plane.base_url}/input/{plane.input_token}"
+    response=requests.get(url,headers={"Range":"bytes=0-47"},timeout=20)
+    expected_size=plane.input_path.stat().st_size
+    assert response.status_code==206
+    assert response.headers.get("Accept-Ranges")=="bytes"
+    assert response.headers.get("Content-Range")==f"bytes 0-47/{expected_size}"
+    assert len(response.content)==48
+    assert response.content==plane.input_path.read_bytes()[:48]
+
+
 # ---------------------------------------------------------------------------
 # result sink
 # ---------------------------------------------------------------------------

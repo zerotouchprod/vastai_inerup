@@ -163,12 +163,65 @@ class _Handler(BaseHTTPRequestHandler):
             if not secrets.compare_digest(name, self.plane.input_token):
                 self._send(404, {"error": "unknown input"})
                 return
-            data = self.plane.input_path.read_bytes()
-            self.send_response(200)
+            input_path = self.plane.input_path
+            size = input_path.stat().st_size
+            start, end = 0, size - 1
+            status = 200
+            range_header = self.headers.get("Range")
+            if range_header:
+                match = re.fullmatch(r"bytes=(\d*)-(\d*)", range_header.strip(), re.IGNORECASE)
+                if match is None or "," in range_header or size == 0:
+                    self.send_response(416)
+                    self.send_header("Accept-Ranges", "bytes")
+                    self.send_header("Content-Range", f"bytes */{size}")
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
+                first, last = match.groups()
+                if first:
+                    start = int(first)
+                    end = int(last) if last else size - 1
+                    if start >= size or end < start:
+                        self.send_response(416)
+                        self.send_header("Accept-Ranges", "bytes")
+                        self.send_header("Content-Range", f"bytes */{size}")
+                        self.send_header("Content-Length", "0")
+                        self.end_headers()
+                        return
+                    end = min(end, size - 1)
+                else:
+                    suffix_length = int(last or "0")
+                    if suffix_length <= 0:
+                        self.send_response(416)
+                        self.send_header("Accept-Ranges", "bytes")
+                        self.send_header("Content-Range", f"bytes */{size}")
+                        self.send_header("Content-Length", "0")
+                        self.end_headers()
+                        return
+                    start = max(0, size - suffix_length)
+                    end = size - 1
+                status = 206
+            length = max(0, end - start + 1)
+            self.send_response(status)
             self.send_header("Content-Type", "video/mp4")
-            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Accept-Ranges", "bytes")
+            if status == 206:
+                self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+            self.send_header("Content-Length", str(length))
             self.end_headers()
-            self.wfile.write(data)
+            try:
+                with input_path.open("rb") as source:
+                    source.seek(start)
+                    remaining = length
+                    while remaining:
+                        chunk = source.read(min(64 * 1024, remaining))
+                        if not chunk:
+                            break
+                        self.wfile.write(chunk)
+                        remaining -= len(chunk)
+            except (BrokenPipeError, ConnectionResetError):
+                # Range-capable media clients may close a probe connection early.
+                return
             return
         self._send(404, {"error": "unknown endpoint"})
 
