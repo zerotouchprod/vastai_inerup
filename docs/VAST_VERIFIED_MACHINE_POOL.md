@@ -15,6 +15,7 @@ Set these variables in the production process that creates Vast offers:
 
 ```text
 VAST_VERIFIED_MACHINE_POOL_PATH=/workspace/project/config/vast_verified_machine_pool.json
+VAST_VERIFIED_MACHINE_POOL_ENFORCED=1
 VAST_WORKER_IMAGE_DIGEST=sha256:<exact-worker-digest>
 VAST_CUDA_VERSION=12.6
 VAST_PYTORCH_VERSION=2.9.1+cu126
