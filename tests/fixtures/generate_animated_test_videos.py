@@ -68,7 +68,7 @@ class SyntheticVideoGenerator:
         frames = []
 
         # Text parameters
-        font = cv2.FONT_HERSHEY_BOLD
+        font = cv2.FONT_HERSHEY_SIMPLEX
         font_scale = 1.5
         thickness = 3
         text_color = (255, 255, 255)  # White
@@ -129,7 +129,7 @@ class SyntheticVideoGenerator:
         frames = []
 
         # Text parameters
-        font = cv2.FONT_HERSHEY_BOLD
+        font = cv2.FONT_HERSHEY_SIMPLEX
         font_scale = 2.0
         thickness = 4
         x_position = self.width // 2 - 200
@@ -203,7 +203,7 @@ class SyntheticVideoGenerator:
         frames = []
 
         # Text parameters
-        font = cv2.FONT_HERSHEY_BOLD
+        font = cv2.FONT_HERSHEY_SIMPLEX
         font_scale = 1.8
         thickness = 3
         text_color = (255, 255, 255)
@@ -268,7 +268,7 @@ class SyntheticVideoGenerator:
         frames = []
 
         # Text parameters
-        font = cv2.FONT_HERSHEY_BOLD
+        font = cv2.FONT_HERSHEY_SIMPLEX
         font_scale = 2.0
         thickness = 4
         text_color = (255, 255, 255)
@@ -324,7 +324,7 @@ class SyntheticVideoGenerator:
         frames = []
 
         # Text parameters
-        font = cv2.FONT_HERSHEY_BOLD
+        font = cv2.FONT_HERSHEY_SIMPLEX
         font_scale = 1.8
         thickness = 3
         text_color = (255, 255, 255)
