@@ -114,6 +114,10 @@ jobs:
           docker image inspect "$SMOKE_IMAGE" > evidence/docker-inspect.json
           ! grep -E 'AIVIDUP_API_URL|AIVIDUP_WORKER_TOKEN|CONTAINER_API_KEY|VAST_API_KEY' tests/gpu_smoke/run.py
 
+      - name: Remove local OCI archive before artifact upload
+        if: always()
+        run: rm -f evidence/gpu-smoke.oci.tar
+
       - name: Upload Docker gate evidence
         if: always()
         uses: actions/upload-artifact@v4
