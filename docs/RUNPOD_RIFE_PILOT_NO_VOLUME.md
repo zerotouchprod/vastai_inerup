@@ -282,4 +282,33 @@ At 2026-10-16 12:08 UTC the fresh unused plane job is
 `pilot-3bfa9c78-e205-4eb7-b9f8-b19aa835dbb9`; evidence path is
 `/var/lib/aividup-runpod-pilot/plane-evidence.json` and is not yet created because the job has not
 been claimed. Secure RTX 4090 EU-RO-1 was LOW at `$0.89/h`; provider inventory had 0 Pods. Controller
-GO remains absent and inactive. **GPU run #3 is awaiting separate explicit spend approval.**
+GO remains absent and inactive.
+
+## 14. Live run #3 — 2026-10-16 (restarted before worker claim; stopped, no retry)
+
+One RTX 4090 Secure / EU-RO-1 Pod `j98pz0w7kbe693` was created at 12:25:14.143 UTC with the pinned
+image, no Network Volume, and absolute deadline 12:55:14.143 UTC. The controller was manually stopped
+at 12:30:59 after repeated tunnel handshakes with no plane/worker evidence; it issued one DELETE and
+verified absence by 12:31:01. Final provider inventory was 0 Pods. Estimated billed lifetime was
+346.857 s, **≈$0.08602** (GPU + estimated disk; not an invoice).
+
+Evidence: `/var/lib/aividup-runpod-pilot/run3-evidence.json` (mode 0600), controller `state.json`,
+`archive/run-2/` preserved the prior attempt, and host sshd journal lines show **10 accepted SSH
+sessions** from the Pod egress IP between 12:28:26 and 12:31:01, roughly every 17–18 seconds. A live
+Pod runtime sample at 12:30:14 showed uptime 0, CPU 9%, GPU util 0%, GPU memory util 0%. The plane
+never wrote evidence: no bootstrap stages, no diagnostic upload, no job claim, and no output. The
+CUDA/RIFE preflight and real video render were therefore **NOT REACHED / NOT TESTED**. A live GET to
+the provider Pod-logs endpoint timed out; no container stdout/stderr was obtained.
+
+### Observer failure found
+
+The short-lived restart-loop observer passed `journalctl --since` an ISO string with `T` and `+00:00`
+(`2026-10-16T12:24:56+00:00`). `journalctl` rejected it (`Failed to parse timestamp`); the observer
+silently saw zero sessions and did not trigger its threshold. The Pod was stopped manually after the
+repeated 17-second SSH pattern was observed. Do not treat that observer as a verified safeguard
+until its timestamp format and query errors are fixed/tested. Controller deletion and inventory
+verification did work.
+
+This was the last approved rental; **no fourth run or automatic retry is authorized**. GO has been
+removed again, controller is inactive, and all run #3 evidence is retained. Any additional paid run
+requires a separate explicit approval.
