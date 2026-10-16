@@ -30,9 +30,7 @@ class ColorChangeDetector:
         # Returns: 'static', 'karaoke', 'moving', or 'both'
     """
 
-    def __init__(self,
-                 color_threshold: float = 50.0,
-                 motion_threshold: float = 5.0):
+    def __init__(self, color_threshold: float = 50.0, motion_threshold: float = 5.0):
         """
         Initialize color change detector.
 
@@ -48,9 +46,11 @@ class ColorChangeDetector:
             f"(color_threshold={color_threshold}, motion_threshold={motion_threshold})"
         )
 
-    def detect_color_variance(self,
-                             frames: List[np.ndarray],
-                             tracked_bboxes: Dict[int, List[Tuple[int, int, int, int]]]) -> Dict[int, List[float]]:
+    def detect_color_variance(
+        self,
+        frames: List[np.ndarray],
+        tracked_bboxes: Dict[int, List[Tuple[int, int, int, int]]],
+    ) -> Dict[int, List[float]]:
         """
         Детектирует степень изменения цвета в каждом регионе.
 
@@ -62,6 +62,7 @@ class ColorChangeDetector:
             Dict mapping frame_idx -> list of color_variance scores
         """
         color_variance = {}
+        baseline_colors = {}
 
         for frame_idx, bboxes in tracked_bboxes.items():
             if frame_idx >= len(frames):
@@ -79,28 +80,39 @@ class ColorChangeDetector:
                 w = max(1, min(w, frame.shape[1] - x))
                 h = max(1, min(h, frame.shape[0] - y))
 
-                region = frame[y:y+h, x:x+w]
+                region = frame[y : y + h, x : x + w]
 
                 if region.size == 0:
                     variances.append(0.0)
                     continue
 
-                # Преобразуем в HSV
+                # Преобразуем в HSV и сравниваем со стабильным baseline
                 hsv_region = cv2.cvtColor(region, cv2.COLOR_BGR2HSV)
+                visible = hsv_region[(hsv_region[:, :, 2] > 20)]
+                if visible.size == 0:
+                    variances.append(0.0)
+                    continue
 
-                # Вычисляем histogram Hue канала (цветовой тон)
-                hist = cv2.calcHist([hsv_region], [0], None, [180], [0, 180])
+                mean_color = np.mean(visible, axis=0)
+                bbox_index = len(variances)
+                baseline = baseline_colors.setdefault(bbox_index, mean_color)
 
-                # Стандартное отклонение = мера вариации
-                variance = float(np.std(hist))
-                variances.append(variance)
+                # Hue is circular; the other channels are linear.
+                hue_delta = abs(float(mean_color[0] - baseline[0]))
+                hue_delta = min(hue_delta, 180.0 - hue_delta)
+                saturation_delta = abs(float(mean_color[1] - baseline[1]))
+                value_delta = abs(float(mean_color[2] - baseline[2]))
+                variances.append(
+                    float(2.0 * hue_delta + saturation_delta + value_delta)
+                )
 
             color_variance[frame_idx] = variances
 
         return color_variance
 
-    def compute_motion_magnitude(self,
-                                tracked_bboxes: Dict[int, List[Tuple[int, int, int, int]]]) -> Dict[int, List[float]]:
+    def compute_motion_magnitude(
+        self, tracked_bboxes: Dict[int, List[Tuple[int, int, int, int]]]
+    ) -> Dict[int, List[float]]:
         """
         Вычисляет magnitude движения для каждого bbox.
 
@@ -115,7 +127,7 @@ class ColorChangeDetector:
         frame_indices = sorted(tracked_bboxes.keys())
 
         for i in range(1, len(frame_indices)):
-            prev_idx = frame_indices[i-1]
+            prev_idx = frame_indices[i - 1]
             curr_idx = frame_indices[i]
 
             prev_bboxes = tracked_bboxes[prev_idx]
@@ -144,13 +156,17 @@ class ColorChangeDetector:
 
         # Первый кадр - нет движения
         if frame_indices:
-            motion_magnitude[frame_indices[0]] = [0.0] * len(tracked_bboxes[frame_indices[0]])
+            motion_magnitude[frame_indices[0]] = [0.0] * len(
+                tracked_bboxes[frame_indices[0]]
+            )
 
         return motion_magnitude
 
-    def classify_animation_type(self,
-                               frames: List[np.ndarray],
-                               tracked_bboxes: Dict[int, List[Tuple[int, int, int, int]]]) -> str:
+    def classify_animation_type(
+        self,
+        frames: List[np.ndarray],
+        tracked_bboxes: Dict[int, List[Tuple[int, int, int, int]]],
+    ) -> str:
         """
         Классифицирует тип анимации текста.
 
@@ -162,7 +178,7 @@ class ColorChangeDetector:
             'static' | 'karaoke' | 'moving' | 'both'
         """
         if not tracked_bboxes:
-            return 'static'
+            return "static"
 
         # Вычисляем цветовую вариацию
         color_variance = self.detect_color_variance(frames, tracked_bboxes)
@@ -184,13 +200,13 @@ class ColorChangeDetector:
         has_motion = avg_motion > self.motion_threshold
 
         if has_color_change and has_motion:
-            return 'both'  # И цвет меняется, и движется
+            return "both"  # И цвет меняется, и движется
         elif has_color_change:
-            return 'karaoke'  # Только цвет меняется
+            return "karaoke"  # Только цвет меняется
         elif has_motion:
-            return 'moving'  # Только движется
+            return "moving"  # Только движется
         else:
-            return 'static'  # Статичный текст
+            return "static"  # Статичный текст
 
     def _compute_average(self, data: Dict[int, List[float]]) -> float:
         """Вычисляет среднее по всем значениям в dict."""
@@ -200,10 +216,12 @@ class ColorChangeDetector:
 
         return float(np.mean(all_values)) if all_values else 0.0
 
-    def analyze_color_progression(self,
-                                 frames: List[np.ndarray],
-                                 bbox: Tuple[int, int, int, int],
-                                 sample_rate: int = 5) -> List[Tuple[int, int, int]]:
+    def analyze_color_progression(
+        self,
+        frames: List[np.ndarray],
+        bbox: Tuple[int, int, int, int],
+        sample_rate: int = 5,
+    ) -> List[Tuple[int, int, int]]:
         """
         Анализирует прогрессию цвета в bbox через кадры.
 
@@ -224,7 +242,7 @@ class ColorChangeDetector:
             frame = frames[i]
 
             # Extract region
-            region = frame[y:y+h, x:x+w]
+            region = frame[y : y + h, x : x + w]
 
             if region.size == 0:
                 colors.append((0, 0, 0))
@@ -235,4 +253,3 @@ class ColorChangeDetector:
             colors.append(tuple(int(c) for c in mean_color))
 
         return colors
-
