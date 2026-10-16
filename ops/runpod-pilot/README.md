@@ -45,8 +45,16 @@ It will not POST a create request at boot/restart without that file.
 - `aividup-runpod-pilot.service` is enabled with `Restart=on-failure`, `StartLimitIntervalSec=300s`, `StartLimitBurst=5`, but `ConditionPathExists=/etc/aividup-runpod-pilot/GO` evaluates false. No GO marker, state file, or create latch exists; controller is inactive and cannot POST.
 - Hermes job `aividup-runpod-pilot-teardown-alert` checks `ActiveState`, `NRestarts`, ambiguous state, heartbeat age, and the durable `OnFailure` marker every minute; empty path is silent. The manual no-GPU systemd integration test proved one restart→resume→watchdog alert while fake Pod was live, followed by fake deletion; no RunPod API call occurred.
 - No RunPod resources were created. Last read-only inventory **2026-10-16 06:06 UTC**: 0 Pods, 0 Network Volumes; Secure RTX 3090 EU-CZ-1 LOW at $0.50/h. Subsequent local work used only fake provider; re-check before any separately approved launch.
+- **Run #1 executed 2026-10-16 10:04:42–10:23:47 UTC** under a separate spend approval that moved to the
+  documented fallback after the RTX 3090 offer vanished (RTX 4090 Secure, EU-RO-1, $0.89/h): Pod
+  `kx35gksg1mtjfz`, ≈**$0.284**, `verified_absent: true`, controller exit 0, 0 Pods / 0 Network Volumes
+  after. Outbound TCP/22 from the Pod **works** (62 accepted tunnel sessions); the run died on a
+  host-only bootstrap path in `pod-args.json` (fixed, with a regression test — see
+  `docs/RUNPOD_RIFE_PILOT_NO_VOLUME.md` §9–§10). Cuda/RIFE remains unverified on a real GPU. `GO` is
+  absent again; the write-once `create-attempted` latch, `state.json`, and `run1-evidence.json` remain
+  in `/var/lib/aividup-runpod-pilot/` as the audit trail.
 
-The only unverified network fact is whether a future RunPod Pod can make outbound TCP/22 to vps1748. Proving that from the provider requires a RunPod compute resource; no GPU or CPU Pod is authorised for that check. The first explicitly approved GPU run will fail closed before checkpoint download if the SSH tunnel cannot establish, and the external controller still owns the absolute 30-minute teardown deadline.
+The outbound TCP/22 question is now **answered**: the Pod reached `vps1748:22` and the restricted tunnel plus the pre-bootstrap HTTP 401 probe both worked in run #1. The first explicitly approved GPU run will still fail closed before checkpoint download if the tunnel cannot establish, and the external controller still owns the absolute 30-minute teardown deadline.
 
 ## Setup order (one-time; no RunPod API POST)
 

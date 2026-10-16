@@ -162,3 +162,47 @@ model, no image optimisation, no production lifecycle change.
 Accepted residual risks: CUDA 12.6 on a host advertising 13.x is unproven until the run itself;
 availability is LOW and may vanish between the check and the launch; the controller is the only
 deadline enforcement, so its host must actually stay alive.
+
+## 9. Live run #1 — 2026-10-16 (executed; worker never reached RIFE)
+
+Spend was approved for one Pod. The approved RTX 3090 / EU-CZ-1 Secure offer disappeared before
+launch (`availability=NONE`, zero datacentres at 10:02 UTC after LOW at 08:46), so the run used the
+documented fallback under a separate explicit decision: **RTX 4090 Secure, EU-RO-1, $0.89/h**, one
+Pod, absolute 1800 s deadline, no Network Volume, no retries.
+
+| Fact | Measured |
+|---|---|
+| create requested → provider `createdAt` | 10:04:41.457 → 10:04:41.954 UTC (0.5 s) |
+| Pod id / datacentre | `kx35gksg1mtjfz` / EU-RO-1 |
+| **cold start** (`createdAt` → first working SSH tunnel from the Pod) | **≈154 s** (first accepted key 10:07:16 UTC) |
+| **outbound TCP/22 Pod → vps1748** | **PASS** — `sshd` accepted the restricted key from the Pod egress IP; 62 sessions during the run |
+| restricted tunnel + HTTP 401 probe before bootstrap | **PASS** — execution advanced past the probe step |
+| isolated plane jobs claimed | **0** (the single job is still unused) |
+| failure | `python3: can't open file '/opt/aividup-runpod-pilot/runpod_checkpoint_bootstrap.py'` (§10) |
+| container restarts | 62 tunnel handshakes in ~16 min — the entrypoint crash-looped |
+| teardown | Pod reached `EXITED`; controller logged `is EXITED; tearing down now`, 1 DELETE attempt, `verified_absent: true`, exit code 0 |
+| provider inventory after | 0 Pods, 0 Network Volumes |
+| wall clock | 10:04:42 → 10:23:47 UTC = **1145 s** |
+| **cost** | 4090 $0.89/h × 1145 s ≈ **$0.283** + 20 GB disk ≈ $0.001 → **≈$0.284** |
+
+CUDA/RIFE on a real GPU is still **unverified**: the run failed before checkpoint download, so
+`cuda_runtime_preflight` and RIFE inference never executed. The absolute-deadline teardown path was
+not exercised (the Pod exited early); the early-exit teardown path was, against the real provider.
+The worst-case $1.25 planning figure was never approached.
+
+## 10. Defect found by run #1 and fixed
+
+`ops/runpod-pilot/pod-args.json` invoked the bootstrap at a **host** path
+(`/opt/aividup-runpod-pilot/runpod_checkpoint_bootstrap.py`) that does not exist inside the
+immutable image; `docker/Dockerfile.runpod-pilot` copies it to
+`/opt/aividup/runpod_checkpoint_bootstrap.py`. Every container restart re-ran the tunnel and the 401
+probe successfully and then died on the missing file.
+
+Fix: the Pod args now run `python3 /opt/aividup/runpod_checkpoint_bootstrap.py &` (the same path and
+interpreter the image's own `ENTRYPOINT` uses). Adding `AIVIDUP_IDLE_EXIT_SECONDS` or any other
+behaviour change is explicitly out of scope.
+
+Regression test `tests/unit/test_runpod_pilot_controller_config.py::test_pod_args_bootstrap_path_exists_inside_the_immutable_image`
+derives the expected path from the Dockerfile `COPY` destination and asserts the Pod args use it and
+never reference a host-only `/opt/aividup-runpod-pilot/` path. No GPU-side test could have caught
+this class of defect; the container filesystem was the only place it could show up.
