@@ -1,0 +1,10 @@
+# Build context for docker/Dockerfile.worker.on-gpu-base (BuildKit picks this file up automatically).
+*
+!src/
+!pipeline_v2.py
+!RIFEv4.26_0921/
+!scripts/worker_start.sh
+!scripts/cuda_runtime_preflight.py
+**/__pycache__
+**/*.pyc
+**/.pytest_cache

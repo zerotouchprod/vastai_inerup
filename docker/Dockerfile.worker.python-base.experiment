@@ -1,12 +1,7 @@
 # EXPERIMENT ONLY. Do not use this file for production deployment.
 # Compare against docker/Dockerfile.worker without the NVIDIA CUDA base image.
-FROM python:3.11-slim-bookworm
-
-ARG GIT_SHA=experiment
-LABEL org.opencontainers.image.title="aividup-worker-python-base-experiment" \
-      org.opencontainers.image.source="https://github.com/zerotouchprod/vastai_inerup" \
-      org.opencontainers.image.revision="${GIT_SHA}" \
-      org.opencontainers.image.description="Non-production size/runtime comparison candidate"
+# Base pinned by index digest (resolved 2026-10-15) so the base layers are byte-stable.
+FROM python:3.11-slim-bookworm@sha256:0a310eeecf4e1f5a0743f9a6520c90c88d089c903ca5fd283f501e3a805f5f89
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PIP_NO_CACHE_DIR=1 \
@@ -21,15 +16,23 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:${PATH}"
-RUN pip install --upgrade pip setuptools wheel
+# All Python deps are exact-pinned with hashes (docker/locks, regenerate via scripts/lock_worker_deps.sh)
+# so heavy layers stay byte-stable across code-only rebuilds. No unpinned `pip install --upgrade`.
+COPY docker/locks/worker-bootstrap.lock /tmp/locks/worker-bootstrap.lock
+RUN pip install --require-hashes --no-deps -r /tmp/locks/worker-bootstrap.lock
 
-# Keep the same CUDA wheel channel and versions as the production candidate.
-RUN pip install torch==2.9.1 torchvision --index-url https://download.pytorch.org/whl/cu126
+# torch 2.9.1+cu126 / torchvision 0.24.1+cu126 + nvidia-* cu12 wheels + triton (heavy layer).
+COPY docker/locks/worker-torch-cu126.lock /tmp/locks/worker-torch-cu126.lock
+RUN pip install --require-hashes --no-deps \
+        --index-url https://download.pytorch.org/whl/cu126 --extra-index-url https://pypi.org/simple \
+        -r /tmp/locks/worker-torch-cu126.lock
 
-COPY requirements-worker.txt /tmp/requirements-worker.txt
-RUN pip install -r /tmp/requirements-worker.txt
+COPY docker/locks/worker-runtime.lock /tmp/locks/worker-runtime.lock
+RUN pip install --require-hashes --no-deps -r /tmp/locks/worker-runtime.lock \
+    && pip check
 
-RUN pip install --no-deps basicsr realesrgan \
+COPY docker/locks/worker-nodeps.lock /tmp/locks/worker-nodeps.lock
+RUN pip install --require-hashes --no-deps -r /tmp/locks/worker-nodeps.lock \
     && F="$(python -c 'import importlib.util as u; print(u.find_spec("basicsr").submodule_search_locations[0])')/data/degradations.py" \
     && sed -i 's/from torchvision.transforms.functional_tensor import rgb_to_grayscale/from torchvision.transforms.functional import rgb_to_grayscale/' "$F" \
     && ! grep -q functional_tensor "$F"
@@ -37,24 +40,32 @@ RUN pip install --no-deps basicsr realesrgan \
 RUN mkdir -p /opt/realesrgan_models && cd /opt/realesrgan_models \
     && wget -q https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.1/RealESRGAN_x2plus.pth \
     && wget -q https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth \
-    && test "$(stat -c %s RealESRGAN_x2plus.pth)" -gt 30000000 \
-    && test "$(stat -c %s RealESRGAN_x4plus.pth)" -gt 60000000
+    && printf '%s  %s\n' \
+        49fafd45f8fd7aa8d31ab2a22d14d91b536c34494a5cfe31eb5d89c2fa266abb RealESRGAN_x2plus.pth \
+        4fa0d38905f75ac06eb49a7951b426670021be3018265fd191d2125df9d682f1 RealESRGAN_x4plus.pth \
+       | sha256sum -c -
 
 WORKDIR /workspace/project
 COPY RIFEv4.26_0921/ /workspace/project/RIFEv4.26_0921/
 RUN mkdir -p /opt/rife_models && ln -s /workspace/project/RIFEv4.26_0921/train_log /opt/rife_models/train_log \
-    && test -s /opt/rife_models/train_log/flownet.pkl
+    && echo "45c7f74156704769dc9f85cfcaf8552e1e926f9399dcfa3a553dee88fac6f53f  /opt/rife_models/train_log/flownet.pkl" | sha256sum -c -
 COPY src/ /workspace/project/src/
 COPY pipeline_v2.py /workspace/project/pipeline_v2.py
 COPY scripts/cuda_runtime_preflight.py /opt/aividup/cuda_runtime_preflight.py
 COPY scripts/worker_start.sh /usr/local/bin/worker_start.sh
-RUN chmod +x /opt/aividup/cuda_runtime_preflight.py /usr/local/bin/worker_start.sh \
-    && echo "${GIT_SHA}" > /etc/aividup_revision
+RUN chmod +x /opt/aividup/cuda_runtime_preflight.py /usr/local/bin/worker_start.sh
 
 RUN python -c "import torch, torchvision, cv2, numpy, yaml, requests, boto3, ffmpeg, pydantic_settings; \
 from basicsr.archs.rrdbnet_arch import RRDBNet; from realesrgan import RealESRGANer; \
 import src.worker.runner, src.presentation.cli; print('worker imports ok, torch', torch.__version__, 'cuda', torch.version.cuda)" \
     && ffmpeg -hide_banner -encoders 2>/dev/null | grep -q libx264
+
+ARG GIT_SHA=experiment
+LABEL org.opencontainers.image.title="aividup-worker-python-base-experiment" \
+      org.opencontainers.image.source="https://github.com/zerotouchprod/vastai_inerup" \
+      org.opencontainers.image.revision="${GIT_SHA}" \
+      org.opencontainers.image.description="Non-production size/runtime comparison candidate"
+RUN echo "${GIT_SHA}" > /etc/aividup_revision
 
 ENV PYTHONPATH=/workspace/project \
     USE_NATIVE_PROCESSORS=1 \

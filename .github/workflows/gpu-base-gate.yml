@@ -1,0 +1,145 @@
+name: gpu-base build + worker layer-reuse gate (CPU only, in-job registry)
+
+# Never pushes to ghcr. Base is built once into an in-job registry:2; two workers are built FROM it by digest
+# on two independent clean buildx builders with NO shared BuildKit cache.
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'docker/Dockerfile.gpu-base'
+      - 'docker/Dockerfile.gpu-base.dockerignore'
+      - 'docker/Dockerfile.worker.on-gpu-base'
+      - 'docker/Dockerfile.worker.on-gpu-base.dockerignore'
+      - 'docker/locks/**'
+      - 'scripts/gpu_base_gate.py'
+      - 'scripts/registry_layer_report.py'
+      - '.github/workflows/gpu-base-gate.yml'
+
+permissions:
+  contents: read
+
+env:
+  REG: localhost:5000
+
+jobs:
+  base-and-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    services:
+      registry: { image: "registry:2", ports: [ "5000:5000" ] }
+    outputs:
+      worker_digest: ${{ steps.gate.outputs.worker_digest }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Free runner disk
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
+      - name: buildkitd config (plain-http local registry)
+        run: printf '[registry."localhost:5000"]\n  http = true\n  insecure = true\n' > /tmp/buildkitd.toml
+      - name: Build gpu-base once (builder-base)
+        run: |
+          docker buildx create --name builder-base --driver docker-container --driver-opt network=host --config /tmp/buildkitd.toml --bootstrap
+          docker buildx build --builder builder-base --platform linux/amd64 --provenance=false -f docker/Dockerfile.gpu-base \
+            --output type=image,name=$REG/aividup-gpu-base:candidate,push=true,registry.insecure=true .
+          docker buildx rm builder-base
+      - name: Base evidence (manifest, digest, sizes, diff_ids, versions)
+        id: base
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          python3 scripts/registry_layer_report.py --repo aividup-gpu-base --tag candidate --output evidence/gpu-base-layers.json | tee evidence/gpu-base-layers.txt
+          D=$(jq -r '.builds[0].manifest_digest' evidence/gpu-base-layers.json)
+          echo "digest=$D" >> "$GITHUB_OUTPUT"
+          curl -fsS -H 'Accept: application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.v2+json' \
+            "http://$REG/v2/aividup-gpu-base/manifests/$D" > evidence/gpu-base-manifest.json
+          C=$(jq -r .config.digest evidence/gpu-base-manifest.json)
+          curl -fsS "http://$REG/v2/aividup-gpu-base/blobs/$C" > evidence/gpu-base-config.json
+          docker pull "$REG/aividup-gpu-base@$D"
+          docker run --rm "$REG/aividup-gpu-base@$D" python -c "import sys, torch, torchvision, importlib.metadata as m; \
+          print('python', sys.version.split()[0]); print('torch', torch.__version__, 'cuda', torch.version.cuda, 'cudnn', torch.backends.cudnn.version()); \
+          print('torchvision', torchvision.__version__); print('pip', m.version('pip'), 'setuptools', m.version('setuptools'), 'wheel', m.version('wheel')); \
+          print('basicsr', m.version('basicsr'), 'realesrgan', m.version('realesrgan'))" | tee evidence/gpu-base-versions.txt
+          docker run --rm "$REG/aividup-gpu-base@$D" sha256sum /opt/realesrgan_models/RealESRGAN_x2plus.pth /opt/realesrgan_models/RealESRGAN_x4plus.pth | tee -a evidence/gpu-base-versions.txt
+          docker run --rm "$REG/aividup-gpu-base@$D" pip freeze --all > evidence/gpu-base-pip-freeze.txt
+          docker run --rm "$REG/aividup-gpu-base@$D" sh -c 'test ! -e /workspace/project/src && test ! -e /etc/aividup_revision' && echo "no worker code / revision in base: OK" | tee -a evidence/gpu-base-versions.txt
+          docker image rm "$REG/aividup-gpu-base@$D"
+      - name: Worker w1 (clean builder-1, no cache import/export)
+        run: |
+          docker buildx create --name builder-1 --driver docker-container --driver-opt network=host --config /tmp/buildkitd.toml --bootstrap
+          docker buildx build --builder builder-1 --platform linux/amd64 --provenance=false -f docker/Dockerfile.worker.on-gpu-base \
+            --build-arg BASE_IMAGE=$REG/aividup-gpu-base@${{ steps.base.outputs.digest }} --build-arg GIT_SHA=${{ github.sha }} \
+            --output type=image,name=$REG/aividup-worker:w1,push=true,registry.insecure=true .
+          docker buildx rm builder-1
+      - name: Worker w2 (independent clean builder-2, new GIT_SHA, no cache import/export)
+        run: |
+          docker buildx create --name builder-2 --driver docker-container --driver-opt network=host --config /tmp/buildkitd.toml --bootstrap
+          docker buildx build --builder builder-2 --platform linux/amd64 --provenance=false -f docker/Dockerfile.worker.on-gpu-base \
+            --build-arg BASE_IMAGE=$REG/aividup-gpu-base@${{ steps.base.outputs.digest }} --build-arg GIT_SHA=gate-${{ github.run_id }} \
+            --output type=image,name=$REG/aividup-worker:w2,push=true,registry.insecure=true .
+          docker buildx rm builder-2
+      - name: Gate (inherited layers identical by blob digest and diff_id)
+        id: gate
+        run: |
+          python3 scripts/registry_layer_report.py --repo aividup-worker --tag w1 --tag w2 --output evidence/worker-layers.json > evidence/worker-layers.txt
+          python3 scripts/gpu_base_gate.py --base evidence/gpu-base-layers.json --workers evidence/worker-layers.json --output evidence/gate.md
+          echo "worker_digest=$(jq -r '.builds[1].manifest_digest' evidence/worker-layers.json)" >> "$GITHUB_OUTPUT"
+          { echo '### gpu-base gate'; cat evidence/gpu-base-versions.txt | sed 's/^/    /'; echo; cat evidence/gate.md; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Export final worker (w2) as OCI archive for fresh-daemon pull test
+        run: |
+          skopeo --version || { sudo apt-get update -q && sudo apt-get install -y -q skopeo; }
+          skopeo copy --src-tls-verify=false docker://$REG/aividup-worker:w2 oci-archive:$RUNNER_TEMP/worker-w2.tar
+          ls -l $RUNNER_TEMP/worker-w2.tar
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: gpu-base-gate-evidence, path: evidence/ }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: worker-w2-oci
+          path: ${{ runner.temp }}/worker-w2.tar
+          compression-level: 0
+          retention-days: 2
+
+  fresh-daemon-pull:
+    needs: base-and-gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    services:
+      registry: { image: "registry:2", ports: [ "5000:5000" ] }
+    env:
+      WANT: ${{ needs.base-and-gate.outputs.worker_digest }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Free runner disk
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
+      - uses: actions/download-artifact@v4
+        with: { name: worker-w2-oci, path: oci }
+      - name: Load into fresh registry preserving digests, then pull by digest on this runner's fresh daemon
+        shell: bash
+        run: |
+          set -euo pipefail
+          skopeo --version || { sudo apt-get update -q && sudo apt-get install -y -q skopeo; }
+          skopeo copy --preserve-digests --dest-tls-verify=false oci-archive:oci/worker-w2.tar docker://$REG/aividup-worker:w2
+          rm -f oci/worker-w2.tar
+          docker image ls -q | wc -l
+          docker pull "$REG/aividup-worker@$WANT"
+      - name: Inspect + verify entrypoint/cmd/env
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          IMG="$REG/aividup-worker@$WANT"
+          docker image inspect "$IMG" > evidence/worker-inspect.json
+          jq '{RepoDigests:.[0].RepoDigests, Size:.[0].Size, Entrypoint:.[0].Config.Entrypoint, Cmd:.[0].Config.Cmd, Labels:.[0].Config.Labels, Layers:(.[0].RootFS.Layers|length)}' evidence/worker-inspect.json | tee evidence/worker-inspect-summary.json
+          test "$(jq -c '.[0].Config.Entrypoint' evidence/worker-inspect.json)" = '["/usr/bin/tini","--","/usr/local/bin/worker_start.sh"]'
+          test "$(jq -c '.[0].Config.Cmd' evidence/worker-inspect.json)" = 'null'
+          docker run --rm --entrypoint python "$IMG" -c "import torch, src.worker.runner, src.presentation.cli; from realesrgan import RealESRGANer; print('imports ok', torch.__version__)" | tee evidence/worker-import.txt
+          docker run --rm --entrypoint cat "$IMG" /etc/aividup_revision | tee -a evidence/worker-import.txt
+      - name: CPU acceptance
+        run: |
+          python3 scripts/worker_image_container_acceptance.py --image "$REG/aividup-worker@$WANT" --allow-local-tag \
+            --evidence evidence/worker-acceptance.json
+          jq -r .decision evidence/worker-acceptance.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: fresh-daemon-pull-evidence, path: evidence/ }
