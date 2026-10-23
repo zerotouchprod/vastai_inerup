@@ -3,7 +3,7 @@
 #
 # Required env:   AIVIDUP_API_URL        e.g. https://aividup.com/api/worker
 #                 AIVIDUP_WORKER_TOKEN   shared secret (never printed, never put on a command line)
-# Provider instance id: AIVIDUP_GPU_INSTANCE_ID, CONTAINER_ID or VAST_CONTAINERLABEL.
+# Provider instance id: AIVIDUP_GPU_INSTANCE_ID, CONTAINER_ID, VAST_CONTAINERLABEL or RUNPOD_POD_ID.
 # Worker id: unique UUID for this process; a new boot requires a new lease generation.
 # Optional env: AIVIDUP_PROCESSOR (pipeline|ffmpeg|passthrough, default pipeline)
 #                 AIVIDUP_GPU_PROBE_BACKEND (all|realesrgan|rife, default all)
@@ -36,6 +36,8 @@ resolve_provider_instance_id() {
   if [[ -n "${AIVIDUP_GPU_INSTANCE_ID:-}" ]]; then printf '%s' "$AIVIDUP_GPU_INSTANCE_ID"; return; fi
   if [[ -n "${CONTAINER_ID:-}" ]]; then printf '%s' "$CONTAINER_ID"; return; fi
   if [[ -n "${VAST_CONTAINERLABEL:-}" ]]; then printf '%s' "${VAST_CONTAINERLABEL#C.}"; return; fi
+  # RunPod injects RUNPOD_POD_ID into every Pod; the control plane leases RunPod Pods by that id.
+  if [[ -n "${RUNPOD_POD_ID:-}" ]]; then printf '%s' "$RUNPOD_POD_ID"; return; fi
 }
 
 # Best effort: the control plane's lease reaper is the authoritative cleanup; this just stops billing sooner.
