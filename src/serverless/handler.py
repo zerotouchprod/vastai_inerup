@@ -63,7 +63,20 @@ def handler(job):
                 "params": inp.get("params", {"scale": 2, "target_fps": 60}), "_timings": timings}
         t = time.monotonic()
         timings["first_gpu_compute_epoch"] = round(time.time(), 3)
-        pipeline(task, src, dst, lost)
+        import io
+        import logging
+
+        buf = io.StringIO()
+        h = logging.StreamHandler(buf)
+        h.setLevel(logging.INFO)
+        logging.getLogger().addHandler(h)
+        try:
+            pipeline(task, src, dst, lost)
+        except Exception as e:  # experiment: surface the cause (log tail only, no env)
+            return {"error": f"{type(e).__name__}: {e}", "log_tail": buf.getvalue()[-3000:],
+                    "disk_free_gb": round(__import__("shutil").disk_usage(d).free / 1e9, 1), **timings}
+        finally:
+            logging.getLogger().removeHandler(h)
         timings["pipeline_s"] = round(time.monotonic() - t, 2)
         timings["output_bytes"] = dst.stat().st_size if dst.exists() else 0
     timings["handler_total_s"] = round(time.time() - t0, 2)
@@ -74,5 +87,7 @@ def handler(job):
 if __name__ == "__main__":
     import runpod
 
+    logging_root = __import__("logging")
+    logging_root.basicConfig(level=logging_root.INFO)
     _warm_imports()
     runpod.serverless.start({"handler": handler})
