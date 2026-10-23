@@ -50,7 +50,11 @@ def handler(job):
         src, dst = Path(d) / "in.mp4", Path(d) / "out.mp4"
         t = time.monotonic()
         url = str(inp.get("input_url", "lavfi"))
-        if url == "lavfi":
+        if inp.get("input_b64"):
+            import base64
+
+            src.write_bytes(base64.b64decode(inp["input_b64"]))
+        elif url == "lavfi":
             _synthetic(src, duration)
         else:
             cut_chunk(url, float(inp.get("start", 0)), duration, src, lost)
