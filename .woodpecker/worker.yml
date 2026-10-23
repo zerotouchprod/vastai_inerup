@@ -51,8 +51,8 @@ steps:
       - apt-get update -qq && apt-get install -y -qq ffmpeg >/dev/null
       - pip install -q pytest "numpy<2" "opencv-python-headless<5" requests pyyaml pydantic
       - python -m compileall -q src/worker src/application/orchestrator.py src/infrastructure/processors/rife/native.py src/infrastructure/processors/rife/native_wrapper.py src/shared/fps_planning.py
-      - python -m pytest tests/unit/test_worker.py tests/unit/test_worker_start.py tests/unit/test_bootstrap_reporting.py tests/unit/test_fps_planning.py tests/test_worker_image_contract.py tests/test_worker_container_acceptance.py tests/test_interpolation_control.py -q
-      - python scripts/worker_image_acceptance.py
+      - 'T=""; for f in tests/unit/test_worker.py tests/unit/test_worker_start.py tests/unit/test_bootstrap_reporting.py tests/unit/test_fps_planning.py tests/test_worker_image_contract.py tests/test_worker_container_acceptance.py tests/test_interpolation_control.py; do [ -f "$f" ] && T="$T $f"; done; python -m pytest $T -q'
+      - python scripts/worker_image_acceptance.py  # test files absent at an older BUILD_REF are skipped above
 
   - name: build-worker
     image: gcr.io/kaniko-project/executor:debug
