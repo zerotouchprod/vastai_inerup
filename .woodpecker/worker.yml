@@ -62,7 +62,7 @@ steps:
       - >-
         /kaniko/executor --context=dir://$CI_WORKSPACE --dockerfile=docker/Dockerfile.worker
         --build-arg=GIT_SHA=$(cat .build-sha) --no-push
-        --snapshot-mode=redo --use-new-run --compressed-caching=false --cleanup
+        --snapshot-mode=redo --use-new-run --compressed-caching=false --cleanup --reproducible
 
   - name: build-worker
     image: gcr.io/kaniko-project/executor:debug
@@ -77,6 +77,6 @@ steps:
       - printf '{"auths":{"ghcr.io":{"auth":"%s"}}}' "$(printf '%s:%s' "$GHCR_USERNAME" "$GHCR_TOKEN" | base64 | tr -d '\n')" > /kaniko/.docker/config.json
       - >-
         /kaniko/executor --context=dir://$CI_WORKSPACE --dockerfile=docker/Dockerfile.worker
-        --build-arg=GIT_SHA=$SHA $DEST --digest-file=/tmp/digest
-        --snapshot-mode=redo --use-new-run --compressed-caching=false --cleanup
+        --build-arg=GIT_SHA=$SHA $DEST --digest-file=/tmp/digest --push-retry=3
+        --snapshot-mode=redo --use-new-run --compressed-caching=false --cleanup --reproducible
       - 'echo "SOURCE_SHA=$SHA IMAGE=ghcr.io/zerotouchprod/aividup-worker:$TAG IMAGE_DIGEST=$(cat /tmp/digest 2>/dev/null)"'
