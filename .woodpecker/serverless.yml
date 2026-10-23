@@ -1,0 +1,18 @@
+# EXPERIMENT: builds docker/Dockerfile.serverless on push to exp/runpod-serverless only.
+when:
+  - event: push
+    branch: exp/runpod-serverless
+steps:
+  - name: build-serverless
+    image: gcr.io/kaniko-project/executor:debug
+    environment:
+      GHCR_USERNAME: {from_secret: ghcr_username}
+      GHCR_TOKEN: {from_secret: ghcr_token}
+    commands:
+      - mkdir -p /kaniko/.docker
+      - printf '{"auths":{"ghcr.io":{"auth":"%s"}}}' "$(printf '%s:%s' "$GHCR_USERNAME" "$GHCR_TOKEN" | base64 | tr -d '\n')" > /kaniko/.docker/config.json
+      - >-
+        /kaniko/executor --context=dir://$CI_WORKSPACE --dockerfile=docker/Dockerfile.serverless
+        --destination=ghcr.io/zerotouchprod/aividup-worker:serverless-$CI_COMMIT_SHA --digest-file=/tmp/digest
+        --snapshot-mode=redo --use-new-run --compressed-caching=false --cleanup
+      - 'echo "IMAGE_DIGEST=$(cat /tmp/digest)"'
