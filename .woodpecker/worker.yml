@@ -1,0 +1,82 @@
+# Replaces .github/workflows/build-worker.yml (tests + image jobs).
+# Builds docker/Dockerfile.worker with kaniko -> ghcr.io/zerotouchprod/aividup-worker:<sha>; PRs build without pushing (no secrets).
+# Manual runs may set BUILD_REF=<40-char sha> to rebuild an older commit (pushed as :rebuild-<sha>, never as :<sha>).
+# Secrets (names only): ghcr_username, ghcr_token (write:packages).
+# Image is ~6 GB compressed (~15 GB unpacked); the builder needs ~40 GB free disk and ~8 GB RAM.
+when:
+  - event: [push, pull_request]
+    branch: main
+    path:
+      include:
+        - 'src/worker/**'
+        - 'src/application/orchestrator.py'
+        - 'src/infrastructure/processors/rife/native.py'
+        - 'src/infrastructure/processors/rife/native_wrapper.py'
+        - 'src/shared/fps_planning.py'
+        - 'tests/unit/test_worker.py'
+        - 'tests/unit/test_worker_start.py'
+        - 'tests/unit/test_bootstrap_reporting.py'
+        - 'contracts/worker-api-v1.json'
+        - 'tests/unit/test_fps_planning.py'
+        - 'tests/test_worker_image_contract.py'
+        - 'tests/test_interpolation_control.py'
+        - 'docker/Dockerfile.worker'
+        - 'docker/Dockerfile.worker.dockerignore'
+        - 'requirements-worker.txt'
+        - 'scripts/worker_start.sh'
+        - 'scripts/cuda_runtime_preflight.py'
+        - 'scripts/worker_image_acceptance.py'
+        - 'scripts/build_worker.sh'
+        - 'scripts/worker_image_container_acceptance.py'
+        - 'scripts/worker_image_variant_report.py'
+        - 'docker/Dockerfile.worker.python-base.experiment'
+        - 'tests/test_worker_container_acceptance.py'
+        - 'RIFEv4.26_0921/**'
+        - '.woodpecker/worker.yml'
+  - event: manual
+
+steps:
+  - name: checkout-ref
+    image: alpine/git:latest
+    commands:
+      - 'if [ -n "$BUILD_REF" ]; then echo "$BUILD_REF" | grep -Eq "^[0-9a-f]{40}$" && git fetch -q origin "$BUILD_REF" && git checkout -q "$BUILD_REF"; fi'
+      - git rev-parse HEAD > /tmp/sha && cp /tmp/sha .build-sha
+      # kaniko ignores per-Dockerfile ignore files; promote the worker one to the context root.
+      - cp docker/Dockerfile.worker.dockerignore .dockerignore && printf '\n.build-sha\n' >> .dockerignore
+      - 'echo "building source $(cat .build-sha)"'
+
+  - name: tests
+    image: python:3.10-slim
+    commands:
+      - apt-get update -qq && apt-get install -y -qq ffmpeg >/dev/null
+      - pip install -q pytest "numpy<2" "opencv-python-headless<5" requests pyyaml pydantic
+      - python -m compileall -q src/worker src/application/orchestrator.py src/infrastructure/processors/rife/native.py src/infrastructure/processors/rife/native_wrapper.py src/shared/fps_planning.py
+      - 'T=""; for f in tests/unit/test_worker.py tests/unit/test_worker_start.py tests/unit/test_bootstrap_reporting.py tests/unit/test_fps_planning.py tests/test_worker_image_contract.py tests/test_worker_container_acceptance.py tests/test_interpolation_control.py; do [ -f "$f" ] && T="$T $f"; done; python -m pytest $T -q'
+      - python scripts/worker_image_acceptance.py  # test files absent at an older BUILD_REF are skipped above
+
+  - name: build-worker-pr
+    # PRs get no secrets: build only, never push.
+    image: gcr.io/kaniko-project/executor:debug
+    when: {event: pull_request}
+    commands:
+      - >-
+        /kaniko/executor --context=dir://$CI_WORKSPACE --dockerfile=docker/Dockerfile.worker
+        --build-arg=GIT_SHA=$(cat .build-sha) --no-push
+        --snapshot-mode=redo --use-new-run --compressed-caching=false --cleanup
+
+  - name: build-worker
+    image: gcr.io/kaniko-project/executor:debug
+    when: {event: [push, manual]}
+    environment:
+      GHCR_USERNAME: {from_secret: ghcr_username}
+      GHCR_TOKEN: {from_secret: ghcr_token}
+    commands:
+      - SHA=$(cat .build-sha); TAG=$SHA; if [ -n "$BUILD_REF" ]; then TAG=rebuild-$SHA; fi
+      - DEST="--destination=ghcr.io/zerotouchprod/aividup-worker:$TAG"
+      - mkdir -p /kaniko/.docker
+      - printf '{"auths":{"ghcr.io":{"auth":"%s"}}}' "$(printf '%s:%s' "$GHCR_USERNAME" "$GHCR_TOKEN" | base64 | tr -d '\n')" > /kaniko/.docker/config.json
+      - >-
+        /kaniko/executor --context=dir://$CI_WORKSPACE --dockerfile=docker/Dockerfile.worker
+        --build-arg=GIT_SHA=$SHA $DEST --digest-file=/tmp/digest
+        --snapshot-mode=redo --use-new-run --compressed-caching=false --cleanup
+      - 'echo "SOURCE_SHA=$SHA IMAGE=ghcr.io/zerotouchprod/aividup-worker:$TAG IMAGE_DIGEST=$(cat /tmp/digest 2>/dev/null)"'
