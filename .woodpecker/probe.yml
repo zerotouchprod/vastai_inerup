@@ -1,0 +1,6 @@
+when: [{event: manual}]
+steps:
+  - name: probe
+    image: alpine:3.20
+    commands:
+      - nproc; free -g; df -h / /tmp . | cat; cat /proc/meminfo | head -3
