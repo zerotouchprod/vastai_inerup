@@ -80,6 +80,15 @@ def test_requires_api_url_and_token_and_never_prints_token(env):
             },
             "12345",
         ),
+        (
+            {
+                "AIVIDUP_GPU_INSTANCE_ID": None,
+                "CONTAINER_ID": None,
+                "VAST_CONTAINERLABEL": None,
+                "RUNPOD_POD_ID": "4ldi0elc9q1tej",
+            },
+            "4ldi0elc9q1tej",
+        ),
     ],
 )
 def test_provider_instance_id_resolution_order(env, extra, expected):
@@ -90,7 +99,7 @@ def test_provider_instance_id_resolution_order(env, extra, expected):
 
 def test_no_provider_instance_id_is_a_config_error(env):
     r = run(
-        env, AIVIDUP_GPU_INSTANCE_ID=None, CONTAINER_ID=None, VAST_CONTAINERLABEL=None
+        env, AIVIDUP_GPU_INSTANCE_ID=None, CONTAINER_ID=None, VAST_CONTAINERLABEL=None, RUNPOD_POD_ID=None
     )
     assert r.returncode == 2 and "provider instance id is unavailable" in r.stdout
 
