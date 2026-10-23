@@ -24,21 +24,27 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_COMPILE=1
 
-# ffmpeg (chunk cutting, probing, h264_nvenc where available), tini (PID 1: signal forwarding, zombie reaping), curl (self-destroy call).
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        python3 python3-pip python3-venv \
-        ffmpeg tini curl wget ca-certificates \
-        libglib2.0-0 libgl1 libgomp1 \
+# Layer order is by change frequency: the multi-GB torch layer sits directly on the base image + python,
+# so routine apt/security updates (curl, ca-certificates, ...) no longer invalidate it. PIP_NO_COMPILE and
+# kaniko --reproducible keep unchanged layers byte-identical between builds (no .pyc / mtime churn).
+RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-venv \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 RUN python3 -m venv /opt/venv
 ENV PATH="/opt/venv/bin:${PATH}"
-RUN pip install --upgrade pip setuptools wheel
+RUN pip install pip==26.2.2 setuptools==84.2.1 wheel==0.48.0
 
 # PyTorch with the CUDA 12.6 wheels (same version the fat image ran on an RTX A4000 in the smoke test).
-RUN pip install torch==2.9.1 torchvision --index-url https://download.pytorch.org/whl/cu126
+RUN pip install torch==2.9.1 torchvision==0.24.1 --index-url https://download.pytorch.org/whl/cu126
+
+# ffmpeg (chunk cutting, probing, h264_nvenc where available), tini (PID 1: signal forwarding, zombie reaping), curl (self-destroy call).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3-pip ffmpeg tini curl wget ca-certificates \
+        libglib2.0-0 libgl1 libgomp1 \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 COPY requirements-worker.txt /tmp/requirements-worker.txt
 RUN pip install -r /tmp/requirements-worker.txt
@@ -52,8 +58,8 @@ RUN pip install --no-deps basicsr realesrgan \
 
 # Model weights live in the image: no download on a rented (billed) GPU.
 RUN mkdir -p /opt/realesrgan_models && cd /opt/realesrgan_models \
-    && wget -q https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.1/RealESRGAN_x2plus.pth \
-    && wget -q https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth \
+    && wget -q --no-hsts https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.1/RealESRGAN_x2plus.pth \
+    && wget -q --no-hsts https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth \
     && test "$(stat -c %s RealESRGAN_x2plus.pth)" -gt 30000000 \
     && test "$(stat -c %s RealESRGAN_x4plus.pth)" -gt 60000000
 
