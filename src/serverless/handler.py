@@ -90,4 +90,10 @@ if __name__ == "__main__":
     logging_root = __import__("logging")
     logging_root.basicConfig(level=logging_root.INFO)
     _warm_imports()
+    import torch
+
+    if torch.cuda.is_available() and torch.cuda.get_device_capability(0)[0] >= 10:
+        # cu126 build has no Blackwell kernels; exit so RunPod does not route jobs here.
+        print("unsupported GPU for this image:", _IMPORTED.get("gpu"), flush=True)
+        raise SystemExit(1)
     runpod.serverless.start({"handler": handler})
