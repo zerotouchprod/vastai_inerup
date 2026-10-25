@@ -82,7 +82,7 @@ RUN chmod +x /opt/aividup/cuda_runtime_preflight.py /usr/local/bin/worker_start.
 # CPU-only builder: CUDA is not available here, so only imports are checked, not model execution.
 RUN python -c "import torch, torchvision, cv2, numpy, yaml, requests, boto3, ffmpeg, pydantic_settings; \
 from basicsr.archs.rrdbnet_arch import RRDBNet; from realesrgan import RealESRGANer; \
-import src.worker.runner, src.presentation.cli, runpod, src.serverless.handler; print('worker imports ok, torch', torch.__version__, 'cuda', torch.version.cuda)" \
+import src.worker.runner, src.presentation.cli, runpod, src.serverless.handler, src.serverless.child; print('worker imports ok, torch', torch.__version__, 'cuda', torch.version.cuda)" \
     && ffmpeg -hide_banner -encoders 2>/dev/null | grep -q libx264
 
 ENV PYTHONPATH=/workspace/project \

@@ -11,6 +11,7 @@ when:
         - 'src/worker/processors.py'
         - 'src/infrastructure/media/**'
         - 'tests/unit/test_serverless.py'
+        - 'tests/fixtures/sls_fake_child.py'
         - 'docker/Dockerfile.aividup-serverless'
         - 'requirements-worker.txt'
         - 'RIFEv4.26_0921/**'

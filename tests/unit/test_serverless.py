@@ -196,6 +196,16 @@ def test_apply_to_assembler_process_local():
 
 # ---------- handler contract ----------
 
+import os  # noqa: E402
+import sys  # noqa: E402
+import time  # noqa: E402
+
+FAKE = [
+    sys.executable,
+    os.path.join(os.path.dirname(__file__), "..", "fixtures", "sls_fake_child.py"),
+]
+OUT = "https://r2.example/sls/att-12345678/o.mp4?X-Amz-Signature=s"
+
 
 @pytest.fixture
 def ready(monkeypatch):
@@ -209,33 +219,23 @@ def ready(monkeypatch):
     )
     monkeypatch.setitem(h._STATE, "probe", {"nvenc_ok": False})
     monkeypatch.setitem(h._STATE, "seen", {})
-    monkeypatch.setattr(enc, "apply_to_assembler", lambda e: None)
+    monkeypatch.setattr(h, "CHILD_CMD", FAKE)
+    monkeypatch.setattr(h, "POLL_S", 0.1)
+    monkeypatch.setattr(h, "CANCEL_POLL_S", 0.1)
+    monkeypatch.setattr(h, "_runpod_cancelled", lambda jid: False)
+    monkeypatch.setenv("FAKE_CHILD", "ok")
 
-    def fake_pipeline(task, src, dst, lost):
-        h.log.info("Assembling video with encoder: libx264")
-        subprocess.run(
-            [
-                "ffmpeg",
-                "-y",
-                "-v",
-                "error",
-                "-i",
-                str(src),
-                "-vf",
-                "fps=60",
-                "-c:v",
-                "libx264",
-                "-pix_fmt",
-                "yuv420p",
-                str(dst),
-            ],
-            check=True,
-        )
 
-    monkeypatch.setattr(h, "run_pipeline", fake_pipeline)
-    import logging
-
-    logging.getLogger().setLevel(logging.INFO)
+@pytest.fixture
+def puts(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        h,
+        "_put",
+        lambda url, path=None, body=None, ctype="": calls.append((url, body, ctype))
+        or 200,
+    )
+    return calls
 
 
 def test_validate_rejects_bad_input():
@@ -247,91 +247,203 @@ def test_validate_rejects_bad_input():
         {"params": []},
         {"output_put_url": "http://plain"},
         {"start": "a"},
+        {"deadline_s": 0},
+        {"deadline_s": "x"},
+        {"output_put_url": OUT},  # no attempt_id
+        {
+            "output_put_url": "https://r2.example/sls/other/o.mp4",
+            "attempt_id": "att-12345678",
+        },
+        {
+            "output_put_url": "https://r2.example/o.mp4?a=att-12345678",
+            "attempt_id": "att-12345678",
+        },
     ):
         with pytest.raises(h.InputError):
             h.validate(bad)
-    assert h.validate({})["input_url"] == "lavfi"
+    v = h.validate({})
+    assert v["input_url"] == "lavfi" and v["deadline_s"] == h.DEFAULT_DEADLINE_S
+    assert (
+        h.validate({"output_put_url": OUT, "attempt_id": "att-12345678"})["attempt_id"]
+        == "att-12345678"
+    )
 
 
-def test_handler_success_contract(ready):
+def test_handler_success_contract(ready, puts):
     out = h.handler(
         {
             "id": "job-1",
-            "input": {"input_url": "lavfi", "duration": 1, "chunk_id": "c1"},
+            "input": {
+                "duration": 1,
+                "chunk_id": "c1",
+                "attempt_id": "att-12345678",
+                "output_put_url": OUT,
+            },
         }
     )
-    assert out["ok"] is True and "error" not in out
+    assert out["ok"] is True and "error" not in out, out
     assert out["schema"] == 1 and out["job_id"] == "job-1" and out["chunk_id"] == "c1"
-    assert len(out["output_sha256"]) == 64 and out["output_bytes"] > 0
+    assert (
+        len(out["output_sha256"]) == 64
+        and out["output_bytes"] > 0
+        and out["upload_status"] == 200
+    )
     assert out["output_frames"] == 60 and abs(out["output_duration_s"] - 1.0) < 0.1
-    assert out["encoder"] == "libx264" and out["encoder_used"] == "libx264"
-    assert out["repeat_delivery"] is False
-    assert {"input_s", "pipeline_s", "handler_total_s"} <= set(out["timings"])
-    json.dumps(out)
+    assert out["encoder_used"] == "libx264" and out["repeat_delivery"] is False
+    assert {"pipeline_s", "handler_total_s", "upload_s"} <= set(out["timings"])
+    assert "X-Amz-Signature" not in json.dumps(out)
 
 
 def test_handler_deterministic_sha(ready):
-    a = h.handler({"id": "a", "input": {"duration": 1}})
-    b = h.handler({"id": "b", "input": {"duration": 1}})
-    assert a["output_sha256"] == b["output_sha256"]
+    assert (
+        h.handler({"id": "a", "input": {}})["output_sha256"]
+        == h.handler({"id": "b", "input": {}})["output_sha256"]
+    )
 
 
 def test_handler_repeat_delivery_flag(ready):
-    h.handler({"id": "dup", "input": {"duration": 1}})
-    assert h.handler({"id": "dup", "input": {"duration": 1}})["repeat_delivery"] is True
+    h.handler({"id": "dup", "input": {}})
+    assert h.handler({"id": "dup", "input": {}})["repeat_delivery"] is True
 
 
-def test_handler_failure_has_traceback_and_telemetry(ready, monkeypatch):
-    def broken(task, src, dst, lost):
-        h.log.info("loading RIFE")
-        raise RuntimeError(
-            "CUDA error: no kernel image is available for execution on the device"
-        )
-
-    monkeypatch.setattr(h, "run_pipeline", broken)
-    puts = []
-    monkeypatch.setattr(
-        h,
-        "_put",
-        lambda url, path=None, body=None, ctype="": puts.append((url, body, ctype))
-        or 200,
-    )
+def test_child_cuda_failure_has_context_and_telemetry(ready, puts, monkeypatch):
+    monkeypatch.setenv("FAKE_CHILD", "cuda")
     out = h.handler(
         {
             "id": "j",
             "input": {
-                "duration": 1,
-                "telemetry_put_url": "https://r2.example/t.json?X-Amz-Signature=s",
+                "telemetry_put_url": "https://r2.example/t.json?X-Amz-Signature=s"
             },
         }
     )
-    assert out["ok"] is False and out["error"].startswith("gpu_error")
-    assert out["failure_code"] == "gpu_error" and out["failed_stage"] == "pipeline"
-    assert "Traceback" in out["traceback"] and "loading RIFE" in out["log_tail"]
-    assert out["refresh_worker"] is True and out["selfcheck"]["arch"] == "sm_89"
-    assert out["telemetry_upload_status"] == 200
-    url, body, ctype = puts[0]
-    rec = json.loads(body)
     assert (
-        ctype == "application/json"
-        and rec["failure_code"] == "gpu_error"
-        and "traceback" in rec
+        out["ok"] is False
+        and out["failure_code"] == "gpu_error"
+        and out["failed_stage"] == "pipeline"
     )
-    assert "X-Amz-Signature" not in json.dumps(out)  # presigned URLs never echoed
+    assert (
+        "Traceback" in out["traceback"]
+        and "no kernel image" in out["log_tail"]
+        and out["refresh_worker"]
+    )
+    assert out["telemetry_upload_status"] == 200
+    rec = json.loads(puts[0][1])
+    assert puts[0][2] == "application/json" and rec["failure_code"] == "gpu_error"
+    assert "X-Amz-Signature" not in json.dumps(out)
+
+
+def _pid_alive(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    try:  # zombie = dead
+        with open(f"/proc/{pid}/stat") as fh:
+            return fh.read().split()[2] != "Z"
+    except OSError:
+        return False
+
+
+def _grandchild_pid(tmp_seen):
+    for _ in range(50):
+        for p in tmp_seen:
+            if os.path.exists(p):
+                return int(open(p).read())
+        time.sleep(0.1)
+
+
+def test_deadline_kills_child_group_and_never_uploads(
+    ready, puts, monkeypatch, tmp_path
+):
+    monkeypatch.setenv("FAKE_CHILD", "sleep")
+    monkeypatch.setattr(h.tempfile, "TemporaryDirectory", lambda: _Keep(tmp_path))
+    t = time.time()
+    out = h.handler(
+        {
+            "id": "j",
+            "input": {
+                "deadline_s": 1.5,
+                "attempt_id": "att-12345678",
+                "output_put_url": OUT,
+            },
+        }
+    )
+    assert time.time() - t < 20
+    assert (
+        out["failure_code"] == "deadline_exceeded"
+        and out["failed_stage"] == "pipeline"
+        and "child killed" in out["error"]
+    )
+    assert not [p for p in puts if p[2] == "video/mp4"]  # no output upload
+    gpid = int((tmp_path / "out.pid").read_text())
+    assert not _pid_alive(gpid)  # grandchild (ffmpeg stand-in) killed with the group
+
+
+def test_cancel_url_kills_child_no_upload_no_telemetry(
+    ready, puts, monkeypatch, tmp_path
+):
+    monkeypatch.setenv("FAKE_CHILD", "sleep")
+    monkeypatch.setattr(h.tempfile, "TemporaryDirectory", lambda: _Keep(tmp_path))
+    t0 = time.time()
+    monkeypatch.setattr(h, "_cancel_marker", lambda url: time.time() - t0 > 1.0)
+    out = h.handler(
+        {
+            "id": "j",
+            "input": {
+                "cancel_url": "https://r2.example/cancel",
+                "attempt_id": "att-12345678",
+                "output_put_url": OUT,
+                "telemetry_put_url": "https://r2.example/t.json",
+            },
+        }
+    )
+    assert out["failure_code"] == "cancelled" and "cancel_url" in out["error"]
+    assert puts == []  # neither output nor telemetry after cancel
+    assert not _pid_alive(int((tmp_path / "out.pid").read_text()))
+
+
+def test_runpod_status_cancel(ready, puts, monkeypatch):
+    monkeypatch.setenv("FAKE_CHILD", "sleep")
+    monkeypatch.setattr(h, "_runpod_cancelled", lambda jid: True)
+    out = h.handler({"id": "j", "input": {}})
+    assert out["failure_code"] == "cancelled" and "runpod_status" in out["error"]
+
+
+def test_cancel_after_pipeline_blocks_upload(ready, puts, monkeypatch):
+    seq = iter([False] * 1000)
+    monkeypatch.setattr(h, "_cancel_marker", lambda url: next(seq, True))
+    real = h.run_child
+
+    def child_then_cancel(*a, **k):
+        r = real(*a, **k)
+        monkeypatch.setattr(h, "_cancel_marker", lambda url: True)
+        return r
+
+    monkeypatch.setattr(h, "run_child", child_then_cancel)
+    out = h.handler(
+        {
+            "id": "j",
+            "input": {
+                "cancel_url": "https://r2.example/c",
+                "attempt_id": "att-12345678",
+                "output_put_url": OUT,
+            },
+        }
+    )
+    assert (
+        out["failure_code"] == "cancelled"
+        and out["failed_stage"] == "verify"
+        and puts == []
+    )
 
 
 def test_handler_selfcheck_failed_refuses_cpu(ready, monkeypatch):
     monkeypatch.setitem(
         h._STATE, "selfcheck", {"ok": False, "reason": "arch_unsupported:sm_120"}
     )
-    called = []
-    monkeypatch.setattr(h, "run_pipeline", lambda *a: called.append(1))
-    out = h.handler({"id": "j", "input": {"duration": 1}})
+    out = h.handler({"id": "j", "input": {}})
     assert (
-        not out["ok"]
-        and not called
-        and "arch_unsupported" in out["error"]
-        and out["refresh_worker"]
+        not out["ok"] and "arch_unsupported" in out["error"] and out["refresh_worker"]
     )
 
 
@@ -347,10 +459,7 @@ def test_handler_input_error(ready):
 def test_handler_upload_failure(ready, monkeypatch):
     monkeypatch.setattr(h, "_put", lambda *a, **k: 403)
     out = h.handler(
-        {
-            "id": "j",
-            "input": {"duration": 1, "output_put_url": "https://r2.example/o.mp4"},
-        }
+        {"id": "j", "input": {"attempt_id": "att-12345678", "output_put_url": OUT}}
     )
     assert not out["ok"] and out["failed_stage"] == "upload" and "403" in out["error"]
 
@@ -362,3 +471,14 @@ def test_diag_returns_selfcheck(ready):
         and out["diag"]["arch"] == "sm_89"
         and out["nvenc"] == {"nvenc_ok": False}
     )
+
+
+class _Keep:
+    def __init__(self, p):
+        self.p = p
+
+    def __enter__(self):
+        return str(self.p)
+
+    def __exit__(self, *a):
+        return False
