@@ -15,7 +15,7 @@
 # Code is baked in and pinned to the build (no `git pull` at start, unlike the legacy fat image),
 # so a worker's behaviour is exactly what was tested for that image tag.
 
-# CUDA 12.6 runtime: native support for Turing .. Hopper and Blackwell (sm_120, RTX 50xx).
+# CUDA 12.8 runtime + torch cu128: kernels for Turing .. Hopper and Blackwell (sm_100/sm_120, incl. MIG slices).
 ARG CUDA_BASE=nvidia/cuda:12.8.1-cudnn-runtime-ubuntu22.04
 FROM ${CUDA_BASE}
 ARG TORCH_INDEX=cu128
@@ -44,7 +44,7 @@ RUN python3 -m venv /opt/venv
 ENV PATH="/opt/venv/bin:${PATH}"
 RUN pip install --upgrade pip setuptools wheel
 
-# PyTorch with the CUDA 12.6 wheels (same version the fat image ran on an RTX A4000 in the smoke test).
+# PyTorch with the CUDA 12.8 wheels (Blackwell kernels; cu126 fails on Blackwell MIG, measured).
 RUN pip install "torch==${TORCH_VERSION}+${TORCH_INDEX}" "torchvision==${TORCHVISION_VERSION}+${TORCH_INDEX}" --index-url "https://download.pytorch.org/whl/${TORCH_INDEX}"
 RUN pip install "runpod==1.7.*"
 
