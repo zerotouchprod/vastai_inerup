@@ -24,6 +24,8 @@ import json
 import logging
 import os
 import shutil
+import signal
+import sys
 import subprocess
 import tempfile
 import threading
@@ -38,6 +40,21 @@ from src.serverless import selfcheck
 SCHEMA = 1
 MAX_DURATION_S = 120.0
 MODES = ("both", "upscale", "interp")
+DEFAULT_DEADLINE_S = 540.0  # keep below the endpoint executionTimeout (600 s)
+MAX_DEADLINE_S = 3600.0
+POLL_S = 1.0
+CANCEL_POLL_S = 3.0
+CHILD_CMD = [sys.executable, "-m", "src.serverless.child"]
+
+
+class Stopped(Exception):
+    """Cancelled or past deadline; carries the failure code."""
+
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+
+
 PROCESS_START = time.time()
 log = logging.getLogger("aividup.serverless")
 
@@ -77,11 +94,26 @@ def validate(inp: Dict[str, Any]) -> Dict[str, Any]:
     params = inp.get("params", {"scale": 2, "target_fps": 60})
     if not isinstance(params, dict):
         raise InputError("params must be an object")
-    for k in ("output_put_url", "telemetry_put_url"):
+    for k in ("output_put_url", "telemetry_put_url", "cancel_url"):
         v = inp.get(k)
         if v is not None and not str(v).startswith("https://"):
             raise InputError(f"{k} must be https")
+    attempt_id = str(inp.get("attempt_id") or "")
+    if inp.get("output_put_url"):
+        # Per-attempt output key: a late/cancelled attempt can never overwrite another attempt's object.
+        path = str(inp["output_put_url"]).split("?", 1)[0]
+        if len(attempt_id) < 8 or attempt_id not in path:
+            raise InputError("output_put_url path must contain attempt_id (>= 8 chars)")
+    try:
+        deadline_s = float(inp.get("deadline_s", DEFAULT_DEADLINE_S))
+    except (TypeError, ValueError):
+        raise InputError("deadline_s must be a number")
+    if not 0 < deadline_s <= MAX_DEADLINE_S:
+        raise InputError(f"need 0 < deadline_s <= {MAX_DEADLINE_S}")
     return {
+        "attempt_id": attempt_id,
+        "deadline_s": deadline_s,
+        "cancel_url": inp.get("cancel_url"),
         "input_url": url,
         "input_b64": inp.get("input_b64"),
         "start": start,
@@ -234,6 +266,131 @@ def run_pipeline(
     pipeline(task, src, dst, lost)
 
 
+class StopCheck:
+    """Cancel/deadline detection. Cancel sources: RunPod job status (best effort, worker env key) and an optional
+    caller-controlled cancel_url (presigned GET of a marker object: HTTP 200 = cancelled).
+    """
+
+    def __init__(self, job_id: str, cancel_url: Optional[str], deadline: float):
+        self.job_id, self.cancel_url, self.deadline = job_id, cancel_url, deadline
+        self._last = 0.0
+        self.source: Optional[str] = None
+
+    def reason(self, force: bool = False) -> Optional[str]:
+        if time.time() >= self.deadline:
+            return "deadline_exceeded"
+        if not force and time.monotonic() - self._last < CANCEL_POLL_S:
+            return None
+        self._last = time.monotonic()
+        if self.cancel_url and _cancel_marker(self.cancel_url):
+            self.source = "cancel_url"
+            return "cancelled"
+        if _runpod_cancelled(self.job_id):
+            self.source = "runpod_status"
+            return "cancelled"
+        return None
+
+    def check(self, force: bool = False) -> None:
+        r = self.reason(force)
+        if r:
+            raise Stopped(r, f"{r} (source={self.source or 'deadline'})")
+
+
+def _cancel_marker(url: str) -> bool:
+    try:
+        import requests
+
+        return requests.get(url, timeout=5, stream=True).status_code == 200
+    except Exception:  # noqa: BLE001 - unreachable marker = not cancelled
+        return False
+
+
+def _runpod_cancelled(job_id: str) -> bool:
+    ep, key = os.environ.get("RUNPOD_ENDPOINT_ID"), os.environ.get("RUNPOD_AI_API_KEY")
+    if not ep or not key or job_id == "local":
+        return False
+    try:
+        import requests
+
+        r = requests.get(
+            f"https://api.runpod.ai/v2/{ep}/status/{job_id}",
+            headers={"Authorization": key},
+            timeout=5,
+        )
+        return r.status_code == 200 and r.json().get("status") in (
+            "CANCELLED",
+            "TIMED_OUT",
+        )
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _kill_group(proc: subprocess.Popen) -> None:
+    for sig, wait in ((signal.SIGTERM, 3), (signal.SIGKILL, 10)):
+        try:
+            os.killpg(proc.pid, sig)
+        except ProcessLookupError:
+            return
+        try:
+            proc.wait(timeout=wait)
+            return
+        except subprocess.TimeoutExpired:
+            continue
+
+
+def run_child(
+    spec, encoder, job_id, workdir: Path, src: Path, dst: Path, stop: "StopCheck", buf
+) -> Dict[str, Any]:
+    """Run fetch+pipeline in a killable child process group; kill it on cancel/deadline."""
+    child_spec = {
+        **{
+            k: spec[k]
+            for k in ("input_url", "input_b64", "start", "duration", "mode", "params")
+        },
+        "attempt_id": spec.get("attempt_id") or job_id,
+        "encoder": encoder,
+        "src": str(src),
+        "dst": str(dst),
+        "result_path": str(workdir / "result.json"),
+    }
+    sp = workdir / "spec.json"
+    sp.write_text(json.dumps(child_spec))
+    logf = open(workdir / "child.log", "w+")
+    proc = subprocess.Popen(
+        CHILD_CMD + [str(sp)],
+        stdout=logf,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+        cwd=os.environ.get("PYTHONPATH") or None,
+    )
+    try:
+        while proc.poll() is None:
+            r = stop.reason()
+            if r:
+                _kill_group(proc)
+                raise Stopped(
+                    r, f"{r} (source={stop.source or 'deadline'}); child killed"
+                )
+            time.sleep(POLL_S)
+    finally:
+        if proc.poll() is None:
+            _kill_group(proc)
+        logf.flush()
+        logf.seek(0)
+        buf.write(logf.read()[-20000:])
+        logf.close()
+    if proc.returncode != 0:
+        tail = buf.getvalue()[-600:]
+        low = tail.lower()
+        if "out of memory" in low:
+            raise RuntimeError(f"child failed (out of memory): {tail[-300:]}")
+        if "cuda" in low or "no kernel image" in low:
+            raise RuntimeError(f"child failed (CUDA error): {tail[-300:]}")
+        raise RuntimeError(f"child exited {proc.returncode}: {tail[-300:]}")
+    rp = workdir / "result.json"
+    return json.loads(rp.read_text()) if rp.exists() else {}
+
+
 def _failure_code(e: BaseException) -> str:
     code = getattr(e, "code", None)
     if code:
@@ -291,28 +448,19 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
             raise RuntimeError(
                 f"gpu self-check failed: {base['selfcheck'].get('reason')}"
             )
-        enc.apply_to_assembler(base["encoder"] or enc.X264)
+        deadline = t0 + spec["deadline_s"]
+        stop = StopCheck(job_id, spec.get("cancel_url"), deadline)
         with tempfile.TemporaryDirectory() as d:
             src, dst = Path(d) / "in.mp4", Path(d) / "out.mp4"
-            lost = threading.Event()
-            stage = "input"
-            t = time.monotonic()
-            fetch_input(spec, src, lost)
-            timings["input_s"] = round(time.monotonic() - t, 2)
             stage = "pipeline"
-            task = {
-                "attempt_id": job_id,
-                "mode": spec["mode"],
-                "params": spec["params"],
-                "_timings": timings,
-            }
-            timings["first_gpu_compute_epoch"] = round(time.time(), 3)
-            t = time.monotonic()
-            run_pipeline(task, src, dst, lost)
-            timings["pipeline_s"] = round(time.monotonic() - t, 2)
+            child = run_child(
+                spec, base["encoder"], job_id, Path(d), src, dst, stop, buf
+            )
+            timings.update(child.get("timings", {}))
             if not dst.exists() or dst.stat().st_size == 0:
                 raise RuntimeError("pipeline produced no output")
             stage = "verify"
+            stop.check(force=True)
             res = {
                 "output_bytes": dst.stat().st_size,
                 "output_sha256": sha256_file(dst),
@@ -327,6 +475,7 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
                 res["encoder_used"] = used[-1].rsplit(":", 1)[-1].strip()
             if spec["output_put_url"]:
                 stage = "upload"
+                stop.check(force=True)  # never upload after cancel or deadline
                 t = time.monotonic()
                 res["upload_status"] = _put(spec["output_put_url"], path=dst)
                 timings["upload_s"] = round(time.monotonic() - t, 2)
@@ -364,7 +513,8 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
             and "self-check" in str(e)
         ):
             out["refresh_worker"] = True
-        _telemetry(spec or (raw if isinstance(raw, dict) else {}), out)
+        if code != "cancelled":
+            _telemetry(spec or (raw if isinstance(raw, dict) else {}), out)
         if not isinstance(e, Exception):
             raise
         return out
