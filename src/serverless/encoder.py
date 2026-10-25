@@ -15,9 +15,26 @@ X264 = "libx264"
 ALLOWED = (NVENC, X264)
 
 
-def probe_nvenc(run: Callable = subprocess.run, timeout: float = 30.0) -> Dict[str, Any]:
-    cmd = ["ffmpeg", "-hide_banner", "-v", "error", "-f", "lavfi", "-i", "testsrc2=size=256x256:rate=30:duration=1",
-           "-c:v", NVENC, "-pix_fmt", "yuv420p", "-f", "null", "-"]
+def probe_nvenc(
+    run: Callable = subprocess.run, timeout: float = 30.0
+) -> Dict[str, Any]:
+    cmd = [
+        "ffmpeg",
+        "-hide_banner",
+        "-v",
+        "error",
+        "-f",
+        "lavfi",
+        "-i",
+        "testsrc2=size=256x256:rate=30:duration=1",
+        "-c:v",
+        NVENC,
+        "-pix_fmt",
+        "yuv420p",
+        "-f",
+        "null",
+        "-",
+    ]
     t = time.monotonic()
     try:
         r = run(cmd, capture_output=True, text=True, timeout=timeout)
@@ -25,12 +42,18 @@ def probe_nvenc(run: Callable = subprocess.run, timeout: float = 30.0) -> Dict[s
         err = "" if ok else (r.stderr or "")[-600:]
     except Exception as e:  # noqa: BLE001 - timeout / missing ffmpeg
         ok, err = False, f"{type(e).__name__}: {e}"[:600]
-    return {"nvenc_ok": ok, "nvenc_error": err or None, "probe_s": round(time.monotonic() - t, 2)}
+    return {
+        "nvenc_ok": ok,
+        "nvenc_error": err or None,
+        "probe_s": round(time.monotonic() - t, 2),
+    }
 
 
 def select_encoder(probe: Dict[str, Any], override: str = None) -> Dict[str, Any]:
     """Encoder decision. AIVIDUP_SLS_ENCODER=libx264|h264_nvenc forces one (nvenc only if the probe passed)."""
-    override = (override if override is not None else os.environ.get("AIVIDUP_SLS_ENCODER", "")).strip()
+    override = (
+        override if override is not None else os.environ.get("AIVIDUP_SLS_ENCODER", "")
+    ).strip()
     if override == X264:
         return {"encoder": X264, "reason": "override"}
     if probe.get("nvenc_ok"):
@@ -44,7 +67,10 @@ def apply_to_assembler(encoder: str) -> None:
         raise ValueError(f"unsupported encoder {encoder}")
     from src.infrastructure.media import assembler as asm
 
-    orig = getattr(asm.FFmpegAssembler, "_aividup_orig_init", None) or asm.FFmpegAssembler.__init__
+    orig = (
+        getattr(asm.FFmpegAssembler, "_aividup_orig_init", None)
+        or asm.FFmpegAssembler.__init__
+    )
 
     def __init__(self, *a, **kw):
         orig(self, *a, **kw)
