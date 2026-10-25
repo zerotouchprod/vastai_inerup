@@ -1,0 +1,52 @@
+# aividup RunPod Serverless worker image (CUDA 12.8 / torch cu128, Blackwell incl. MIG). Separate from worker.yml:
+# never touches ghcr.io/zerotouchprod/aividup-worker and never deploys anything.
+# PRs: CPU tests + build without push (no secrets). Push to main / manual: tests + push :cu128-<sha>.
+# Secrets (names only): ghcr_username, ghcr_token.
+when:
+  - event: [push, pull_request]
+    branch: main
+    path:
+      include:
+        - 'src/serverless/**'
+        - 'src/worker/processors.py'
+        - 'src/infrastructure/media/**'
+        - 'tests/unit/test_serverless.py'
+        - 'docker/Dockerfile.aividup-serverless'
+        - 'requirements-worker.txt'
+        - 'RIFEv4.26_0921/**'
+        - '.woodpecker/aividup-serverless.yml'
+  - event: manual
+
+steps:
+  - name: tests
+    image: python:3.10-slim
+    commands:
+      - apt-get update -qq && apt-get install -y -qq ffmpeg >/dev/null
+      - pip install -q pytest "numpy<2" "opencv-python-headless<5" requests pyyaml pydantic
+      - python -m compileall -q src/serverless
+      - python -m pytest tests/unit/test_serverless.py -q
+
+  - name: build-cu128-pr
+    image: gcr.io/kaniko-project/executor:debug
+    when: {event: pull_request}
+    commands:
+      - >-
+        /kaniko/executor --context=dir://$CI_WORKSPACE --dockerfile=docker/Dockerfile.aividup-serverless
+        --build-arg=GIT_SHA=$CI_COMMIT_SHA --no-push
+        --snapshot-mode=redo --use-new-run --compressed-caching=false --cleanup
+
+  - name: build-cu128
+    image: gcr.io/kaniko-project/executor:debug
+    when: {event: [push, manual]}
+    environment:
+      GHCR_USERNAME: {from_secret: ghcr_username}
+      GHCR_TOKEN: {from_secret: ghcr_token}
+    commands:
+      - mkdir -p /kaniko/.docker
+      - printf '{"auths":{"ghcr.io":{"auth":"%s"}}}' "$(printf '%s:%s' "$GHCR_USERNAME" "$GHCR_TOKEN" | base64 | tr -d '\n')" > /kaniko/.docker/config.json
+      - >-
+        /kaniko/executor --context=dir://$CI_WORKSPACE --dockerfile=docker/Dockerfile.aividup-serverless
+        --build-arg=GIT_SHA=$CI_COMMIT_SHA
+        --destination=ghcr.io/zerotouchprod/aividup-serverless-blackwell:cu128-$CI_COMMIT_SHA --digest-file=/tmp/digest
+        --snapshot-mode=redo --use-new-run --compressed-caching=false --cleanup
+      - 'echo "IMAGE=ghcr.io/zerotouchprod/aividup-serverless-blackwell:cu128-$CI_COMMIT_SHA IMAGE_DIGEST=$(cat /tmp/digest)"'
