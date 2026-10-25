@@ -31,14 +31,24 @@ def parse_mig_profile(nvidia_smi_l: str, gpu_name: str = "") -> Optional[str]:
 
 
 def arch_supported(arch: Optional[str], arch_list) -> bool:
-    """True when torch ships kernels for this arch (exact sm_xx, or a compute_xx PTX of the same major)."""
+    """True when torch can run on this arch: an sm_XY cubin with the same major and minor <= ours
+    (binary-compatible, e.g. sm_86 runs on sm_89/L4), or compute_XY PTX with XY <= ours (JIT)."""
     if not arch:
         return False
-    arch_list = list(arch_list or [])
-    if arch in arch_list:
-        return True
-    major = arch[3:-1]
-    return any(a.startswith("compute_") and a[8:-1] == major for a in arch_list)
+    try:
+        mine = int(arch[3:])
+    except ValueError:
+        return False
+    for a in arch_list or []:
+        kind, _, num = str(a).partition("_")
+        if not num.isdigit():
+            continue
+        n = int(num)
+        if kind == "sm" and n // 10 == mine // 10 and n <= mine:
+            return True
+        if kind == "compute" and n <= mine:
+            return True
+    return False
 
 
 def _nvidia_smi(run: Callable = subprocess.run) -> str:

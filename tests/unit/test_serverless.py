@@ -32,7 +32,11 @@ def test_parse_mig(smi, name, want):
 def test_arch_supported():
     assert sc.arch_supported("sm_120", ["sm_90", "sm_120"])
     assert not sc.arch_supported("sm_120", ["sm_80", "sm_86", "sm_90"])  # cu126 on Blackwell
-    assert sc.arch_supported("sm_121", ["compute_120"])  # PTX of the same major is JIT-able
+    assert sc.arch_supported("sm_121", ["compute_120"])  # PTX is JIT-able on newer archs
+    # cu128 wheel list (measured): no sm_89 cubin, but sm_86 is binary-compatible with L4 (sm_89)
+    cu128 = ["sm_70", "sm_75", "sm_80", "sm_86", "sm_90", "sm_100", "sm_120"]
+    assert sc.arch_supported("sm_89", cu128) and sc.arch_supported("sm_120", cu128)
+    assert not sc.arch_supported("sm_89", ["sm_90", "sm_120"])  # cubins never run on an older minor/major
     assert not sc.arch_supported(None, ["sm_90"])
 
 
