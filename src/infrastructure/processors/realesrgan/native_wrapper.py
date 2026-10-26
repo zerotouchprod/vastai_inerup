@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import List, Dict, Any
 
 from src.infrastructure.processors.base import BaseProcessor
-from src.infrastructure.processors.realesrgan.native import RealESRGANNative
+from src.infrastructure.processors.realesrgan.native import get_upscaler
 from src.domain.exceptions import VideoProcessingError, ProcessorNotAvailableError
 from src.shared.logging import get_logger
 
@@ -84,10 +84,11 @@ class RealESRGANNativeWrapper(BaseProcessor):
             List of upscaled frame paths
         """
         # Get options
-        scale = options.get('scale', 2)
-        tile_size = options.get('tile_size', 512)
+        scale = int(options.get('scale', 2))
+        tile_size = options.get('tile_size') if 'tile_size' in options else None
         batch_size = options.get('batch_size')  # None = auto-detect
         half = options.get('half', True)
+        device = options.get('device', 'cuda')
         is_intermediate = options.get('_intermediate_stage', False)
 
         if is_intermediate:
@@ -96,21 +97,20 @@ class RealESRGANNativeWrapper(BaseProcessor):
             self._logger.info(f"Running Real-ESRGAN (Native Python): scale={scale}")
 
         try:
-            # Create processor if not exists
-            if self._processor is None:
-                self._processor = RealESRGANNative(
-                    scale=scale,
-                    tile_size=tile_size,
-                    batch_size=batch_size,
-                    half=half,
-                    logger=self._logger
-                )
+            self._processor = get_upscaler(
+                scale,
+                half,
+                device,
+                tile_size,
+                batch_size,
+                logger=self._logger,
+            )
 
-            # Process frames
             output_frames = self._processor.process_frames(
                 input_frames,
                 output_dir,
-                progress_callback=None  # TODO: Add progress tracking
+                progress_callback=options.get('progress_callback'),
+                cancel_event=options.get('cancel_event'),
             )
 
             if not output_frames:

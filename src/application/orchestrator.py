@@ -299,6 +299,8 @@ class VideoProcessingOrchestrator:
             options = {'scale': job.scale, 'job_id': job.job_id}
             # include b2 overrides if present
             if isinstance(job.config, dict):
+                options['cancel_event'] = job.config.get('cancel_event')
+                options['progress_callback'] = job.config.get('progress_callback')
                 options['b2_output_key'] = job.config.get('b2_output_key')
                 options['b2_bucket'] = job.config.get('b2_bucket')
             result = self._upscaler.process(frame_paths, output_dir, **options)

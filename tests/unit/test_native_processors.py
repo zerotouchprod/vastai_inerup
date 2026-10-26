@@ -14,27 +14,23 @@ class TestGPUMemoryDetector:
         """Test batch size suggestion for low VRAM."""
         from src.infrastructure.processors.realesrgan.native import GPUMemoryDetector
 
-        # <12GB -> batch 1
-        assert GPUMemoryDetector.suggest_batch_size(8 * 1024) == 1
+        # 8GB is the 8-12GB bucket.
+        assert GPUMemoryDetector.suggest_batch_size(8 * 1024) == 4
 
     def test_suggest_batch_size_medium_vram(self):
         """Test batch size suggestion for medium VRAM."""
         from src.infrastructure.processors.realesrgan.native import GPUMemoryDetector
 
-        # 12-16GB -> batch 2
-        assert GPUMemoryDetector.suggest_batch_size(14 * 1024) == 2
-
-        # 16-24GB -> batch 4
-        assert GPUMemoryDetector.suggest_batch_size(20 * 1024) == 4
+        # 12-16GB -> batch 8
+        assert GPUMemoryDetector.suggest_batch_size(14 * 1024) == 8
 
     def test_suggest_batch_size_high_vram(self):
         """Test batch size suggestion for high VRAM."""
         from src.infrastructure.processors.realesrgan.native import GPUMemoryDetector
 
-        # 24-32GB -> batch 8
-        assert GPUMemoryDetector.suggest_batch_size(28 * 1024) == 8
-
-        # >=32GB -> batch 16
+        # 16-24GB -> batch 12. >=24GB -> batch 16.
+        assert GPUMemoryDetector.suggest_batch_size(20 * 1024) == 12
+        assert GPUMemoryDetector.suggest_batch_size(28 * 1024) == 16
         assert GPUMemoryDetector.suggest_batch_size(40 * 1024) == 16
 
 
