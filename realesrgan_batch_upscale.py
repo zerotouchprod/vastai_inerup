@@ -148,36 +148,9 @@ def load_model(model_name='RealESRGAN_x4plus', scale=4, device='cuda', tile_size
                 break
 
         if not x2plus_found:
-            # Try to download x2plus model on-the-fly
-            print(f"⚠️  RealESRGAN_x2plus not found in any location, attempting to download...")
-            download_success = False
-
-            try:
-                os.makedirs('/opt/realesrgan_models', exist_ok=True)
-                download_url = 'https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.1/RealESRGAN_x2plus.pth'
-                download_path = '/opt/realesrgan_models/RealESRGAN_x2plus.pth'
-
-                print(f"📥 Downloading from {download_url} (33 MB, may take 30-60s)...")
-                import urllib.request
-
-                # Download with progress (simple version)
-                urllib.request.urlretrieve(download_url, download_path)
-
-                if os.path.isfile(download_path) and os.path.getsize(download_path) > 1000000:  # At least 1MB
-                    file_size_mb = os.path.getsize(download_path) / 1024 / 1024
-                    print(f"✓ Downloaded RealESRGAN_x2plus.pth successfully! ({file_size_mb:.1f} MB)")
-                    print(f"✓ Auto-switching to RealESRGAN_x2plus for scale=2 (faster!)")
-                    model_name = 'RealESRGAN_x2plus'
-                    download_success = True
-                else:
-                    print(f"❌ Download failed or file is corrupt")
-            except Exception as e:
-                print(f"❌ Download error: {e}")
-
-            if not download_success:
-                print(f"⚠️  Using RealESRGAN_x4plus for scale=2 (SLOW - will take 40+ minutes)")
-                print(f"💡 Tip: Rebuild Docker image with x2plus model for 25-50x speedup!")
-            # Keep using x4plus, will adjust outscale later
+            raise FileNotFoundError(
+                "Required RealESRGAN_x2plus weights are missing; refusing silent x4plus fallback"
+            )
 
     model_path = os.path.join('/opt/realesrgan_models', f'{model_name}.pth')
 
