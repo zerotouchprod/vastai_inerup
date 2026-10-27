@@ -29,6 +29,7 @@ import logging
 # Try to import torch for GPU detection
 try:
     import torch
+
     TORCH_AVAILABLE = True
 except ImportError:
     torch = None  # type: ignore
@@ -46,13 +47,17 @@ class GPUMemoryDetector:
         # Try nvidia-smi first
         try:
             result = subprocess.run(
-                ['nvidia-smi', '--query-gpu=memory.total', '--format=csv,nounits,noheader'],
+                [
+                    "nvidia-smi",
+                    "--query-gpu=memory.total",
+                    "--format=csv,nounits,noheader",
+                ],
                 capture_output=True,
                 text=True,
-                timeout=5
+                timeout=5,
             )
             if result.returncode == 0:
-                for line in result.stdout.strip().split('\n'):
+                for line in result.stdout.strip().split("\n"):
                     if line.strip():
                         try:
                             memories.append(int(line.strip()))
@@ -133,7 +138,9 @@ class PngWriter:
             import cv2
 
             path.parent.mkdir(parents=True, exist_ok=True)
-            ok = cv2.imwrite(str(path), image, [cv2.IMWRITE_PNG_COMPRESSION, self._compression])
+            ok = cv2.imwrite(
+                str(path), image, [cv2.IMWRITE_PNG_COMPRESSION, self._compression]
+            )
             if not ok:
                 raise RuntimeError(f"failed to write {path}")
         finally:
@@ -263,8 +270,8 @@ class RealESRGANNative:
         pre_pad: int = 0,
         half: bool = True,
         batch_size: Optional[int] = None,
-        device: str = 'cuda',
-        logger: Optional[logging.Logger] = None
+        device: str = "cuda",
+        logger: Optional[logging.Logger] = None,
     ):
         """
         Initialize Real-ESRGAN processor.
@@ -285,12 +292,12 @@ class RealESRGANNative:
         # Auto-select model based on scale if not specified
         if model_name is None:
             if scale == 2:
-                model_name = 'RealESRGAN_x2plus'
+                model_name = "RealESRGAN_x2plus"
             elif scale == 4:
-                model_name = 'RealESRGAN_x4plus'
+                model_name = "RealESRGAN_x4plus"
             else:
                 # For other scales, use x4plus and post-scale
-                model_name = 'RealESRGAN_x4plus'
+                model_name = "RealESRGAN_x4plus"
 
         self.model_name = model_name
         self.tile_size = tile_size
@@ -332,10 +339,10 @@ class RealESRGANNative:
         self.logger.info(f"Loading Real-ESRGAN model: {self.model_name}")
 
         # Determine model architecture based on model name
-        if 'x4plus' in self.model_name or 'x4' in self.model_name:
+        if "x4plus" in self.model_name or "x4" in self.model_name:
             num_block = 23
             netscale = 4
-        elif 'x2plus' in self.model_name or 'x2' in self.model_name:
+        elif "x2plus" in self.model_name or "x2" in self.model_name:
             num_block = 23
             netscale = 2
         else:
@@ -350,7 +357,7 @@ class RealESRGANNative:
             num_feat=64,
             num_block=num_block,
             num_grow_ch=32,
-            scale=netscale
+            scale=netscale,
         )
 
         # Find model weights
@@ -366,28 +373,37 @@ class RealESRGANNative:
             tile_pad=self.tile_pad,
             pre_pad=self.pre_pad,
             half=use_half,
-            device=self.device
+            device=self.device,
         )
 
-        self.logger.info(f"Model loaded successfully")
+        self.logger.info("Model loaded successfully")
 
     def _find_model_weights(self) -> Path:
         """Find model weights file."""
         # Common locations (ordered by priority)
         possible_paths = [
             # Docker container preinstalled models (highest priority)
-            Path('/opt/realesrgan_models') / f'{self.model_name}.pth',
+            Path("/opt/realesrgan_models") / f"{self.model_name}.pth",
             # Docker container paths
-            Path('/workspace/project/external/Real-ESRGAN/weights') / f'{self.model_name}.pth',
-            Path('/workspace/project/external/Real-ESRGAN/experiments/pretrained_models') / f'{self.model_name}.pth',
-            Path('/root/.cache/realesrgan/weights') / f'{self.model_name}.pth',
+            Path("/workspace/project/external/Real-ESRGAN/weights")
+            / f"{self.model_name}.pth",
+            Path(
+                "/workspace/project/external/Real-ESRGAN/experiments/pretrained_models"
+            )
+            / f"{self.model_name}.pth",
+            Path("/root/.cache/realesrgan/weights") / f"{self.model_name}.pth",
             # Relative paths (when running locally)
-            Path('weights') / f'{self.model_name}.pth',
-            Path('experiments/pretrained_models') / f'{self.model_name}.pth',
-            Path('external/Real-ESRGAN/weights') / f'{self.model_name}.pth',
-            Path('external/Real-ESRGAN/experiments/pretrained_models') / f'{self.model_name}.pth',
+            Path("weights") / f"{self.model_name}.pth",
+            Path("experiments/pretrained_models") / f"{self.model_name}.pth",
+            Path("external/Real-ESRGAN/weights") / f"{self.model_name}.pth",
+            Path("external/Real-ESRGAN/experiments/pretrained_models")
+            / f"{self.model_name}.pth",
             # User home directory
-            Path.home() / '.cache' / 'realesrgan' / 'weights' / f'{self.model_name}.pth',
+            Path.home()
+            / ".cache"
+            / "realesrgan"
+            / "weights"
+            / f"{self.model_name}.pth",
         ]
 
         for path in possible_paths:
@@ -396,18 +412,26 @@ class RealESRGANNative:
                 return path
 
         # If x2plus not found, try to fallback to x4plus (we'll post-scale)
-        if 'x2plus' in self.model_name:
-            self.logger.warning(f"{self.model_name} not found, trying fallback to x4plus...")
-            fallback_name = 'RealESRGAN_x4plus'
+        if "x2plus" in self.model_name:
+            self.logger.warning(
+                f"{self.model_name} not found, trying fallback to x4plus..."
+            )
+            fallback_name = "RealESRGAN_x4plus"
             fallback_paths = [
-                Path('/opt/realesrgan_models') / f'{fallback_name}.pth',
-                Path('/workspace/project/external/Real-ESRGAN/weights') / f'{fallback_name}.pth',
-                Path('/workspace/project/external/Real-ESRGAN/experiments/pretrained_models') / f'{fallback_name}.pth',
+                Path("/opt/realesrgan_models") / f"{fallback_name}.pth",
+                Path("/workspace/project/external/Real-ESRGAN/weights")
+                / f"{fallback_name}.pth",
+                Path(
+                    "/workspace/project/external/Real-ESRGAN/experiments/pretrained_models"
+                )
+                / f"{fallback_name}.pth",
             ]
             for path in fallback_paths:
                 if path.exists():
                     self.logger.info(f"Using fallback model: {path}")
-                    self.logger.info(f"Will use x4plus model with outscale={self.scale}")
+                    self.logger.info(
+                        f"Will use x4plus model with outscale={self.scale}"
+                    )
                     # Update model_name to x4plus for architecture setup
                     self.model_name = fallback_name
                     self._use_fallback_scale = True
@@ -420,14 +444,14 @@ class RealESRGANNative:
 
         try:
             from realesrgan.utils import download_pretrained_models
-            cache_dir = Path.home() / '.cache' / 'realesrgan' / 'weights'
+
+            cache_dir = Path.home() / ".cache" / "realesrgan" / "weights"
             cache_dir.mkdir(parents=True, exist_ok=True)
-            model_path = cache_dir / f'{self.model_name}.pth'
+            model_path = cache_dir / f"{self.model_name}.pth"
 
             # Download model
             download_pretrained_models(
-                model_name=self.model_name,
-                model_path=str(model_path)
+                model_name=self.model_name, model_path=str(model_path)
             )
 
             if model_path.exists():
@@ -593,14 +617,13 @@ class RealESRGANNative:
 
         elapsed = time.time() - start_time
         avg_fps = total / elapsed if elapsed > 0 else 0
-        self.logger.info(f"Completed {total} frames in {elapsed:.1f}s ({avg_fps:.2f} fps)")
+        self.logger.info(
+            f"Completed {total} frames in {elapsed:.1f}s ({avg_fps:.2f} fps)"
+        )
         return output_frames
 
     def process_video(
-        self,
-        input_video: Path,
-        output_video: Path,
-        fps: Optional[float] = None
+        self, input_video: Path, output_video: Path, fps: Optional[float] = None
     ) -> Path:
         """
         Process entire video file.
@@ -641,11 +664,11 @@ class RealESRGANNative:
             # Assemble video
             self.logger.info(f"Assembling video to {output_video}")
             assembler = FFmpegAssembler()
-            result = assembler.assemble_video(
+            assembler.assemble_video(
                 output_frames,
                 output_video,
                 fps=fps,
-                resolution=(info.width * self.scale, info.height * self.scale)
+                resolution=(info.width * self.scale, info.height * self.scale),
             )
 
             return output_video
@@ -657,23 +680,25 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(
-        description='Real-ESRGAN PyTorch (Native Python Implementation)'
+        description="Real-ESRGAN PyTorch (Native Python Implementation)"
     )
-    parser.add_argument('input', help='Input file (video or directory of frames)')
-    parser.add_argument('output', help='Output file or directory')
-    parser.add_argument('scale', type=int, nargs='?', default=4, help='Scale factor (default: 4)')
-    parser.add_argument('--batch-size', type=int, help='Batch size (auto if not specified)')
-    parser.add_argument('--tile-size', type=int, default=512, help='Tile size')
-    parser.add_argument('--half', action='store_true', default=True, help='Use FP16')
-    parser.add_argument('--no-half', dest='half', action='store_false', help='Use FP32')
+    parser.add_argument("input", help="Input file (video or directory of frames)")
+    parser.add_argument("output", help="Output file or directory")
+    parser.add_argument(
+        "scale", type=int, nargs="?", default=4, help="Scale factor (default: 4)"
+    )
+    parser.add_argument(
+        "--batch-size", type=int, help="Batch size (auto if not specified)"
+    )
+    parser.add_argument("--tile-size", type=int, default=512, help="Tile size")
+    parser.add_argument("--half", action="store_true", default=True, help="Use FP16")
+    parser.add_argument("--no-half", dest="half", action="store_false", help="Use FP32")
 
     args = parser.parse_args()
 
     # Setup logging
     logging.basicConfig(
-        level=logging.INFO,
-        format='[%(asctime)s] %(message)s',
-        datefmt='%H:%M:%S'
+        level=logging.INFO, format="[%(asctime)s] %(message)s", datefmt="%H:%M:%S"
     )
 
     input_path = Path(args.input)
@@ -684,7 +709,7 @@ def main():
         scale=args.scale,
         tile_size=args.tile_size,
         half=args.half,
-        batch_size=args.batch_size
+        batch_size=args.batch_size,
     )
 
     # Process
@@ -693,7 +718,7 @@ def main():
         processor.process_video(input_path, output_path)
     elif input_path.is_dir():
         # Directory of frames
-        frames = sorted(input_path.glob('*.png')) or sorted(input_path.glob('*.jpg'))
+        frames = sorted(input_path.glob("*.png")) or sorted(input_path.glob("*.jpg"))
         output_path.mkdir(parents=True, exist_ok=True)
         processor.process_frames(frames, output_path)
     else:
@@ -703,6 +728,5 @@ def main():
     print(f"✅ Success: {output_path}")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
-

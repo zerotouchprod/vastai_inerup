@@ -60,7 +60,10 @@ def test_upscale_process_frames_reports_progress(tmp_path, monkeypatch):
 
     processor._upsampler = Upsampler()
     progress = []
-    frames = [tmp_path / "in" / "frame_000001.png", tmp_path / "in" / "frame_000002.png"]
+    frames = [
+        tmp_path / "in" / "frame_000001.png",
+        tmp_path / "in" / "frame_000002.png",
+    ]
 
     processor.process_frames(
         frames,
@@ -155,7 +158,9 @@ def test_orchestrator_upscale_passes_progress_and_cancel(tmp_path):
             captured["options"] = options
             output_dir.mkdir(parents=True, exist_ok=True)
             (output_dir / "frame_000001.png").write_bytes(b"png")
-            return ProcessingResult(success=True, output_path=output_dir, frames_processed=1)
+            return ProcessingResult(
+                success=True, output_path=output_dir, frames_processed=1
+            )
 
     orchestrator = VideoProcessingOrchestrator.__new__(VideoProcessingOrchestrator)
     orchestrator._upscaler = Upscaler()
@@ -192,7 +197,9 @@ def test_orchestrator_both_mode_passes_progress_and_cancel(tmp_path, strategy):
             captured[self.name] = options
             output_dir.mkdir(parents=True, exist_ok=True)
             (output_dir / "frame_000001.png").write_bytes(b"png")
-            return ProcessingResult(success=True, output_path=output_dir, frames_processed=1)
+            return ProcessingResult(
+                success=True, output_path=output_dir, frames_processed=1
+            )
 
     orchestrator = VideoProcessingOrchestrator.__new__(VideoProcessingOrchestrator)
     orchestrator._upscaler = Stage("upscale")
@@ -223,7 +230,9 @@ def test_wrapper_passes_tile_progress_and_cancel(tmp_path, monkeypatch):
     seen = {}
 
     class Processor:
-        def process_frames(self, frames, output_dir, progress_callback=None, cancel_event=None):
+        def process_frames(
+            self, frames, output_dir, progress_callback=None, cancel_event=None
+        ):
             seen["progress"] = progress_callback
             seen["cancel"] = cancel_event
             return [output_dir / "frame_000001.png"]
@@ -234,7 +243,9 @@ def test_wrapper_passes_tile_progress_and_cancel(tmp_path, monkeypatch):
         return Processor()
 
     monkeypatch.setattr(native_wrapper, "get_upscaler", fake_get_upscaler)
-    wrapper = native_wrapper.RealESRGANNativeWrapper.__new__(native_wrapper.RealESRGANNativeWrapper)
+    wrapper = native_wrapper.RealESRGANNativeWrapper.__new__(
+        native_wrapper.RealESRGANNativeWrapper
+    )
     wrapper._logger = logging.getLogger("wrapper-test")
     wrapper._processor = None
     lost = threading.Event()

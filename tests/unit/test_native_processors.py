@@ -3,8 +3,6 @@ Unit tests for native Python processors.
 """
 
 import pytest
-from pathlib import Path
-from unittest.mock import Mock, patch
 
 
 class TestGPUMemoryDetector:
@@ -41,11 +39,7 @@ class TestRealESRGANNative:
         """Test processor initialization."""
         from src.infrastructure.processors.realesrgan.native import RealESRGANNative
 
-        processor = RealESRGANNative(
-            scale=2,
-            tile_size=512,
-            batch_size=4
-        )
+        processor = RealESRGANNative(scale=2, tile_size=512, batch_size=4)
 
         assert processor.scale == 2
         assert processor.tile_size == 512
@@ -101,7 +95,9 @@ class TestNativeWrappers:
     def test_realesrgan_native_wrapper(self):
         """Test Real-ESRGAN native wrapper."""
         try:
-            from src.infrastructure.processors.realesrgan.native_wrapper import RealESRGANNativeWrapper
+            from src.infrastructure.processors.realesrgan.native_wrapper import (
+                RealESRGANNativeWrapper,
+            )
 
             # Should not raise if dependencies available
             if RealESRGANNativeWrapper.is_available():
@@ -115,7 +111,9 @@ class TestNativeWrappers:
     def test_rife_native_wrapper(self):
         """Test RIFE native wrapper."""
         try:
-            from src.infrastructure.processors.rife.native_wrapper import RIFENativeWrapper
+            from src.infrastructure.processors.rife.native_wrapper import (
+                RIFENativeWrapper,
+            )
 
             # Should not raise if dependencies available
             if RIFENativeWrapper.is_available():
@@ -141,7 +139,7 @@ class TestFactoryNativeSupport:
         """Test factory reads USE_NATIVE_PROCESSORS env."""
         from src.application.factories import ProcessorFactory
 
-        monkeypatch.setenv('USE_NATIVE_PROCESSORS', '1')
+        monkeypatch.setenv("USE_NATIVE_PROCESSORS", "1")
         factory = ProcessorFactory()
         assert factory.use_native is True
 
@@ -152,7 +150,7 @@ class TestFactoryNativeSupport:
         factory = ProcessorFactory(use_native=True)
 
         try:
-            upscaler = factory.create_upscaler(prefer='native')
+            upscaler = factory.create_upscaler(prefer="native")
             assert upscaler is not None
         except Exception:
             pytest.skip("Native upscaler not available")
@@ -164,12 +162,11 @@ class TestFactoryNativeSupport:
         factory = ProcessorFactory(use_native=True)
 
         try:
-            interpolator = factory.create_interpolator(prefer='native')
+            interpolator = factory.create_interpolator(prefer="native")
             assert interpolator is not None
         except Exception:
             pytest.skip("Native interpolator not available")
 
 
-if __name__ == '__main__':
-    pytest.main([__file__, '-v'])
-
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])
