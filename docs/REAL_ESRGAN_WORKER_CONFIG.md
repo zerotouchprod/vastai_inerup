@@ -14,4 +14,4 @@ The native worker reads these optional environment variables. Existing defaults 
 
 The worker refuses to replace missing `RealESRGAN_x2plus` weights with `RealESRGAN_x4plus`. A missing required model is a startup/processing error and is logged explicitly.
 
-The runtime log includes model name, requested/network scale, input resolution, FP16, tile, tile padding, pre-padding, selected batch, and weights path. Completion logs include decode, preprocess, inference, postprocess, encode and total timings.
+The runtime log includes model name, requested/network scale, input resolution, FP16, tile, tile padding, pre-padding, selected batch, and weights path. Completion logs include frame read, tensor preprocess, model inference, tensor postprocess, PNG encode and total timings. These are native frame-pipeline timings; ffmpeg video decode/encode is outside this component.

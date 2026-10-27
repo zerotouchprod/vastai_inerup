@@ -151,9 +151,9 @@ class PngWriter:
         finally:
             if self._timing is not None:
                 with self._lock:
-                    self._timing["encode_s"] = self._timing.get("encode_s", 0.0) + (
-                        time.perf_counter() - started
-                    )
+                    self._timing["png_encode_s"] = self._timing.get(
+                        "png_encode_s", 0.0
+                    ) + (time.perf_counter() - started)
             self._semaphore.release()
 
     def close(self) -> None:
@@ -224,6 +224,8 @@ def batch_forward(upsampler, frames_bgr, scale, timing=None):
     inference_start = time.perf_counter()
     with torch.inference_mode():
         out = upsampler.model(batch)
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
     if timing is not None:
         timing["inference_s"] = timing.get("inference_s", 0.0) + (
             time.perf_counter() - inference_start
@@ -331,6 +333,13 @@ class RealESRGANNative:
                 model_name = "RealESRGAN_x4plus"
 
         self.model_name = model_name
+        expected_model = {2: "RealESRGAN_x2plus", 4: "RealESRGAN_x4plus"}.get(
+            int(scale)
+        )
+        if expected_model is not None and model_name != expected_model:
+            raise ValueError(
+                f"model {model_name!r} is incompatible with scale={scale}; expected {expected_model!r}"
+            )
         self.tile_size = tile_size
         self.tile_pad = tile_pad
         self.pre_pad = pre_pad
@@ -348,6 +357,9 @@ class RealESRGANNative:
             self.logger.info(f"Auto-detected batch_size: {batch_size}")
 
         self.batch_size = batch_size
+        self._auto_batch_size = batch_size
+        self._initial_tile_size = tile_size
+        self._oom_recovery_attempted = False
 
         # Model will be loaded on first use
         self._model = None
@@ -421,6 +433,7 @@ class RealESRGANNative:
 
         # Create upsampler
         use_half = self.half and (torch is not None and torch.cuda.is_available())
+        self.actual_half = use_half
         self._upsampler = RealESRGANer(
             scale=netscale,
             model_path=str(model_path),
@@ -520,8 +533,41 @@ class RealESRGANNative:
             return 1
         explicit = getattr(self, "_explicit_batch_size", None)
         if explicit is None:
-            return 1
+            return max(1, int(self.batch_size))
         return max(1, int(explicit))
+
+    def _reset_execution_state(self) -> None:
+        """Reset mutable per-job tuning while keeping model weights cached."""
+        self._oom_recovery_attempted = False
+        explicit = getattr(self, "_explicit_batch_size", None)
+        self.batch_size = explicit or getattr(self, "_auto_batch_size", self.batch_size)
+        self._batch_configured_for_resolution = explicit is not None
+        initial_tile = getattr(self, "_initial_tile_size", self.tile_size)
+        if self.tile_size != initial_tile:
+            self.set_tile_size(initial_tile)
+
+    def _synchronize_cuda(self) -> None:
+        if TORCH_AVAILABLE and torch is not None and torch.cuda.is_available():
+            torch.cuda.synchronize()
+
+    def _recover_from_oom(self, images_count: int) -> None:
+        if self._oom_recovery_attempted:
+            raise RuntimeError(
+                "Real-ESRGAN CUDA OOM persisted after one bounded recovery attempt"
+            )
+        self._oom_recovery_attempted = True
+        if TORCH_AVAILABLE and torch is not None and torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        old_tile = self.tile_size
+        new_tile = 512 if old_tile == 0 else max(128, old_tile // 2)
+        self.set_tile_size(new_tile)
+        self.batch_size = 1
+        self.logger.warning(
+            "OOM recovery: batch_size=%s -> 1, tile_size=%s -> %s, retry_count=1",
+            images_count,
+            old_tile,
+            new_tile,
+        )
 
     def _can_batch_forward(self) -> bool:
         if self.tile_size != 0 or getattr(self, "_use_fallback_scale", False):
@@ -562,16 +608,7 @@ class RealESRGANNative:
                 self.tile_size,
                 len(images),
             )
-        # Retry outside the except block: the traceback holds the failed
-        # forward's tensors, so VRAM is only released once it is gone.
-        if TORCH_AVAILABLE and torch is not None and torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        self.set_tile_size(512)
-        self.batch_size = 1
-        self._explicit_batch_size = 1
-        self.logger.warning(
-            "OOM recovery: batch_size=%s -> 1, tile_size -> 512", len(images)
-        )
+        self._recover_from_oom(len(images))
         return [self._enhance_frame(img) for img in images]
 
     def process_frames(
@@ -587,6 +624,7 @@ class RealESRGANNative:
         emitted frame. Tile 0 uses a single model forward per same-size group.
         """
         self._raise_if_cancelled(cancel_event)
+        self._reset_execution_state()
         output_dir.mkdir(parents=True, exist_ok=True)
         self._load_model()
 
@@ -614,7 +652,7 @@ class RealESRGANNative:
             getattr(self._upsampler, "scale", "unknown"),
             first.shape[1],
             first.shape[0],
-            self.half,
+            getattr(self, "actual_half", self.half),
             self.tile_size,
             getattr(self, "tile_pad", 10),
             getattr(self, "pre_pad", 0),
@@ -638,11 +676,11 @@ class RealESRGANNative:
         output_frames = []
         start_time = time.time()
         timings = {
-            "decode_s": 0.0,
+            "frame_read_s": 0.0,
             "preprocess_s": 0.0,
             "inference_s": 0.0,
             "postprocess_s": 0.0,
-            "encode_s": 0.0,
+            "png_encode_s": 0.0,
         }
         writer = PngWriter(timing=timings)
         try:
@@ -658,7 +696,7 @@ class RealESRGANNative:
                     frame_path = input_frames[index + consumed]
                     decode_start = time.perf_counter()
                     img = cv2.imread(str(frame_path), cv2.IMREAD_COLOR)
-                    timings["decode_s"] += time.perf_counter() - decode_start
+                    timings["frame_read_s"] += time.perf_counter() - decode_start
                     consumed += 1
                     if img is None:
                         self.logger.warning(f"Failed to load frame: {frame_path}")
@@ -677,7 +715,21 @@ class RealESRGANNative:
                     outputs = self._upscale_loaded(images, timing=timings)
                 else:
                     inference_start = time.perf_counter()
-                    outputs = [self._enhance_frame(img) for img in images]
+                    try:
+                        outputs = [self._enhance_frame(img) for img in images]
+                    except Exception as exc:
+                        if not _is_cuda_oom(exc):
+                            raise
+                        self.logger.exception(
+                            "Real-ESRGAN CUDA OOM in tiled path: model=%s scale=%s tile=%s images=%s",
+                            getattr(self, "model_name", "unknown"),
+                            self.scale,
+                            self.tile_size,
+                            len(images),
+                        )
+                        self._recover_from_oom(len(images))
+                        outputs = [self._enhance_frame(img) for img in images]
+                    self._synchronize_cuda()
                     timings["inference_s"] += time.perf_counter() - inference_start
                 for out_img, out_path in zip(outputs, paths):
                     self._raise_if_cancelled(cancel_event)
