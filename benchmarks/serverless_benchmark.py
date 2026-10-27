@@ -77,9 +77,19 @@ def summarize(
         },
         "phase_mean_s": {field: avg(field) for field in REQUIRED_PHASES},
     }
-    gpu_seconds = sum(float(r.get("timings", {}).get("pipeline_s", 0.0)) for r in valid)
-    result["estimated_gpu_seconds"] = round(gpu_seconds, 3)
-    result["estimated_cost_usd"] = round(gpu_seconds / 3600 * rate_usd_per_hour, 6)
+    pipeline_seconds = sum(
+        float(r.get("timings", {}).get("pipeline_s", 0.0)) for r in valid
+    )
+    billed_seconds = sum(
+        float(r.get("billed_seconds", r.get("timings", {}).get("handler_total_s", 0.0)))
+        for r in valid
+    )
+    result["pipeline_seconds"] = round(pipeline_seconds, 3)
+    result["billed_seconds"] = round(billed_seconds, 3)
+    result["pipeline_only_cost_usd"] = round(
+        pipeline_seconds / 3600 * rate_usd_per_hour, 6
+    )
+    result["estimated_cost_usd"] = round(billed_seconds / 3600 * rate_usd_per_hour, 6)
     result["cold_mean_total_s"] = (
         round(mean(float(r["timings"]["handler_total_s"]) for r in cold), 3)
         if cold

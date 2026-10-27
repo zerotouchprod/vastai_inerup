@@ -1,0 +1,22 @@
+# Pinned runtime dependencies for the isolated Blackwell Serverless image.
+# torch/torchvision and runpod are pinned directly in docker/Dockerfile.aividup-serverless.
+numpy==1.26.4
+opencv-python-headless==4.10.0.84
+Pillow==10.4.0
+tqdm==4.66.5
+PyYAML==6.0.2
+requests==2.32.3
+boto3==1.35.24
+ffmpeg-python==0.2.0
+pydantic==2.9.2
+pydantic-settings==2.5.2
+python-dotenv==1.0.1
+scipy==1.13.1
+scikit-image==0.24.0
+addict==2.4.0
+future==1.0.0
+lmdb==1.5.1
+yapf==0.40.2
+tensorboard==2.17.1
+basicsr==1.4.2
+realesrgan==0.3.0

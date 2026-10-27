@@ -42,8 +42,17 @@ def test_preflight_supports_all_configured_backends():
 def test_blackwell_serverless_image_is_pinned_and_checksums_models():
     dockerfile = (ROOT / "docker" / "Dockerfile.aividup-serverless").read_text()
 
-    assert "ARG CUDA_DIGEST=sha256:" in dockerfile
-    assert "FROM ${CUDA_BASE}@${CUDA_DIGEST}" in dockerfile
+    assert (
+        "FROM nvidia/cuda:12.8.1-cudnn-runtime-ubuntu22.04@"
+        "sha256:59e0e4376a0f16d10b03d3a14344b80a866a1674cb4948cb318291387ac05010"
+    ) in dockerfile
+    assert (
+        "49fafd45f8fd7aa8d31ab2a22d14d91b536c34494a5cfe31eb5d89c2fa266abb" in dockerfile
+    )
+    assert (
+        "4fa0d38905f75ac06eb49a7951b426670021be3018265fd191d2125df9d682f1" in dockerfile
+    )
     assert "sha256sum -c" in dockerfile
     assert "TORCH_VERSION=2.9.1" in dockerfile
     assert "TORCHVISION_VERSION=0.24.1" in dockerfile
+    assert "requirements-serverless-blackwell.txt" in dockerfile
