@@ -10,13 +10,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
+import re
 from pathlib import Path
 from statistics import mean
 from typing import Any
 
 REQUIRED_PHASES = (
     "queue_delay_s",
-    "cold_boot_s",
+    "selfcheck_s",
     "model_load_s",
     "input_s",
     "setup_s",
@@ -46,6 +48,21 @@ def summarize(
 ) -> dict[str, Any]:
     if not records:
         raise ValueError("no benchmark records")
+    for index, record in enumerate(records, 1):
+        digest = record.get("input_sha256")
+        duration = record.get("input_duration_s")
+        if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+            raise ValueError(
+                f"record {index}: input_sha256 must be a 64-character lowercase SHA-256"
+            )
+        if (
+            not isinstance(duration, (int, float))
+            or not math.isfinite(float(duration))
+            or float(duration) <= 0
+        ):
+            raise ValueError(
+                f"record {index}: input_duration_s must be finite and positive"
+            )
     key = (records[0].get("input_sha256"), records[0].get("input_duration_s"))
     if any((r.get("input_sha256"), r.get("input_duration_s")) != key for r in records):
         raise ValueError(
@@ -63,6 +80,18 @@ def summarize(
 
     cold = [r for r in valid if not r.get("warm_start", False)]
     warm = [r for r in valid if r.get("warm_start", False)]
+
+    def phase_means(items: list[dict[str, Any]]) -> dict[str, float | None]:
+        def phase_avg(field: str) -> float | None:
+            values = [
+                float(r["timings"][field])
+                for r in items
+                if field in r.get("timings", {})
+            ]
+            return round(mean(values), 3) if values else None
+
+        return {field: phase_avg(field) for field in REQUIRED_PHASES}
+
     result: dict[str, Any] = {
         "records": len(records),
         "successful": len(valid),
@@ -76,6 +105,8 @@ def summarize(
             for encoder in sorted({str(r.get("encoder_used")) for r in valid})
         },
         "phase_mean_s": {field: avg(field) for field in REQUIRED_PHASES},
+        "cold_phase_mean_s": phase_means(cold),
+        "warm_phase_mean_s": phase_means(warm),
     }
     pipeline_seconds = sum(
         float(r.get("timings", {}).get("pipeline_s", 0.0)) for r in valid

@@ -427,11 +427,7 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
     base["selfcheck"] = _selfcheck_summary()
     base["encoder"] = (_STATE["encoder"] or {}).get("encoder")
     base["encoder_reason"] = (_STATE["encoder"] or {}).get("reason")
-    base["cold_boot_s"] = (
-        (_STATE["selfcheck"] or {}).get("selfcheck_s", 0.0)
-        if not base["warm_start"]
-        else 0.0
-    )
+    base["selfcheck_s"] = (_STATE["selfcheck"] or {}).get("selfcheck_s", 0.0)
     if isinstance(raw, dict) and (raw.get("diag") or raw.get("selfcheck")):
         return {
             **base,

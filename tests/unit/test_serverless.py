@@ -292,7 +292,7 @@ def test_handler_success_contract(ready, puts):
     assert out["output_frames"] == 60 and abs(out["output_duration_s"] - 1.0) < 0.1
     assert out["encoder_used"] == "libx264" and out["repeat_delivery"] is False
     assert len(out["input_sha256"]) == 64 and out["input_duration_s"] == 1.0
-    assert out["warm_start"] is False and out["cold_boot_s"] >= 0
+    assert out["warm_start"] is False and out["selfcheck_s"] >= 0
     assert {"pipeline_s", "handler_total_s", "upload_s"} <= set(out["timings"])
     assert "X-Amz-Signature" not in json.dumps(out)
 

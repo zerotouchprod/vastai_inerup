@@ -59,13 +59,12 @@ python benchmarks/serverless_benchmark.py results.jsonl \
 
 The reducer separates cold and warm runs and reports:
 
-- input/download;
-- setup/model loading;
-- pipeline/inference;
-- upload;
-- total handler time;
+- phase means separately for cold and warm runs;
+- queue, self-check, model-load, input, setup, RIFE, Real-ESRGAN, encode, pipeline, upload and total fields when present;
 - encoder selection;
-- estimated cost from measured pipeline seconds.
+- billed-time cost estimate and pipeline-only cost estimate.
+
+`selfcheck_s` is the worker self-check duration only; it is not a full provider cold-start measurement. Full cold boot remains **NOT TESTED** unless provider timestamps (`created_at`, container-ready, first handler receipt) are supplied.
 
 The current child process exposes `input_s`, `setup_s`, `pipeline_s`, and upload/total timings. RIFE-vs-Real-ESRGAN sub-phase timings remain **NOT TESTED** until the worker emits those phase boundaries on a real GPU.
 
