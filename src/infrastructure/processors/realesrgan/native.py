@@ -606,7 +606,9 @@ class RealESRGANNative:
         self._configure_batch_for_resolution(first.shape[0], first.shape[1])
         self.logger.info(f"Processing {total} frames with Real-ESRGAN")
         self.logger.info(
-            "Real-ESRGAN runtime: model=%s requested_scale=%s network_scale=%s resolution=%sx%s fp16=%s tile=%s tile_pad=%s pre_pad=%s batch=%s weights=%s",
+            "Real-ESRGAN runtime: model=%s requested_scale=%s network_scale=%s "
+            "resolution=%sx%s fp16=%s tile=%s tile_pad=%s pre_pad=%s "
+            "batch=%s weights=%s",
             getattr(self, "model_name", "unknown"),
             self.scale,
             getattr(self._upsampler, "scale", "unknown"),
