@@ -3,8 +3,6 @@ Unit tests for native Python processors.
 """
 
 import pytest
-from pathlib import Path
-from unittest.mock import Mock, patch
 
 
 class TestGPUMemoryDetector:
@@ -14,27 +12,23 @@ class TestGPUMemoryDetector:
         """Test batch size suggestion for low VRAM."""
         from src.infrastructure.processors.realesrgan.native import GPUMemoryDetector
 
-        # <12GB -> batch 1
-        assert GPUMemoryDetector.suggest_batch_size(8 * 1024) == 1
+        # 8GB is the 8-12GB bucket.
+        assert GPUMemoryDetector.suggest_batch_size(8 * 1024) == 4
 
     def test_suggest_batch_size_medium_vram(self):
         """Test batch size suggestion for medium VRAM."""
         from src.infrastructure.processors.realesrgan.native import GPUMemoryDetector
 
-        # 12-16GB -> batch 2
-        assert GPUMemoryDetector.suggest_batch_size(14 * 1024) == 2
-
-        # 16-24GB -> batch 4
-        assert GPUMemoryDetector.suggest_batch_size(20 * 1024) == 4
+        # 12-16GB -> batch 8
+        assert GPUMemoryDetector.suggest_batch_size(14 * 1024) == 8
 
     def test_suggest_batch_size_high_vram(self):
         """Test batch size suggestion for high VRAM."""
         from src.infrastructure.processors.realesrgan.native import GPUMemoryDetector
 
-        # 24-32GB -> batch 8
-        assert GPUMemoryDetector.suggest_batch_size(28 * 1024) == 8
-
-        # >=32GB -> batch 16
+        # 16-24GB -> batch 12. >=24GB -> batch 16.
+        assert GPUMemoryDetector.suggest_batch_size(20 * 1024) == 12
+        assert GPUMemoryDetector.suggest_batch_size(28 * 1024) == 16
         assert GPUMemoryDetector.suggest_batch_size(40 * 1024) == 16
 
 
@@ -45,11 +39,7 @@ class TestRealESRGANNative:
         """Test processor initialization."""
         from src.infrastructure.processors.realesrgan.native import RealESRGANNative
 
-        processor = RealESRGANNative(
-            scale=2,
-            tile_size=512,
-            batch_size=4
-        )
+        processor = RealESRGANNative(scale=2, tile_size=512, batch_size=4)
 
         assert processor.scale == 2
         assert processor.tile_size == 512
@@ -105,7 +95,9 @@ class TestNativeWrappers:
     def test_realesrgan_native_wrapper(self):
         """Test Real-ESRGAN native wrapper."""
         try:
-            from src.infrastructure.processors.realesrgan.native_wrapper import RealESRGANNativeWrapper
+            from src.infrastructure.processors.realesrgan.native_wrapper import (
+                RealESRGANNativeWrapper,
+            )
 
             # Should not raise if dependencies available
             if RealESRGANNativeWrapper.is_available():
@@ -119,7 +111,9 @@ class TestNativeWrappers:
     def test_rife_native_wrapper(self):
         """Test RIFE native wrapper."""
         try:
-            from src.infrastructure.processors.rife.native_wrapper import RIFENativeWrapper
+            from src.infrastructure.processors.rife.native_wrapper import (
+                RIFENativeWrapper,
+            )
 
             # Should not raise if dependencies available
             if RIFENativeWrapper.is_available():
@@ -145,7 +139,7 @@ class TestFactoryNativeSupport:
         """Test factory reads USE_NATIVE_PROCESSORS env."""
         from src.application.factories import ProcessorFactory
 
-        monkeypatch.setenv('USE_NATIVE_PROCESSORS', '1')
+        monkeypatch.setenv("USE_NATIVE_PROCESSORS", "1")
         factory = ProcessorFactory()
         assert factory.use_native is True
 
@@ -156,7 +150,7 @@ class TestFactoryNativeSupport:
         factory = ProcessorFactory(use_native=True)
 
         try:
-            upscaler = factory.create_upscaler(prefer='native')
+            upscaler = factory.create_upscaler(prefer="native")
             assert upscaler is not None
         except Exception:
             pytest.skip("Native upscaler not available")
@@ -168,12 +162,11 @@ class TestFactoryNativeSupport:
         factory = ProcessorFactory(use_native=True)
 
         try:
-            interpolator = factory.create_interpolator(prefer='native')
+            interpolator = factory.create_interpolator(prefer="native")
             assert interpolator is not None
         except Exception:
             pytest.skip("Native interpolator not available")
 
 
-if __name__ == '__main__':
-    pytest.main([__file__, '-v'])
-
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])

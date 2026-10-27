@@ -18,8 +18,10 @@ Usage:
 """
 
 import sys
+import threading
 import time
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import List, Optional
 import logging
@@ -27,6 +29,7 @@ import logging
 # Try to import torch for GPU detection
 try:
     import torch
+
     TORCH_AVAILABLE = True
 except ImportError:
     torch = None  # type: ignore
@@ -44,13 +47,17 @@ class GPUMemoryDetector:
         # Try nvidia-smi first
         try:
             result = subprocess.run(
-                ['nvidia-smi', '--query-gpu=memory.total', '--format=csv,nounits,noheader'],
+                [
+                    "nvidia-smi",
+                    "--query-gpu=memory.total",
+                    "--format=csv,nounits,noheader",
+                ],
                 capture_output=True,
                 text=True,
-                timeout=5
+                timeout=5,
             )
             if result.returncode == 0:
-                for line in result.stdout.strip().split('\n'):
+                for line in result.stdout.strip().split("\n"):
                     if line.strip():
                         try:
                             memories.append(int(line.strip()))
@@ -100,6 +107,153 @@ class GPUMemoryDetector:
             return 16
 
 
+# Process-wide upscalers. The worker builds a new orchestrator per chunk;
+# the cache key ignores tile and batch so an OOM tile change is remembered.
+_UPSCALER_CACHE = {}
+
+
+class PngWriter:
+    """Write PNGs on a small pool. close() waits for every write."""
+
+    def __init__(self, workers: int = 2, compression: int = 1, max_pending: int = 2):
+        self._compression = int(compression)
+        self._semaphore = threading.Semaphore(max_pending)
+        self._executor = ThreadPoolExecutor(max_workers=max(1, workers))
+        self._futures = []
+        self._lock = threading.Lock()
+
+    def submit(self, path, image) -> None:
+        owned = image.copy() if hasattr(image, "copy") else image
+        self._semaphore.acquire()
+        try:
+            future = self._executor.submit(self._write, Path(path), owned)
+        except Exception:
+            self._semaphore.release()
+            raise
+        with self._lock:
+            self._futures.append(future)
+
+    def _write(self, path: Path, image) -> None:
+        try:
+            import cv2
+
+            path.parent.mkdir(parents=True, exist_ok=True)
+            ok = cv2.imwrite(
+                str(path), image, [cv2.IMWRITE_PNG_COMPRESSION, self._compression]
+            )
+            if not ok:
+                raise RuntimeError(f"failed to write {path}")
+        finally:
+            self._semaphore.release()
+
+    def close(self) -> None:
+        error = None
+        try:
+            with self._lock:
+                futures = list(self._futures)
+            for future in futures:
+                try:
+                    future.result()
+                except Exception as exc:
+                    if error is None:
+                        error = exc
+        finally:
+            self._executor.shutdown(wait=True)
+        if error is not None:
+            raise error
+
+
+def _is_cuda_oom(exc: BaseException) -> bool:
+    if not TORCH_AVAILABLE or torch is None:
+        return False
+    oom = getattr(getattr(torch, "cuda", None), "OutOfMemoryError", None)
+    return isinstance(oom, type) and isinstance(exc, oom)
+
+
+def batch_forward(upsampler, frames_bgr, scale):
+    """Run one tiled-off forward.
+
+    BGR uint8 frames become an RGB float32 NCHW batch in 0..1. When
+    ``upsampler.half`` is set, the batch is cast with ``.half()`` and moved
+    to ``upsampler.device``. H and W are reflect-padded up to a multiple of
+    ``scale``, then a single ``upsampler.model`` call runs under
+    ``torch.inference_mode()``. Padding is cropped by ``pad * scale``, values
+    are clamped to 0..1, and the result is returned as BGR uint8 on CPU.
+    """
+    import numpy as np
+
+    if not TORCH_AVAILABLE or torch is None:
+        raise ImportError("torch is required for batch_forward")
+
+    scale = int(scale)
+    channels = []
+    for img in frames_bgr:
+        arr = np.ascontiguousarray(img)
+        rgb = arr[:, :, ::-1].astype(np.float32) / 255.0
+        channels.append(np.transpose(rgb, (2, 0, 1)))
+    batch = torch.from_numpy(np.stack(channels, axis=0))
+    device = getattr(upsampler, "device", None)
+    if getattr(upsampler, "half", False):
+        batch = batch.half()
+        if device is not None:
+            batch = batch.to(device)
+    elif device is not None:
+        batch = batch.to(device)
+
+    _, _, height, width = batch.shape
+    pad_h = (scale - (height % scale)) % scale
+    pad_w = (scale - (width % scale)) % scale
+    if pad_h or pad_w:
+        batch = torch.nn.functional.pad(batch, (0, pad_w, 0, pad_h), mode="reflect")
+
+    with torch.inference_mode():
+        out = upsampler.model(batch)
+
+    if pad_h or pad_w:
+        out = out[:, :, : out.shape[2] - pad_h * scale, : out.shape[3] - pad_w * scale]
+    out = out.clamp(0, 1).float().cpu().numpy()
+
+    results = []
+    for index in range(out.shape[0]):
+        rgb = np.transpose(out[index], (1, 2, 0))
+        bgr = rgb[:, :, ::-1]
+        results.append(np.clip(np.rint(bgr * 255.0), 0, 255).astype(np.uint8))
+    return results
+
+
+def clear_upscaler_cache() -> None:
+    """Drop process-wide upscalers. Tests call this around each case."""
+    _UPSCALER_CACHE.clear()
+
+
+def get_upscaler(scale, half, device, tile_size, batch_size, logger=None):
+    """Return the process-wide upscaler for this scale, precision, and device.
+
+    ``tile_size is None`` starts a new entry at 0. A later call with None keeps
+    the tile already stored on that entry, including 512 after an OOM fallback.
+    An explicit tile updates the cached object and does not reload weights.
+    """
+    key = (int(scale), bool(half), str(device))
+    existing = _UPSCALER_CACHE.get(key)
+    if existing is not None:
+        if tile_size is not None and int(tile_size) != int(existing.tile_size):
+            existing.set_tile_size(int(tile_size))
+        return existing
+
+    chosen = 0 if tile_size is None else int(tile_size)
+    processor = RealESRGANNative(
+        scale=int(scale),
+        tile_size=chosen,
+        half=bool(half),
+        batch_size=batch_size,
+        device=str(device),
+        logger=logger,
+    )
+    _UPSCALER_CACHE[key] = processor
+    processor._load_model()
+    return processor
+
+
 class RealESRGANNative:
     """
     Native Python implementation of Real-ESRGAN processing.
@@ -116,8 +270,8 @@ class RealESRGANNative:
         pre_pad: int = 0,
         half: bool = True,
         batch_size: Optional[int] = None,
-        device: str = 'cuda',
-        logger: Optional[logging.Logger] = None
+        device: str = "cuda",
+        logger: Optional[logging.Logger] = None,
     ):
         """
         Initialize Real-ESRGAN processor.
@@ -138,12 +292,12 @@ class RealESRGANNative:
         # Auto-select model based on scale if not specified
         if model_name is None:
             if scale == 2:
-                model_name = 'RealESRGAN_x2plus'
+                model_name = "RealESRGAN_x2plus"
             elif scale == 4:
-                model_name = 'RealESRGAN_x4plus'
+                model_name = "RealESRGAN_x4plus"
             else:
                 # For other scales, use x4plus and post-scale
-                model_name = 'RealESRGAN_x4plus'
+                model_name = "RealESRGAN_x4plus"
 
         self.model_name = model_name
         self.tile_size = tile_size
@@ -153,7 +307,10 @@ class RealESRGANNative:
         self.device = device
         self.logger = logger or logging.getLogger(__name__)
 
-        # Auto-detect batch size if not specified
+        # Remember an explicit batch before None is replaced by the VRAM table.
+        # That table is only the tiled-path read grouping; tile 0 uses the
+        # explicit value or 1 as the GPU batch.
+        self._explicit_batch_size = batch_size
         if batch_size is None:
             batch_size = GPUMemoryDetector.suggest_batch_size()
             self.logger.info(f"Auto-detected batch_size: {batch_size}")
@@ -182,10 +339,10 @@ class RealESRGANNative:
         self.logger.info(f"Loading Real-ESRGAN model: {self.model_name}")
 
         # Determine model architecture based on model name
-        if 'x4plus' in self.model_name or 'x4' in self.model_name:
+        if "x4plus" in self.model_name or "x4" in self.model_name:
             num_block = 23
             netscale = 4
-        elif 'x2plus' in self.model_name or 'x2' in self.model_name:
+        elif "x2plus" in self.model_name or "x2" in self.model_name:
             num_block = 23
             netscale = 2
         else:
@@ -200,7 +357,7 @@ class RealESRGANNative:
             num_feat=64,
             num_block=num_block,
             num_grow_ch=32,
-            scale=netscale
+            scale=netscale,
         )
 
         # Find model weights
@@ -216,28 +373,37 @@ class RealESRGANNative:
             tile_pad=self.tile_pad,
             pre_pad=self.pre_pad,
             half=use_half,
-            device=self.device
+            device=self.device,
         )
 
-        self.logger.info(f"Model loaded successfully")
+        self.logger.info("Model loaded successfully")
 
     def _find_model_weights(self) -> Path:
         """Find model weights file."""
         # Common locations (ordered by priority)
         possible_paths = [
             # Docker container preinstalled models (highest priority)
-            Path('/opt/realesrgan_models') / f'{self.model_name}.pth',
+            Path("/opt/realesrgan_models") / f"{self.model_name}.pth",
             # Docker container paths
-            Path('/workspace/project/external/Real-ESRGAN/weights') / f'{self.model_name}.pth',
-            Path('/workspace/project/external/Real-ESRGAN/experiments/pretrained_models') / f'{self.model_name}.pth',
-            Path('/root/.cache/realesrgan/weights') / f'{self.model_name}.pth',
+            Path("/workspace/project/external/Real-ESRGAN/weights")
+            / f"{self.model_name}.pth",
+            Path(
+                "/workspace/project/external/Real-ESRGAN/experiments/pretrained_models"
+            )
+            / f"{self.model_name}.pth",
+            Path("/root/.cache/realesrgan/weights") / f"{self.model_name}.pth",
             # Relative paths (when running locally)
-            Path('weights') / f'{self.model_name}.pth',
-            Path('experiments/pretrained_models') / f'{self.model_name}.pth',
-            Path('external/Real-ESRGAN/weights') / f'{self.model_name}.pth',
-            Path('external/Real-ESRGAN/experiments/pretrained_models') / f'{self.model_name}.pth',
+            Path("weights") / f"{self.model_name}.pth",
+            Path("experiments/pretrained_models") / f"{self.model_name}.pth",
+            Path("external/Real-ESRGAN/weights") / f"{self.model_name}.pth",
+            Path("external/Real-ESRGAN/experiments/pretrained_models")
+            / f"{self.model_name}.pth",
             # User home directory
-            Path.home() / '.cache' / 'realesrgan' / 'weights' / f'{self.model_name}.pth',
+            Path.home()
+            / ".cache"
+            / "realesrgan"
+            / "weights"
+            / f"{self.model_name}.pth",
         ]
 
         for path in possible_paths:
@@ -246,18 +412,26 @@ class RealESRGANNative:
                 return path
 
         # If x2plus not found, try to fallback to x4plus (we'll post-scale)
-        if 'x2plus' in self.model_name:
-            self.logger.warning(f"{self.model_name} not found, trying fallback to x4plus...")
-            fallback_name = 'RealESRGAN_x4plus'
+        if "x2plus" in self.model_name:
+            self.logger.warning(
+                f"{self.model_name} not found, trying fallback to x4plus..."
+            )
+            fallback_name = "RealESRGAN_x4plus"
             fallback_paths = [
-                Path('/opt/realesrgan_models') / f'{fallback_name}.pth',
-                Path('/workspace/project/external/Real-ESRGAN/weights') / f'{fallback_name}.pth',
-                Path('/workspace/project/external/Real-ESRGAN/experiments/pretrained_models') / f'{fallback_name}.pth',
+                Path("/opt/realesrgan_models") / f"{fallback_name}.pth",
+                Path("/workspace/project/external/Real-ESRGAN/weights")
+                / f"{fallback_name}.pth",
+                Path(
+                    "/workspace/project/external/Real-ESRGAN/experiments/pretrained_models"
+                )
+                / f"{fallback_name}.pth",
             ]
             for path in fallback_paths:
                 if path.exists():
                     self.logger.info(f"Using fallback model: {path}")
-                    self.logger.info(f"Will use x4plus model with outscale={self.scale}")
+                    self.logger.info(
+                        f"Will use x4plus model with outscale={self.scale}"
+                    )
                     # Update model_name to x4plus for architecture setup
                     self.model_name = fallback_name
                     self._use_fallback_scale = True
@@ -270,14 +444,14 @@ class RealESRGANNative:
 
         try:
             from realesrgan.utils import download_pretrained_models
-            cache_dir = Path.home() / '.cache' / 'realesrgan' / 'weights'
+
+            cache_dir = Path.home() / ".cache" / "realesrgan" / "weights"
             cache_dir.mkdir(parents=True, exist_ok=True)
-            model_path = cache_dir / f'{self.model_name}.pth'
+            model_path = cache_dir / f"{self.model_name}.pth"
 
             # Download model
             download_pretrained_models(
-                model_name=self.model_name,
-                model_path=str(model_path)
+                model_name=self.model_name, model_path=str(model_path)
             )
 
             if model_path.exists():
@@ -293,137 +467,163 @@ class RealESRGANNative:
             f"https://github.com/xinntao/Real-ESRGAN/releases"
         )
 
+    def set_tile_size(self, tile_size: int) -> None:
+        """Update the tile on this object and on a live upsampler. Does not reload weights."""
+        self.tile_size = tile_size
+        upsampler = self._upsampler
+        if upsampler is None:
+            return
+        upsampler.tile_size = tile_size
+        if hasattr(upsampler, "tile"):
+            upsampler.tile = tile_size
+
+    def _gpu_batch_size(self) -> int:
+        """GPU batch for tile 0. The VRAM table is not a GPU batch."""
+        if self.tile_size != 0:
+            return 1
+        explicit = getattr(self, "_explicit_batch_size", None)
+        if explicit is None:
+            return 1
+        return max(1, int(explicit))
+
+    def _can_batch_forward(self) -> bool:
+        if self.tile_size != 0 or getattr(self, "_use_fallback_scale", False):
+            return False
+        upsampler = self._upsampler
+        net_scale = getattr(upsampler, "scale", None) if upsampler is not None else None
+        if net_scale is None:
+            return False
+        return int(net_scale) == int(self.scale)
+
+    def _read_group_size(self) -> int:
+        if self._can_batch_forward():
+            return max(1, self._gpu_batch_size())
+        return max(1, int(self.batch_size))
+
+    def _raise_if_cancelled(self, cancel_event) -> None:
+        if cancel_event is not None and cancel_event.is_set():
+            raise RuntimeError("upscale cancelled")
+
+    def _enhance_frame(self, img):
+        output, _ = self._upsampler.enhance(img, outscale=self.scale)
+        return output
+
+    def _upscale_loaded(self, images):
+        """Tile-0 batch. On CUDA OOM, switch this cached object to tile 512 and enhance."""
+        try:
+            return batch_forward(self._upsampler, images, int(self.scale))
+        except Exception as exc:
+            if not _is_cuda_oom(exc):
+                raise
+        # Retry outside the except block: the traceback holds the failed
+        # forward's tensors, so VRAM is only released once it is gone.
+        if TORCH_AVAILABLE and torch is not None and torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        self.set_tile_size(512)
+        self.logger.info("  gpu_batch=1")
+        return [self._enhance_frame(img) for img in images]
+
     def process_frames(
         self,
         input_frames: List[Path],
         output_dir: Path,
-        progress_callback: Optional[callable] = None
+        progress_callback: Optional[callable] = None,
+        cancel_event=None,
     ) -> List[Path]:
-        """
-        Process frames with Real-ESRGAN.
+        """Process frames with Real-ESRGAN.
 
-        Args:
-            input_frames: List of input frame paths
-            output_dir: Output directory
-            progress_callback: Optional callback(current, total)
-
-        Returns:
-            List of output frame paths
+        A cancel that is already set writes nothing. Progress is one call per
+        emitted frame. Tile 0 uses a single model forward per same-size group.
         """
+        self._raise_if_cancelled(cancel_event)
         output_dir.mkdir(parents=True, exist_ok=True)
-
-        # Load model
         self._load_model()
 
-        # Import cv2 here (not at module level)
         try:
             import cv2
         except ImportError as e:
-            raise ImportError("opencv-python not found. Install: pip install opencv-python") from e
+            raise ImportError(
+                "opencv-python not found. Install: pip install opencv-python"
+            ) from e
 
-        output_frames = []
         total = len(input_frames)
-
         self.logger.info(f"Processing {total} frames with Real-ESRGAN")
         self.logger.info(f"  Scale: {self.scale}x")
         self.logger.info(f"  Tile size: {self.tile_size}")
         self.logger.info(f"  Batch size: {self.batch_size}")
         self.logger.info(f"  Half precision: {self.half}")
+        if self.tile_size != 0:
+            self.logger.info("  gpu_batch=1")
+        else:
+            self.logger.info(f"  gpu_batch={self._gpu_batch_size()}")
 
-        # Log GPU info if available
         if torch is not None and torch.cuda.is_available():
             gpu_name = torch.cuda.get_device_name(0)
             gpu_memory = torch.cuda.get_device_properties(0).total_memory / (1024**3)
             self.logger.info(f"  GPU: {gpu_name} ({gpu_memory:.1f}GB)")
 
+        output_frames = []
         start_time = time.time()
-
-        # Process frames in batches for better GPU utilization
-        batch_size = self.batch_size
-        num_batches = (total + batch_size - 1) // batch_size
-
-        for batch_idx in range(num_batches):
-            batch_start_idx = batch_idx * batch_size
-            batch_end_idx = min(batch_start_idx + batch_size, total)
-            batch_frames = input_frames[batch_start_idx:batch_end_idx]
-
-            try:
-                # Load batch of images
+        writer = PngWriter()
+        try:
+            index = 0
+            while index < total:
+                self._raise_if_cancelled(cancel_event)
+                group = self._read_group_size()
                 images = []
-                valid_frames = []
-
-                for frame_path in batch_frames:
+                paths = []
+                consumed = 0
+                while consumed < group and index + consumed < total:
+                    self._raise_if_cancelled(cancel_event)
+                    frame_path = input_frames[index + consumed]
                     img = cv2.imread(str(frame_path), cv2.IMREAD_COLOR)
-                    if img is not None:
-                        images.append(img)
-                        valid_frames.append(frame_path)
-                    else:
+                    consumed += 1
+                    if img is None:
                         self.logger.warning(f"Failed to load frame: {frame_path}")
-
+                        continue
+                    if images and img.shape != images[0].shape:
+                        consumed -= 1
+                        break
+                    images.append(img)
+                    paths.append(output_dir / Path(frame_path).name)
+                if consumed == 0:
+                    break
+                index += consumed
                 if not images:
                     continue
-
-                # Log image info for first frame only
-                if batch_idx == 0 and images:
-                    h, w = images[0].shape[:2]
-                    self.logger.info(f"  Input resolution: {w}x{h}")
-                    self.logger.info(f"  Output resolution: {w*self.scale}x{h*self.scale}")
-
-                # Process batch
-                batch_start_time = time.time()
-
-                # Process each image in the batch (RealESRGANer doesn't support true batching)
-                for img, frame_path in zip(images, valid_frames):
-                    output, _ = self._upsampler.enhance(img, outscale=self.scale)
-
-                    # Save immediately
-                    output_path = output_dir / frame_path.name
-                    cv2.imwrite(str(output_path), output)
-                    output_frames.append(output_path)
-
-                batch_time = time.time() - batch_start_time
-
-                # Progress reporting (less verbose - only every 10 frames or at milestones)
-                current_frame = batch_end_idx
-                show_progress = (
-                    current_frame <= 10 or
-                    current_frame % 10 == 0 or
-                    current_frame == total
-                )
-
-                if show_progress:
-                    elapsed = time.time() - start_time
-                    fps = current_frame / elapsed if elapsed > 0 else 0
-                    eta = (total - current_frame) / fps if fps > 0 else 0
-
-                    self.logger.info(
-                        f"Processed {current_frame}/{total} frames "
-                        f"({100*current_frame/total:.1f}%) | "
-                        f"{fps:.2f} fps | "
-                        f"ETA: {eta:.0f}s"
-                    )
-
+                if self._can_batch_forward():
+                    outputs = self._upscale_loaded(images)
+                else:
+                    outputs = [self._enhance_frame(img) for img in images]
+                for out_img, out_path in zip(outputs, paths):
+                    self._raise_if_cancelled(cancel_event)
+                    writer.submit(out_path, out_img)
+                    output_frames.append(out_path)
+                    current = len(output_frames)
                     if progress_callback:
-                        progress_callback(current_frame, total)
-
-            except Exception as e:
-                self.logger.error(f"Failed to process batch {batch_idx + 1}/{num_batches}: {e}")
-                import traceback
-                self.logger.error(traceback.format_exc())
-                raise
+                        progress_callback(current, total)
+                    if current <= 10 or current % 10 == 0 or current == total:
+                        elapsed = time.time() - start_time
+                        fps = current / elapsed if elapsed > 0 else 0
+                        eta = (total - current) / fps if fps > 0 else 0
+                        self.logger.info(
+                            f"Processed {current}/{total} frames "
+                            f"({100 * current / total:.1f}%) | "
+                            f"{fps:.2f} fps | "
+                            f"ETA: {eta:.0f}s"
+                        )
+        finally:
+            writer.close()
 
         elapsed = time.time() - start_time
         avg_fps = total / elapsed if elapsed > 0 else 0
-
-        self.logger.info(f"✅ Completed {total} frames in {elapsed:.1f}s ({avg_fps:.2f} fps)")
-
+        self.logger.info(
+            f"Completed {total} frames in {elapsed:.1f}s ({avg_fps:.2f} fps)"
+        )
         return output_frames
 
     def process_video(
-        self,
-        input_video: Path,
-        output_video: Path,
-        fps: Optional[float] = None
+        self, input_video: Path, output_video: Path, fps: Optional[float] = None
     ) -> Path:
         """
         Process entire video file.
@@ -464,11 +664,11 @@ class RealESRGANNative:
             # Assemble video
             self.logger.info(f"Assembling video to {output_video}")
             assembler = FFmpegAssembler()
-            result = assembler.assemble_video(
+            assembler.assemble_video(
                 output_frames,
                 output_video,
                 fps=fps,
-                resolution=(info.width * self.scale, info.height * self.scale)
+                resolution=(info.width * self.scale, info.height * self.scale),
             )
 
             return output_video
@@ -480,23 +680,25 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(
-        description='Real-ESRGAN PyTorch (Native Python Implementation)'
+        description="Real-ESRGAN PyTorch (Native Python Implementation)"
     )
-    parser.add_argument('input', help='Input file (video or directory of frames)')
-    parser.add_argument('output', help='Output file or directory')
-    parser.add_argument('scale', type=int, nargs='?', default=4, help='Scale factor (default: 4)')
-    parser.add_argument('--batch-size', type=int, help='Batch size (auto if not specified)')
-    parser.add_argument('--tile-size', type=int, default=512, help='Tile size')
-    parser.add_argument('--half', action='store_true', default=True, help='Use FP16')
-    parser.add_argument('--no-half', dest='half', action='store_false', help='Use FP32')
+    parser.add_argument("input", help="Input file (video or directory of frames)")
+    parser.add_argument("output", help="Output file or directory")
+    parser.add_argument(
+        "scale", type=int, nargs="?", default=4, help="Scale factor (default: 4)"
+    )
+    parser.add_argument(
+        "--batch-size", type=int, help="Batch size (auto if not specified)"
+    )
+    parser.add_argument("--tile-size", type=int, default=512, help="Tile size")
+    parser.add_argument("--half", action="store_true", default=True, help="Use FP16")
+    parser.add_argument("--no-half", dest="half", action="store_false", help="Use FP32")
 
     args = parser.parse_args()
 
     # Setup logging
     logging.basicConfig(
-        level=logging.INFO,
-        format='[%(asctime)s] %(message)s',
-        datefmt='%H:%M:%S'
+        level=logging.INFO, format="[%(asctime)s] %(message)s", datefmt="%H:%M:%S"
     )
 
     input_path = Path(args.input)
@@ -507,7 +709,7 @@ def main():
         scale=args.scale,
         tile_size=args.tile_size,
         half=args.half,
-        batch_size=args.batch_size
+        batch_size=args.batch_size,
     )
 
     # Process
@@ -516,7 +718,7 @@ def main():
         processor.process_video(input_path, output_path)
     elif input_path.is_dir():
         # Directory of frames
-        frames = sorted(input_path.glob('*.png')) or sorted(input_path.glob('*.jpg'))
+        frames = sorted(input_path.glob("*.png")) or sorted(input_path.glob("*.jpg"))
         output_path.mkdir(parents=True, exist_ok=True)
         processor.process_frames(frames, output_path)
     else:
@@ -526,6 +728,5 @@ def main():
     print(f"✅ Success: {output_path}")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
-

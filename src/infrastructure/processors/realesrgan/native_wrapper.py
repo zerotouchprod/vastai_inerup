@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import List, Dict, Any
 
 from src.infrastructure.processors.base import BaseProcessor
-from src.infrastructure.processors.realesrgan.native import RealESRGANNative
+from src.infrastructure.processors.realesrgan.native import get_upscaler
 from src.domain.exceptions import VideoProcessingError, ProcessorNotAvailableError
 from src.shared.logging import get_logger
 
@@ -35,18 +35,23 @@ class RealESRGANNativeWrapper(BaseProcessor):
         """Check if Real-ESRGAN dependencies are available."""
         try:
             import torch
+
             logger.info(f"[DEBUG] PyTorch version: {torch.__version__}")
             logger.info(f"[DEBUG] CUDA available: {torch.cuda.is_available()}")
             if torch.cuda.is_available():
                 logger.info(f"[DEBUG] CUDA device: {torch.cuda.get_device_name(0)}")
-                logger.info(f"[DEBUG] CUDA capability: {torch.cuda.get_device_capability(0)}")
+                logger.info(
+                    f"[DEBUG] CUDA capability: {torch.cuda.get_device_capability(0)}"
+                )
             # Note: CUDA is preferred but not required for testing
             # The actual device selection happens during model loading
 
-            from basicsr.archs.rrdbnet_arch import RRDBNet
+            from basicsr.archs.rrdbnet_arch import RRDBNet  # noqa: F401
+
             logger.info("[DEBUG] basicsr.archs.rrdbnet_arch import OK")
-            
-            from realesrgan import RealESRGANer
+
+            from realesrgan import RealESRGANer  # noqa: F401
+
             logger.info("[DEBUG] realesrgan import OK")
 
             logger.info("Real-ESRGAN native is available (all dependencies found)")
@@ -54,11 +59,13 @@ class RealESRGANNativeWrapper(BaseProcessor):
         except ImportError as e:
             logger.warning(f"Real-ESRGAN native not available - ImportError: {e}")
             import traceback
+
             logger.warning(f"Import traceback: {traceback.format_exc()}")
             return False
         except Exception as e:
             logger.warning(f"Real-ESRGAN native availability check failed: {e}")
             import traceback
+
             logger.warning(f"Exception traceback: {traceback.format_exc()}")
             return False
 
@@ -67,10 +74,7 @@ class RealESRGANNativeWrapper(BaseProcessor):
         return True
 
     def _execute_processing(
-        self,
-        input_frames: List[Path],
-        output_dir: Path,
-        options: Dict[str, Any]
+        self, input_frames: List[Path], output_dir: Path, options: Dict[str, Any]
     ) -> List[Path]:
         """
         Execute Real-ESRGAN upscaling using native Python.
@@ -84,33 +88,35 @@ class RealESRGANNativeWrapper(BaseProcessor):
             List of upscaled frame paths
         """
         # Get options
-        scale = options.get('scale', 2)
-        tile_size = options.get('tile_size', 512)
-        batch_size = options.get('batch_size')  # None = auto-detect
-        half = options.get('half', True)
-        is_intermediate = options.get('_intermediate_stage', False)
+        scale = int(options.get("scale", 2))
+        tile_size = options.get("tile_size") if "tile_size" in options else None
+        batch_size = options.get("batch_size")  # None = auto-detect
+        half = options.get("half", True)
+        device = options.get("device", "cuda")
+        is_intermediate = options.get("_intermediate_stage", False)
 
         if is_intermediate:
-            self._logger.info(f"Running Real-ESRGAN (Native Python, intermediate stage): scale={scale}")
+            self._logger.info(
+                f"Running Real-ESRGAN (Native Python, intermediate stage): scale={scale}"
+            )
         else:
             self._logger.info(f"Running Real-ESRGAN (Native Python): scale={scale}")
 
         try:
-            # Create processor if not exists
-            if self._processor is None:
-                self._processor = RealESRGANNative(
-                    scale=scale,
-                    tile_size=tile_size,
-                    batch_size=batch_size,
-                    half=half,
-                    logger=self._logger
-                )
+            self._processor = get_upscaler(
+                scale,
+                half,
+                device,
+                tile_size,
+                batch_size,
+                logger=self._logger,
+            )
 
-            # Process frames
             output_frames = self._processor.process_frames(
                 input_frames,
                 output_dir,
-                progress_callback=None  # TODO: Add progress tracking
+                progress_callback=options.get("progress_callback"),
+                cancel_event=options.get("cancel_event"),
             )
 
             if not output_frames:
@@ -119,7 +125,9 @@ class RealESRGANNativeWrapper(BaseProcessor):
             # Note: Native processors don't handle B2 uploads
             # The orchestrator will upload the final assembled video
             if is_intermediate:
-                self._logger.debug("Intermediate stage - orchestrator will handle final upload")
+                self._logger.debug(
+                    "Intermediate stage - orchestrator will handle final upload"
+                )
 
             return output_frames
 
