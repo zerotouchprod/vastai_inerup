@@ -116,7 +116,9 @@ _UPSCALER_CACHE = {}
 class PngWriter:
     """Write PNGs on a small pool. close() waits for every write."""
 
-    def __init__(self, workers: int = 2, compression: int = 1, max_pending: int = 2, timing=None):
+    def __init__(
+        self, workers: int = 2, compression: int = 1, max_pending: int = 2, timing=None
+    ):
         self._compression = int(compression)
         self._semaphore = threading.Semaphore(max_pending)
         self._executor = ThreadPoolExecutor(max_workers=max(1, workers))
@@ -149,7 +151,9 @@ class PngWriter:
         finally:
             if self._timing is not None:
                 with self._lock:
-                    self._timing["encode_s"] = self._timing.get("encode_s", 0.0) + (time.perf_counter() - started)
+                    self._timing["encode_s"] = self._timing.get("encode_s", 0.0) + (
+                        time.perf_counter() - started
+                    )
             self._semaphore.release()
 
     def close(self) -> None:
@@ -213,13 +217,17 @@ def batch_forward(upsampler, frames_bgr, scale, timing=None):
     if pad_h or pad_w:
         batch = torch.nn.functional.pad(batch, (0, pad_w, 0, pad_h), mode="reflect")
     if timing is not None:
-        timing["preprocess_s"] = timing.get("preprocess_s", 0.0) + (time.perf_counter() - phase_start)
+        timing["preprocess_s"] = timing.get("preprocess_s", 0.0) + (
+            time.perf_counter() - phase_start
+        )
 
     inference_start = time.perf_counter()
     with torch.inference_mode():
         out = upsampler.model(batch)
     if timing is not None:
-        timing["inference_s"] = timing.get("inference_s", 0.0) + (time.perf_counter() - inference_start)
+        timing["inference_s"] = timing.get("inference_s", 0.0) + (
+            time.perf_counter() - inference_start
+        )
 
     if pad_h or pad_w:
         out = out[:, :, : out.shape[2] - pad_h * scale, : out.shape[3] - pad_w * scale]
@@ -232,7 +240,9 @@ def batch_forward(upsampler, frames_bgr, scale, timing=None):
         bgr = rgb[:, :, ::-1]
         results.append(np.clip(np.rint(bgr * 255.0), 0, 255).astype(np.uint8))
     if timing is not None:
-        timing["postprocess_s"] = timing.get("postprocess_s", 0.0) + (time.perf_counter() - post_start)
+        timing["postprocess_s"] = timing.get("postprocess_s", 0.0) + (
+            time.perf_counter() - post_start
+        )
     return results
 
 
@@ -241,14 +251,18 @@ def clear_upscaler_cache() -> None:
     _UPSCALER_CACHE.clear()
 
 
-def get_upscaler(scale, half, device, tile_size, batch_size, model_name=None, logger=None):
+def get_upscaler(
+    scale, half, device, tile_size, batch_size, model_name=None, logger=None
+):
     """Return the process-wide upscaler for this scale, precision, and device.
 
     ``tile_size is None`` starts a new entry at 0. A later call with None keeps
     the tile already stored on that entry, including 512 after an OOM fallback.
     An explicit tile updates the cached object and does not reload weights.
     """
-    model_name = model_name or ("RealESRGAN_x2plus" if int(scale) == 2 else "RealESRGAN_x4plus")
+    model_name = model_name or (
+        "RealESRGAN_x2plus" if int(scale) == 2 else "RealESRGAN_x4plus"
+    )
     key = (int(scale), bool(half), str(device), model_name)
     existing = _UPSCALER_CACHE.get(key)
     if existing is not None:
@@ -345,7 +359,9 @@ class RealESRGANNative:
         if getattr(self, "_batch_configured_for_resolution", False):
             return
         base = int(self.batch_size)
-        max_pixels = int(os.getenv("REAL_ESRGAN_MAX_BATCH_PIXELS", str(1920 * 1080 * base)))
+        max_pixels = int(
+            os.getenv("REAL_ESRGAN_MAX_BATCH_PIXELS", str(1920 * 1080 * base))
+        )
         pixels = max(1, int(height) * int(width))
         safe = max(1, max_pixels // pixels)
         configured = min(base, safe)
@@ -354,7 +370,11 @@ class RealESRGANNative:
         self._batch_configured_for_resolution = True
         self.logger.info(
             "Resolution-aware batch selection: resolution=%sx%s base_batch=%s selected_batch=%s max_pixels=%s",
-            width, height, base, self.batch_size, max_pixels,
+            width,
+            height,
+            base,
+            self.batch_size,
+            max_pixels,
         )
 
     def _load_model(self):
@@ -528,13 +548,19 @@ class RealESRGANNative:
     def _upscale_loaded(self, images, timing=None):
         """Tile-0 batch. On CUDA OOM, switch this cached object to tile 512 and enhance."""
         try:
-            return batch_forward(self._upsampler, images, int(self.scale), timing=timing)
+            return batch_forward(
+                self._upsampler, images, int(self.scale), timing=timing
+            )
         except Exception as exc:
             if not _is_cuda_oom(exc):
                 raise
             self.logger.exception(
                 "Real-ESRGAN CUDA OOM: model=%s scale=%s batch=%s tile=%s images=%s",
-                getattr(self, "model_name", "unknown"), self.scale, len(images), self.tile_size, len(images),
+                getattr(self, "model_name", "unknown"),
+                self.scale,
+                len(images),
+                self.tile_size,
+                len(images),
             )
         # Retry outside the except block: the traceback holds the failed
         # forward's tensors, so VRAM is only released once it is gone.
@@ -543,7 +569,9 @@ class RealESRGANNative:
         self.set_tile_size(512)
         self.batch_size = 1
         self._explicit_batch_size = 1
-        self.logger.warning("OOM recovery: batch_size=%s -> 1, tile_size -> 512", len(images))
+        self.logger.warning(
+            "OOM recovery: batch_size=%s -> 1, tile_size -> 512", len(images)
+        )
         return [self._enhance_frame(img) for img in images]
 
     def process_frames(
@@ -570,16 +598,26 @@ class RealESRGANNative:
             ) from e
 
         total = len(input_frames)
-        first = cv2.imread(str(input_frames[0]), cv2.IMREAD_COLOR) if input_frames else None
+        first = (
+            cv2.imread(str(input_frames[0]), cv2.IMREAD_COLOR) if input_frames else None
+        )
         if first is None:
             raise ValueError("Unable to read the first input frame")
         self._configure_batch_for_resolution(first.shape[0], first.shape[1])
         self.logger.info(f"Processing {total} frames with Real-ESRGAN")
         self.logger.info(
             "Real-ESRGAN runtime: model=%s requested_scale=%s network_scale=%s resolution=%sx%s fp16=%s tile=%s tile_pad=%s pre_pad=%s batch=%s weights=%s",
-            getattr(self, "model_name", "unknown"), self.scale, getattr(self._upsampler, "scale", "unknown"),
-            first.shape[1], first.shape[0], self.half, self.tile_size,
-            getattr(self, "tile_pad", 10), getattr(self, "pre_pad", 0), self.batch_size, getattr(self, "model_path", "unknown"),
+            getattr(self, "model_name", "unknown"),
+            self.scale,
+            getattr(self._upsampler, "scale", "unknown"),
+            first.shape[1],
+            first.shape[0],
+            self.half,
+            self.tile_size,
+            getattr(self, "tile_pad", 10),
+            getattr(self, "pre_pad", 0),
+            self.batch_size,
+            getattr(self, "model_path", "unknown"),
         )
         self.logger.info(f"  Scale: {self.scale}x")
         self.logger.info(f"  Tile size: {self.tile_size}")
@@ -597,7 +635,13 @@ class RealESRGANNative:
 
         output_frames = []
         start_time = time.time()
-        timings = {"decode_s": 0.0, "preprocess_s": 0.0, "inference_s": 0.0, "postprocess_s": 0.0, "encode_s": 0.0}
+        timings = {
+            "decode_s": 0.0,
+            "preprocess_s": 0.0,
+            "inference_s": 0.0,
+            "postprocess_s": 0.0,
+            "encode_s": 0.0,
+        }
         writer = PngWriter(timing=timings)
         try:
             index = 0
@@ -658,7 +702,9 @@ class RealESRGANNative:
         self.logger.info(
             f"Completed {total} frames in {elapsed:.1f}s ({avg_fps:.2f} fps)"
         )
-        self.logger.info("Real-ESRGAN timings: %s", {k: round(v, 3) for k, v in timings.items()})
+        self.logger.info(
+            "Real-ESRGAN timings: %s", {k: round(v, 3) for k, v in timings.items()}
+        )
         return output_frames
 
     def process_video(

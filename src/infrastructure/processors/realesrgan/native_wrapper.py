@@ -99,7 +99,10 @@ class RealESRGANNativeWrapper(BaseProcessor):
         batch_size = options.get("batch_size")  # None = resolution-aware auto-detect
         if batch_size is None and os.getenv("REAL_ESRGAN_BATCH_SIZE"):
             batch_size = int(os.environ["REAL_ESRGAN_BATCH_SIZE"])
-        half = options.get("half", os.getenv("REAL_ESRGAN_HALF", "true").lower() not in ("0", "false", "no"))
+        half = options.get(
+            "half",
+            os.getenv("REAL_ESRGAN_HALF", "true").lower() not in ("0", "false", "no"),
+        )
         device = options.get("device", "cuda")
         is_intermediate = options.get("_intermediate_stage", False)
 
