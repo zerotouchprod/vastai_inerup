@@ -103,3 +103,42 @@ def test_runtime_source_contains_observability_fields():
 def test_legacy_loader_refuses_x2_to_x4_fallback():
     source = Path("realesrgan_batch_upscale.py").read_text()
     assert "refusing silent x4plus fallback" in source
+
+
+def test_cached_processor_applies_explicit_and_auto_batch_per_job():
+    from src.infrastructure.processors.realesrgan.native import RealESRGANNative
+
+    p = RealESRGANNative.__new__(RealESRGANNative)
+    p.tile_size = 0
+    p.batch_size = 12
+    p._auto_batch_size = 12
+    p._upsampler = None
+
+    p.configure_job(tile_size=0, batch_size=1)
+    assert p._gpu_batch_size() == 1
+
+    p.configure_job(tile_size=None, batch_size=None)
+    assert p._explicit_batch_size is None
+    assert p._gpu_batch_size() == p._auto_batch_size
+
+    p.configure_job(tile_size=0, batch_size=4)
+    assert p._gpu_batch_size() == 4
+
+    p.configure_job(tile_size=None, batch_size=None)
+    assert p._gpu_batch_size() == p._auto_batch_size
+
+
+def test_cached_processor_applies_tile_per_job_without_reloading_weights():
+    from src.infrastructure.processors.realesrgan.native import RealESRGANNative
+
+    p = RealESRGANNative.__new__(RealESRGANNative)
+    p.tile_size = 0
+    p.batch_size = 12
+    p._auto_batch_size = 12
+    p._upsampler = None
+
+    p.configure_job(tile_size=0, batch_size=None)
+    p.configure_job(tile_size=512, batch_size=None)
+    assert p.tile_size == 512
+    p.configure_job(tile_size=0, batch_size=None)
+    assert p.tile_size == 0

@@ -256,20 +256,14 @@ def clear_upscaler_cache() -> None:
 def get_upscaler(
     scale, half, device, tile_size, batch_size, model_name=None, logger=None
 ):
-    """Return the process-wide upscaler for this scale, precision, and device.
-
-    ``tile_size is None`` starts a new entry at 0. A later call with None keeps
-    the tile already stored on that entry, including 512 after an OOM fallback.
-    An explicit tile updates the cached object and does not reload weights.
-    """
+    """Return cached model weights with fresh job-scoped execution settings."""
     model_name = model_name or (
         "RealESRGAN_x2plus" if int(scale) == 2 else "RealESRGAN_x4plus"
     )
     key = (int(scale), bool(half), str(device), model_name)
     existing = _UPSCALER_CACHE.get(key)
     if existing is not None:
-        if tile_size is not None and int(tile_size) != int(existing.tile_size):
-            existing.set_tile_size(int(tile_size))
+        existing.configure_job(tile_size=tile_size, batch_size=batch_size)
         return existing
 
     chosen = 0 if tile_size is None else int(tile_size)
@@ -523,9 +517,26 @@ class RealESRGANNative:
         upsampler = self._upsampler
         if upsampler is None:
             return
-        upsampler.tile_size = tile_size
+        if hasattr(upsampler, "tile_size"):
+            upsampler.tile_size = tile_size
         if hasattr(upsampler, "tile"):
             upsampler.tile = tile_size
+
+    def configure_job(
+        self, tile_size: Optional[int], batch_size: Optional[int]
+    ) -> None:
+        """Apply only this job's tuning without replacing cached model weights."""
+        chosen_tile = 0 if tile_size is None else int(tile_size)
+        self._explicit_batch_size = batch_size
+        self.batch_size = (
+            max(1, int(batch_size))
+            if batch_size is not None
+            else max(1, int(getattr(self, "_auto_batch_size", self.batch_size)))
+        )
+        self._initial_tile_size = chosen_tile
+        self._batch_configured_for_resolution = batch_size is not None
+        self.set_tile_size(chosen_tile)
+        self._oom_recovery_attempted = False
 
     def _gpu_batch_size(self) -> int:
         """GPU batch for tile 0. The VRAM table is not a GPU batch."""
