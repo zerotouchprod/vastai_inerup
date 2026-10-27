@@ -491,11 +491,13 @@ class RealESRGANNative:
         except Exception as exc:
             if not _is_cuda_oom(exc):
                 raise
-            if TORCH_AVAILABLE and torch is not None and torch.cuda.is_available():
-                torch.cuda.empty_cache()
-            self.set_tile_size(512)
-            self.logger.info("  gpu_batch=1")
-            return [self._enhance_frame(img) for img in images]
+        # Retry outside the except block: the traceback holds the failed
+        # forward's tensors, so VRAM is only released once it is gone.
+        if TORCH_AVAILABLE and torch is not None and torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        self.set_tile_size(512)
+        self.logger.info("  gpu_batch=1")
+        return [self._enhance_frame(img) for img in images]
 
     def process_frames(
         self,

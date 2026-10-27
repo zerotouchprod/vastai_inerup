@@ -177,6 +177,46 @@ def test_orchestrator_upscale_passes_progress_and_cancel(tmp_path):
     assert captured["options"]["progress_callback"] is callback
 
 
+@pytest.mark.parametrize("strategy", ["interp-then-upscale", "upscale-then-interp"])
+def test_orchestrator_both_mode_passes_progress_and_cancel(tmp_path, strategy):
+    from src.application.orchestrator import VideoProcessingOrchestrator
+    from src.domain.models import Job, ProcessingResult
+
+    captured = {}
+
+    class Stage:
+        def __init__(self, name):
+            self.name = name
+
+        def process(self, frames, output_dir, **options):
+            captured[self.name] = options
+            output_dir.mkdir(parents=True, exist_ok=True)
+            (output_dir / "frame_000001.png").write_bytes(b"png")
+            return ProcessingResult(success=True, output_path=output_dir, frames_processed=1)
+
+    orchestrator = VideoProcessingOrchestrator.__new__(VideoProcessingOrchestrator)
+    orchestrator._upscaler = Stage("upscale")
+    orchestrator._interpolator = Stage("interp")
+    orchestrator._logger = logging.getLogger("upscale-test")
+    lost = threading.Event()
+
+    def callback(current, total):
+        return None
+
+    job = Job(
+        job_id="job-1",
+        input_url="file://in.mp4",
+        mode="both",
+        strategy=strategy,
+        config={"cancel_event": lost, "progress_callback": callback},
+    )
+
+    orchestrator._process_frames(job, [Path("frame_000001.png")], tmp_path)
+
+    assert captured["upscale"]["cancel_event"] is lost
+    assert captured["upscale"]["progress_callback"] is callback
+
+
 def test_wrapper_passes_tile_progress_and_cancel(tmp_path, monkeypatch):
     from src.infrastructure.processors.realesrgan import native_wrapper
 

@@ -446,6 +446,8 @@ class VideoProcessingOrchestrator:
                     '_intermediate_stage': True  # Don't upload intermediate results
                 }
                 if isinstance(job.config, dict):
+                    upscale_options['cancel_event'] = job.config.get('cancel_event')
+                    upscale_options['progress_callback'] = job.config.get('progress_callback')
                     upscale_options['b2_output_key'] = job.config.get('b2_output_key')
                     upscale_options['b2_bucket'] = job.config.get('b2_bucket')
                 upscale_result = self._upscaler.process(interpolated_frames, upscale_dir, **upscale_options)
@@ -467,6 +469,8 @@ class VideoProcessingOrchestrator:
                     '_intermediate_stage': True  # Don't upload intermediate results
                 }
                 if isinstance(job.config, dict):
+                    upscale_options['cancel_event'] = job.config.get('cancel_event')
+                    upscale_options['progress_callback'] = job.config.get('progress_callback')
                     upscale_options['b2_output_key'] = job.config.get('b2_output_key')
                     upscale_options['b2_bucket'] = job.config.get('b2_bucket')
                 result = self._upscaler.process(frame_paths, upscale_dir, **upscale_options)
