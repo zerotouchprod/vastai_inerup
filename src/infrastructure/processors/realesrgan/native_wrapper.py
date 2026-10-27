@@ -4,6 +4,7 @@ Wrapper adapter for native Python Real-ESRGAN implementation.
 This adapter uses the pure Python implementation instead of shell scripts.
 """
 
+import os
 from pathlib import Path
 from typing import List, Dict, Any
 
@@ -89,9 +90,16 @@ class RealESRGANNativeWrapper(BaseProcessor):
         """
         # Get options
         scale = int(options.get("scale", 2))
+        model_name_override = options.get("model_name") or os.getenv(
+            "REAL_ESRGAN_MODEL_X2" if scale == 2 else "REAL_ESRGAN_MODEL_X4"
+        )
         tile_size = options.get("tile_size") if "tile_size" in options else None
-        batch_size = options.get("batch_size")  # None = auto-detect
-        half = options.get("half", True)
+        if tile_size is None and os.getenv("REAL_ESRGAN_TILE_SIZE"):
+            tile_size = int(os.environ["REAL_ESRGAN_TILE_SIZE"])
+        batch_size = options.get("batch_size")  # None = resolution-aware auto-detect
+        if batch_size is None and os.getenv("REAL_ESRGAN_BATCH_SIZE"):
+            batch_size = int(os.environ["REAL_ESRGAN_BATCH_SIZE"])
+        half = options.get("half", os.getenv("REAL_ESRGAN_HALF", "true").lower() not in ("0", "false", "no"))
         device = options.get("device", "cuda")
         is_intermediate = options.get("_intermediate_stage", False)
 
@@ -103,14 +111,11 @@ class RealESRGANNativeWrapper(BaseProcessor):
             self._logger.info(f"Running Real-ESRGAN (Native Python): scale={scale}")
 
         try:
-            self._processor = get_upscaler(
-                scale,
-                half,
-                device,
-                tile_size,
-                batch_size,
-                logger=self._logger,
-            )
+            get_args = (scale, half, device, tile_size, batch_size)
+            get_kwargs: Dict[str, Any] = {"logger": self._logger}
+            if model_name_override:
+                get_kwargs["model_name"] = model_name_override
+            self._processor = get_upscaler(*get_args, **get_kwargs)
 
             output_frames = self._processor.process_frames(
                 input_frames,

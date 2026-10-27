@@ -25,6 +25,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import List, Optional
 import logging
+import os
 
 # Try to import torch for GPU detection
 try:
@@ -115,12 +116,13 @@ _UPSCALER_CACHE = {}
 class PngWriter:
     """Write PNGs on a small pool. close() waits for every write."""
 
-    def __init__(self, workers: int = 2, compression: int = 1, max_pending: int = 2):
+    def __init__(self, workers: int = 2, compression: int = 1, max_pending: int = 2, timing=None):
         self._compression = int(compression)
         self._semaphore = threading.Semaphore(max_pending)
         self._executor = ThreadPoolExecutor(max_workers=max(1, workers))
         self._futures = []
         self._lock = threading.Lock()
+        self._timing = timing
 
     def submit(self, path, image) -> None:
         owned = image.copy() if hasattr(image, "copy") else image
@@ -134,6 +136,7 @@ class PngWriter:
             self._futures.append(future)
 
     def _write(self, path: Path, image) -> None:
+        started = time.perf_counter()
         try:
             import cv2
 
@@ -144,6 +147,9 @@ class PngWriter:
             if not ok:
                 raise RuntimeError(f"failed to write {path}")
         finally:
+            if self._timing is not None:
+                with self._lock:
+                    self._timing["encode_s"] = self._timing.get("encode_s", 0.0) + (time.perf_counter() - started)
             self._semaphore.release()
 
     def close(self) -> None:
@@ -170,7 +176,7 @@ def _is_cuda_oom(exc: BaseException) -> bool:
     return isinstance(oom, type) and isinstance(exc, oom)
 
 
-def batch_forward(upsampler, frames_bgr, scale):
+def batch_forward(upsampler, frames_bgr, scale, timing=None):
     """Run one tiled-off forward.
 
     BGR uint8 frames become an RGB float32 NCHW batch in 0..1. When
@@ -186,6 +192,7 @@ def batch_forward(upsampler, frames_bgr, scale):
         raise ImportError("torch is required for batch_forward")
 
     scale = int(scale)
+    phase_start = time.perf_counter()
     channels = []
     for img in frames_bgr:
         arr = np.ascontiguousarray(img)
@@ -205,12 +212,18 @@ def batch_forward(upsampler, frames_bgr, scale):
     pad_w = (scale - (width % scale)) % scale
     if pad_h or pad_w:
         batch = torch.nn.functional.pad(batch, (0, pad_w, 0, pad_h), mode="reflect")
+    if timing is not None:
+        timing["preprocess_s"] = timing.get("preprocess_s", 0.0) + (time.perf_counter() - phase_start)
 
+    inference_start = time.perf_counter()
     with torch.inference_mode():
         out = upsampler.model(batch)
+    if timing is not None:
+        timing["inference_s"] = timing.get("inference_s", 0.0) + (time.perf_counter() - inference_start)
 
     if pad_h or pad_w:
         out = out[:, :, : out.shape[2] - pad_h * scale, : out.shape[3] - pad_w * scale]
+    post_start = time.perf_counter()
     out = out.clamp(0, 1).float().cpu().numpy()
 
     results = []
@@ -218,6 +231,8 @@ def batch_forward(upsampler, frames_bgr, scale):
         rgb = np.transpose(out[index], (1, 2, 0))
         bgr = rgb[:, :, ::-1]
         results.append(np.clip(np.rint(bgr * 255.0), 0, 255).astype(np.uint8))
+    if timing is not None:
+        timing["postprocess_s"] = timing.get("postprocess_s", 0.0) + (time.perf_counter() - post_start)
     return results
 
 
@@ -226,14 +241,15 @@ def clear_upscaler_cache() -> None:
     _UPSCALER_CACHE.clear()
 
 
-def get_upscaler(scale, half, device, tile_size, batch_size, logger=None):
+def get_upscaler(scale, half, device, tile_size, batch_size, model_name=None, logger=None):
     """Return the process-wide upscaler for this scale, precision, and device.
 
     ``tile_size is None`` starts a new entry at 0. A later call with None keeps
     the tile already stored on that entry, including 512 after an OOM fallback.
     An explicit tile updates the cached object and does not reload weights.
     """
-    key = (int(scale), bool(half), str(device))
+    model_name = model_name or ("RealESRGAN_x2plus" if int(scale) == 2 else "RealESRGAN_x4plus")
+    key = (int(scale), bool(half), str(device), model_name)
     existing = _UPSCALER_CACHE.get(key)
     if existing is not None:
         if tile_size is not None and int(tile_size) != int(existing.tile_size):
@@ -243,6 +259,7 @@ def get_upscaler(scale, half, device, tile_size, batch_size, logger=None):
     chosen = 0 if tile_size is None else int(tile_size)
     processor = RealESRGANNative(
         scale=int(scale),
+        model_name=model_name,
         tile_size=chosen,
         half=bool(half),
         batch_size=batch_size,
@@ -311,6 +328,7 @@ class RealESRGANNative:
         # That table is only the tiled-path read grouping; tile 0 uses the
         # explicit value or 1 as the GPU batch.
         self._explicit_batch_size = batch_size
+        self._batch_configured_for_resolution = batch_size is not None
         if batch_size is None:
             batch_size = GPUMemoryDetector.suggest_batch_size()
             self.logger.info(f"Auto-detected batch_size: {batch_size}")
@@ -321,6 +339,23 @@ class RealESRGANNative:
         self._model = None
         self._upsampler = None
         self._use_fallback_scale = False  # Flag for x4plus->x2 fallback
+
+    def _configure_batch_for_resolution(self, height: int, width: int) -> None:
+        """Keep the legacy VRAM table, but cap auto batch by input pixel area."""
+        if getattr(self, "_batch_configured_for_resolution", False):
+            return
+        base = int(self.batch_size)
+        max_pixels = int(os.getenv("REAL_ESRGAN_MAX_BATCH_PIXELS", str(1920 * 1080 * base)))
+        pixels = max(1, int(height) * int(width))
+        safe = max(1, max_pixels // pixels)
+        configured = min(base, safe)
+        max_batch = int(os.getenv("REAL_ESRGAN_MAX_BATCH_SIZE", str(base)))
+        self.batch_size = max(1, min(configured, max_batch))
+        self._batch_configured_for_resolution = True
+        self.logger.info(
+            "Resolution-aware batch selection: resolution=%sx%s base_batch=%s selected_batch=%s max_pixels=%s",
+            width, height, base, self.batch_size, max_pixels,
+        )
 
     def _load_model(self):
         """Load Real-ESRGAN model (lazy loading)."""
@@ -362,6 +397,7 @@ class RealESRGANNative:
 
         # Find model weights
         model_path = self._find_model_weights()
+        self.model_path = str(model_path)
 
         # Create upsampler
         use_half = self.half and (torch is not None and torch.cuda.is_available())
@@ -411,31 +447,12 @@ class RealESRGANNative:
                 self.logger.info(f"Found model weights: {path}")
                 return path
 
-        # If x2plus not found, try to fallback to x4plus (we'll post-scale)
+        # Never silently use x4plus for a requested x2 run: it doubles the
+        # model output work and hides a broken image/model contract.
         if "x2plus" in self.model_name:
-            self.logger.warning(
-                f"{self.model_name} not found, trying fallback to x4plus..."
+            raise FileNotFoundError(
+                f"Required {self.model_name} weights are missing; refusing silent x4plus fallback"
             )
-            fallback_name = "RealESRGAN_x4plus"
-            fallback_paths = [
-                Path("/opt/realesrgan_models") / f"{fallback_name}.pth",
-                Path("/workspace/project/external/Real-ESRGAN/weights")
-                / f"{fallback_name}.pth",
-                Path(
-                    "/workspace/project/external/Real-ESRGAN/experiments/pretrained_models"
-                )
-                / f"{fallback_name}.pth",
-            ]
-            for path in fallback_paths:
-                if path.exists():
-                    self.logger.info(f"Using fallback model: {path}")
-                    self.logger.info(
-                        f"Will use x4plus model with outscale={self.scale}"
-                    )
-                    # Update model_name to x4plus for architecture setup
-                    self.model_name = fallback_name
-                    self._use_fallback_scale = True
-                    return path
 
         # If not found, try to download from huggingface
         self.logger.warning(f"Model weights not found locally for {self.model_name}")
@@ -508,19 +525,25 @@ class RealESRGANNative:
         output, _ = self._upsampler.enhance(img, outscale=self.scale)
         return output
 
-    def _upscale_loaded(self, images):
+    def _upscale_loaded(self, images, timing=None):
         """Tile-0 batch. On CUDA OOM, switch this cached object to tile 512 and enhance."""
         try:
-            return batch_forward(self._upsampler, images, int(self.scale))
+            return batch_forward(self._upsampler, images, int(self.scale), timing=timing)
         except Exception as exc:
             if not _is_cuda_oom(exc):
                 raise
+            self.logger.exception(
+                "Real-ESRGAN CUDA OOM: model=%s scale=%s batch=%s tile=%s images=%s",
+                getattr(self, "model_name", "unknown"), self.scale, len(images), self.tile_size, len(images),
+            )
         # Retry outside the except block: the traceback holds the failed
         # forward's tensors, so VRAM is only released once it is gone.
         if TORCH_AVAILABLE and torch is not None and torch.cuda.is_available():
             torch.cuda.empty_cache()
         self.set_tile_size(512)
-        self.logger.info("  gpu_batch=1")
+        self.batch_size = 1
+        self._explicit_batch_size = 1
+        self.logger.warning("OOM recovery: batch_size=%s -> 1, tile_size -> 512", len(images))
         return [self._enhance_frame(img) for img in images]
 
     def process_frames(
@@ -547,7 +570,17 @@ class RealESRGANNative:
             ) from e
 
         total = len(input_frames)
+        first = cv2.imread(str(input_frames[0]), cv2.IMREAD_COLOR) if input_frames else None
+        if first is None:
+            raise ValueError("Unable to read the first input frame")
+        self._configure_batch_for_resolution(first.shape[0], first.shape[1])
         self.logger.info(f"Processing {total} frames with Real-ESRGAN")
+        self.logger.info(
+            "Real-ESRGAN runtime: model=%s requested_scale=%s network_scale=%s resolution=%sx%s fp16=%s tile=%s tile_pad=%s pre_pad=%s batch=%s weights=%s",
+            getattr(self, "model_name", "unknown"), self.scale, getattr(self._upsampler, "scale", "unknown"),
+            first.shape[1], first.shape[0], self.half, self.tile_size,
+            getattr(self, "tile_pad", 10), getattr(self, "pre_pad", 0), self.batch_size, getattr(self, "model_path", "unknown"),
+        )
         self.logger.info(f"  Scale: {self.scale}x")
         self.logger.info(f"  Tile size: {self.tile_size}")
         self.logger.info(f"  Batch size: {self.batch_size}")
@@ -564,7 +597,8 @@ class RealESRGANNative:
 
         output_frames = []
         start_time = time.time()
-        writer = PngWriter()
+        timings = {"decode_s": 0.0, "preprocess_s": 0.0, "inference_s": 0.0, "postprocess_s": 0.0, "encode_s": 0.0}
+        writer = PngWriter(timing=timings)
         try:
             index = 0
             while index < total:
@@ -576,7 +610,9 @@ class RealESRGANNative:
                 while consumed < group and index + consumed < total:
                     self._raise_if_cancelled(cancel_event)
                     frame_path = input_frames[index + consumed]
+                    decode_start = time.perf_counter()
                     img = cv2.imread(str(frame_path), cv2.IMREAD_COLOR)
+                    timings["decode_s"] += time.perf_counter() - decode_start
                     consumed += 1
                     if img is None:
                         self.logger.warning(f"Failed to load frame: {frame_path}")
@@ -592,9 +628,11 @@ class RealESRGANNative:
                 if not images:
                     continue
                 if self._can_batch_forward():
-                    outputs = self._upscale_loaded(images)
+                    outputs = self._upscale_loaded(images, timing=timings)
                 else:
+                    inference_start = time.perf_counter()
                     outputs = [self._enhance_frame(img) for img in images]
+                    timings["inference_s"] += time.perf_counter() - inference_start
                 for out_img, out_path in zip(outputs, paths):
                     self._raise_if_cancelled(cancel_event)
                     writer.submit(out_path, out_img)
@@ -620,6 +658,7 @@ class RealESRGANNative:
         self.logger.info(
             f"Completed {total} frames in {elapsed:.1f}s ({avg_fps:.2f} fps)"
         )
+        self.logger.info("Real-ESRGAN timings: %s", {k: round(v, 3) for k, v in timings.items()})
         return output_frames
 
     def process_video(
