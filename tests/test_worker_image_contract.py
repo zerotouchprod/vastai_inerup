@@ -1,6 +1,5 @@
 from pathlib import Path
 
-
 ROOT = Path(__file__).parents[1]
 DOCKERFILE = ROOT / "docker" / "Dockerfile.worker"
 START = ROOT / "scripts" / "worker_start.sh"
@@ -11,9 +10,15 @@ def test_worker_image_contains_runtime_preflight_and_real_entrypoint():
     dockerfile = DOCKERFILE.read_text()
     ignore = IGNORE.read_text()
 
-    assert "COPY scripts/cuda_runtime_preflight.py /opt/aividup/cuda_runtime_preflight.py" in dockerfile
+    assert (
+        "COPY scripts/cuda_runtime_preflight.py /opt/aividup/cuda_runtime_preflight.py"
+        in dockerfile
+    )
     assert "scripts/cuda_runtime_preflight.py" in ignore
-    assert 'ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/worker_start.sh"]' in dockerfile
+    assert (
+        'ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/worker_start.sh"]'
+        in dockerfile
+    )
     assert 'CMD ["sleep", "infinity"]' not in dockerfile
 
 
@@ -32,3 +37,13 @@ def test_preflight_supports_all_configured_backends():
 
     assert 'backend in {"all", "realesrgan"}' in preflight
     assert 'backend in {"all", "rife"}' in preflight
+
+
+def test_blackwell_serverless_image_is_pinned_and_checksums_models():
+    dockerfile = (ROOT / "docker" / "Dockerfile.aividup-serverless").read_text()
+
+    assert "ARG CUDA_DIGEST=sha256:" in dockerfile
+    assert "FROM ${CUDA_BASE}@${CUDA_DIGEST}" in dockerfile
+    assert "sha256sum -c" in dockerfile
+    assert "TORCH_VERSION=2.9.1" in dockerfile
+    assert "TORCHVISION_VERSION=0.24.1" in dockerfile

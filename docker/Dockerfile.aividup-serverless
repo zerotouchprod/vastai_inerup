@@ -17,10 +17,13 @@
 
 # CUDA 12.8 runtime + torch cu128: kernels for Turing .. Hopper and Blackwell (sm_100/sm_120, incl. MIG slices).
 ARG CUDA_BASE=nvidia/cuda:12.8.1-cudnn-runtime-ubuntu22.04
-FROM ${CUDA_BASE}
+ARG CUDA_DIGEST=sha256:59e0e4376a0f16d10b03d3a14344b80a866a1674cb4948cb318291387ac05010
+FROM ${CUDA_BASE}@${CUDA_DIGEST}
 ARG TORCH_INDEX=cu128
 ARG TORCH_VERSION=2.9.1
 ARG TORCHVISION_VERSION=0.24.1
+ARG REALESRGAN_X2_SHA256=49fafd45f8fd7aa8d31ab2a22d14d91b536c34494a5cfe31eb5d89c2fa266abb
+ARG REALESRGAN_X4_SHA256=4fa0d38905f75ac06eb49a7951b426670021be3018265fd191d2125df9d682f1
 
 ARG GIT_SHA=unknown
 LABEL org.opencontainers.image.title="aividup-serverless-blackwell" \
@@ -46,7 +49,7 @@ RUN pip install --upgrade pip setuptools wheel
 
 # PyTorch with the CUDA 12.8 wheels (Blackwell kernels; cu126 fails on Blackwell MIG, measured).
 RUN pip install "torch==${TORCH_VERSION}+${TORCH_INDEX}" "torchvision==${TORCHVISION_VERSION}+${TORCH_INDEX}" --index-url "https://download.pytorch.org/whl/${TORCH_INDEX}"
-RUN pip install "runpod==1.7.*"
+RUN pip install "runpod==1.7.13"
 
 COPY requirements-worker.txt /tmp/requirements-worker.txt
 RUN pip install -r /tmp/requirements-worker.txt
@@ -62,6 +65,8 @@ RUN pip install --no-deps basicsr realesrgan \
 RUN mkdir -p /opt/realesrgan_models && cd /opt/realesrgan_models \
     && wget -q https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.1/RealESRGAN_x2plus.pth \
     && wget -q https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth \
+    && printf '%s  %s\n' "${REALESRGAN_X2_SHA256}" RealESRGAN_x2plus.pth | sha256sum -c - \
+    && printf '%s  %s\n' "${REALESRGAN_X4_SHA256}" RealESRGAN_x4plus.pth | sha256sum -c - \
     && test "$(stat -c %s RealESRGAN_x2plus.pth)" -gt 30000000 \
     && test "$(stat -c %s RealESRGAN_x4plus.pth)" -gt 60000000
 
