@@ -37,14 +37,18 @@ jobs:
       - name: Refuse overwrite of immutable experimental tag
         run: |
           set -euo pipefail
-          code=$(curl -sS -o /dev/null -w '%{http_code}' \
-            -u "${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}" \
-            "https://ghcr.io/v2/zerotouchprod/vastai_inerup/manifests/$TAG")
-          case "$code" in
-            404) ;;
-            200) echo "Tag already exists; refusing overwrite."; exit 1 ;;
-            *) echo "Unexpected registry response: $code"; exit 1 ;;
-          esac
+          inspect_log="$RUNNER_TEMP/blackwell-tag-inspect.log"
+          if docker buildx imagetools inspect "$IMAGE:$TAG" >"$inspect_log" 2>&1; then
+            echo "Tag already exists; refusing overwrite."
+            exit 1
+          fi
+          if grep -Eqi 'manifest unknown|not found|404' "$inspect_log"; then
+            echo "Tag absent; proceeding."
+          else
+            cat "$inspect_log"
+            echo "Could not prove tag absence; failing closed."
+            exit 1
+          fi
 
       - name: Build and push experimental tag
         run: |
