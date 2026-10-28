@@ -5,7 +5,9 @@ Usage: python -m src.serverless.child <spec.json>   (spec written by the handler
 """
 
 import json
+import hashlib
 import logging
+import subprocess
 import sys
 import threading
 import time
@@ -27,6 +29,28 @@ def main(spec_path: str) -> int:
     t = time.monotonic()
     fetch_input(spec, src, lost)
     timings["input_s"] = round(time.monotonic() - t, 2)
+    digest = hashlib.sha256()
+    with src.open("rb") as fh:
+        for block in iter(lambda: fh.read(1 << 20), b""):
+            digest.update(block)
+    input_sha256 = digest.hexdigest()
+    probe = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=nw=1:nk=1",
+            str(src),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=60,
+    )
+    input_duration_s = float(probe.stdout.strip())
     print("AIVIDUP_STAGE pipeline", file=sys.stderr, flush=True)
     task = {
         "attempt_id": spec["attempt_id"],
@@ -38,7 +62,15 @@ def main(spec_path: str) -> int:
     t = time.monotonic()
     run_pipeline(task, src, dst, lost)
     timings["pipeline_s"] = round(time.monotonic() - t, 2)
-    Path(spec["result_path"]).write_text(json.dumps({"timings": timings}))
+    Path(spec["result_path"]).write_text(
+        json.dumps(
+            {
+                "timings": timings,
+                "input_sha256": input_sha256,
+                "input_duration_s": input_duration_s,
+            }
+        )
+    )
     return 0
 
 

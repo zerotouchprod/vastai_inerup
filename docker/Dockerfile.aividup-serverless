@@ -1,5 +1,5 @@
-# RunPod Serverless experiment image (aividup-serverless-blackwell): same RIFE v4.26 + Real-ESRGAN pipeline as
-# Dockerfile.worker, but CUDA 12.8 + torch 2.9.1+cu128 (Blackwell sm_120/sm_100 kernels) and the Serverless handler.
+# RunPod Serverless experiment image (aividup-serverless-blackwell): RIFE v4.26 + Real-ESRGAN pipeline
+# with CUDA 12.8 + torch 2.9.1+cu128 (Blackwell sm_120/sm_100 kernels) and the Serverless handler.
 # Separate image + pipeline; the prod worker (Dockerfile.worker) is untouched. Not Dockerfile.serverless (FLUX/Hunyuan).
 # syntax=docker/dockerfile:1.6
 #
@@ -8,19 +8,18 @@
 # (OCR, SAM2, ProPainter), so the image is smaller, boots faster and carries no non-commercial-licensed models.
 #
 # Build (from the repo root):
-#   scripts/build_worker.sh            # tags ghcr.io/zerotouchprod/aividup-worker:<git-sha>
-# or manually:
-#   docker build -f docker/Dockerfile.worker --build-arg GIT_SHA=$(git rev-parse --short HEAD) -t aividup-worker .
+#   docker build -f docker/Dockerfile.aividup-serverless --build-arg GIT_SHA=$(git rev-parse --short HEAD) -t aividup-serverless-blackwell .
 #
 # Code is baked in and pinned to the build (no `git pull` at start, unlike the legacy fat image),
 # so a worker's behaviour is exactly what was tested for that image tag.
 
 # CUDA 12.8 runtime + torch cu128: kernels for Turing .. Hopper and Blackwell (sm_100/sm_120, incl. MIG slices).
-ARG CUDA_BASE=nvidia/cuda:12.8.1-cudnn-runtime-ubuntu22.04
-FROM ${CUDA_BASE}
+FROM nvidia/cuda:12.8.1-cudnn-runtime-ubuntu22.04@sha256:59e0e4376a0f16d10b03d3a14344b80a866a1674cb4948cb318291387ac05010
 ARG TORCH_INDEX=cu128
 ARG TORCH_VERSION=2.9.1
 ARG TORCHVISION_VERSION=0.24.1
+ARG REALESRGAN_X2_SHA256=49fafd45f8fd7aa8d31ab2a22d14d91b536c34494a5cfe31eb5d89c2fa266abb
+ARG REALESRGAN_X4_SHA256=4fa0d38905f75ac06eb49a7951b426670021be3018265fd191d2125df9d682f1
 
 ARG GIT_SHA=unknown
 LABEL org.opencontainers.image.title="aividup-serverless-blackwell" \
@@ -42,18 +41,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 RUN python3 -m venv /opt/venv
 ENV PATH="/opt/venv/bin:${PATH}"
-RUN pip install --upgrade pip setuptools wheel
+RUN pip install "pip==25.2" "setuptools==80.9.0" "wheel==0.45.1"
 
 # PyTorch with the CUDA 12.8 wheels (Blackwell kernels; cu126 fails on Blackwell MIG, measured).
 RUN pip install "torch==${TORCH_VERSION}+${TORCH_INDEX}" "torchvision==${TORCHVISION_VERSION}+${TORCH_INDEX}" --index-url "https://download.pytorch.org/whl/${TORCH_INDEX}"
-RUN pip install "runpod==1.7.*"
+RUN pip install "runpod==1.7.13"
 
-COPY requirements-worker.txt /tmp/requirements-worker.txt
-RUN pip install -r /tmp/requirements-worker.txt
+COPY requirements-serverless-blackwell.txt /tmp/requirements-serverless-blackwell.txt
+RUN pip install -r /tmp/requirements-serverless-blackwell.txt
 
 # Real-ESRGAN. basicsr is installed without deps and patched for new torchvision
 # (functional_tensor was removed); realesrgan itself only needs RealESRGANer + basicsr.
-RUN pip install --no-deps basicsr realesrgan \
+RUN pip install --no-deps "basicsr==1.4.2" "realesrgan==0.3.0" \
     && F="$(python -c 'import importlib.util as u; print(u.find_spec("basicsr").submodule_search_locations[0])')/data/degradations.py" \
     && sed -i 's/from torchvision.transforms.functional_tensor import rgb_to_grayscale/from torchvision.transforms.functional import rgb_to_grayscale/' "$F" \
     && ! grep -q functional_tensor "$F"
@@ -62,6 +61,8 @@ RUN pip install --no-deps basicsr realesrgan \
 RUN mkdir -p /opt/realesrgan_models && cd /opt/realesrgan_models \
     && wget -q https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.1/RealESRGAN_x2plus.pth \
     && wget -q https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth \
+    && printf '%s  %s\n' "${REALESRGAN_X2_SHA256}" RealESRGAN_x2plus.pth | sha256sum -c - \
+    && printf '%s  %s\n' "${REALESRGAN_X4_SHA256}" RealESRGAN_x4plus.pth | sha256sum -c - \
     && test "$(stat -c %s RealESRGAN_x2plus.pth)" -gt 30000000 \
     && test "$(stat -c %s RealESRGAN_x4plus.pth)" -gt 60000000
 

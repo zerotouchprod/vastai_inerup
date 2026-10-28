@@ -421,11 +421,13 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
     }
     # Same job id twice in one worker = RunPod re-delivered it; record it so the E2E can assert no double execution.
     base["repeat_delivery"] = job_id in _STATE["seen"]
+    base["warm_start"] = _STATE["calls"] > 1
     _STATE["seen"][job_id] = _STATE["seen"].get(job_id, 0) + 1
     startup()
     base["selfcheck"] = _selfcheck_summary()
     base["encoder"] = (_STATE["encoder"] or {}).get("encoder")
     base["encoder_reason"] = (_STATE["encoder"] or {}).get("reason")
+    base["selfcheck_s"] = (_STATE["selfcheck"] or {}).get("selfcheck_s", 0.0)
     if isinstance(raw, dict) and (raw.get("diag") or raw.get("selfcheck")):
         return {
             **base,
@@ -457,6 +459,9 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
                 spec, base["encoder"], job_id, Path(d), src, dst, stop, buf
             )
             timings.update(child.get("timings", {}))
+            for field in ("input_sha256", "input_duration_s"):
+                if field in child:
+                    base[field] = child[field]
             if not dst.exists() or dst.stat().st_size == 0:
                 raise RuntimeError("pipeline produced no output")
             stage = "verify"

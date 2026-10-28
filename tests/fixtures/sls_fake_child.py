@@ -1,6 +1,7 @@
 """Fake serverless child for CPU tests. FAKE_CHILD=ok|sleep|cuda. Spec format = src/serverless/child.py."""
 
 import json
+import hashlib
 import os
 import subprocess
 import sys
@@ -42,5 +43,11 @@ subprocess.run(
 )
 print("x Assembling video with encoder: libx264", flush=True)
 Path(spec["result_path"]).write_text(
-    json.dumps({"timings": {"input_s": 0, "pipeline_s": 0.1}})
+    json.dumps(
+        {
+            "timings": {"input_s": 0, "pipeline_s": 0.1},
+            "input_sha256": hashlib.sha256(b"synthetic-input").hexdigest(),
+            "input_duration_s": 1.0,
+        }
+    )
 )

@@ -1,0 +1,63 @@
+name: Build Blackwell Serverless experiment image
+
+on:
+  pull_request:
+    paths:
+      - 'docker/Dockerfile.aividup-serverless'
+      - 'requirements-serverless-blackwell.txt'
+      - 'src/serverless/**'
+      - 'src/worker/**'
+      - 'src/infrastructure/processors/rife/**'
+      - 'src/infrastructure/processors/realesrgan/**'
+      - 'RIFEv4.26_0921/**'
+      - '.github/workflows/blackwell-serverless-build.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-experiment-image:
+    name: Build experimental Serverless image (no push, no GPU)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Free runner disk
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build image locally and run import/weight checks
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          docker buildx build \
+            --platform linux/amd64 \
+            --progress=plain \
+            --file docker/Dockerfile.aividup-serverless \
+            --build-arg GIT_SHA="${GITHUB_SHA}" \
+            --tag aividup-serverless-blackwell:ci \
+            --load . 2>&1 | tee evidence/docker-build.log
+
+      - name: Verify image metadata and no publication
+        run: |
+          set -euo pipefail
+          docker image inspect aividup-serverless-blackwell:ci > evidence/docker-inspect.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          data = json.loads(Path('evidence/docker-inspect.json').read_text())[0]
+          labels = data.get('Config', {}).get('Labels', {})
+          assert labels.get('org.opencontainers.image.title') == 'aividup-serverless-blackwell', labels
+          print({'architecture': data.get('Architecture'), 'os': data.get('Os'), 'labels': labels})
+          PY
+
+      - name: Upload build evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: blackwell-serverless-build-${{ github.run_id }}
+          path: evidence/
+          if-no-files-found: warn
