@@ -179,7 +179,8 @@ class FFmpegWrapper:
         pattern: str = "frame_%06d.png",
         encoder: str = "h264_nvenc",
         pix_fmt: str = "yuv420p",
-        fallback_encoders: list = None
+        fallback_encoders: list = None,
+        quality: int = 23,
     ) -> Path:
         """
         Assemble video from frames with encoder fallback support.
@@ -244,8 +245,9 @@ class FFmpegWrapper:
             ]
 
             # Add encoder-specific options
-            if enc == "h264_nvenc":
-                cmd.extend(['-preset', 'p6', '-cq', '19'])
+            if enc in ("h264_nvenc", "hevc_nvenc"):
+                quality = max(0, min(51, int(quality)))
+                cmd.extend(['-preset', 'p6', '-cq', str(quality)])
             elif enc == "libx264":
                 cmd.extend(['-crf', '18', '-preset', 'medium'])
             elif enc == "mpeg4":
