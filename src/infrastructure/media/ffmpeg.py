@@ -1,9 +1,8 @@
 """FFmpeg wrapper for video operations."""
 
 import subprocess
-import re
 from pathlib import Path
-from typing import Optional, List, Tuple
+from typing import List
 
 from src.domain.exceptions import ExtractionError, AssemblyError
 from src.shared.logging import get_logger
@@ -145,7 +144,7 @@ class FFmpegWrapper:
         self._logger.info(f"Extracting frames to {output_dir}")
 
         try:
-            result = subprocess.run(
+            subprocess.run(
                 cmd,
                 capture_output=True,
                 text=True,
@@ -300,10 +299,11 @@ class FFmpegWrapper:
 
                 if abs(actual_duration - expected_duration) > 0.5:
                     self._logger.warning(
-                        f"[ASSEMBLY DEBUG] Duration mismatch! Expected {expected_duration:.2f}s but got {actual_duration:.2f}s"
+                        f"[ASSEMBLY DEBUG] Duration mismatch! Expected {expected_duration:.2f}s "
+                        f"but got {actual_duration:.2f}s"
                     )
                     self._logger.warning(
-                        f"[ASSEMBLY DEBUG] This suggests FPS encoding issue. Check ffmpeg output:"
+                        "[ASSEMBLY DEBUG] This suggests FPS encoding issue. Check ffmpeg output:"
                     )
                     self._logger.warning(
                         f"[ASSEMBLY DEBUG] FFmpeg stderr: {process.stderr[:1000]}"
@@ -316,7 +316,7 @@ class FFmpegWrapper:
                 self._logger.error(
                     f"FFmpeg assembly with encoder '{enc}' timed out after 1 hour"
                 )
-                last_error = AssemblyError(f"Video assembly timed out after 1 hour")
+                last_error = AssemblyError("Video assembly timed out after 1 hour")
                 # Continue to next encoder
                 continue
             except subprocess.CalledProcessError as e:
@@ -350,5 +350,5 @@ class FFmpegWrapper:
         try:
             result = subprocess.run(cmd, capture_output=True, text=True, check=True)
             return encoder in result.stdout
-        except:
+        except Exception:
             return False
