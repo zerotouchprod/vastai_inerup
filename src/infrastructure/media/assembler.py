@@ -3,7 +3,6 @@
 from pathlib import Path
 from typing import List
 
-from src.domain.protocols import IAssembler
 from src.domain.exceptions import AssemblyError
 from src.shared.logging import get_logger
 from src.infrastructure.media.ffmpeg import FFmpegWrapper
@@ -28,11 +27,7 @@ class FFmpegAssembler:
         return self._ffmpeg.test_encoder(encoder)
 
     def assemble(
-        self,
-        frames: List[Path],
-        output_path: Path,
-        fps: float,
-        **options
+        self, frames: List[Path], output_path: Path, fps: float, **options
     ) -> Path:
         """
         Assemble frames into a video file.
@@ -55,9 +50,10 @@ class FFmpegAssembler:
         # Convert to Path if needed
         first_frame = frames[0] if isinstance(frames[0], Path) else Path(frames[0])
         frames_dir = first_frame.parent
-        pattern = options.get('pattern', 'frame_%06d.png')
-        encoder = options.get('encoder', self._preferred_encoder)
-        pix_fmt = options.get('pix_fmt', 'yuv420p')
+        pattern = options.get("pattern", "frame_%06d.png")
+        encoder = options.get("encoder", self._preferred_encoder)
+        pix_fmt = options.get("pix_fmt", "yuv420p")
+        quality = options.get("quality", 23)
 
         self._logger.info(
             f"Assembling {len(frames)} frames at {fps} FPS with encoder: {encoder}"
@@ -71,7 +67,8 @@ class FFmpegAssembler:
                 fps=fps,
                 pattern=pattern,
                 encoder=encoder,
-                pix_fmt=pix_fmt
+                pix_fmt=pix_fmt,
+                quality=quality,
             )
 
         except AssemblyError as e:
@@ -89,7 +86,8 @@ class FFmpegAssembler:
                         fps=fps,
                         pattern=pattern,
                         encoder=self._fallback_encoder,
-                        pix_fmt=pix_fmt
+                        pix_fmt=pix_fmt,
+                        quality=quality,
                     )
                 except AssemblyError as e2:
                     raise AssemblyError(
@@ -99,4 +97,3 @@ class FFmpegAssembler:
             else:
                 # No fallback available
                 raise
-
