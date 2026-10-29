@@ -250,7 +250,7 @@ class FFmpegWrapper:
 
             # Add encoder-specific options
             if enc in ("h264_nvenc", "hevc_nvenc"):
-                quality = max(0, min(51, int(quality)))
+                quality = max(1, min(51, int(quality)))
                 cmd.extend(["-preset", "p6", "-cq", str(quality)])
             elif enc == "libx264":
                 cmd.extend(["-crf", "18", "-preset", "medium"])
