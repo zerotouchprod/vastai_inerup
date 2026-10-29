@@ -348,6 +348,8 @@ def run_child(
             for k in ("input_url", "input_b64", "start", "duration", "mode", "params")
         },
         "attempt_id": spec.get("attempt_id") or job_id,
+        "job_id": job_id,
+        "chunk_id": spec.get("chunk_id"),
         "encoder": encoder,
         "src": str(src),
         "dst": str(dst),
@@ -363,8 +365,19 @@ def run_child(
         start_new_session=True,
         cwd=os.environ.get("PYTHONPATH") or None,
     )
+    live = open(workdir / "child.log", "r", errors="replace")
+
+    def _tee() -> None:
+        # Stream child output to the worker's stdout so the platform log shows
+        # every line (start-up included), not only the tail in log_tail.
+        data = live.read()
+        if data:
+            sys.stdout.write(data)
+            sys.stdout.flush()
+
     try:
         while proc.poll() is None:
+            _tee()
             r = stop.reason()
             if r:
                 _kill_group(proc)
@@ -376,6 +389,10 @@ def run_child(
         if proc.poll() is None:
             _kill_group(proc)
         logf.flush()
+        try:
+            _tee()
+        finally:
+            live.close()
         logf.seek(0)
         buf.write(logf.read()[-20000:])
         logf.close()

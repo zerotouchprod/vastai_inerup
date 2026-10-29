@@ -7,6 +7,7 @@ Usage: python -m src.serverless.child <spec.json>   (spec written by the handler
 import json
 import hashlib
 import logging
+import os
 import subprocess
 import sys
 import threading
@@ -15,10 +16,20 @@ from pathlib import Path
 
 
 def main(spec_path: str) -> int:
+    try:  # child output is a file tee'd by the handler: flush every line
+        sys.stdout.reconfigure(line_buffering=True)
+        sys.stderr.reconfigure(line_buffering=True)
+    except Exception:  # noqa: BLE001
+        pass
     logging.basicConfig(
-        level=logging.INFO, stream=sys.stderr, format="%(asctime)s %(name)s %(message)s"
+        level=logging.INFO,
+        stream=sys.stdout,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+        force=True,
     )
     spec = json.loads(Path(spec_path).read_text())
+    os.environ["AIVIDUP_LOG_JOB_ID"] = str(spec.get("job_id") or spec["attempt_id"])
+    os.environ["AIVIDUP_LOG_CHUNK_ID"] = str(spec.get("chunk_id", "-"))
     from src.serverless import encoder as enc
     from src.serverless.handler import fetch_input, run_pipeline
 

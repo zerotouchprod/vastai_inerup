@@ -96,7 +96,7 @@ def test_runtime_source_contains_observability_fields():
         "png_encode_s",
     ):
         assert field in source
-    assert "Real-ESRGAN runtime:" in source
+    assert "Real-ESRGAN START" in source
     assert "CUDA OOM" in source
 
 
