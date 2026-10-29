@@ -31,28 +31,28 @@ class FFmpegWrapper:
             ExtractionError: If ffprobe fails
         """
         cmd = [
-            'ffprobe',
-            '-v', 'error',
-            '-select_streams', 'v:0',
-            '-show_entries', 'stream=width,height,r_frame_rate,nb_frames,codec_name,duration',
-            '-show_entries', 'format=duration',
-            '-of', 'default=noprint_wrappers=1',
-            str(video_path)
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=width,height,r_frame_rate,nb_frames,codec_name,duration",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1",
+            str(video_path),
         ]
 
         try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                check=True
-            )
+            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
 
             # Parse output
             info = {}
-            for line in result.stdout.strip().split('\n'):
-                if '=' in line:
-                    key, value = line.split('=', 1)
+            for line in result.stdout.strip().split("\n"):
+                if "=" in line:
+                    key, value = line.split("=", 1)
                     info[key] = value
 
             return info
@@ -63,25 +63,24 @@ class FFmpegWrapper:
     def get_fps(self, video_path: Path) -> float:
         """Get frames per second of video."""
         cmd = [
-            'ffprobe',
-            '-v', '0',
-            '-select_streams', 'v:0',
-            '-show_entries', 'stream=avg_frame_rate',
-            '-of', 'default=noprint_wrappers=1:nokey=1',
-            str(video_path)
+            "ffprobe",
+            "-v",
+            "0",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=avg_frame_rate",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            str(video_path),
         ]
 
         try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                check=True
-            )
+            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
 
             fps_str = result.stdout.strip()
-            if '/' in fps_str:
-                num, den = fps_str.split('/')
+            if "/" in fps_str:
+                num, den = fps_str.split("/")
                 return float(num) / float(den)
             return float(fps_str)
 
@@ -91,20 +90,18 @@ class FFmpegWrapper:
     def get_duration(self, video_path: Path) -> float:
         """Get duration of video in seconds."""
         cmd = [
-            'ffprobe',
-            '-v', 'error',
-            '-show_entries', 'format=duration',
-            '-of', 'default=noprint_wrappers=1:nokey=1',
-            str(video_path)
+            "ffprobe",
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            str(video_path),
         ]
 
         try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                check=True
-            )
+            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
 
             duration_str = result.stdout.strip()
             return float(duration_str) if duration_str else 0.0
@@ -114,10 +111,7 @@ class FFmpegWrapper:
             return 0.0
 
     def extract_frames(
-        self,
-        video_path: Path,
-        output_dir: Path,
-        pattern: str = "frame_%06d.png"
+        self, video_path: Path, output_dir: Path, pattern: str = "frame_%06d.png"
     ) -> List[Path]:
         """
         Extract all frames from video.
@@ -137,12 +131,15 @@ class FFmpegWrapper:
         output_pattern = output_dir / pattern
 
         cmd = [
-            'ffmpeg',
-            '-y',
-            '-i', str(video_path),
-            '-pix_fmt', 'rgb24',
-            '-vf', 'format=rgb24',  # Force 8-bit RGB output
-            str(output_pattern)
+            "ffmpeg",
+            "-y",
+            "-i",
+            str(video_path),
+            "-pix_fmt",
+            "rgb24",
+            "-vf",
+            "format=rgb24",  # Force 8-bit RGB output
+            str(output_pattern),
         ]
 
         self._logger.info(f"Extracting frames to {output_dir}")
@@ -153,7 +150,7 @@ class FFmpegWrapper:
                 capture_output=True,
                 text=True,
                 check=True,
-                timeout=36000  # 10 hour timeout
+                timeout=36000,  # 10 hour timeout
             )
 
             # List extracted frames
@@ -216,7 +213,9 @@ class FFmpegWrapper:
         self._logger.info(f"[ASSEMBLY DEBUG] Frame pattern: {pattern}")
         self._logger.info(f"[ASSEMBLY DEBUG] Frame count: {frame_count}")
         self._logger.info(f"[ASSEMBLY DEBUG] Target FPS: {fps}")
-        self._logger.info(f"[ASSEMBLY DEBUG] Expected duration: {expected_duration:.2f}s")
+        self._logger.info(
+            f"[ASSEMBLY DEBUG] Expected duration: {expected_duration:.2f}s"
+        )
 
         # Try encoders in order: primary + fallbacks
         encoders_to_try = [encoder] + fallback_encoders
@@ -234,24 +233,30 @@ class FFmpegWrapper:
 
             # Build ffmpeg command
             cmd = [
-                'ffmpeg',
-                '-y',
-                '-framerate', str(fps),  # How fast to read input frames
-                '-i', str(input_pattern),
-                '-r', str(fps),  # Output video framerate (must match for CFR)
-                '-c:v', enc,
-                '-pix_fmt', pix_fmt,
-                '-vsync', 'cfr',  # Constant frame rate - ensures timestamps are evenly spaced
+                "ffmpeg",
+                "-y",
+                "-framerate",
+                str(fps),  # How fast to read input frames
+                "-i",
+                str(input_pattern),
+                "-r",
+                str(fps),  # Output video framerate (must match for CFR)
+                "-c:v",
+                enc,
+                "-pix_fmt",
+                pix_fmt,
+                "-vsync",
+                "cfr",  # Constant frame rate - ensures timestamps are evenly spaced
             ]
 
             # Add encoder-specific options
             if enc in ("h264_nvenc", "hevc_nvenc"):
                 quality = max(0, min(51, int(quality)))
-                cmd.extend(['-preset', 'p6', '-cq', str(quality)])
+                cmd.extend(["-preset", "p6", "-cq", str(quality)])
             elif enc == "libx264":
-                cmd.extend(['-crf', '18', '-preset', 'medium'])
+                cmd.extend(["-crf", "18", "-preset", "medium"])
             elif enc == "mpeg4":
-                cmd.extend(['-qscale:v', '2'])
+                cmd.extend(["-qscale:v", "2"])
 
             cmd.append(str(output_path))
 
@@ -264,14 +269,18 @@ class FFmpegWrapper:
                     capture_output=True,
                     text=True,
                     check=True,
-                    timeout=3600  # 1 hour timeout
+                    timeout=3600,  # 1 hour timeout
                 )
 
                 # Log ffmpeg output for debugging
                 if process.stdout:
-                    self._logger.info(f"[ASSEMBLY DEBUG] FFmpeg stdout: {process.stdout[-2000:]}")
+                    self._logger.info(
+                        f"[ASSEMBLY DEBUG] FFmpeg stdout: {process.stdout[-2000:]}"
+                    )
                 if process.stderr:
-                    self._logger.info(f"[ASSEMBLY DEBUG] FFmpeg stderr (last 2000 chars): {process.stderr[-2000:]}")
+                    self._logger.info(
+                        f"[ASSEMBLY DEBUG] FFmpeg stderr (last 2000 chars): {process.stderr[-2000:]}"
+                    )
 
                 if not output_path.exists() or output_path.stat().st_size == 0:
                     raise AssemblyError("Output video is empty or missing")
@@ -282,50 +291,64 @@ class FFmpegWrapper:
 
                 self._logger.info(f"[ASSEMBLY DEBUG] Output video: {output_path}")
                 self._logger.info(f"[ASSEMBLY DEBUG] Actual FPS: {actual_fps:.2f}")
-                self._logger.info(f"[ASSEMBLY DEBUG] Actual duration: {actual_duration:.2f}s")
-                self._logger.info(f"[ASSEMBLY DEBUG] Duration ratio (actual/expected): {actual_duration/expected_duration:.2f}x")
+                self._logger.info(
+                    f"[ASSEMBLY DEBUG] Actual duration: {actual_duration:.2f}s"
+                )
+                self._logger.info(
+                    f"[ASSEMBLY DEBUG] Duration ratio (actual/expected): {actual_duration/expected_duration:.2f}x"
+                )
 
                 if abs(actual_duration - expected_duration) > 0.5:
-                    self._logger.warning(f"[ASSEMBLY DEBUG] Duration mismatch! Expected {expected_duration:.2f}s but got {actual_duration:.2f}s")
-                    self._logger.warning(f"[ASSEMBLY DEBUG] This suggests FPS encoding issue. Check ffmpeg output:")
-                    self._logger.warning(f"[ASSEMBLY DEBUG] FFmpeg stderr: {process.stderr[:1000]}")
+                    self._logger.warning(
+                        f"[ASSEMBLY DEBUG] Duration mismatch! Expected {expected_duration:.2f}s but got {actual_duration:.2f}s"
+                    )
+                    self._logger.warning(
+                        f"[ASSEMBLY DEBUG] This suggests FPS encoding issue. Check ffmpeg output:"
+                    )
+                    self._logger.warning(
+                        f"[ASSEMBLY DEBUG] FFmpeg stderr: {process.stderr[:1000]}"
+                    )
 
                 self._logger.info(f"Assembled video: {output_path}")
                 return output_path
 
             except subprocess.TimeoutExpired:
-                self._logger.error(f"FFmpeg assembly with encoder '{enc}' timed out after 1 hour")
+                self._logger.error(
+                    f"FFmpeg assembly with encoder '{enc}' timed out after 1 hour"
+                )
                 last_error = AssemblyError(f"Video assembly timed out after 1 hour")
                 # Continue to next encoder
                 continue
             except subprocess.CalledProcessError as e:
                 self._logger.error(f"Encoder '{enc}' failed: {e.stderr[:500]}")
-                last_error = AssemblyError(f"Video assembly failed with encoder '{enc}': {e.stderr[:500]}")
+                last_error = AssemblyError(
+                    f"Video assembly failed with encoder '{enc}': {e.stderr[:500]}"
+                )
                 # Continue to next encoder
                 continue
             except Exception as e:
-                self._logger.error(f"Unexpected error during video assembly with encoder '{enc}': {e}")
-                last_error = AssemblyError(f"Video assembly failed with unexpected error: {e}")
+                self._logger.error(
+                    f"Unexpected error during video assembly with encoder '{enc}': {e}"
+                )
+                last_error = AssemblyError(
+                    f"Video assembly failed with unexpected error: {e}"
+                )
                 continue
 
         # If we get here, all encoders failed
         self._logger.error(f"All encoders failed: {encoders_to_try}")
-        raise last_error if last_error else AssemblyError("Video assembly failed with no specific error")
+        raise (
+            last_error
+            if last_error
+            else AssemblyError("Video assembly failed with no specific error")
+        )
 
     def test_encoder(self, encoder: str) -> bool:
         """Test if encoder is available."""
-        cmd = [
-            'ffmpeg',
-            '-hide_banner',
-            '-encoders']
+        cmd = ["ffmpeg", "-hide_banner", "-encoders"]
 
         try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                check=True
-            )
+            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
             return encoder in result.stdout
         except:
             return False
