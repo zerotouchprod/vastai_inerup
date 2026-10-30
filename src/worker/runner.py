@@ -163,7 +163,11 @@ class Worker:
             out_path = deliver(task["output"], chunk_out)
             timings["upload_s"] = round(time.monotonic() - t, 2)
             timings["work_s"] = round(time.monotonic() - claimed_at, 2)
-            self._client.complete(attempt_id, out_path, timings)
+            upscale = task.get("_upscale")
+            if upscale:
+                self._client.complete(attempt_id, out_path, timings, upscale=upscale)
+            else:
+                self._client.complete(attempt_id, out_path, timings)
             log.info(
                 "chunk %s done -> %s timings=%s",
                 task.get("chunk_index"),

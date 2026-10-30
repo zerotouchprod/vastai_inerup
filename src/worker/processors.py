@@ -1,10 +1,14 @@
 """Chunk processors. Each takes a chunk video file and writes the processed chunk to `dst`."""
 
+import json
+import logging
 import subprocess
 import threading
 import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List
+
+log = logging.getLogger(__name__)
 
 
 class ProcessorError(Exception):
@@ -169,11 +173,30 @@ def pipeline(task: Dict[str, Any], src: Path, dst: Path, lost: threading.Event) 
     job.config["cancel_event"] = lost
     job.config["progress_callback"] = task.get("_progress_callback")
     result = orchestrator.process(job)
+    _collect_upscale_stats(task)
     if not getattr(result, "success", True) or not dst.exists():
         raise ProcessorError(
             "output_invalid",
             f"pipeline produced no output: {getattr(result, 'error', '')}",
         )
+
+
+def _collect_upscale_stats(task: Dict[str, Any]) -> None:
+    """Copy the last Real-ESRGAN run stats (batch/tile/OOM/fps/learned safe batch) into the task.
+
+    Sent to the control plane as the optional ``upscale`` field of complete();
+    kept out of ``timings`` because that map is numeric-only and summed as runtime.
+    """
+    try:
+        from src.infrastructure.processors.realesrgan import native
+
+        stats = dict(native.LAST_UPSCALE_STATS)
+        native.LAST_UPSCALE_STATS.clear()
+    except Exception:  # noqa: BLE001 - torch-less images / non-upscale modes
+        return
+    if stats:
+        task["_upscale"] = stats
+        log.info("upscale telemetry %s", json.dumps(stats, sort_keys=True))
 
 
 PROCESSORS: Dict[str, Callable[[Dict[str, Any], Path, Path, threading.Event], None]] = {

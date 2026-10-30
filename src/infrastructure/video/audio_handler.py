@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 
 class AudioProcessingError(Exception):
     """Raised when audio processing fails."""
+
     pass
 
 
@@ -35,10 +36,12 @@ class AudioPreserver:
         preserver.merge_audio_video(processed_video, audio_path, final_output)
     """
 
-    def __init__(self,
-                 audio_codec: str = 'aac',
-                 audio_bitrate: str = '192k',
-                 fallback_to_silent: bool = True):
+    def __init__(
+        self,
+        audio_codec: str = "aac",
+        audio_bitrate: str = "192k",
+        fallback_to_silent: bool = True,
+    ):
         """
         Initialize audio preserver.
 
@@ -51,7 +54,9 @@ class AudioPreserver:
         self.audio_bitrate = audio_bitrate
         self.fallback_to_silent = fallback_to_silent
 
-        logger.info(f"AudioPreserver initialized (codec={audio_codec}, bitrate={audio_bitrate})")
+        logger.info(
+            f"AudioPreserver initialized (codec={audio_codec}, bitrate={audio_bitrate})"
+        )
 
     def extract_audio(self, video_path: Path, output_path: Path) -> bool:
         """
@@ -72,7 +77,7 @@ class AudioPreserver:
 
             # Get video info first to check if audio exists
             probe = ffmpeg.probe(str(video_path))
-            audio_streams = [s for s in probe['streams'] if s['codec_type'] == 'audio']
+            audio_streams = [s for s in probe["streams"] if s["codec_type"] == "audio"]
 
             if not audio_streams:
                 logger.warning(f"No audio track found in {video_path}")
@@ -80,19 +85,27 @@ class AudioPreserver:
 
             # Log audio info
             audio_info = audio_streams[0]
-            codec = audio_info.get('codec_name', 'unknown')
-            duration = float(audio_info.get('duration', 0))
-            bitrate = int(audio_info.get('bit_rate', 0)) // 1000 if 'bit_rate' in audio_info else 0
+            codec = audio_info.get("codec_name", "unknown")
+            duration = float(audio_info.get("duration", 0))
+            bitrate = (
+                int(audio_info.get("bit_rate", 0)) // 1000
+                if "bit_rate" in audio_info
+                else 0
+            )
 
-            logger.info(f"Audio track detected: codec={codec}, duration={duration:.2f}s, bitrate={bitrate}kbps")
+            logger.info(
+                f"Audio track detected: codec={codec}, duration={duration:.2f}s, bitrate={bitrate}kbps"
+            )
 
             # Extract audio stream
             stream = ffmpeg.input(str(video_path))
             audio = stream.audio
-            output = ffmpeg.output(audio, str(output_path), acodec='copy')
+            output = ffmpeg.output(audio, str(output_path), acodec="copy")
 
             # Run extraction
-            ffmpeg.run(output, capture_stdout=True, capture_stderr=True, overwrite_output=True)
+            ffmpeg.run(
+                output, capture_stdout=True, capture_stderr=True, overwrite_output=True
+            )
 
             logger.info(f"Audio extracted successfully to {output_path}")
             return True
@@ -105,11 +118,13 @@ class AudioPreserver:
             logger.error(f"Unexpected error during audio extraction: {e}")
             raise AudioProcessingError(f"Unexpected error: {e}")
 
-    def merge_audio_video(self,
-                         video_path: Path,
-                         audio_path: Path,
-                         output_path: Path,
-                         video_codec: str = 'copy') -> bool:
+    def merge_audio_video(
+        self,
+        video_path: Path,
+        audio_path: Path,
+        output_path: Path,
+        video_codec: str = "copy",
+    ) -> bool:
         """
         Merge audio track with processed video.
 
@@ -126,7 +141,9 @@ class AudioPreserver:
             AudioProcessingError: If merge fails
         """
         try:
-            logger.info(f"Merging audio into video: {video_path} + {audio_path} -> {output_path}")
+            logger.info(
+                f"Merging audio into video: {video_path} + {audio_path} -> {output_path}"
+            )
 
             # Check inputs exist
             if not video_path.exists():
@@ -143,14 +160,16 @@ class AudioPreserver:
                 video.video,  # Video stream
                 audio.audio,  # Audio stream
                 str(output_path),
-                vcodec=video_codec,      # Don't re-encode video (fast)
-                acodec=self.audio_codec, # Re-encode audio to target codec
+                vcodec=video_codec,  # Don't re-encode video (fast)
+                acodec=self.audio_codec,  # Re-encode audio to target codec
                 audio_bitrate=self.audio_bitrate,
-                shortest=None            # Match shortest stream duration
+                shortest=None,  # Match shortest stream duration
             )
 
             # Run merge
-            ffmpeg.run(output, capture_stdout=True, capture_stderr=True, overwrite_output=True)
+            ffmpeg.run(
+                output, capture_stdout=True, capture_stderr=True, overwrite_output=True
+            )
 
             logger.info(f"Audio merged successfully: {output_path}")
             return True
@@ -175,18 +194,22 @@ class AudioPreserver:
         """
         try:
             probe = ffmpeg.probe(str(file_path))
-            audio_streams = [s for s in probe['streams'] if s['codec_type'] == 'audio']
+            audio_streams = [s for s in probe["streams"] if s["codec_type"] == "audio"]
 
             if not audio_streams:
                 return None
 
             audio = audio_streams[0]
             return {
-                'codec': audio.get('codec_name'),
-                'duration': float(audio.get('duration', 0)),
-                'sample_rate': int(audio.get('sample_rate', 0)),
-                'channels': int(audio.get('channels', 0)),
-                'bitrate': int(audio.get('bit_rate', 0)) // 1000 if 'bit_rate' in audio else None
+                "codec": audio.get("codec_name"),
+                "duration": float(audio.get("duration", 0)),
+                "sample_rate": int(audio.get("sample_rate", 0)),
+                "channels": int(audio.get("channels", 0)),
+                "bitrate": (
+                    int(audio.get("bit_rate", 0)) // 1000
+                    if "bit_rate" in audio
+                    else None
+                ),
             }
         except Exception as e:
             logger.warning(f"Failed to get audio info from {file_path}: {e}")
@@ -206,6 +229,19 @@ class AudioPreserver:
 
 
 # Convenience functions
+# Codecs that stream-copy into an MP4/M4A container. Anything else goes to
+# Matroska, which accepts any codec. Both carry a real duration, unlike raw
+# ADTS .aac where ffprobe only estimates duration from bitrate (the 20.00s vs
+# 15.76s mismatch seen on instance 58412911).
+_M4A_COPY_CODECS = {"aac", "mp3", "alac", "ac3", "eac3"}
+
+
+def audio_sidecar_name(codec: Optional[str], stem: str = "original_audio") -> str:
+    """File name for a stream-copied audio track with an accurate container duration."""
+    suffix = ".m4a" if (codec or "").lower() in _M4A_COPY_CODECS else ".mka"
+    return f"{stem}{suffix}"
+
+
 def extract_audio(video_path: Path, output_path: Path) -> bool:
     """Extract audio from video (convenience function)."""
     preserver = AudioPreserver()
@@ -222,4 +258,3 @@ def has_audio(video_path: Path) -> bool:
     """Check if video has audio track (convenience function)."""
     preserver = AudioPreserver()
     return preserver.has_audio_track(video_path)
-
