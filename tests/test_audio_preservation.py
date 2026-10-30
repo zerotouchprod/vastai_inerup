@@ -5,11 +5,15 @@ Tests audio extraction, merging, and error handling.
 
 import pytest
 from pathlib import Path
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import patch, MagicMock
 import ffmpeg
 
 from src.infrastructure.video.audio_handler import (
-    AudioPreserver, AudioProcessingError, extract_audio, merge_audio_video, has_audio
+    AudioPreserver,
+    AudioProcessingError,
+    extract_audio,
+    merge_audio_video,
+    has_audio,
 )
 
 
@@ -20,36 +24,34 @@ class TestAudioPreserver:
         """Test initialization with default parameters."""
         preserver = AudioPreserver()
 
-        assert preserver.audio_codec == 'aac'
-        assert preserver.audio_bitrate == '192k'
+        assert preserver.audio_codec == "aac"
+        assert preserver.audio_bitrate == "192k"
         assert preserver.fallback_to_silent is True
 
     def test_init_custom_params(self):
         """Test initialization with custom parameters."""
         preserver = AudioPreserver(
-            audio_codec='mp3',
-            audio_bitrate='128k',
-            fallback_to_silent=False
+            audio_codec="mp3", audio_bitrate="128k", fallback_to_silent=False
         )
 
-        assert preserver.audio_codec == 'mp3'
-        assert preserver.audio_bitrate == '128k'
+        assert preserver.audio_codec == "mp3"
+        assert preserver.audio_bitrate == "128k"
         assert preserver.fallback_to_silent is False
 
-    @patch('ffmpeg.probe')
-    @patch('ffmpeg.input')
-    @patch('ffmpeg.output')
-    @patch('ffmpeg.run')
+    @patch("ffmpeg.probe")
+    @patch("ffmpeg.input")
+    @patch("ffmpeg.output")
+    @patch("ffmpeg.run")
     def test_extract_audio_success(self, mock_run, mock_output, mock_input, mock_probe):
         """Test successful audio extraction."""
         # Mock probe to return audio stream
         mock_probe.return_value = {
-            'streams': [
+            "streams": [
                 {
-                    'codec_type': 'audio',
-                    'codec_name': 'aac',
-                    'duration': '120.5',
-                    'bit_rate': '192000'
+                    "codec_type": "audio",
+                    "codec_name": "aac",
+                    "duration": "120.5",
+                    "bit_rate": "192000",
                 }
             ]
         }
@@ -69,15 +71,11 @@ class TestAudioPreserver:
         mock_probe.assert_called_once()
         mock_run.assert_called_once()
 
-    @patch('ffmpeg.probe')
+    @patch("ffmpeg.probe")
     def test_extract_audio_no_audio_track(self, mock_probe):
         """Test extraction when video has no audio track."""
         # Mock probe to return no audio streams
-        mock_probe.return_value = {
-            'streams': [
-                {'codec_type': 'video'}
-            ]
-        }
+        mock_probe.return_value = {"streams": [{"codec_type": "video"}]}
 
         preserver = AudioPreserver()
         video_path = Path("test_video.mp4")
@@ -87,18 +85,20 @@ class TestAudioPreserver:
 
         assert result is False
 
-    @patch('ffmpeg.probe')
-    @patch('ffmpeg.input')
-    @patch('ffmpeg.output')
-    @patch('ffmpeg.run')
-    def test_extract_audio_ffmpeg_error(self, mock_run, mock_output, mock_input, mock_probe):
+    @patch("ffmpeg.probe")
+    @patch("ffmpeg.input")
+    @patch("ffmpeg.output")
+    @patch("ffmpeg.run")
+    def test_extract_audio_ffmpeg_error(
+        self, mock_run, mock_output, mock_input, mock_probe
+    ):
         """Test extraction when FFmpeg fails."""
         mock_probe.return_value = {
-            'streams': [{'codec_type': 'audio', 'codec_name': 'aac'}]
+            "streams": [{"codec_type": "audio", "codec_name": "aac"}]
         }
 
         # Mock FFmpeg error
-        error = ffmpeg.Error('ffmpeg', '', b'Error message')
+        error = ffmpeg.Error("ffmpeg", "", b"Error message")
         mock_run.side_effect = error
 
         preserver = AudioPreserver()
@@ -108,10 +108,12 @@ class TestAudioPreserver:
         with pytest.raises(AudioProcessingError):
             preserver.extract_audio(video_path, audio_path)
 
-    @patch('ffmpeg.input')
-    @patch('ffmpeg.output')
-    @patch('ffmpeg.run')
-    def test_merge_audio_video_success(self, mock_run, mock_output, mock_input, tmp_path):
+    @patch("ffmpeg.input")
+    @patch("ffmpeg.output")
+    @patch("ffmpeg.run")
+    def test_merge_audio_video_success(
+        self, mock_run, mock_output, mock_input, tmp_path
+    ):
         """Test successful audio/video merging."""
         # Create temporary files
         video_path = tmp_path / "video.mp4"
@@ -126,7 +128,7 @@ class TestAudioPreserver:
         mock_audio_stream = MagicMock()
 
         def input_side_effect(path):
-            if 'video' in path:
+            if "video" in path:
                 return mock_video_stream
             return mock_audio_stream
 
@@ -166,18 +168,18 @@ class TestAudioPreserver:
         with pytest.raises(AudioProcessingError, match="Audio file not found"):
             preserver.merge_audio_video(video_path, audio_path, output_path)
 
-    @patch('ffmpeg.probe')
+    @patch("ffmpeg.probe")
     def test_get_audio_info_with_audio(self, mock_probe):
         """Test getting audio info from file with audio."""
         mock_probe.return_value = {
-            'streams': [
+            "streams": [
                 {
-                    'codec_type': 'audio',
-                    'codec_name': 'aac',
-                    'duration': '120.5',
-                    'sample_rate': '48000',
-                    'channels': '2',
-                    'bit_rate': '192000'
+                    "codec_type": "audio",
+                    "codec_name": "aac",
+                    "duration": "120.5",
+                    "sample_rate": "48000",
+                    "channels": "2",
+                    "bit_rate": "192000",
                 }
             ]
         }
@@ -186,29 +188,27 @@ class TestAudioPreserver:
         info = preserver.get_audio_info(Path("test.mp4"))
 
         assert info is not None
-        assert info['codec'] == 'aac'
-        assert info['duration'] == 120.5
-        assert info['sample_rate'] == 48000
-        assert info['channels'] == 2
-        assert info['bitrate'] == 192
+        assert info["codec"] == "aac"
+        assert info["duration"] == 120.5
+        assert info["sample_rate"] == 48000
+        assert info["channels"] == 2
+        assert info["bitrate"] == 192
 
-    @patch('ffmpeg.probe')
+    @patch("ffmpeg.probe")
     def test_get_audio_info_no_audio(self, mock_probe):
         """Test getting audio info from file without audio."""
-        mock_probe.return_value = {
-            'streams': [{'codec_type': 'video'}]
-        }
+        mock_probe.return_value = {"streams": [{"codec_type": "video"}]}
 
         preserver = AudioPreserver()
         info = preserver.get_audio_info(Path("test.mp4"))
 
         assert info is None
 
-    @patch('ffmpeg.probe')
+    @patch("ffmpeg.probe")
     def test_has_audio_track_true(self, mock_probe):
         """Test has_audio_track returns True when audio exists."""
         mock_probe.return_value = {
-            'streams': [{'codec_type': 'audio', 'codec_name': 'aac'}]
+            "streams": [{"codec_type": "audio", "codec_name": "aac"}]
         }
 
         preserver = AudioPreserver()
@@ -216,12 +216,10 @@ class TestAudioPreserver:
 
         assert result is True
 
-    @patch('ffmpeg.probe')
+    @patch("ffmpeg.probe")
     def test_has_audio_track_false(self, mock_probe):
         """Test has_audio_track returns False when no audio."""
-        mock_probe.return_value = {
-            'streams': [{'codec_type': 'video'}]
-        }
+        mock_probe.return_value = {"streams": [{"codec_type": "video"}]}
 
         preserver = AudioPreserver()
         result = preserver.has_audio_track(Path("test.mp4"))
@@ -232,7 +230,7 @@ class TestAudioPreserver:
 class TestConvenienceFunctions:
     """Test convenience wrapper functions."""
 
-    @patch.object(AudioPreserver, 'extract_audio')
+    @patch.object(AudioPreserver, "extract_audio")
     def test_extract_audio_wrapper(self, mock_extract):
         """Test extract_audio convenience function."""
         mock_extract.return_value = True
@@ -242,21 +240,19 @@ class TestConvenienceFunctions:
         assert result is True
         mock_extract.assert_called_once()
 
-    @patch.object(AudioPreserver, 'merge_audio_video')
+    @patch.object(AudioPreserver, "merge_audio_video")
     def test_merge_audio_video_wrapper(self, mock_merge):
         """Test merge_audio_video convenience function."""
         mock_merge.return_value = True
 
         result = merge_audio_video(
-            Path("video.mp4"),
-            Path("audio.aac"),
-            Path("final.mp4")
+            Path("video.mp4"), Path("audio.aac"), Path("final.mp4")
         )
 
         assert result is True
         mock_merge.assert_called_once()
 
-    @patch.object(AudioPreserver, 'has_audio_track')
+    @patch.object(AudioPreserver, "has_audio_track")
     def test_has_audio_wrapper(self, mock_has_audio):
         """Test has_audio convenience function."""
         mock_has_audio.return_value = True
@@ -267,6 +263,68 @@ class TestConvenienceFunctions:
         mock_has_audio.assert_called_once()
 
 
-if __name__ == '__main__':
-    pytest.main([__file__, '-v'])
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])
 
+
+class TestAudioSidecarName:
+    """Extracted audio goes into a container with a real duration, never raw ADTS."""
+
+    @pytest.mark.parametrize("codec", ["aac", "AAC", "mp3", "ac3"])
+    def test_mp4_compatible_codecs_use_m4a(self, codec):
+        from src.infrastructure.video.audio_handler import audio_sidecar_name
+
+        assert audio_sidecar_name(codec) == "original_audio.m4a"
+
+    @pytest.mark.parametrize("codec", ["opus", "pcm_s16le", "vorbis", None, ""])
+    def test_other_codecs_use_matroska(self, codec):
+        from src.infrastructure.video.audio_handler import audio_sidecar_name
+
+        assert audio_sidecar_name(codec) == "original_audio.mka"
+
+    def test_orchestrator_no_longer_extracts_raw_aac(self):
+        source = Path("src/application/orchestrator.py").read_text()
+        assert 'original_audio.aac"' not in source
+        assert "audio_sidecar_name" in source
+
+
+def test_m4a_extraction_reports_exact_duration(tmp_path):
+    """Real ffmpeg: a 20 s AAC track copied to .m4a probes as ~20 s (raw .aac would be estimated)."""
+    import shutil
+    import subprocess
+
+    if not shutil.which("ffmpeg"):
+        pytest.skip("ffmpeg not installed")
+    src = tmp_path / "in.mp4"
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-v",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=64x64:rate=10:duration=20",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:duration=20",
+            "-c:v",
+            "libx264",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "160k",
+            "-shortest",
+            str(src),
+        ],
+        check=True,
+    )
+    preserver = AudioPreserver()
+    from src.infrastructure.video.audio_handler import audio_sidecar_name
+
+    out = tmp_path / audio_sidecar_name(preserver.get_audio_info(src)["codec"])
+    assert out.suffix == ".m4a"
+    assert preserver.extract_audio(src, out) is True
+    assert abs(preserver.get_audio_info(out)["duration"] - 20.0) < 0.1

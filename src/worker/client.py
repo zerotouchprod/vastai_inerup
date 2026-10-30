@@ -105,6 +105,7 @@ class ControlPlaneClient:
         attempt_id: str,
         output_path: str,
         timings: Optional[Dict[str, float]] = None,
+        upscale: Optional[Dict[str, Any]] = None,
     ) -> None:
         payload: Dict[str, Any] = {
             "output_path": output_path,
@@ -112,6 +113,9 @@ class ControlPlaneClient:
         }
         if timings:
             payload["timings"] = timings
+        if upscale:
+            # Optional; control planes that do not validate it ignore it.
+            payload["upscale"] = upscale
         self._owned(self._post(f"/attempts/{attempt_id}/complete", payload))
 
     def fail(self, attempt_id: str, failure_code: str) -> None:

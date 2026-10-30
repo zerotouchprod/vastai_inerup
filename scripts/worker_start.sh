@@ -12,6 +12,8 @@
 #                 AIVIDUP_MAX_RESTARTS (must be 0)    in-lease restarts are fenced; recover with a new lease
 #                 AIVIDUP_POLL_SECONDS (default 3)   AIVIDUP_RESTART_BACKOFF (unused; compatibility only)
 #                 AIVIDUP_SELF_DESTROY=1                    after exit, destroy this Vast instance (needs CONTAINER_ID + CONTAINER_API_KEY)
+#                 PYTORCH_CUDA_ALLOC_CONF (default expandable_segments:True)
+#                 AIVIDUP_CONFIG_FILE  optional processing config YAML (default: none -> built-in defaults + env)
 #                 AIVIDUP_SKIP_GPU_CHECK=1 | AIVIDUP_DRY_RUN=1 | PYTHON=<interpreter>
 #
 # Exit codes: 0 idle/lifetime exit, 2 bad configuration, 3 GPU unusable, 4 gave up after repeated crashes, 143 stopped by signal.
@@ -31,6 +33,8 @@ POLL="${AIVIDUP_POLL_SECONDS:-3}"
 BACKOFF="${AIVIDUP_RESTART_BACKOFF:-5}"
 AIVIDUP_GPU_PROBE_BACKEND="${AIVIDUP_GPU_PROBE_BACKEND:-all}"
 export AIVIDUP_GPU_PROBE_BACKEND
+# Fewer fragmentation OOMs in the CUDA caching allocator; an explicit value (even empty) wins.
+export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF-expandable_segments:True}"
 
 resolve_provider_instance_id() {
   if [[ -n "${AIVIDUP_GPU_INSTANCE_ID:-}" ]]; then printf '%s' "$AIVIDUP_GPU_INSTANCE_ID"; return; fi

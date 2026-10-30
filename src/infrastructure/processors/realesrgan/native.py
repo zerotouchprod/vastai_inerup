@@ -17,7 +17,9 @@ Usage:
     output_frames = processor.process_frames(input_frames, output_dir)
 """
 
+import collections
 import io
+import os
 import re
 import sys
 import threading
@@ -27,7 +29,10 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import List, Optional
 import logging
-import os
+
+# Must be set before CUDA initialises; an explicit env value always wins.
+# expandable_segments reduces fragmentation OOMs; it does not create VRAM.
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 # Try to import torch for GPU detection
 try:
@@ -113,6 +118,181 @@ class GPUMemoryDetector:
 # Process-wide upscalers. The worker builds a new orchestrator per chunk;
 # the cache key ignores tile and batch so an OOM tile change is remembered.
 _UPSCALER_CACHE = {}
+
+_GIB = 2**30
+
+# Peak activation bytes per OUTPUT pixel per frame (fp16) for the batch_forward
+# path. Measured on Vast instance 58412911 (RTX 4080 16GB, x2plus,
+# 1080x1920 -> 2160x3840, batch 8): the first forward held 11.31 GiB and asked
+# for 7.91 GiB more (conv_up2: 8 x 64ch x 8.29 MP x 2 B) before OOM, i.e.
+# (11.31 + 7.91) / 8 = 2.40 GiB per frame = ~311 B per output pixel. RRDBNet's
+# tail (conv_up2 / conv_hr at output resolution, 64ch) dominates for both x2plus
+# and x4plus, so both use the same factor until x4plus is measured.
+_PEAK_BYTES_PER_OUTPUT_PIXEL_FP16 = {
+    "RealESRGAN_x2plus": 311,
+    "RealESRGAN_x4plus": 311,
+}
+_DEFAULT_PEAK_BYTES_PER_OUTPUT_PIXEL_FP16 = 311
+_DEFAULT_VRAM_HEADROOM = 0.15
+_DEFAULT_MAX_AUTO_BATCH = 8
+
+# Safe (batch, tile) learned from OOMs in this process, keyed by
+# (gpu_name, model_name, out_w, out_h). The worker builds a new orchestrator per
+# chunk but keeps the process, so later chunks start from the learned value.
+_SAFE_BATCH = {}
+
+# Stats of the last process_frames() call (read by the worker for telemetry).
+LAST_UPSCALE_STATS = {}
+
+
+def _env_float(name, default):
+    try:
+        return float(os.getenv(name, "") or default)
+    except ValueError:
+        return float(default)
+
+
+def _env_int(name, default):
+    try:
+        return int(os.getenv(name, "") or default)
+    except ValueError:
+        return int(default)
+
+
+def peak_bytes_per_output_pixel(model_name, half=True):
+    """Per-frame peak activation bytes per output pixel (env-overridable)."""
+    factor = _env_float(
+        "REAL_ESRGAN_PEAK_BYTES_PER_OUT_PIXEL",
+        _PEAK_BYTES_PER_OUTPUT_PIXEL_FP16.get(
+            str(model_name), _DEFAULT_PEAK_BYTES_PER_OUTPUT_PIXEL_FP16
+        ),
+    )
+    return factor if half else factor * 2
+
+
+def estimate_auto_batch(
+    out_height, out_width, model_name, free_bytes, half=True, headroom=None, cap=None
+):
+    """GPU batch for tile 0 from OUTPUT pixels and free VRAM.
+
+    batch = floor(free * (1 - headroom) / (out_px * bytes_per_out_px)), clamped
+    to [1, cap]. Returns (batch, detail). Examples for x2plus fp16 at
+    2160x3840 output (~2.40 GiB/frame), headroom 0.15: 15.2 GiB free (16 GB
+    card) -> 5; 23.2 GiB free (24 GB card) -> 8.
+    """
+    if headroom is None:
+        headroom = _env_float("REAL_ESRGAN_VRAM_HEADROOM", _DEFAULT_VRAM_HEADROOM)
+    headroom = min(0.9, max(0.0, float(headroom)))
+    if cap is None:
+        cap = _env_int("REAL_ESRGAN_MAX_BATCH_SIZE", _DEFAULT_MAX_AUTO_BATCH)
+    cap = max(1, int(cap))
+    per_frame = max(1, int(out_height) * int(out_width)) * peak_bytes_per_output_pixel(
+        model_name, half
+    )
+    usable = max(0.0, float(free_bytes) * (1.0 - headroom))
+    raw = int(usable // per_frame) if per_frame > 0 else 1
+    batch = max(1, min(cap, raw))
+    return batch, {
+        "per_frame_gib": round(per_frame / _GIB, 2),
+        "free_gib": round(float(free_bytes) / _GIB, 2),
+        "usable_gib": round(usable / _GIB, 2),
+        "headroom": headroom,
+        "cap": cap,
+        "raw": raw,
+    }
+
+
+def _free_vram_bytes():
+    """Free bytes on cuda:0 incl. memory cached (reserved but unallocated) by torch."""
+    if not (TORCH_AVAILABLE and torch is not None and torch.cuda.is_available()):
+        return None
+    try:
+        free, _total = torch.cuda.mem_get_info(0)
+        cached = torch.cuda.memory_reserved(0) - torch.cuda.memory_allocated(0)
+        return int(free + max(0, cached))
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _gpu_name():
+    if TORCH_AVAILABLE and torch is not None and torch.cuda.is_available():
+        try:
+            return str(torch.cuda.get_device_name(0))
+        except Exception:  # noqa: BLE001
+            return "cuda"
+    return "cpu"
+
+
+def safe_batch_key(gpu_name, model_name, out_width, out_height):
+    return (str(gpu_name), str(model_name), int(out_width), int(out_height))
+
+
+def remember_safe_batch(key, batch, tile):
+    _SAFE_BATCH[key] = {"batch": max(1, int(batch)), "tile": int(tile)}
+
+
+def safe_batch_snapshot():
+    """JSON-friendly copy of the learned safe settings in this process."""
+    return [
+        {
+            "gpu": k[0],
+            "model": k[1],
+            "output_resolution": f"{k[2]}x{k[3]}",
+            "batch": v["batch"],
+            "tile": v["tile"],
+        }
+        for k, v in _SAFE_BATCH.items()
+    ]
+
+
+def clear_safe_batches():
+    _SAFE_BATCH.clear()
+
+
+class FpsMeter:
+    """Cumulative FPS (incl. model warmup / OOM) vs rolling and steady-state FPS.
+
+    cumulative: done / (now - start).
+    recent: frames over the last ``window`` frames' wall time.
+    steady: frames after the first emitted group (warmup, first CUDA kernels,
+    any OOM retry) divided by the time since that group finished.
+    """
+
+    def __init__(self, start=None, window=30):
+        self.start = time.time() if start is None else float(start)
+        self.window = max(2, int(window))
+        self._samples = collections.deque()
+        self._first = None
+        self._last = None
+
+    def mark(self, done, now=None):
+        now = time.time() if now is None else float(now)
+        sample = (now, int(done))
+        if self._first is None:
+            self._first = sample
+        self._last = sample
+        self._samples.append(sample)
+        while len(self._samples) > 1 and sample[1] - self._samples[1][1] >= self.window:
+            self._samples.popleft()
+
+    def cumulative(self, now=None):
+        if self._last is None:
+            return 0.0
+        now = self._last[0] if now is None else float(now)
+        elapsed = now - self.start
+        return self._last[1] / elapsed if elapsed > 0 else 0.0
+
+    def recent(self):
+        if len(self._samples) < 2:
+            return 0.0
+        (t0, d0), (t1, d1) = self._samples[0], self._samples[-1]
+        return (d1 - d0) / (t1 - t0) if t1 > t0 else 0.0
+
+    def steady(self):
+        if self._first is None or self._last is None:
+            return 0.0
+        (t0, d0), (t1, d1) = self._first, self._last
+        return (d1 - d0) / (t1 - t0) if t1 > t0 and d1 > d0 else 0.0
 
 
 class PngWriter:
@@ -449,26 +629,72 @@ class RealESRGANNative:
         self._use_fallback_scale = False  # Flag for x4plus->x2 fallback
 
     def _configure_batch_for_resolution(self, height: int, width: int) -> None:
-        """Keep the legacy VRAM table, but cap auto batch by input pixel area."""
-        if getattr(self, "_batch_configured_for_resolution", False):
+        """Pick the tile-0 GPU batch for this input resolution.
+
+        Explicit batch (REAL_ESRGAN_BATCH_SIZE / job) wins. Otherwise, with CUDA,
+        the batch comes from OUTPUT pixels and free VRAM (estimate_auto_batch).
+        Without free-VRAM info the legacy input-pixel cap is used. A safe
+        (batch, tile) learned from an OOM in this process for the same
+        (gpu, model, output resolution) caps the result.
+        """
+        if (
+            getattr(self, "_batch_configured_for_resolution", False)
+            and getattr(self, "_explicit_batch_size", None) is None
+        ):
             return
-        base = int(self.batch_size)
-        max_pixels = int(
-            os.getenv("REAL_ESRGAN_MAX_BATCH_PIXELS", str(1920 * 1080 * base))
-        )
-        pixels = max(1, int(height) * int(width))
-        safe = max(1, max_pixels // pixels)
-        configured = min(base, safe)
-        max_batch = int(os.getenv("REAL_ESRGAN_MAX_BATCH_SIZE", str(base)))
-        self.batch_size = max(1, min(configured, max_batch))
+        scale = int(getattr(self, "scale", 1) or 1)
+        out_h, out_w = int(height) * scale, int(width) * scale
+        model = getattr(self, "model_name", "unknown")
+        explicit = getattr(self, "_explicit_batch_size", None)
+        detail = {}
+        if explicit is not None:
+            self.batch_size = max(1, int(explicit))
+            source = "explicit"
+        else:
+            free = _free_vram_bytes()
+            if free is not None:
+                half = bool(getattr(self, "actual_half", getattr(self, "half", True)))
+                self.batch_size, detail = estimate_auto_batch(
+                    out_h, out_w, model, free, half=half
+                )
+                source = "auto_vram"
+            else:
+                base = int(self.batch_size)
+                max_pixels = int(
+                    os.getenv("REAL_ESRGAN_MAX_BATCH_PIXELS", str(1920 * 1080 * base))
+                )
+                pixels = max(1, int(height) * int(width))
+                safe = max(1, max_pixels // pixels)
+                max_batch = int(os.getenv("REAL_ESRGAN_MAX_BATCH_SIZE", str(base)))
+                self.batch_size = max(1, min(base, safe, max_batch))
+                detail = {"max_pixels": max_pixels}
+                source = "legacy_input_pixels"
+        key = safe_batch_key(_gpu_name(), model, out_w, out_h)
+        self._safe_key = key
+        learned = _SAFE_BATCH.get(key)
+        if learned is not None:
+            if learned["batch"] < self._gpu_batch_size_raw():
+                self._oom_batch_cap = learned["batch"]
+                source += "+learned"
+            if learned["tile"] and self.tile_size == 0:
+                self.set_tile_size(learned["tile"])
+                self.tile_reason = "learned_oom"
+                source += "+learned_tile"
+        self.batch_source = source
         self._batch_configured_for_resolution = True
         self.logger.info(
-            "Resolution-aware batch selection: resolution=%sx%s base_batch=%s selected_batch=%s max_pixels=%s",
+            "Real-ESRGAN batch selection: input=%sx%s output=%sx%s model=%s "
+            "source=%s gpu_batch=%s tile=%s detail=%s learned=%s",
             width,
             height,
-            base,
-            self.batch_size,
-            max_pixels,
+            out_w,
+            out_h,
+            model,
+            source,
+            self._gpu_batch_size(),
+            self.tile_size,
+            detail,
+            learned,
         )
 
     def _load_model(self):
@@ -625,22 +851,30 @@ class RealESRGANNative:
         self._batch_configured_for_resolution = batch_size is not None
         self.set_tile_size(chosen_tile)
         self._oom_recovery_attempted = False
+        self._oom_batch_cap = None
 
-    def _gpu_batch_size(self) -> int:
-        """GPU batch for tile 0. The VRAM table is not a GPU batch."""
-        if self.tile_size != 0:
-            return 1
+    def _gpu_batch_size_raw(self) -> int:
         explicit = getattr(self, "_explicit_batch_size", None)
         if explicit is None:
             return max(1, int(self.batch_size))
         return max(1, int(explicit))
 
+    def _gpu_batch_size(self) -> int:
+        """GPU batch for tile 0, capped by an OOM step-down. The VRAM table is not a GPU batch."""
+        if self.tile_size != 0:
+            return 1
+        batch = self._gpu_batch_size_raw()
+        cap = getattr(self, "_oom_batch_cap", None)
+        return max(1, min(batch, int(cap))) if cap else batch
+
     def _reset_execution_state(self) -> None:
         """Reset mutable per-job tuning while keeping model weights cached."""
         self._oom_recovery_attempted = False
+        self._oom_batch_cap = None
+        self._oom_events = []
         explicit = getattr(self, "_explicit_batch_size", None)
         self.batch_size = explicit or getattr(self, "_auto_batch_size", self.batch_size)
-        self._batch_configured_for_resolution = explicit is not None
+        self._batch_configured_for_resolution = False
         initial_tile = getattr(self, "_initial_tile_size", self.tile_size)
         if self.tile_size != initial_tile:
             self.set_tile_size(initial_tile)
@@ -686,6 +920,40 @@ class RealESRGANNative:
             images_count,
             "/".join(map(str, vram)) if vram else "n/a",
         )
+
+    def _step_down_after_oom(self, attempted: int) -> None:
+        """One OOM in batch_forward: halve the GPU batch, or tile 512 once batch is 1."""
+        if TORCH_AVAILABLE and torch is not None and torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        old = max(1, min(self._gpu_batch_size(), int(attempted)))
+        events = getattr(self, "_oom_events", None)
+        if events is None:
+            events = self._oom_events = []
+        key = getattr(self, "_safe_key", None)
+        if old > 1:
+            new = max(1, old // 2)
+            self._oom_batch_cap = new
+            self.oom_fallback = True
+            events.append({"from_batch": old, "to_batch": new, "tile": 0})
+            if key is not None:
+                remember_safe_batch(key, new, 0)
+            ctx = log_context()
+            vram = _vram_mb()
+            self.logger.warning(
+                "WARNING Real-ESRGAN OOM STEP-DOWN job=%s chunk=%s: gpu_batch %s -> %s, "
+                "tile stays 0, retrying the same frames, oom_events=%s, vram_used/peak/total_mb=%s",
+                ctx["job"],
+                ctx["chunk"],
+                old,
+                new,
+                len(events),
+                "/".join(map(str, vram)) if vram else "n/a",
+            )
+            return
+        self._recover_from_oom(attempted)
+        events.append({"from_batch": 1, "to_batch": 1, "tile": self.tile_size})
+        if key is not None:
+            remember_safe_batch(key, 1, self.tile_size)
 
     def _can_batch_forward(self) -> bool:
         if self.tile_size != 0 or getattr(self, "_use_fallback_scale", False):
@@ -771,14 +1039,21 @@ class RealESRGANNative:
 
     def _log_progress(self, first, last, current, total, start_time) -> None:
         ctx = log_context()
-        elapsed = time.time() - start_time
-        fps = current / elapsed if elapsed > 0 else 0
-        eta = (total - current) / fps if fps > 0 else 0
+        meter = getattr(self, "_fps_meter", None)
+        if meter is not None:
+            fps = meter.cumulative()
+            recent = meter.recent()
+        else:
+            elapsed = time.time() - start_time
+            fps = current / elapsed if elapsed > 0 else 0
+            recent = 0.0
+        rate = recent or fps
+        eta = (total - current) / rate if rate > 0 else 0
         vram = _vram_mb()
         self.logger.info(
             "Real-ESRGAN progress job=%s chunk=%s frames=%s-%s done=%s/%s (%.1f%%) "
-            "model=%s fp16=%s tile=%s tile_reason=%s gpu_batch=%s fps=%.2f eta=%.0fs "
-            "vram_used/peak_mb=%s oom_fallback=%s",
+            "model=%s fp16=%s tile=%s tile_reason=%s gpu_batch=%s fps_recent=%.2f "
+            "fps_cum=%.2f eta=%.0fs vram_used/peak_mb=%s oom_fallback=%s",
             ctx["job"],
             ctx["chunk"],
             first,
@@ -791,6 +1066,7 @@ class RealESRGANNative:
             self.tile_size,
             getattr(self, "tile_reason", "default"),
             self._gpu_batch_size(),
+            recent,
             fps,
             eta,
             f"{vram[0]}/{vram[1]}" if vram else "n/a",
@@ -803,25 +1079,56 @@ class RealESRGANNative:
                 pass
 
     def _upscale_loaded(self, images, timing=None):
-        """Tile-0 batch. On CUDA OOM, switch this cached object to tile 512 and enhance."""
-        try:
-            return batch_forward(
-                self._upsampler, images, int(self.scale), timing=timing
-            )
-        except Exception as exc:
-            if not _is_cuda_oom(exc):
-                raise
-            self.logger.exception(
-                "Real-ESRGAN CUDA OOM: model=%s scale=%s batch=%s tile=%s images=%s",
-                getattr(self, "model_name", "unknown"),
-                self.scale,
-                len(images),
-                self.tile_size,
-                len(images),
-            )
-        self._recover_from_oom(len(images))
+        """Tile-0 forward in sub-batches with bounded OOM step-down.
+
+        On CUDA OOM the same frames are retried with half the batch
+        (8 -> 4 -> 2 -> 1, torch.cuda.empty_cache between tries); finished
+        sub-batches are kept. Only after batch 1 OOMs does the rest go tiled
+        (tile 512). At most REAL_ESRGAN_OOM_MAX_RETRIES (default 5) OOMs per call.
+        """
+        max_retries = max(1, _env_int("REAL_ESRGAN_OOM_MAX_RETRIES", 5))
+        retries = 0
         base = getattr(self, "_frame_base", 0)
-        return [self._enhance_frame(img, base + i) for i, img in enumerate(images)]
+        outputs = []
+        pos = 0
+        while pos < len(images):
+            if not self._can_batch_forward():
+                outputs.extend(
+                    self._enhance_frame(img, base + pos + i)
+                    for i, img in enumerate(images[pos:])
+                )
+                break
+            sub = images[pos : pos + self._gpu_batch_size()]
+            oom = False
+            try:
+                outputs.extend(
+                    batch_forward(self._upsampler, sub, int(self.scale), timing=timing)
+                )
+                pos += len(sub)
+            except Exception as exc:
+                if not _is_cuda_oom(exc):
+                    raise
+                retries += 1
+                self.logger.warning(
+                    "Real-ESRGAN CUDA OOM: model=%s scale=%s batch=%s tile=%s retry=%s/%s: %s",
+                    getattr(self, "model_name", "unknown"),
+                    self.scale,
+                    len(sub),
+                    self.tile_size,
+                    retries,
+                    max_retries,
+                    str(exc).splitlines()[0] if str(exc) else type(exc).__name__,
+                )
+                if retries > max_retries:
+                    raise RuntimeError(
+                        f"Real-ESRGAN CUDA OOM persisted after {max_retries} bounded retries"
+                    ) from exc
+                oom = True
+            if oom:
+                # Outside the except block so the traceback (which pins the
+                # failed forward's activations) is gone before empty_cache().
+                self._step_down_after_oom(len(sub))
+        return outputs
 
     def process_frames(
         self,
@@ -863,6 +1170,11 @@ class RealESRGANNative:
 
         output_frames = []
         start_time = time.time()
+        self._fps_meter = FpsMeter(
+            start_time, window=_env_int("REAL_ESRGAN_FPS_WINDOW", 30)
+        )
+        initial_gpu_batch = self._gpu_batch_size()
+        initial_tile = self.tile_size
         timings = {
             "frame_read_s": 0.0,
             "preprocess_s": 0.0,
@@ -936,23 +1248,53 @@ class RealESRGANNative:
                         progress_callback(current, total)
                 last_frame = group_first + consumed - 1
                 done = len(output_frames)
-                if done <= 10 or done // 10 != (done - len(outputs)) // 10 or done == total:
+                self._fps_meter.mark(done)
+                if (
+                    done <= 10
+                    or done // 10 != (done - len(outputs)) // 10
+                    or done == total
+                ):
                     self._log_progress(group_first, last_frame, done, total, start_time)
         finally:
             writer.close()
 
         elapsed = time.time() - start_time
         avg_fps = total / elapsed if elapsed > 0 else 0
+        steady_fps = self._fps_meter.steady()
         ctx = log_context()
         vram = _vram_mb()
+        key = getattr(self, "_safe_key", None)
+        LAST_UPSCALE_STATS.clear()
+        LAST_UPSCALE_STATS.update(
+            {
+                "gpu": key[0] if key else _gpu_name(),
+                "model": getattr(self, "model_name", "unknown"),
+                "output_resolution": f"{key[2]}x{key[3]}" if key else None,
+                "batch_source": getattr(self, "batch_source", "unknown"),
+                "initial_gpu_batch": initial_gpu_batch,
+                "initial_tile": initial_tile,
+                "final_gpu_batch": self._gpu_batch_size(),
+                "final_tile": self.tile_size,
+                "oom_events": list(getattr(self, "_oom_events", []) or []),
+                "frames": total,
+                "elapsed_s": round(elapsed, 2),
+                "fps_cumulative": round(avg_fps, 3),
+                "fps_steady": round(steady_fps, 3),
+                "vram_peak_mb": vram[1] if vram else None,
+                "vram_total_mb": vram[2] if vram else None,
+                "safe_batches": safe_batch_snapshot(),
+            }
+        )
         self.logger.info(
-            "Real-ESRGAN DONE job=%s chunk=%s frames=%s elapsed=%.1fs fps=%.2f "
+            "Real-ESRGAN DONE job=%s chunk=%s frames=%s elapsed=%.1fs fps_cum=%.2f "
+            "fps_steady=%.2f "
             "model=%s tile=%s tile_reason=%s gpu_batch=%s vram_peak_mb=%s oom_fallback=%s",
             ctx["job"],
             ctx["chunk"],
             total,
             elapsed,
             avg_fps,
+            steady_fps,
             getattr(self, "model_name", "unknown"),
             self.tile_size,
             getattr(self, "tile_reason", "default"),

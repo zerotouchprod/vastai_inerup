@@ -91,7 +91,18 @@ class VideoProcessingOrchestrator:
                         fallback_to_silent=config.FALLBACK_TO_SILENT,
                     )
 
-                    audio_path = workspace / "original_audio.aac"
+                    # .m4a/.mka instead of raw ADTS .aac: a container
+                    # duration is exact, ADTS duration is a bitrate guess.
+                    # (The merge uses -shortest on real timestamps; no code
+                    # path trims by the probed duration, it is log-only.)
+                    from src.infrastructure.video.audio_handler import (
+                        audio_sidecar_name,
+                    )
+
+                    source_audio = audio_preserver.get_audio_info(input_file)
+                    audio_path = workspace / audio_sidecar_name(
+                        (source_audio or {}).get("codec")
+                    )
                     has_audio = audio_preserver.extract_audio(input_file, audio_path)
 
                     if has_audio:

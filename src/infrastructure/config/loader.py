@@ -81,8 +81,13 @@ class ProcessingConfig:
             if self.scale <= 0:
                 raise ConfigurationError(f"Scale must be positive, got: {self.scale}")
             if self.mode != "remove-subtitles" and self.interp_factor <= 0:
-                raise ConfigurationError(f"Interp factor must be positive, got: {self.interp_factor}")
-            if self.mode == "both" and self.strategy not in ("interp-then-upscale", "upscale-then-interp"):
+                raise ConfigurationError(
+                    f"Interp factor must be positive, got: {self.interp_factor}"
+                )
+            if self.mode == "both" and self.strategy not in (
+                "interp-then-upscale",
+                "upscale-then-interp",
+            ):
                 raise ConfigurationError(f"Invalid strategy: {self.strategy}")
         elif self.type == "image":
             if self.mode not in ("upscale", "hdr", "denoise"):
@@ -107,8 +112,25 @@ class ConfigLoader:
         Args:
             config_path: Optional path to YAML config file
         """
-        self.config_path = config_path or Path("config.yaml")
         self._logger = get_logger(__name__)
+        self.config_path = self._resolve_path(config_path)
+
+    @staticmethod
+    def _resolve_path(config_path: Optional[Path]) -> Optional[Path]:
+        """Explicit path > AIVIDUP_CONFIG_FILE > ./config.yaml (legacy CLI) > none.
+
+        The GPU worker image ships no config.yaml (the repo-root config.yaml is
+        the legacy Vast launcher config, not a ProcessingConfig), so the worker
+        runs on ProcessingConfig defaults + env + task params. That is expected
+        and logged once at INFO instead of a misleading "not found" warning.
+        """
+        if config_path:
+            return Path(config_path)
+        env = os.getenv("AIVIDUP_CONFIG_FILE")
+        if env:
+            return Path(env)
+        legacy = Path("config.yaml")
+        return legacy if legacy.exists() else None
 
     def load(self, overrides: Optional[Dict[str, Any]] = None) -> ProcessingConfig:
         """
@@ -125,13 +147,24 @@ class ConfigLoader:
         config_dict = {}
 
         # Load from YAML if exists
-        if self.config_path.exists():
-            self._logger.info(f"Loading config from {self.config_path}")
-            with open(self.config_path, 'r') as f:
+        if self.config_path is None:
+            self._logger.info(
+                "No processing config file (AIVIDUP_CONFIG_FILE unset, no ./config.yaml in %s): "
+                "using built-in ProcessingConfig defaults + env + task params; "
+                "Real-ESRGAN tile/batch/fp16 come from REAL_ESRGAN_* env or auto",
+                Path.cwd(),
+            )
+        elif self.config_path.exists():
+            self._logger.info(f"Loading config from {self.config_path.resolve()}")
+            with open(self.config_path, "r") as f:
                 yaml_config = yaml.safe_load(f) or {}
                 config_dict.update(yaml_config)
         else:
-            self._logger.warning(f"Config file not found: {self.config_path}")
+            self._logger.warning(
+                "Config file not found: %s (cwd %s); using built-in defaults + env",
+                self.config_path,
+                Path.cwd(),
+            )
 
         # Override with environment variables
         env_config = self._load_from_env()
@@ -147,23 +180,58 @@ class ConfigLoader:
 
         # Validate required fields
         if "input_url" not in config_dict:
-            raise ConfigurationError("input_url is required (set INPUT_URL or VIDEO_INPUT_URL)")
+            raise ConfigurationError(
+                "input_url is required (set INPUT_URL or VIDEO_INPUT_URL)"
+            )
 
         # Filter to only known ProcessingConfig fields
         valid_fields = {
-            'input_url', 'output_dir', 'temp_dir', 'type', 'mode', 'scale', 'target_resolution',
-            'interp_factor', 'target_fps', 'prefer', 'strict', 'strategy',
-            'b2_bucket', 'b2_endpoint', 'b2_output_key', 'b2_key', 'b2_secret',
-            'batch_args', 'smoke_seconds', 'smoke_timeout', 'keep_tmp', 'job_id',
-            'audio_mode', 'image_mode', 'subtitle_language'
+            "input_url",
+            "output_dir",
+            "temp_dir",
+            "type",
+            "mode",
+            "scale",
+            "target_resolution",
+            "interp_factor",
+            "target_fps",
+            "prefer",
+            "strict",
+            "strategy",
+            "b2_bucket",
+            "b2_endpoint",
+            "b2_output_key",
+            "b2_key",
+            "b2_secret",
+            "batch_args",
+            "smoke_seconds",
+            "smoke_timeout",
+            "keep_tmp",
+            "job_id",
+            "audio_mode",
+            "image_mode",
+            "subtitle_language",
         }
 
         filtered_config = {k: v for k, v in config_dict.items() if k in valid_fields}
 
         try:
-            return ProcessingConfig(**filtered_config)
+            config = ProcessingConfig(**filtered_config)
         except TypeError as e:
             raise ConfigurationError(f"Invalid configuration: {e}")
+        self._logger.info(
+            "Effective processing config: source=%s mode=%s scale=%s prefer=%s strategy=%s "
+            "target_fps=%s interp_factor=%s audio_mode=%s",
+            self.config_path if self.config_path is not None else "defaults+env",
+            config.mode,
+            config.scale,
+            config.prefer,
+            config.strategy,
+            config.target_fps,
+            config.interp_factor,
+            config.audio_mode,
+        )
+        return config
 
     def _load_from_env(self) -> Dict[str, Any]:
         """Load configuration from environment variables."""

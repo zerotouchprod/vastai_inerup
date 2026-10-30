@@ -9,6 +9,7 @@ def test_resolution_aware_batch_caps_large_input(monkeypatch):
     monkeypatch.setenv("REAL_ESRGAN_MAX_BATCH_PIXELS", str(12 * 1920 * 1080))
     p = RealESRGANNative.__new__(RealESRGANNative)
     p.batch_size = 12
+    p.tile_size = 0
     p._explicit_batch_size = None
     p._batch_configured_for_resolution = False
     p.logger = __import__("logging").getLogger("test")
