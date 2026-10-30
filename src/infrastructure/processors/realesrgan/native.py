@@ -140,6 +140,9 @@ _DEFAULT_MAX_AUTO_BATCH = 8
 # (gpu_name, model_name, out_w, out_h). The worker builds a new orchestrator per
 # chunk but keeps the process, so later chunks start from the learned value.
 _SAFE_BATCH = {}
+# Scope (job id) the learned safe batches belong to. A new job clears them so no
+# execution state is carried from one job to another; chunks of the same job share it.
+_SAFE_SCOPE = {"id": "-"}
 
 # Stats of the last process_frames() call (read by the worker for telemetry).
 LAST_UPSCALE_STATS = {}
@@ -223,8 +226,30 @@ def _gpu_name():
     return "cpu"
 
 
-def safe_batch_key(gpu_name, model_name, out_width, out_height):
-    return (str(gpu_name), str(model_name), int(out_width), int(out_height))
+def begin_safe_batch_scope(scope_id) -> bool:
+    """Enter the safe-batch scope of a job. Returns True when a different job's state was dropped."""
+    scope = str(scope_id or "-")
+    if scope == _SAFE_SCOPE["id"]:
+        return False
+    dropped = bool(_SAFE_BATCH)
+    _SAFE_BATCH.clear()
+    _SAFE_SCOPE["id"] = scope
+    return dropped
+
+
+def current_safe_batch_scope() -> str:
+    return _SAFE_SCOPE["id"]
+
+
+def safe_batch_key(gpu_name, model_name, out_width, out_height, half=True):
+    return (
+        _SAFE_SCOPE["id"],
+        str(gpu_name),
+        str(model_name),
+        int(out_width),
+        int(out_height),
+        bool(half),
+    )
 
 
 def remember_safe_batch(key, batch, tile):
@@ -235,9 +260,11 @@ def safe_batch_snapshot():
     """JSON-friendly copy of the learned safe settings in this process."""
     return [
         {
-            "gpu": k[0],
-            "model": k[1],
-            "output_resolution": f"{k[2]}x{k[3]}",
+            "scope": k[0],
+            "gpu": k[1],
+            "model": k[2],
+            "output_resolution": f"{k[3]}x{k[4]}",
+            "half": k[5],
             "batch": v["batch"],
             "tile": v["tile"],
         }
@@ -247,6 +274,20 @@ def safe_batch_snapshot():
 
 def clear_safe_batches():
     _SAFE_BATCH.clear()
+    _SAFE_SCOPE["id"] = "-"
+
+
+def _select_perf_profile(gpu_name, model, scale, width, height, half, logger):
+    """Measured profile for this exact (gpu, model, scale, input, fp16) or None. Never raises."""
+    try:
+        from src.infrastructure.processors.realesrgan.profiles import select_profile
+
+        return select_profile(gpu_name, model, scale, width, height, half=half)
+    except Exception as exc:  # noqa: BLE001 - a bad profiles file must not fail the job
+        logger.warning(
+            "Real-ESRGAN perf profiles unavailable (%s); using auto settings", exc
+        )
+        return None
 
 
 class FpsMeter:
@@ -647,13 +688,32 @@ class RealESRGANNative:
         model = getattr(self, "model_name", "unknown")
         explicit = getattr(self, "_explicit_batch_size", None)
         detail = {}
-        if explicit is not None:
+        half = bool(getattr(self, "actual_half", getattr(self, "half", True)))
+        gpu = _gpu_name()
+        profile = None
+        # Profiles only replace the defaults: an explicit tile or batch (env/job) wins.
+        if (
+            explicit is None
+            and self._source("tile") == "default"
+            and int(getattr(self, "_initial_tile_size", self.tile_size) or 0) == 0
+        ):
+            profile = _select_perf_profile(
+                gpu, model, scale, width, height, half, self.logger
+            )
+        self._perf_profile = profile
+        if profile is not None:
+            self.batch_size = max(1, int(profile.gpu_batch))
+            if self.tile_size != profile.tile:
+                self.set_tile_size(profile.tile)
+            self.tile_reason = f"profile:{profile.id}"
+            source = f"profile:{profile.id}"
+            detail = {"reference_fps": profile.reference_fps}
+        elif explicit is not None:
             self.batch_size = max(1, int(explicit))
             source = "explicit"
         else:
             free = _free_vram_bytes()
             if free is not None:
-                half = bool(getattr(self, "actual_half", getattr(self, "half", True)))
                 self.batch_size, detail = estimate_auto_batch(
                     out_h, out_w, model, free, half=half
                 )
@@ -669,27 +729,31 @@ class RealESRGANNative:
                 self.batch_size = max(1, min(base, safe, max_batch))
                 detail = {"max_pixels": max_pixels}
                 source = "legacy_input_pixels"
-        key = safe_batch_key(_gpu_name(), model, out_w, out_h)
+        key = safe_batch_key(gpu, model, out_w, out_h, half)
         self._safe_key = key
         learned = _SAFE_BATCH.get(key)
         if learned is not None:
             if learned["batch"] < self._gpu_batch_size_raw():
                 self._oom_batch_cap = learned["batch"]
                 source += "+learned"
-            if learned["tile"] and self.tile_size == 0:
+            if learned["tile"] and (
+                self.tile_size == 0 or learned["tile"] < self.tile_size
+            ):
                 self.set_tile_size(learned["tile"])
                 self.tile_reason = "learned_oom"
                 source += "+learned_tile"
         self.batch_source = source
         self._batch_configured_for_resolution = True
         self.logger.info(
-            "Real-ESRGAN batch selection: input=%sx%s output=%sx%s model=%s "
-            "source=%s gpu_batch=%s tile=%s detail=%s learned=%s",
+            "Real-ESRGAN batch selection: input=%sx%s output=%sx%s model=%s gpu=%s "
+            "profile=%s source=%s gpu_batch=%s tile=%s detail=%s learned=%s",
             width,
             height,
             out_w,
             out_h,
             model,
+            gpu,
+            profile.id if profile is not None else "none",
             source,
             self._gpu_batch_size(),
             self.tile_size,
@@ -872,6 +936,7 @@ class RealESRGANNative:
         self._oom_recovery_attempted = False
         self._oom_batch_cap = None
         self._oom_events = []
+        self._perf_profile = None
         explicit = getattr(self, "_explicit_batch_size", None)
         self.batch_size = explicit or getattr(self, "_auto_batch_size", self.batch_size)
         self._batch_configured_for_resolution = False
@@ -1264,13 +1329,16 @@ class RealESRGANNative:
         ctx = log_context()
         vram = _vram_mb()
         key = getattr(self, "_safe_key", None)
+        profile = getattr(self, "_perf_profile", None)
         LAST_UPSCALE_STATS.clear()
         LAST_UPSCALE_STATS.update(
             {
-                "gpu": key[0] if key else _gpu_name(),
+                "gpu": key[1] if key else _gpu_name(),
                 "model": getattr(self, "model_name", "unknown"),
-                "output_resolution": f"{key[2]}x{key[3]}" if key else None,
+                "output_resolution": f"{key[3]}x{key[4]}" if key else None,
                 "batch_source": getattr(self, "batch_source", "unknown"),
+                "profile_id": profile.id if profile is not None else None,
+                "profile": profile.summary() if profile is not None else None,
                 "initial_gpu_batch": initial_gpu_batch,
                 "initial_tile": initial_tile,
                 "final_gpu_batch": self._gpu_batch_size(),

@@ -94,12 +94,16 @@ class RealESRGANNativeWrapper(BaseProcessor):
             "REAL_ESRGAN_MODEL_X2" if scale == 2 else "REAL_ESRGAN_MODEL_X4"
         )
         source = {
-            "model": "option"
-            if options.get("model_name")
-            else (
-                "env"
-                if os.getenv("REAL_ESRGAN_MODEL_X2" if scale == 2 else "REAL_ESRGAN_MODEL_X4")
-                else "default"
+            "model": (
+                "option"
+                if options.get("model_name")
+                else (
+                    "env"
+                    if os.getenv(
+                        "REAL_ESRGAN_MODEL_X2" if scale == 2 else "REAL_ESRGAN_MODEL_X4"
+                    )
+                    else "default"
+                )
             )
         }
         tile_size = options.get("tile_size") if "tile_size" in options else None

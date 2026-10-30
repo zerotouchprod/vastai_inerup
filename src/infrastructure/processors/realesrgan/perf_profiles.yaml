@@ -1,0 +1,40 @@
+# Measured Real-ESRGAN native performance profiles.
+#
+# A profile applies only when ALL keys match exactly:
+#   gpu    - normalized GPU model (see profiles.normalize_gpu_name), e.g. "RTX 4080".
+#            "RTX 4080 SUPER" / "RTX 4080 Laptop GPU" are different GPUs and do not match.
+#   model  - Real-ESRGAN weights name
+#   scale  - network/output scale
+#   input  - WIDTHxHEIGHT of the frames fed to the model (orientation-specific;
+#            1920x1080 is NOT matched by a 1080x1920 profile unless listed)
+#   half   - fp16
+# and neither REAL_ESRGAN_TILE_SIZE nor REAL_ESRGAN_BATCH_SIZE (nor job options)
+# is set. No match -> previous behaviour (tile from config, auto-batch).
+# OOM step-down / tiling recovery still runs and starts from the profile values.
+#
+# Override the file with REAL_ESRGAN_PROFILES_FILE=/path.yaml, disable with
+# REAL_ESRGAN_PROFILES=off.
+version: 1
+profiles:
+  - id: rtx4080-x2plus-fp16-1080x1920
+    gpu: RTX 4080
+    vram_gb: 16
+    model: RealESRGAN_x2plus
+    scale: 2
+    input: 1080x1920
+    half: true
+    tile: 512
+    gpu_batch: 1
+    reference_fps: 1.27
+    measured: "2026-10-30 Vast 58427970, 600 frames, image e8384806; b2 1.02, b4 0.89, auto(b5) 0.84 fps"
+  - id: rtx3090-x2plus-fp16-1080x1920
+    gpu: RTX 3090
+    vram_gb: 24
+    model: RealESRGAN_x2plus
+    scale: 2
+    input: 1080x1920
+    half: true
+    tile: 0
+    gpu_batch: 2
+    reference_fps: 1.14
+    measured: "2026-10-30 Vast 58437425, 600 frames, image e8384806; tile512/b1 0.99 fps; b4 result lost"

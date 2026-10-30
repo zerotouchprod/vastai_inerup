@@ -172,6 +172,7 @@ def pipeline(task: Dict[str, Any], src: Path, dst: Path, lost: threading.Event) 
         job.config = {}
     job.config["cancel_event"] = lost
     job.config["progress_callback"] = task.get("_progress_callback")
+    _begin_upscale_scope(task)
     result = orchestrator.process(job)
     _collect_upscale_stats(task)
     if not getattr(result, "success", True) or not dst.exists():
@@ -179,6 +180,18 @@ def pipeline(task: Dict[str, Any], src: Path, dst: Path, lost: threading.Event) 
             "output_invalid",
             f"pipeline produced no output: {getattr(result, 'error', '')}",
         )
+
+
+def _begin_upscale_scope(task: Dict[str, Any]) -> None:
+    """Scope Real-ESRGAN learned OOM state to this job: a different job starts clean."""
+    try:
+        from src.infrastructure.processors.realesrgan import native
+
+        native.LAST_UPSCALE_STATS.clear()
+        if native.begin_safe_batch_scope(task.get("job_id") or task.get("attempt_id")):
+            log.info("upscale: dropped learned safe batches of a previous job")
+    except Exception:  # noqa: BLE001 - torch-less images / non-upscale modes
+        return
 
 
 def _collect_upscale_stats(task: Dict[str, Any]) -> None:
