@@ -87,6 +87,7 @@ import src.worker.runner, src.presentation.cli, runpod, src.serverless.handler, 
     && ffmpeg -hide_banner -encoders 2>/dev/null | grep -q libx264
 
 ENV PYTHONPATH=/workspace/project \
+    GIT_SHA=${GIT_SHA} \
     USE_NATIVE_PROCESSORS=1 \
     STRICT_FRAME_COUNT=1 \
     NVIDIA_VISIBLE_DEVICES=all \

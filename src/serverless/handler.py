@@ -23,6 +23,7 @@ import io
 import json
 import logging
 import os
+import re
 import shutil
 import signal
 import sys
@@ -338,6 +339,14 @@ def _kill_group(proc: subprocess.Popen) -> None:
             continue
 
 
+_URL_QUERY_RE = re.compile(r"(https?://[^\s'\"?]+)\?[^\s'\"]*")
+
+
+def redact_urls(text: str) -> str:
+    """Drop query strings (presigned signatures/tokens) from URLs in log text."""
+    return _URL_QUERY_RE.sub(r"\1?<redacted>", text)
+
+
 def run_child(
     spec, encoder, job_id, workdir: Path, src: Path, dst: Path, stop: "StopCheck", buf
 ) -> Dict[str, Any]:
@@ -348,6 +357,8 @@ def run_child(
             for k in ("input_url", "input_b64", "start", "duration", "mode", "params")
         },
         "attempt_id": spec.get("attempt_id") or job_id,
+        "job_id": job_id,
+        "chunk_id": spec.get("chunk_id"),
         "encoder": encoder,
         "src": str(src),
         "dst": str(dst),
@@ -363,8 +374,29 @@ def run_child(
         start_new_session=True,
         cwd=os.environ.get("PYTHONPATH") or None,
     )
+    live = open(workdir / "child.log", "r", errors="replace")
+    pending = [""]
+
+    def _tee(final: bool = False) -> None:
+        # Stream child output to the worker's stdout so the platform log shows
+        # every line (start-up included), not only the tail in log_tail.
+        # Whole lines only, with URL query strings (presigned signatures) redacted.
+        data = pending[0] + live.read()
+        if not final and "\n" in data:
+            cut = data.rindex("\n") + 1
+            data, pending[0] = data[:cut], data[cut:]
+        elif not final:
+            pending[0] = data
+            return
+        else:
+            pending[0] = ""
+        if data:
+            sys.stdout.write(redact_urls(data))
+            sys.stdout.flush()
+
     try:
         while proc.poll() is None:
+            _tee()
             r = stop.reason()
             if r:
                 _kill_group(proc)
@@ -376,6 +408,10 @@ def run_child(
         if proc.poll() is None:
             _kill_group(proc)
         logf.flush()
+        try:
+            _tee(final=True)
+        finally:
+            live.close()
         logf.seek(0)
         buf.write(logf.read()[-20000:])
         logf.close()

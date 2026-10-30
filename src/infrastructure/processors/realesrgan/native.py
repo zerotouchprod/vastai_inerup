@@ -17,6 +17,8 @@ Usage:
     output_frames = processor.process_frames(input_frames, output_dir)
 """
 
+import io
+import re
 import sys
 import threading
 import time
@@ -180,6 +182,83 @@ def _is_cuda_oom(exc: BaseException) -> bool:
     return isinstance(oom, type) and isinstance(exc, oom)
 
 
+_TILE_PRINT_RE = re.compile(r"^\s*Tile\s+(\d+)/(\d+)\s*$")
+
+
+class _TilePrintFilter(io.TextIOBase):
+    """stdout replacement used around RealESRGANer.enhance.
+
+    realesrgan's tile_process() prints a bare ``\tTile N/M`` per tile. Those
+    lines carry no context, so they are swallowed and counted; anything else
+    is forwarded to the real stdout unchanged.
+    """
+
+    def __init__(self, target):
+        self._target = target
+        self._pending = ""
+        self.tiles_seen = 0
+        self.tiles_total = 0
+
+    def writable(self):
+        return True
+
+    def write(self, data):
+        self._pending += data
+        while "\n" in self._pending:
+            line, self._pending = self._pending.split("\n", 1)
+            self._handle(line + "\n")
+        return len(data)
+
+    def _handle(self, line):
+        m = _TILE_PRINT_RE.match(line)
+        if m:
+            self.tiles_seen += 1
+            self.tiles_total = int(m.group(2))
+            return
+        self._target.write(line)
+
+    def flush(self):
+        if self._pending:
+            self._handle(self._pending)
+            self._pending = ""
+        try:
+            self._target.flush()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def log_context() -> dict:
+    """Job/chunk identifiers set by the serverless child (env), for log lines."""
+    return {
+        "job": os.getenv("AIVIDUP_LOG_JOB_ID") or "-",
+        "chunk": os.getenv("AIVIDUP_LOG_CHUNK_ID") or "-",
+    }
+
+
+def image_revision() -> str:
+    sha = os.getenv("GIT_SHA")
+    if sha and sha != "unknown":
+        return sha
+    try:
+        with open("/etc/aividup_revision", encoding="utf-8") as fh:
+            return fh.read().strip() or "unknown"
+    except OSError:
+        return "unknown"
+
+
+def _vram_mb():
+    """(used_mb, peak_mb, total_mb) for cuda:0, or None without CUDA."""
+    if not (TORCH_AVAILABLE and torch is not None and torch.cuda.is_available()):
+        return None
+    try:
+        used = torch.cuda.memory_allocated(0) / 2**20
+        peak = torch.cuda.max_memory_allocated(0) / 2**20
+        total = torch.cuda.get_device_properties(0).total_memory / 2**20
+        return round(used), round(peak), round(total)
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def batch_forward(upsampler, frames_bgr, scale, timing=None):
     """Run one tiled-off forward.
 
@@ -254,7 +333,14 @@ def clear_upscaler_cache() -> None:
 
 
 def get_upscaler(
-    scale, half, device, tile_size, batch_size, model_name=None, logger=None
+    scale,
+    half,
+    device,
+    tile_size,
+    batch_size,
+    model_name=None,
+    logger=None,
+    settings_source=None,
 ):
     """Return cached model weights with fresh job-scoped execution settings."""
     model_name = model_name or (
@@ -264,6 +350,7 @@ def get_upscaler(
     existing = _UPSCALER_CACHE.get(key)
     if existing is not None:
         existing.configure_job(tile_size=tile_size, batch_size=batch_size)
+        existing.settings_source = dict(settings_source or {})
         return existing
 
     chosen = 0 if tile_size is None else int(tile_size)
@@ -276,6 +363,7 @@ def get_upscaler(
         device=str(device),
         logger=logger,
     )
+    processor.settings_source = dict(settings_source or {})
     _UPSCALER_CACHE[key] = processor
     processor._load_model()
     return processor
@@ -556,6 +644,11 @@ class RealESRGANNative:
         initial_tile = getattr(self, "_initial_tile_size", self.tile_size)
         if self.tile_size != initial_tile:
             self.set_tile_size(initial_tile)
+        self.oom_fallback = False
+        self.tile_reason = self._source("tile")
+
+    def _source(self, key: str) -> str:
+        return (getattr(self, "settings_source", None) or {}).get(key, "default")
 
     def _synchronize_cuda(self) -> None:
         if TORCH_AVAILABLE and torch is not None and torch.cuda.is_available():
@@ -570,14 +663,28 @@ class RealESRGANNative:
         if TORCH_AVAILABLE and torch is not None and torch.cuda.is_available():
             torch.cuda.empty_cache()
         old_tile = self.tile_size
+        old_reason = getattr(self, "tile_reason", self._source("tile"))
+        old_gpu_batch = self._gpu_batch_size()
         new_tile = 512 if old_tile == 0 else max(128, old_tile // 2)
         self.set_tile_size(new_tile)
         self.batch_size = 1
+        self.oom_fallback = True
+        self.tile_reason = "oom"
+        ctx = log_context()
+        vram = _vram_mb()
         self.logger.warning(
-            "OOM recovery: batch_size=%s -> 1, tile_size=%s -> %s, retry_count=1",
-            images_count,
+            "WARNING Real-ESRGAN OOM FALLBACK job=%s chunk=%s: "
+            "tile %s(%s) -> %s(oom), gpu_batch %s -> 1, read_group %s -> 1, "
+            "batch_forward -> off, retry_count=1, vram_used/peak/total_mb=%s. "
+            "Remaining frames of this chunk run tiled and slower.",
+            ctx["job"],
+            ctx["chunk"],
             old_tile,
+            old_reason,
             new_tile,
+            old_gpu_batch,
+            images_count,
+            "/".join(map(str, vram)) if vram else "n/a",
         )
 
     def _can_batch_forward(self) -> bool:
@@ -598,9 +705,102 @@ class RealESRGANNative:
         if cancel_event is not None and cancel_event.is_set():
             raise RuntimeError("upscale cancelled")
 
-    def _enhance_frame(self, img):
-        output, _ = self._upsampler.enhance(img, outscale=self.scale)
+    def _enhance_frame(self, img, frame_idx=None):
+        flt = _TilePrintFilter(sys.stdout)
+        old = sys.stdout
+        sys.stdout = flt
+        try:
+            output, _ = self._upsampler.enhance(img, outscale=self.scale)
+        finally:
+            sys.stdout = old
+            flt.flush()
+        if flt.tiles_seen:
+            ctx = log_context()
+            self.logger.info(
+                "Real-ESRGAN tiled frame job=%s chunk=%s frame=%s tiles=%s/%s "
+                "tile=%s tile_reason=%s oom_fallback=%s",
+                ctx["job"],
+                ctx["chunk"],
+                frame_idx if frame_idx is not None else "?",
+                flt.tiles_seen,
+                flt.tiles_total,
+                self.tile_size,
+                getattr(self, "tile_reason", "default"),
+                getattr(self, "oom_fallback", False),
+            )
         return output
+
+    def _log_startup(self, width, height, total) -> None:
+        ctx = log_context()
+        src = getattr(self, "settings_source", None) or {}
+        gpu = "none"
+        if TORCH_AVAILABLE and torch is not None and torch.cuda.is_available():
+            try:
+                props = torch.cuda.get_device_properties(0)
+                gpu = f"{torch.cuda.get_device_name(0)} ({props.total_memory / 2**30:.1f}GB)"
+            except Exception:  # noqa: BLE001
+                gpu = "cuda (unknown)"
+        self.logger.info(
+            "Real-ESRGAN START job=%s chunk=%s frames=%s resolution=%sx%s "
+            "model=%s weights=%s net_scale=%s outscale=%s x4_fallback=%s "
+            "fp16=%s(%s) tile=%s(%s) tile_pad=%s gpu_batch=%s(%s) read_group=%s "
+            "batch_forward=%s model_source=%s gpu=%s image_sha=%s",
+            ctx["job"],
+            ctx["chunk"],
+            total,
+            width,
+            height,
+            getattr(self, "model_name", "unknown"),
+            getattr(self, "model_path", "unknown"),
+            getattr(self._upsampler, "scale", "unknown"),
+            self.scale,
+            getattr(self, "_use_fallback_scale", False),
+            getattr(self, "actual_half", self.half),
+            src.get("half", "default"),
+            self.tile_size,
+            getattr(self, "tile_reason", src.get("tile", "default")),
+            getattr(self, "tile_pad", 10),
+            self._gpu_batch_size(),
+            src.get("batch", "default"),
+            self._read_group_size(),
+            self._can_batch_forward(),
+            src.get("model", "default"),
+            gpu,
+            image_revision(),
+        )
+
+    def _log_progress(self, first, last, current, total, start_time) -> None:
+        ctx = log_context()
+        elapsed = time.time() - start_time
+        fps = current / elapsed if elapsed > 0 else 0
+        eta = (total - current) / fps if fps > 0 else 0
+        vram = _vram_mb()
+        self.logger.info(
+            "Real-ESRGAN progress job=%s chunk=%s frames=%s-%s done=%s/%s (%.1f%%) "
+            "model=%s fp16=%s tile=%s tile_reason=%s gpu_batch=%s fps=%.2f eta=%.0fs "
+            "vram_used/peak_mb=%s oom_fallback=%s",
+            ctx["job"],
+            ctx["chunk"],
+            first,
+            last,
+            current,
+            total,
+            100 * current / total if total else 100.0,
+            getattr(self, "model_name", "unknown"),
+            getattr(self, "actual_half", self.half),
+            self.tile_size,
+            getattr(self, "tile_reason", "default"),
+            self._gpu_batch_size(),
+            fps,
+            eta,
+            f"{vram[0]}/{vram[1]}" if vram else "n/a",
+            getattr(self, "oom_fallback", False),
+        )
+        for h in list(self.logger.handlers) + list(logging.getLogger().handlers):
+            try:
+                h.flush()
+            except Exception:  # noqa: BLE001
+                pass
 
     def _upscale_loaded(self, images, timing=None):
         """Tile-0 batch. On CUDA OOM, switch this cached object to tile 512 and enhance."""
@@ -620,7 +820,8 @@ class RealESRGANNative:
                 len(images),
             )
         self._recover_from_oom(len(images))
-        return [self._enhance_frame(img) for img in images]
+        base = getattr(self, "_frame_base", 0)
+        return [self._enhance_frame(img, base + i) for i, img in enumerate(images)]
 
     def process_frames(
         self,
@@ -653,36 +854,12 @@ class RealESRGANNative:
         if first is None:
             raise ValueError("Unable to read the first input frame")
         self._configure_batch_for_resolution(first.shape[0], first.shape[1])
-        self.logger.info(f"Processing {total} frames with Real-ESRGAN")
-        self.logger.info(
-            "Real-ESRGAN runtime: model=%s requested_scale=%s network_scale=%s "
-            "resolution=%sx%s fp16=%s tile=%s tile_pad=%s pre_pad=%s "
-            "batch=%s weights=%s",
-            getattr(self, "model_name", "unknown"),
-            self.scale,
-            getattr(self._upsampler, "scale", "unknown"),
-            first.shape[1],
-            first.shape[0],
-            getattr(self, "actual_half", self.half),
-            self.tile_size,
-            getattr(self, "tile_pad", 10),
-            getattr(self, "pre_pad", 0),
-            self.batch_size,
-            getattr(self, "model_path", "unknown"),
-        )
-        self.logger.info(f"  Scale: {self.scale}x")
-        self.logger.info(f"  Tile size: {self.tile_size}")
-        self.logger.info(f"  Batch size: {self.batch_size}")
-        self.logger.info(f"  Half precision: {self.half}")
-        if self.tile_size != 0:
-            self.logger.info("  gpu_batch=1")
-        else:
-            self.logger.info(f"  gpu_batch={self._gpu_batch_size()}")
-
-        if torch is not None and torch.cuda.is_available():
-            gpu_name = torch.cuda.get_device_name(0)
-            gpu_memory = torch.cuda.get_device_properties(0).total_memory / (1024**3)
-            self.logger.info(f"  GPU: {gpu_name} ({gpu_memory:.1f}GB)")
+        if TORCH_AVAILABLE and torch is not None and torch.cuda.is_available():
+            try:
+                torch.cuda.reset_peak_memory_stats(0)
+            except Exception:  # noqa: BLE001
+                pass
+        self._log_startup(first.shape[1], first.shape[0], total)
 
         output_frames = []
         start_time = time.time()
@@ -719,15 +896,20 @@ class RealESRGANNative:
                     paths.append(output_dir / Path(frame_path).name)
                 if consumed == 0:
                     break
+                group_first = index
                 index += consumed
                 if not images:
                     continue
+                self._frame_base = group_first
                 if self._can_batch_forward():
                     outputs = self._upscale_loaded(images, timing=timings)
                 else:
                     inference_start = time.perf_counter()
                     try:
-                        outputs = [self._enhance_frame(img) for img in images]
+                        outputs = [
+                            self._enhance_frame(img, group_first + i)
+                            for i, img in enumerate(images)
+                        ]
                     except Exception as exc:
                         if not _is_cuda_oom(exc):
                             raise
@@ -739,7 +921,10 @@ class RealESRGANNative:
                             len(images),
                         )
                         self._recover_from_oom(len(images))
-                        outputs = [self._enhance_frame(img) for img in images]
+                        outputs = [
+                            self._enhance_frame(img, group_first + i)
+                            for i, img in enumerate(images)
+                        ]
                     self._synchronize_cuda()
                     timings["inference_s"] += time.perf_counter() - inference_start
                 for out_img, out_path in zip(outputs, paths):
@@ -749,23 +934,31 @@ class RealESRGANNative:
                     current = len(output_frames)
                     if progress_callback:
                         progress_callback(current, total)
-                    if current <= 10 or current % 10 == 0 or current == total:
-                        elapsed = time.time() - start_time
-                        fps = current / elapsed if elapsed > 0 else 0
-                        eta = (total - current) / fps if fps > 0 else 0
-                        self.logger.info(
-                            f"Processed {current}/{total} frames "
-                            f"({100 * current / total:.1f}%) | "
-                            f"{fps:.2f} fps | "
-                            f"ETA: {eta:.0f}s"
-                        )
+                last_frame = group_first + consumed - 1
+                done = len(output_frames)
+                if done <= 10 or done // 10 != (done - len(outputs)) // 10 or done == total:
+                    self._log_progress(group_first, last_frame, done, total, start_time)
         finally:
             writer.close()
 
         elapsed = time.time() - start_time
         avg_fps = total / elapsed if elapsed > 0 else 0
+        ctx = log_context()
+        vram = _vram_mb()
         self.logger.info(
-            f"Completed {total} frames in {elapsed:.1f}s ({avg_fps:.2f} fps)"
+            "Real-ESRGAN DONE job=%s chunk=%s frames=%s elapsed=%.1fs fps=%.2f "
+            "model=%s tile=%s tile_reason=%s gpu_batch=%s vram_peak_mb=%s oom_fallback=%s",
+            ctx["job"],
+            ctx["chunk"],
+            total,
+            elapsed,
+            avg_fps,
+            getattr(self, "model_name", "unknown"),
+            self.tile_size,
+            getattr(self, "tile_reason", "default"),
+            self._gpu_batch_size(),
+            vram[1] if vram else "n/a",
+            getattr(self, "oom_fallback", False),
         )
         self.logger.info(
             "Real-ESRGAN timings: %s", {k: round(v, 3) for k, v in timings.items()}

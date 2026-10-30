@@ -93,12 +93,29 @@ class RealESRGANNativeWrapper(BaseProcessor):
         model_name_override = options.get("model_name") or os.getenv(
             "REAL_ESRGAN_MODEL_X2" if scale == 2 else "REAL_ESRGAN_MODEL_X4"
         )
+        source = {
+            "model": "option"
+            if options.get("model_name")
+            else (
+                "env"
+                if os.getenv("REAL_ESRGAN_MODEL_X2" if scale == 2 else "REAL_ESRGAN_MODEL_X4")
+                else "default"
+            )
+        }
         tile_size = options.get("tile_size") if "tile_size" in options else None
+        source["tile"] = "option" if tile_size is not None else "default"
         if tile_size is None and os.getenv("REAL_ESRGAN_TILE_SIZE"):
             tile_size = int(os.environ["REAL_ESRGAN_TILE_SIZE"])
+            source["tile"] = "env"
         batch_size = options.get("batch_size")  # None = resolution-aware auto-detect
+        source["batch"] = "option" if batch_size is not None else "auto"
         if batch_size is None and os.getenv("REAL_ESRGAN_BATCH_SIZE"):
             batch_size = int(os.environ["REAL_ESRGAN_BATCH_SIZE"])
+            source["batch"] = "env"
+        if "half" in options:
+            source["half"] = "option"
+        else:
+            source["half"] = "env" if os.getenv("REAL_ESRGAN_HALF") else "default"
         half = options.get(
             "half",
             os.getenv("REAL_ESRGAN_HALF", "true").lower() not in ("0", "false", "no"),
@@ -115,7 +132,10 @@ class RealESRGANNativeWrapper(BaseProcessor):
 
         try:
             get_args = (scale, half, device, tile_size, batch_size)
-            get_kwargs: Dict[str, Any] = {"logger": self._logger}
+            get_kwargs: Dict[str, Any] = {
+                "logger": self._logger,
+                "settings_source": source,
+            }
             if model_name_override:
                 get_kwargs["model_name"] = model_name_override
             self._processor = get_upscaler(*get_args, **get_kwargs)
