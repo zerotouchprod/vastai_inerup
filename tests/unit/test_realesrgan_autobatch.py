@@ -24,6 +24,8 @@ def _clean(monkeypatch):
         "REAL_ESRGAN_MAX_BATCH_PIXELS",
     ):
         monkeypatch.delenv(k, raising=False)
+    # Auto-batch behaviour without measured profiles (see test_realesrgan_profiles.py).
+    monkeypatch.setenv("REAL_ESRGAN_PROFILES", "off")
     n.clear_safe_batches()
     yield
     n.clear_safe_batches()
@@ -128,9 +130,11 @@ def test_step_down_8_4_2_retries_same_frames_without_tiling(monkeypatch):
     assert [e["to_batch"] for e in p._oom_events] == [4, 2]
     assert n.safe_batch_snapshot() == [
         {
+            "scope": "-",
             "gpu": "RTX 4080",
             "model": "RealESRGAN_x2plus",
             "output_resolution": "2160x3840",
+            "half": True,
             "batch": 2,
             "tile": 0,
         }
