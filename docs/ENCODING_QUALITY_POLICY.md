@@ -30,3 +30,23 @@ The original output was preserved. On a 5-second 4K segment, CPU-only controls (
 These CPU controls are directional evidence only: they are not NVENC performance or final visual-quality certification. The local host has no NVIDIA runtime (`nvidia-smi` unavailable), so no NVENC re-encode was fabricated or run.
 
 For a 197.555-second source, linear size extrapolation is only a rough planning estimate; scene complexity and GOP structure can change the result materially.
+
+## Capped VBR (current default)
+
+`h264_nvenc` / `hevc_nvenc` now use capped VBR by default:
+`-preset p6 -tune hq -rc vbr -cq 24 -b:v 0 -maxrate 30M -bufsize 60M -spatial-aq 1 -g <2 s of frames>`
+(+ `-profile:v high` for H.264). Env knobs (empty = default):
+
+| Env | Default |
+|---|---|
+| `AIVIDUP_NVENC_RC_MODE` | `capped` (`legacy` = old `-preset p6 -cq <quality, default 23>`, no ceiling) |
+| `AIVIDUP_NVENC_PRESET` | `p6` |
+| `AIVIDUP_NVENC_CQ` | `24` (an explicit `quality=` argument wins) |
+| `AIVIDUP_NVENC_MAXRATE` / `AIVIDUP_NVENC_BUFSIZE` | `30M` / `60M` |
+| `AIVIDUP_NVENC_GOP_SECONDS` | `2` |
+| `AIVIDUP_NVENC_SPATIAL_AQ` | `1` |
+| `AIVIDUP_NVENC_PROFILE` | `high` (H.264 only) |
+
+All flags were validated against the image's ffmpeg 4.4.2 (Ubuntu 22.04): options parse, the run stops only at
+`Cannot load libcuda.so.1` on a GPU-less host. CPU reference (15 s 4K excerpt of an 80 Mbit/s output): x264 CRF 20
+gave -69 % size at VMAF 95.5 vs the original output.

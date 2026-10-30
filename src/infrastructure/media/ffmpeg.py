@@ -1,5 +1,6 @@
 """FFmpeg wrapper for video operations."""
 
+import os
 import subprocess
 from pathlib import Path
 from typing import List
@@ -8,6 +9,69 @@ from src.domain.exceptions import ExtractionError, AssemblyError
 from src.shared.logging import get_logger
 
 logger = get_logger(__name__)
+
+
+# NVENC rate control. "capped" (default): VBR at a constant-quality target with a
+# peak-bitrate ceiling, so complex 4K frames cannot inflate files to ~80 Mbit/s.
+# "legacy": the pre-cap behaviour (-preset p6 -cq <q>, no ceiling).
+NVENC_DEFAULTS = {
+    "AIVIDUP_NVENC_RC_MODE": "capped",
+    "AIVIDUP_NVENC_PRESET": "p6",
+    "AIVIDUP_NVENC_CQ": "24",
+    "AIVIDUP_NVENC_MAXRATE": "30M",
+    "AIVIDUP_NVENC_BUFSIZE": "60M",
+    "AIVIDUP_NVENC_GOP_SECONDS": "2",
+    "AIVIDUP_NVENC_SPATIAL_AQ": "1",
+    "AIVIDUP_NVENC_PROFILE": "high",
+}
+LEGACY_NVENC_CQ = 23
+
+
+def _clamp_cq(value) -> int:
+    return max(1, min(51, int(value)))
+
+
+def nvenc_encode_args(encoder: str, quality, fps: float, env=None) -> list[str]:
+    """Return ffmpeg args for h264_nvenc/hevc_nvenc according to env policy."""
+    env = os.environ if env is None else env
+
+    def get(key: str) -> str:
+        v = env.get(key)
+        return v.strip() if v and v.strip() else NVENC_DEFAULTS[key]
+
+    mode = get("AIVIDUP_NVENC_RC_MODE").lower()
+    preset = get("AIVIDUP_NVENC_PRESET")
+    if mode == "legacy":
+        q = LEGACY_NVENC_CQ if quality is None else quality
+        return ["-preset", preset, "-cq", str(_clamp_cq(q))]
+    if mode != "capped":
+        logger.warning(f"Unknown AIVIDUP_NVENC_RC_MODE={mode!r}; using capped")
+
+    q = get("AIVIDUP_NVENC_CQ") if quality is None else quality
+    gop = max(1, round(float(fps or 30) * float(get("AIVIDUP_NVENC_GOP_SECONDS"))))
+    args = [
+        "-preset",
+        preset,
+        "-tune",
+        "hq",
+        "-rc",
+        "vbr",
+        "-cq",
+        str(_clamp_cq(q)),
+        "-b:v",
+        "0",
+        "-maxrate",
+        get("AIVIDUP_NVENC_MAXRATE"),
+        "-bufsize",
+        get("AIVIDUP_NVENC_BUFSIZE"),
+        "-spatial-aq",
+        "1" if get("AIVIDUP_NVENC_SPATIAL_AQ") not in ("0", "false") else "0",
+        "-g",
+        str(gop),
+    ]
+    if encoder == "h264_nvenc":
+        args += ["-profile:v", get("AIVIDUP_NVENC_PROFILE")]
+    return args
 
 
 class FFmpegWrapper:
@@ -176,7 +240,7 @@ class FFmpegWrapper:
         encoder: str = "h264_nvenc",
         pix_fmt: str = "yuv420p",
         fallback_encoders: list = None,
-        quality: int = 23,
+        quality=None,
     ) -> Path:
         """
         Assemble video from frames with encoder fallback support.
@@ -250,8 +314,7 @@ class FFmpegWrapper:
 
             # Add encoder-specific options
             if enc in ("h264_nvenc", "hevc_nvenc"):
-                quality = max(1, min(51, int(quality)))
-                cmd.extend(["-preset", "p6", "-cq", str(quality)])
+                cmd.extend(nvenc_encode_args(enc, quality, fps))
             elif enc == "libx264":
                 cmd.extend(["-crf", "18", "-preset", "medium"])
             elif enc == "mpeg4":
@@ -294,7 +357,7 @@ class FFmpegWrapper:
                     f"[ASSEMBLY DEBUG] Actual duration: {actual_duration:.2f}s"
                 )
                 self._logger.info(
-                    f"[ASSEMBLY DEBUG] Duration ratio (actual/expected): {actual_duration/expected_duration:.2f}x"
+                    f"[ASSEMBLY DEBUG] Duration ratio (actual/expected): {actual_duration / expected_duration:.2f}x"
                 )
 
                 if abs(actual_duration - expected_duration) > 0.5:

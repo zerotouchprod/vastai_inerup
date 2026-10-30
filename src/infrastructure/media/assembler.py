@@ -53,7 +53,7 @@ class FFmpegAssembler:
         pattern = options.get("pattern", "frame_%06d.png")
         encoder = options.get("encoder", self._preferred_encoder)
         pix_fmt = options.get("pix_fmt", "yuv420p")
-        quality = options.get("quality", 23)
+        quality = options.get("quality")  # None -> env policy default
 
         self._logger.info(
             f"Assembling {len(frames)} frames at {fps} FPS with encoder: {encoder}"
