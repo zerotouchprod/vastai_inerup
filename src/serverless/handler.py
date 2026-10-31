@@ -256,7 +256,16 @@ def fetch_input(spec: Dict[str, Any], dst: Path, lost: threading.Event) -> None:
     else:
         from src.worker.processors import cut_chunk
 
-        cut_chunk(spec["input_url"], spec["start"], spec["duration"], dst, lost)
+        from src.serverless.boundary import padded_duration
+
+        # Interp modes: one-pad cut so the boundary pair with the next chunk's first frame is interpolated.
+        cut_chunk(
+            spec["input_url"],
+            spec["start"],
+            padded_duration(spec["mode"], spec["duration"]),
+            dst,
+            lost,
+        )
 
 
 def run_pipeline(
@@ -495,7 +504,7 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
                 spec, base["encoder"], job_id, Path(d), src, dst, stop, buf
             )
             timings.update(child.get("timings", {}))
-            for field in ("input_sha256", "input_duration_s"):
+            for field in ("input_sha256", "input_duration_s", "boundary"):
                 if field in child:
                     base[field] = child[field]
             if not dst.exists() or dst.stat().st_size == 0:

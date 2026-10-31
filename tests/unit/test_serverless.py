@@ -485,3 +485,150 @@ class _Keep:
 
     def __exit__(self, *a):
         return False
+
+
+# ---------- RIFE chunk-boundary frame accounting ----------
+
+from src.serverless import boundary as bd  # noqa: E402
+
+
+def _frames(p):
+    return bd._probe(p)["frames"]
+
+
+def _fake_rife(src, dst, factor=2):
+    """Frame-count stand-in for RIFE: n source frames -> factor*(n-1)+1 frames at factor x fps."""
+    info = bd._probe(src)
+    n = info["frames"]
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-v",
+            "error",
+            "-i",
+            str(src),
+            "-vf",
+            f"fps={info['fps'] * factor}",
+            "-frames:v",
+            str(factor * (n - 1) + 1),
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            str(dst),
+        ],
+        check=True,
+        capture_output=True,
+    )
+
+
+@pytest.fixture
+def source_3s(tmp_path):
+    p = tmp_path / "src.mp4"
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=160x90:rate=30:duration=3",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:duration=3",
+            "-shortest",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            str(p),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    return p
+
+
+def test_padded_duration_only_for_interp_modes():
+    assert bd.padded_duration("both", 10.0) == 10.0 + bd.PAD_S
+    assert bd.padded_duration("interp", 10.0) == 10.0 + bd.PAD_S
+    assert bd.padded_duration("upscale", 10.0) == 10.0
+    assert bd.PAD_S > 1 / 24
+
+
+def test_chunked_interp_keeps_every_frame_across_boundaries(source_3s, tmp_path):
+    """3 x 1 s chunks of a 30 fps source at 2x must give 3 x 60 = 180 frames (old behaviour: 3 x 59 = 177)."""
+    from src.worker.processors import cut_chunk
+
+    total = 0
+    for i in range(3):
+        cut = tmp_path / f"cut{i}.mp4"
+        out = tmp_path / f"out{i}.mp4"
+        cut_chunk(str(source_3s), float(i), bd.padded_duration("both", 1.0), cut, None)
+        _fake_rife(cut, out)
+        rep = bd.normalize_frames(out, 1.0)
+        assert rep["frames_after"] == 60, rep
+        total += _frames(out)
+    assert total == 180
+
+
+def test_unpadded_chunks_reproduce_the_old_frame_loss(source_3s, tmp_path):
+    from src.worker.processors import cut_chunk
+
+    cut, out = tmp_path / "c.mp4", tmp_path / "o.mp4"
+    cut_chunk(str(source_3s), 0.0, 1.0, cut, None)
+    _fake_rife(cut, out)
+    assert _frames(out) == 59
+
+
+def test_final_chunk_without_next_frame_is_padded_by_cloning(source_3s, tmp_path):
+    from src.worker.processors import cut_chunk
+
+    cut, out = tmp_path / "c.mp4", tmp_path / "o.mp4"
+    cut_chunk(
+        str(source_3s), 2.0, bd.padded_duration("interp", 1.0), cut, None
+    )  # pad runs past the end
+    _fake_rife(cut, out)
+    rep = bd.normalize_frames(out, 1.0)
+    assert rep["frames_before"] == 59 and rep["frames_after"] == 60
+
+
+def test_normalize_without_audio_stream_and_noop_when_exact(tmp_path):
+    p = tmp_path / "v.mp4"
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=64x64:rate=60:duration=1",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-pix_fmt",
+            "yuv420p",
+            str(p),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    before = p.read_bytes()
+    assert bd.normalize_frames(p, 1.0)["frames_after"] == 60
+    assert p.read_bytes() == before  # already exact: untouched
+    assert bd.normalize_frames(p, 0.5)["frames_after"] == 30
