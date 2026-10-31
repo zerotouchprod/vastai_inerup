@@ -501,10 +501,29 @@ def _fake_rife(src, dst, factor=2):
     info = bd._probe(src)
     n = info["frames"]
     subprocess.run(
-        ["ffmpeg", "-y", "-v", "error", "-i", str(src), "-vf", f"fps={info['fps'] * factor}",
-         "-frames:v", str(factor * (n - 1) + 1), "-c:v", "libx264", "-preset", "ultrafast",
-         "-pix_fmt", "yuv420p", "-c:a", "aac", str(dst)],
-        check=True, capture_output=True,
+        [
+            "ffmpeg",
+            "-y",
+            "-v",
+            "error",
+            "-i",
+            str(src),
+            "-vf",
+            f"fps={info['fps'] * factor}",
+            "-frames:v",
+            str(factor * (n - 1) + 1),
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            str(dst),
+        ],
+        check=True,
+        capture_output=True,
     )
 
 
@@ -512,10 +531,32 @@ def _fake_rife(src, dst, factor=2):
 def source_3s(tmp_path):
     p = tmp_path / "src.mp4"
     subprocess.run(
-        ["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "testsrc2=size=160x90:rate=30:duration=3",
-         "-f", "lavfi", "-i", "sine=frequency=440:duration=3", "-shortest", "-c:v", "libx264",
-         "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "aac", str(p)],
-        check=True, capture_output=True,
+        [
+            "ffmpeg",
+            "-y",
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=160x90:rate=30:duration=3",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:duration=3",
+            "-shortest",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            str(p),
+        ],
+        check=True,
+        capture_output=True,
     )
     return p
 
@@ -556,7 +597,9 @@ def test_final_chunk_without_next_frame_is_padded_by_cloning(source_3s, tmp_path
     from src.worker.processors import cut_chunk
 
     cut, out = tmp_path / "c.mp4", tmp_path / "o.mp4"
-    cut_chunk(str(source_3s), 2.0, bd.padded_duration("interp", 1.0), cut, None)  # pad runs past the end
+    cut_chunk(
+        str(source_3s), 2.0, bd.padded_duration("interp", 1.0), cut, None
+    )  # pad runs past the end
     _fake_rife(cut, out)
     rep = bd.normalize_frames(out, 1.0)
     assert rep["frames_before"] == 59 and rep["frames_after"] == 60
@@ -565,9 +608,25 @@ def test_final_chunk_without_next_frame_is_padded_by_cloning(source_3s, tmp_path
 def test_normalize_without_audio_stream_and_noop_when_exact(tmp_path):
     p = tmp_path / "v.mp4"
     subprocess.run(
-        ["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "testsrc2=size=64x64:rate=60:duration=1",
-         "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", str(p)],
-        check=True, capture_output=True,
+        [
+            "ffmpeg",
+            "-y",
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=64x64:rate=60:duration=1",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-pix_fmt",
+            "yuv420p",
+            str(p),
+        ],
+        check=True,
+        capture_output=True,
     )
     before = p.read_bytes()
     assert bd.normalize_frames(p, 1.0)["frames_after"] == 60

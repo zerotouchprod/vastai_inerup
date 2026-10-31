@@ -76,7 +76,11 @@ def main(spec_path: str) -> int:
     boundary = None
     from src.serverless.boundary import needs_boundary_fix, normalize_frames
 
-    if needs_boundary_fix(spec["mode"]) and not spec.get("input_b64") and spec["input_url"] != "lavfi":
+    if (
+        needs_boundary_fix(spec["mode"])
+        and not spec.get("input_b64")
+        and spec["input_url"] != "lavfi"
+    ):
         t = time.monotonic()
         from src.worker.processors import run_cmd
 

@@ -37,13 +37,29 @@ def expected_frames(duration: float, fps: float) -> int:
 def _probe(path: Path, run: Callable = subprocess.run) -> dict:
     r = run(
         [
-            "ffprobe", "-v", "error", "-select_streams", "v:0", "-count_packets",
-            "-show_entries", "stream=nb_read_packets,avg_frame_rate", "-of", "json", str(path),
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-count_packets",
+            "-show_entries",
+            "stream=nb_read_packets,avg_frame_rate",
+            "-of",
+            "json",
+            str(path),
         ],
-        capture_output=True, text=True, timeout=60, check=True,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=True,
     )
     s = (json.loads(r.stdout or "{}").get("streams") or [{}])[0]
-    fps = float(Fraction(s.get("avg_frame_rate") or "0/1")) if s.get("avg_frame_rate") not in (None, "0/0") else 0.0
+    fps = (
+        float(Fraction(s.get("avg_frame_rate") or "0/1"))
+        if s.get("avg_frame_rate") not in (None, "0/0")
+        else 0.0
+    )
     return {"frames": int(s.get("nb_read_packets", 0) or 0), "fps": fps}
 
 
@@ -59,7 +75,11 @@ def normalize_frames(
     if info["fps"] <= 0:
         raise RuntimeError("cannot normalize chunk frames: output fps unknown")
     want = expected_frames(duration, info["fps"])
-    report = {"frames_before": info["frames"], "frames_expected": want, "output_fps": round(info["fps"], 3)}
+    report = {
+        "frames_before": info["frames"],
+        "frames_expected": want,
+        "output_fps": round(info["fps"], 3),
+    }
     if info["frames"] == want:
         report["frames_after"] = want
         return report
@@ -67,11 +87,31 @@ def normalize_frames(
     tmp = dst.with_name(dst.stem + ".norm" + dst.suffix)
     vf = f"tpad=stop_mode=clone:stop={short}" if short else "null"
     cmd = [
-        "ffmpeg", "-y", "-v", "error", "-i", str(dst),
-        "-vf", vf, "-frames:v", str(want),
-        "-af", f"apad,atrim=0:{duration:.6f}",
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "12", "-pix_fmt", "yuv420p",
-        "-c:a", "aac", "-movflags", "+faststart", str(tmp),
+        "ffmpeg",
+        "-y",
+        "-v",
+        "error",
+        "-i",
+        str(dst),
+        "-vf",
+        vf,
+        "-frames:v",
+        str(want),
+        "-af",
+        f"apad,atrim=0:{duration:.6f}",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-crf",
+        "12",
+        "-pix_fmt",
+        "yuv420p",
+        "-c:a",
+        "aac",
+        "-movflags",
+        "+faststart",
+        str(tmp),
     ]
     if run_cmd is not None:
         run_cmd(cmd, lost)
