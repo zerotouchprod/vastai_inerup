@@ -20,6 +20,7 @@ import logging
 # Try to import torch
 try:
     import torch
+
     TORCH_AVAILABLE = True
 except ImportError:
     # Ensure name exists even if torch not installed (helps static checks)
@@ -39,8 +40,8 @@ class RIFENative:
         factor: float = 2.0,
         model_path: Optional[Path] = None,
         scale: float = 1.0,
-        device: str = 'cuda',
-        logger: Optional[logging.Logger] = None
+        device: str = "cuda",
+        logger: Optional[logging.Logger] = None,
     ):
         """
         Initialize RIFE processor.
@@ -73,15 +74,17 @@ class RIFENative:
         The code is loaded from external/RIFE.
         """
         possible_paths = [
-            Path('/opt/rife_models/train_log'),  # Docker container preinstalled models (PRIORITY!)
-            Path('/workspace/project/RIFEv4.26_0921'),  # Preinstalled weights
-            Path('/workspace/project/external/RIFE/train_log'),  # Cloned repo weights
-            Path('RIFEv4.26_0921'),  # Local dev
-            Path('external/RIFE/train_log'),  # Local dev
+            Path(
+                "/opt/rife_models/train_log"
+            ),  # Docker container preinstalled models (PRIORITY!)
+            Path("/workspace/project/RIFEv4.26_0921"),  # Preinstalled weights
+            Path("/workspace/project/external/RIFE/train_log"),  # Cloned repo weights
+            Path("RIFEv4.26_0921"),  # Local dev
+            Path("external/RIFE/train_log"),  # Local dev
         ]
 
         for path in possible_paths:
-            if path.exists() and list(path.glob('*.pkl')):  # Check for .pkl files
+            if path.exists() and list(path.glob("*.pkl")):  # Check for .pkl files
                 self.logger.info(f"Found RIFE model weights: {path}")
                 return path
 
@@ -103,24 +106,25 @@ class RIFENative:
             self.logger.info(f"Added {rife_root} to sys.path")
 
         # Check if RIFE_HDv3.py was copied to root (done by remote_runner.sh)
-        rife_hdv3_root = rife_repo_path / 'RIFE_HDv3.py'
+        rife_hdv3_root = rife_repo_path / "RIFE_HDv3.py"
         if rife_hdv3_root.exists():
             self.logger.info(f"✓ Found RIFE_HDv3.py in root: {rife_hdv3_root}")
             # Also copy warplayer.py if needed
-            warplayer_root = rife_repo_path / 'warplayer.py'
-            warplayer_model = rife_repo_path / 'model' / 'warplayer.py'
+            warplayer_root = rife_repo_path / "warplayer.py"
+            warplayer_model = rife_repo_path / "model" / "warplayer.py"
             if not warplayer_root.exists() and warplayer_model.exists():
                 import shutil
+
                 shutil.copy(warplayer_model, warplayer_root)
                 self.logger.info(f"Copied warplayer.py to root")
 
         # Find model directory
-        model_dir = rife_repo_path / 'model'
+        model_dir = rife_repo_path / "model"
         if model_dir.exists():
             self.logger.info(f"Setting up model package from {model_dir}")
 
             # Create __init__.py in model/ if it doesn't exist (for Python package)
-            init_file = model_dir / '__init__.py'
+            init_file = model_dir / "__init__.py"
             if not init_file.exists():
                 init_file.write_text("# RIFE model package\n")
                 self.logger.info(f"Created {init_file}")
@@ -129,21 +133,26 @@ class RIFENative:
             try:
                 # Force reload if already imported
                 import importlib
-                if 'model' in sys.modules:
-                    importlib.reload(sys.modules['model'])
-                if 'model.warplayer' in sys.modules:
-                    importlib.reload(sys.modules['model.warplayer'])
+
+                if "model" in sys.modules:
+                    importlib.reload(sys.modules["model"])
+                if "model.warplayer" in sys.modules:
+                    importlib.reload(sys.modules["model.warplayer"])
 
                 # Now try importing
                 import model
                 import model.warplayer
+
                 self.logger.info("✓ model.warplayer loaded successfully")
             except ImportError as e:
-                self.logger.warning(f"Could not import model.warplayer from model/: {e}")
+                self.logger.warning(
+                    f"Could not import model.warplayer from model/: {e}"
+                )
                 # Try to copy files to root as fallback
                 try:
                     import shutil
-                    for f in ['warplayer.py', 'IFNet_HDv3.py']:
+
+                    for f in ["warplayer.py", "IFNet_HDv3.py"]:
                         src = model_dir / f
                         dst = rife_repo_path / f
                         if src.exists() and not dst.exists():
@@ -152,7 +161,9 @@ class RIFENative:
                 except Exception as copy_err:
                     self.logger.warning(f"Fallback copy failed: {copy_err}")
         else:
-            self.logger.warning(f"model/ directory not found in {rife_repo_path}, will try root files")
+            self.logger.warning(
+                f"model/ directory not found in {rife_repo_path}, will try root files"
+            )
 
     def _check_cuda_compatibility(self) -> str:
         """
@@ -161,7 +172,7 @@ class RIFENative:
         """
         if not torch.cuda.is_available():
             self.logger.warning("CUDA not available, using CPU")
-            return torch.device('cpu')
+            return torch.device("cpu")
 
         try:
             # Get GPU compute capability
@@ -169,26 +180,28 @@ class RIFENative:
             compute_capability = f"sm_{device_props.major}{device_props.minor}"
 
             # Try a simple CUDA operation to test compatibility
-            test_tensor = torch.randn(10, 10).to('cuda:0')
+            test_tensor = torch.randn(10, 10).to("cuda:0")
             _ = test_tensor * 2
 
-            self.logger.info(f"CUDA is available and compatible: {device_props.name} ({compute_capability})")
-            return torch.device('cuda:0')
+            self.logger.info(
+                f"CUDA is available and compatible: {device_props.name} ({compute_capability})"
+            )
+            return torch.device("cuda:0")
 
         except RuntimeError as e:
             if "no kernel image is available" in str(e) or "not compatible" in str(e):
                 self.logger.warning(f"CUDA device not compatible with PyTorch: {e}")
                 self.logger.warning("Falling back to CPU processing (will be slower)")
-                return torch.device('cpu')
+                return torch.device("cpu")
             raise
 
     def _move_model_to_device(self, model, target_device) -> None:
         """
         Robustly move model parameters and buffers to target device.
-        
+
         Handles nested modules and custom model structures that might not
         have standard .to() method or .parameters()/.buffers() attributes.
-        
+
         Args:
             model: The model to move
             target_device: Target device (torch.device or convertible to str)
@@ -199,25 +212,27 @@ class RIFENative:
                 try:
                     target_device = torch.device(str(target_device))
                 except Exception:
-                    target_device = torch.device('cpu')
-        
+                    target_device = torch.device("cpu")
+
         self.logger.info(f"Moving model to device: {target_device}")
-        
+
         # Try standard .to() method first
-        if hasattr(model, 'to') and callable(getattr(model, 'to')):
+        if hasattr(model, "to") and callable(getattr(model, "to")):
             try:
                 model.to(target_device)
                 self.logger.debug(f"Successfully used model.to({target_device})")
                 return
             except Exception as e:
-                self.logger.debug(f"model.to() failed: {e}, falling back to manual movement")
-        
+                self.logger.debug(
+                    f"model.to() failed: {e}, falling back to manual movement"
+                )
+
         # Manual movement for parameters and buffers
         moved_params = 0
         moved_buffers = 0
-        
+
         # Check if model has named_modules (standard torch.nn.Module)
-        if hasattr(model, 'named_modules'):
+        if hasattr(model, "named_modules"):
             # Recursively move all parameters
             def move_parameters(module):
                 nonlocal moved_params
@@ -228,7 +243,7 @@ class RIFENative:
                             moved_params += 1
                         except Exception as e:
                             self.logger.warning(f"Failed to move parameter {name}: {e}")
-            
+
             # Recursively move all buffers
             def move_buffers(module):
                 nonlocal moved_buffers
@@ -239,17 +254,19 @@ class RIFENative:
                             moved_buffers += 1
                         except Exception as e:
                             self.logger.warning(f"Failed to move buffer {name}: {e}")
-            
+
             # Apply recursively to all submodules
             for module_name, module in model.named_modules():
                 move_parameters(module)
                 move_buffers(module)
         else:
             # Model doesn't have named_modules - try to move parameters and buffers directly
-            self.logger.debug("Model doesn't have named_modules, trying direct parameter/buffer access")
-            
+            self.logger.debug(
+                "Model doesn't have named_modules, trying direct parameter/buffer access"
+            )
+
             # Try to move parameters if model has parameters() method
-            if hasattr(model, 'parameters') and callable(getattr(model, 'parameters')):
+            if hasattr(model, "parameters") and callable(getattr(model, "parameters")):
                 try:
                     for param in model.parameters():
                         if param is not None:
@@ -257,9 +274,9 @@ class RIFENative:
                             moved_params += 1
                 except Exception as e:
                     self.logger.warning(f"Failed to move parameters: {e}")
-            
+
             # Try to move buffers if model has buffers() method
-            if hasattr(model, 'buffers') and callable(getattr(model, 'buffers')):
+            if hasattr(model, "buffers") and callable(getattr(model, "buffers")):
                 try:
                     for buf in model.buffers():
                         if buf is not None:
@@ -267,13 +284,15 @@ class RIFENative:
                             moved_buffers += 1
                 except Exception as e:
                     self.logger.warning(f"Failed to move buffers: {e}")
-        
-        self.logger.info(f"Moved {moved_params} parameters and {moved_buffers} buffers to {target_device}")
-    
+
+        self.logger.info(
+            f"Moved {moved_params} parameters and {moved_buffers} buffers to {target_device}"
+        )
+
     def _verify_model_device(self, model, expected_device) -> bool:
         """
         Verify that all model parameters are on the expected device.
-        
+
         Returns:
             True if all parameters are on expected device, False otherwise
         """
@@ -283,31 +302,35 @@ class RIFENative:
                 try:
                     expected_device = torch.device(str(expected_device))
                 except Exception:
-                    expected_device = torch.device('cpu')
-        
+                    expected_device = torch.device("cpu")
+
         mismatched = []
-        
+
         # Check if model has named_parameters (standard torch.nn.Module)
-        if hasattr(model, 'named_parameters'):
+        if hasattr(model, "named_parameters"):
             for name, param in model.named_parameters():
                 if param.device != expected_device:
                     mismatched.append((name, param.device))
-        elif hasattr(model, 'parameters') and callable(getattr(model, 'parameters')):
+        elif hasattr(model, "parameters") and callable(getattr(model, "parameters")):
             # Model doesn't have named_parameters, but has parameters()
             for i, param in enumerate(model.parameters()):
                 if param.device != expected_device:
                     mismatched.append((f"param_{i}", param.device))
         else:
             # Cannot verify parameters
-            self.logger.warning("Cannot verify model device: model has no named_parameters or parameters method")
+            self.logger.warning(
+                "Cannot verify model device: model has no named_parameters or parameters method"
+            )
             return True  # Assume OK
-        
+
         if mismatched:
-            self.logger.error(f"Model device mismatch: {len(mismatched)} parameters on wrong device")
+            self.logger.error(
+                f"Model device mismatch: {len(mismatched)} parameters on wrong device"
+            )
             for name, dev in mismatched[:5]:  # Show first 5 mismatches
                 self.logger.error(f"  {name}: expected {expected_device}, got {dev}")
             return False
-        
+
         self.logger.debug(f"All model parameters verified on device: {expected_device}")
         return True
 
@@ -326,20 +349,24 @@ class RIFENative:
             try:
                 self.device = torch.device(str(self.device))
             except Exception:
-                self.device = torch.device('cpu')
+                self.device = torch.device("cpu")
 
-        if self.device.type == 'cpu':
-            self.logger.warning("⚠️ Using CPU for RIFE - processing will be much slower!")
+        if self.device.type == "cpu":
+            self.logger.warning(
+                "⚠️ Using CPU for RIFE - processing will be much slower!"
+            )
 
         self.logger.info(f"Loading RIFE model (weights from: {self.model_path})")
 
         # Find RIFE repository - prioritize preinstalled RIFE over cloned repo
         rife_repo_paths = [
-            Path('/workspace/project/RIFEv4.26_0921'),  # Preinstalled RIFE (priority!)
-            Path('RIFEv4.26_0921'),  # Local dev preinstalled
-            Path('/workspace/project/external/RIFE'),  # Cloned repo
-            Path('external/RIFE'),  # Local dev cloned
-            Path(__file__).parent.parent.parent.parent.parent / 'external' / 'RIFE',  # From src/
+            Path("/workspace/project/RIFEv4.26_0921"),  # Preinstalled RIFE (priority!)
+            Path("RIFEv4.26_0921"),  # Local dev preinstalled
+            Path("/workspace/project/external/RIFE"),  # Cloned repo
+            Path("external/RIFE"),  # Local dev cloned
+            Path(__file__).parent.parent.parent.parent.parent
+            / "external"
+            / "RIFE",  # From src/
         ]
 
         rife_repo_path = None
@@ -347,10 +374,11 @@ class RIFENative:
             # Check if this path has the actual RIFE code (not just empty model/__init__.py)
             if path and path.exists():
                 # Check for train_log directory (contains actual RIFE implementation)
-                has_train_log = (path / 'train_log').exists()
+                has_train_log = (path / "train_log").exists()
                 # Or check for model/RIFE_HDv3.py or model/RIFE.py
-                has_model_code = (path / 'model' / 'RIFE_HDv3.py').exists() or \
-                                 (path / 'model' / 'RIFE.py').exists()
+                has_model_code = (path / "model" / "RIFE_HDv3.py").exists() or (
+                    path / "model" / "RIFE.py"
+                ).exists()
 
                 if has_train_log or has_model_code:
                     rife_repo_path = path
@@ -368,11 +396,27 @@ class RIFENative:
         # Find RIFE_HDv3.py or model/RIFE.py
         # Priority: root (copied by remote_runner.sh) -> model/ -> train_log/
         model_class_paths = [
-            (rife_repo_path / 'RIFE_HDv3.py', 'RIFE_HDv3_root', 'Model'),  # Copied to root by remote_runner.sh (PRIORITY!)
-            (rife_repo_path / 'model' / 'RIFE_HDv3.py', 'RIFE_HDv3_model', 'Model'),  # v4.6 (model dir)
-            (rife_repo_path / 'train_log' / 'RIFE_HDv3.py', 'RIFE_HDv3_train', 'Model'),  # v4.6+ (train_log)
-            (rife_repo_path / 'model' / 'RIFE.py', 'RIFE_model', 'Model'),  # v4.x
-            (rife_repo_path / 'train_log' / 'RIFE_HD.py', 'RIFE_HD', 'Model'),  # Older version
+            (
+                rife_repo_path / "RIFE_HDv3.py",
+                "RIFE_HDv3_root",
+                "Model",
+            ),  # Copied to root by remote_runner.sh (PRIORITY!)
+            (
+                rife_repo_path / "model" / "RIFE_HDv3.py",
+                "RIFE_HDv3_model",
+                "Model",
+            ),  # v4.6 (model dir)
+            (
+                rife_repo_path / "train_log" / "RIFE_HDv3.py",
+                "RIFE_HDv3_train",
+                "Model",
+            ),  # v4.6+ (train_log)
+            (rife_repo_path / "model" / "RIFE.py", "RIFE_model", "Model"),  # v4.x
+            (
+                rife_repo_path / "train_log" / "RIFE_HD.py",
+                "RIFE_HD",
+                "Model",
+            ),  # Older version
         ]
 
         model_class = None
@@ -386,6 +430,7 @@ class RIFENative:
             try:
                 # Import the module
                 import importlib.util
+
                 spec = importlib.util.spec_from_file_location(module_name, model_file)
                 if spec is None or spec.loader is None:
                     self.logger.warning(f"Could not create spec for {model_file}")
@@ -398,15 +443,20 @@ class RIFENative:
                 # Get the Model class
                 if hasattr(module, class_name):
                     model_class = getattr(module, class_name)
-                    self.logger.info(f"✓ Successfully loaded {module_name}.{class_name} from {model_file}")
+                    self.logger.info(
+                        f"✓ Successfully loaded {module_name}.{class_name} from {model_file}"
+                    )
                     break
                 else:
-                    self.logger.warning(f"Module {module_name} does not have {class_name} class")
+                    self.logger.warning(
+                        f"Module {module_name} does not have {class_name} class"
+                    )
 
             except Exception as e:
                 last_error = e
                 self.logger.warning(f"Failed to load {model_file}: {e}")
                 import traceback
+
                 self.logger.debug(traceback.format_exc())
                 continue
 
@@ -423,9 +473,9 @@ class RIFENative:
 
             # Load model weights
             weights_path = self.model_path
-            if not (weights_path / 'flownet.pkl').exists():
+            if not (weights_path / "flownet.pkl").exists():
                 # If model_path doesn't have pkl files directly, check parent
-                if (weights_path.parent / 'flownet.pkl').exists():
+                if (weights_path.parent / "flownet.pkl").exists():
                     weights_path = weights_path.parent
 
             self.logger.info(f"Loading model weights from {weights_path}")
@@ -435,16 +485,22 @@ class RIFENative:
 
             # --- Ensure model parameters/buffers are on the selected device ---
             try:
-                target_dev = getattr(self, 'model_device', None) or self.device
-                target_dev = torch.device(str(target_dev)) if torch and not isinstance(target_dev, torch.device) else target_dev
-                
+                target_dev = getattr(self, "model_device", None) or self.device
+                target_dev = (
+                    torch.device(str(target_dev))
+                    if torch and not isinstance(target_dev, torch.device)
+                    else target_dev
+                )
+
                 # Use robust model movement
                 self._move_model_to_device(self._model, target_dev)
-                
+
                 # Verify all parameters are on the correct device
                 if not self._verify_model_device(self._model, target_dev):
-                    self.logger.warning("Some model parameters may not be on the target device")
-                
+                    self.logger.warning(
+                        "Some model parameters may not be on the target device"
+                    )
+
                 # Set model_device based on actual parameter device
                 try:
                     # Get device from first parameter
@@ -454,14 +510,20 @@ class RIFENative:
                     else:
                         model_dev = target_dev
                     self.model_device = torch.device(str(model_dev))
-                    self.logger.info(f"Model parameters confirmed on device: {self.model_device}")
-                    
+                    self.logger.info(
+                        f"Model parameters confirmed on device: {self.model_device}"
+                    )
+
                     # Log detailed device info for debugging (especially for RTX 5070)
                     if torch.cuda.is_available():
                         device_props = torch.cuda.get_device_properties(0)
-                        compute_capability = f"sm_{device_props.major}{device_props.minor}"
-                        self.logger.info(f"GPU: {device_props.name} (Compute: {compute_capability}, VRAM: {device_props.total_memory / 1e9:.1f} GB)")
-                        
+                        compute_capability = (
+                            f"sm_{device_props.major}{device_props.minor}"
+                        )
+                        self.logger.info(
+                            f"GPU: {device_props.name} (Compute: {compute_capability}, VRAM: {device_props.total_memory / 1e9:.1f} GB)"
+                        )
+
                 except Exception as e:
                     self.logger.warning(f"Could not determine model device: {e}")
                     self.model_device = target_dev
@@ -484,7 +546,7 @@ class RIFENative:
         # factor 2 -> 1 mid, factor 4 -> 3 mids, etc.
         return max(1, int(self.factor) - 1)
 
-    def _pad_to_multiple(self, tensor: 'torch.Tensor', multiple: int = 64) -> tuple:
+    def _pad_to_multiple(self, tensor: "torch.Tensor", multiple: int = 64) -> tuple:
         """
         Pad tensor to multiple of given size.
 
@@ -504,17 +566,18 @@ class RIFENative:
 
         if pad[1] != 0 or pad[3] != 0:
             import torch.nn.functional as F
+
             tensor = F.pad(tensor, pad)
 
         return tensor, h, w
 
     def _interpolate_pair(
         self,
-        frame1: 'torch.Tensor',
-        frame2: 'torch.Tensor',
+        frame1: "torch.Tensor",
+        frame2: "torch.Tensor",
         mids_count: int,
-        timesteps: Optional[List[float]] = None
-    ) -> List['torch.Tensor']:
+        timesteps: Optional[List[float]] = None,
+    ) -> List["torch.Tensor"]:
         """
         Interpolate between two frames.
 
@@ -531,17 +594,19 @@ class RIFENative:
         _, _, orig_h, orig_w = frame1.shape
 
         # Determine target device for inference (prefer model_device if set)
-        model_dev = getattr(self, 'model_device', None) or self.device
+        model_dev = getattr(self, "model_device", None) or self.device
         try:
             model_dev = torch.device(str(model_dev))
         except Exception:
-            model_dev = torch.device('cpu')
+            model_dev = torch.device("cpu")
 
         # --- FIX: ensure inputs are on the same device as the model parameters ---
         # Log device info for debugging (especially for RTX 5070)
-        self.logger.debug(f"Input tensor devices - frame1: {frame1.device}, frame2: {frame2.device}")
+        self.logger.debug(
+            f"Input tensor devices - frame1: {frame1.device}, frame2: {frame2.device}"
+        )
         self.logger.debug(f"Target model device: {model_dev}")
-        
+
         # Move input tensors to model device before any ops (use non_blocking when possible)
         try:
             if frame1.device != model_dev:
@@ -556,37 +621,47 @@ class RIFENative:
                     frame2 = frame2.to(model_dev, non_blocking=True)
                 except Exception:
                     frame2 = frame2.to(model_dev)
-                    
+
             # Verify movement succeeded
             if frame1.device != model_dev or frame2.device != model_dev:
-                self.logger.warning(f"Tensor device mismatch after movement: frame1={frame1.device}, frame2={frame2.device}, expected={model_dev}")
-                
+                self.logger.warning(
+                    f"Tensor device mismatch after movement: frame1={frame1.device}, frame2={frame2.device}, expected={model_dev}"
+                )
+
         except Exception as e:
             # If moving tensors fails, log devices and re-raise with context
-            self.logger.error(f"Failed to move input tensors to device {model_dev}: {e}")
-            self.logger.error(f"frame1.device={getattr(frame1, 'device', 'unknown')}, frame2.device={getattr(frame2, 'device', 'unknown')}")
-            
+            self.logger.error(
+                f"Failed to move input tensors to device {model_dev}: {e}"
+            )
+            self.logger.error(
+                f"frame1.device={getattr(frame1, 'device', 'unknown')}, frame2.device={getattr(frame2, 'device', 'unknown')}"
+            )
+
             # Log model parameter devices for additional context
             try:
                 param_devices = set(str(p.device) for p in self._model.parameters())
                 self.logger.error(f"Model parameter devices: {param_devices}")
             except Exception:
                 pass
-                
+
             raise
 
         # Pad to multiples of 64 (RIFE model requirement)
         frame1_padded, _, _ = self._pad_to_multiple(frame1, 64)
         frame2_padded, _, _ = self._pad_to_multiple(frame2, 64)
 
-        mids: List['torch.Tensor'] = []
+        mids: List["torch.Tensor"] = []
 
         with torch.no_grad():
             if timesteps is not None:
                 mids_count = len(timesteps)
             for i in range(mids_count):
                 # Calculate timestep
-                timestep = timesteps[i] if timesteps is not None else (i + 1) / (mids_count + 1)
+                timestep = (
+                    timesteps[i]
+                    if timesteps is not None
+                    else (i + 1) / (mids_count + 1)
+                )
 
                 # Log debug info about device placement before inference
                 try:
@@ -594,11 +669,16 @@ class RIFENative:
                     for p in self._model.parameters():
                         model_param_devices.add(str(p.device))
                 except Exception:
-                    model_param_devices = {str(getattr(self, 'model_device', 'unknown'))}
+                    model_param_devices = {
+                        str(getattr(self, "model_device", "unknown"))
+                    }
 
                 self.logger.debug(
                     "Calling RIFE inference: timestep=%s frame1.device=%s frame2.device=%s model_param_devices=%s",
-                    timestep, getattr(frame1_padded, 'device', 'unknown'), getattr(frame2_padded, 'device', 'unknown'), model_param_devices
+                    timestep,
+                    getattr(frame1_padded, "device", "unknown"),
+                    getattr(frame2_padded, "device", "unknown"),
+                    model_param_devices,
                 )
 
                 # Interpolate
@@ -611,12 +691,15 @@ class RIFENative:
                         for p in self._model.parameters():
                             model_param_devices.add(str(p.device))
                     except Exception:
-                        model_param_devices.add('unknown')
+                        model_param_devices.add("unknown")
 
                     # Log detailed device mismatch info
                     self.logger.error(
                         "RuntimeError during RIFE inference: %s | frame1.device=%s frame2.device=%s model_param_devices=%s",
-                        e, getattr(frame1, 'device', 'unknown'), getattr(frame2, 'device', 'unknown'), model_param_devices
+                        e,
+                        getattr(frame1, "device", "unknown"),
+                        getattr(frame2, "device", "unknown"),
+                        model_param_devices,
                     )
                     raise
 
@@ -627,13 +710,15 @@ class RIFENative:
 
         return mids
 
-    def _load_frame_as_tensor(self, frame_path: Path) -> 'torch.Tensor':
+    def _load_frame_as_tensor(self, frame_path: Path) -> "torch.Tensor":
         """Load image file as torch tensor."""
         try:
             import cv2
             import numpy as np
         except ImportError as e:
-            raise ImportError("opencv-python not found. Install: pip install opencv-python") from e
+            raise ImportError(
+                "opencv-python not found. Install: pip install opencv-python"
+            ) from e
 
         img = cv2.imread(str(frame_path))
         if img is None:
@@ -646,22 +731,24 @@ class RIFENative:
         img = torch.from_numpy(img).permute(2, 0, 1).unsqueeze(0).float() / 255.0
 
         # Move to device (prefer model_device if available)
-        target_dev = getattr(self, 'model_device', None) or self.device
+        target_dev = getattr(self, "model_device", None) or self.device
         try:
             target_dev = torch.device(str(target_dev))
         except Exception:
-            target_dev = torch.device('cpu')
+            target_dev = torch.device("cpu")
         img = img.to(target_dev)
 
         return img
 
-    def _save_tensor_as_frame(self, tensor: 'torch.Tensor', output_path: Path):
+    def _save_tensor_as_frame(self, tensor: "torch.Tensor", output_path: Path):
         """Save torch tensor as image file."""
         try:
             import cv2
             import numpy as np
         except ImportError as e:
-            raise ImportError("opencv-python not found. Install: pip install opencv-python") from e
+            raise ImportError(
+                "opencv-python not found. Install: pip install opencv-python"
+            ) from e
 
         # Tensor is [1, 3, H, W], convert to [H, W, 3]
         img = tensor.squeeze(0).permute(1, 2, 0).cpu().numpy()
@@ -731,12 +818,21 @@ class RIFENative:
                     except (OSError, NotImplementedError):
                         # Fall back to copy if symlink not supported
                         import shutil
+
                         shutil.copy2(frame1_path, orig_output_path)
                 output_frames.append(orig_output_path)
                 frame_counter += 1
 
-                # Generate intermediate frames
-                mids = self._interpolate_pair(frame1, frame2, mids_per_pair)
+                # Generate intermediate frames. On a hard cut, hold frame1 instead of morphing.
+                from src.shared.scene_cut import is_scene_cut
+
+                if is_scene_cut(frame1_path, frame2_path):
+                    self.logger.info(
+                        f"Scene cut between pair {idx+1}/{total_pairs}: holding frame instead of interpolating"
+                    )
+                    mids = [frame1] * mids_per_pair
+                else:
+                    mids = self._interpolate_pair(frame1, frame2, mids_per_pair)
 
                 # Save intermediate frames with sequential numbering
                 for mid_idx, mid in enumerate(mids, 1):
@@ -773,8 +869,22 @@ class RIFENative:
                 last_output_path.symlink_to(last_frame_path.absolute())
             except (OSError, NotImplementedError):
                 import shutil
+
                 shutil.copy2(last_frame_path, last_output_path)
         output_frames.append(last_output_path)
+        # Hold the last source frame (factor-1) more times so the sequence is factor*N, not
+        # factor*(N-1)+1. That keeps duration = N / src_fps (600 frames @ 30fps -> 1200 @ 60fps).
+        for _ in range(mids_per_pair):
+            hold_path = output_dir / f"frame_{frame_counter:06d}.png"
+            if not hold_path.exists():
+                try:
+                    hold_path.symlink_to(last_frame_path.absolute())
+                except (OSError, NotImplementedError):
+                    import shutil
+
+                    shutil.copy2(last_frame_path, hold_path)
+            output_frames.append(hold_path)
+            frame_counter += 1
 
         elapsed = time.time() - start_time
         avg_fps = total_pairs / elapsed if elapsed > 0 else 0
@@ -823,15 +933,22 @@ class RIFENative:
             if cancel_event is not None and cancel_event.is_set():
                 raise RuntimeError("interpolation cancelled")
             out_path = output_dir / f"frame_{out_idx:06d}.png"
-            if frac == 0.0:
+            from src.shared.scene_cut import is_scene_cut
+
+            if frac == 0.0 or (
+                i + 1 < len(input_frames)
+                and is_scene_cut(input_frames[i], input_frames[i + 1])
+            ):
                 try:
                     out_path.symlink_to(input_frames[i].absolute())
                 except (OSError, NotImplementedError):
                     shutil.copy2(input_frames[i], out_path)
             else:
                 if cache_idx != i:
-                    cache = (self._load_frame_as_tensor(input_frames[i]),
-                             self._load_frame_as_tensor(input_frames[i + 1]))
+                    cache = (
+                        self._load_frame_as_tensor(input_frames[i]),
+                        self._load_frame_as_tensor(input_frames[i + 1]),
+                    )
                     cache_idx = i
                 mid = self._interpolate_pair(cache[0], cache[1], 0, timesteps=[frac])[0]
                 self._save_tensor_as_frame(mid, out_path)
@@ -840,14 +957,15 @@ class RIFENative:
                 progress_callback(out_idx, len(plan))
             if out_idx % 50 == 0 or out_idx == len(plan):
                 elapsed = time.time() - start_time
-                self.logger.info(f"Frame {out_idx}/{len(plan)} | {out_idx / elapsed:.2f} fps" if elapsed > 0 else f"Frame {out_idx}/{len(plan)}")
+                self.logger.info(
+                    f"Frame {out_idx}/{len(plan)} | {out_idx / elapsed:.2f} fps"
+                    if elapsed > 0
+                    else f"Frame {out_idx}/{len(plan)}"
+                )
         return output_frames
 
     def process_video(
-        self,
-        input_video: Path,
-        output_video: Path,
-        fps: Optional[float] = None
+        self, input_video: Path, output_video: Path, fps: Optional[float] = None
     ) -> Path:
         """
         Interpolate entire video file.
@@ -862,9 +980,10 @@ class RIFENative:
         """
         # import media helpers dynamically to avoid static import resolution issues
         import importlib
-        media_mod = importlib.import_module('infrastructure.media')
-        FFmpegExtractor = getattr(media_mod, 'FFmpegExtractor')
-        FFmpegAssembler = getattr(media_mod, 'FFmpegAssembler')
+
+        media_mod = importlib.import_module("infrastructure.media")
+        FFmpegExtractor = getattr(media_mod, "FFmpegExtractor")
+        FFmpegAssembler = getattr(media_mod, "FFmpegAssembler")
 
         # Create temporary directories
         import tempfile
@@ -896,7 +1015,7 @@ class RIFENative:
                 output_frames,
                 output_video,
                 fps=fps,
-                resolution=(info.width, info.height)
+                resolution=(info.width, info.height),
             )
 
             return output_video
@@ -908,31 +1027,31 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(
-        description='RIFE Interpolation (Native Python Implementation)'
+        description="RIFE Interpolation (Native Python Implementation)"
     )
-    parser.add_argument('input', help='Input file (video or directory of frames)')
-    parser.add_argument('output', help='Output file or directory')
-    parser.add_argument('factor', type=float, nargs='?', default=2.0,
-                       help='Interpolation factor (default: 2.0)')
-    parser.add_argument('--model-path', type=Path, help='Path to RIFE model')
+    parser.add_argument("input", help="Input file (video or directory of frames)")
+    parser.add_argument("output", help="Output file or directory")
+    parser.add_argument(
+        "factor",
+        type=float,
+        nargs="?",
+        default=2.0,
+        help="Interpolation factor (default: 2.0)",
+    )
+    parser.add_argument("--model-path", type=Path, help="Path to RIFE model")
 
     args = parser.parse_args()
 
     # Setup logging
     logging.basicConfig(
-        level=logging.INFO,
-        format='[%(asctime)s] %(message)s',
-        datefmt='%H:%M:%S'
+        level=logging.INFO, format="[%(asctime)s] %(message)s", datefmt="%H:%M:%S"
     )
 
     input_path = Path(args.input)
     output_path = Path(args.output)
 
     # Create processor
-    processor = RIFENative(
-        factor=args.factor,
-        model_path=args.model_path
-    )
+    processor = RIFENative(factor=args.factor, model_path=args.model_path)
 
     # Process
     if input_path.is_file():
@@ -940,7 +1059,7 @@ def main():
         processor.process_video(input_path, output_path)
     elif input_path.is_dir():
         # Directory of frames
-        frames = sorted(input_path.glob('*.png')) or sorted(input_path.glob('*.jpg'))
+        frames = sorted(input_path.glob("*.png")) or sorted(input_path.glob("*.jpg"))
         output_path.mkdir(parents=True, exist_ok=True)
         processor.process_frames(frames, output_path)
     else:
@@ -950,5 +1069,5 @@ def main():
     print(f"✅ Success: {output_path}")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
