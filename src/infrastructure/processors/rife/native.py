@@ -884,6 +884,7 @@ class RIFENative:
 
                 shutil.copy2(last_frame_path, last_output_path)
         output_frames.append(last_output_path)
+        frame_counter += 1
         # Hold the last source frame (factor-1) more times so the sequence is factor*N, not
         # factor*(N-1)+1. That keeps duration = N / src_fps (600 frames @ 30fps -> 1200 @ 60fps).
         for _ in range(mids_per_pair):

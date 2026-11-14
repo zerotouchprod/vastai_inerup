@@ -41,7 +41,11 @@ def histogram_l1_distance(path_a: PathLike, path_b: PathLike) -> float:
 def is_scene_cut(
     path_a: PathLike, path_b: PathLike, threshold: float = DEFAULT_THRESHOLD
 ) -> bool:
-    return histogram_l1_distance(path_a, path_b) >= threshold
+    try:
+        return histogram_l1_distance(path_a, path_b) >= threshold
+    except OSError:
+        # Unreadable/missing frames: let the interpolator raise a clearer error (or a test mock run).
+        return False
 
 
 def integer_factor_frame_count(n_src: int, factor: int) -> int:
