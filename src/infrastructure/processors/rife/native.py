@@ -116,7 +116,7 @@ class RIFENative:
                 import shutil
 
                 shutil.copy(warplayer_model, warplayer_root)
-                self.logger.info(f"Copied warplayer.py to root")
+                self.logger.info("Copied warplayer.py to root")
 
         # Find model directory
         model_dir = rife_repo_path / "model"
@@ -141,7 +141,7 @@ class RIFENative:
 
                 # Now try importing
                 import model
-                import model.warplayer
+                import model.warplayer  # noqa: F401
 
                 self.logger.info("✓ model.warplayer loaded successfully")
             except ImportError as e:
@@ -521,7 +521,12 @@ class RIFENative:
                             f"sm_{device_props.major}{device_props.minor}"
                         )
                         self.logger.info(
-                            f"GPU: {device_props.name} (Compute: {compute_capability}, VRAM: {device_props.total_memory / 1e9:.1f} GB)"
+                            "GPU: %s (Compute: %s, VRAM: %.1f GB)"
+                            % (
+                                device_props.name,
+                                compute_capability,
+                                device_props.total_memory / 1e9,
+                            )
                         )
 
                 except Exception as e:
@@ -625,7 +630,10 @@ class RIFENative:
             # Verify movement succeeded
             if frame1.device != model_dev or frame2.device != model_dev:
                 self.logger.warning(
-                    f"Tensor device mismatch after movement: frame1={frame1.device}, frame2={frame2.device}, expected={model_dev}"
+                    "Tensor device mismatch after movement: frame1=%s, frame2=%s, expected=%s",
+                    frame1.device,
+                    frame2.device,
+                    model_dev,
                 )
 
         except Exception as e:
@@ -634,7 +642,9 @@ class RIFENative:
                 f"Failed to move input tensors to device {model_dev}: {e}"
             )
             self.logger.error(
-                f"frame1.device={getattr(frame1, 'device', 'unknown')}, frame2.device={getattr(frame2, 'device', 'unknown')}"
+                "frame1.device=%s, frame2.device=%s",
+                getattr(frame1, "device", "unknown"),
+                getattr(frame2, "device", "unknown"),
             )
 
             # Log model parameter devices for additional context
@@ -695,7 +705,8 @@ class RIFENative:
 
                     # Log detailed device mismatch info
                     self.logger.error(
-                        "RuntimeError during RIFE inference: %s | frame1.device=%s frame2.device=%s model_param_devices=%s",
+                        "RuntimeError during RIFE inference: %s | "
+                        "frame1.device=%s frame2.device=%s model_param_devices=%s",
                         e,
                         getattr(frame1, "device", "unknown"),
                         getattr(frame2, "device", "unknown"),
@@ -714,7 +725,6 @@ class RIFENative:
         """Load image file as torch tensor."""
         try:
             import cv2
-            import numpy as np
         except ImportError as e:
             raise ImportError(
                 "opencv-python not found. Install: pip install opencv-python"
@@ -828,7 +838,7 @@ class RIFENative:
 
                 if is_scene_cut(frame1_path, frame2_path):
                     self.logger.info(
-                        f"Scene cut between pair {idx+1}/{total_pairs}: holding frame instead of interpolating"
+                        f"Scene cut between pair {idx + 1}/{total_pairs}: holding frame instead of interpolating"
                     )
                     mids = [frame1] * mids_per_pair
                 else:
@@ -848,8 +858,8 @@ class RIFENative:
                     eta = (total_pairs - idx - 1) / fps if fps > 0 else 0
 
                     self.logger.info(
-                        f"Processed {idx+1}/{total_pairs} pairs "
-                        f"({100*(idx+1)/total_pairs:.1f}%) | "
+                        f"Processed {idx + 1}/{total_pairs} pairs "
+                        f"({100 * (idx + 1) / total_pairs:.1f}%) | "
                         f"{fps:.2f} fps | "
                         f"ETA: {eta:.0f}s"
                     )
@@ -858,7 +868,9 @@ class RIFENative:
                         progress_callback(idx + 1, total_pairs)
 
             except Exception as e:
-                self.logger.error(f"Failed to process pair {idx+1}/{total_pairs}: {e}")
+                self.logger.error(
+                    f"Failed to process pair {idx + 1}/{total_pairs}: {e}"
+                )
                 raise
 
         # Copy/symlink last frame to output directory with sequential numbering
@@ -1011,7 +1023,7 @@ class RIFENative:
             # Assemble video
             self.logger.info(f"Assembling video to {output_video}")
             assembler = FFmpegAssembler()
-            result = assembler.assemble_video(
+            assembler.assemble_video(
                 output_frames,
                 output_video,
                 fps=fps,
