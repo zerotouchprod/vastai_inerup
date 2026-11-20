@@ -63,8 +63,10 @@ def _env_float(name: str, default: float) -> float:
 
 
 def _gray64(path: PathLike) -> np.ndarray:
-    image = Image.open(path).convert("L").resize(
-        (_DOWNSCALE, _DOWNSCALE), Image.Resampling.BILINEAR
+    image = (
+        Image.open(path)
+        .convert("L")
+        .resize((_DOWNSCALE, _DOWNSCALE), Image.Resampling.BILINEAR)
     )
     return np.asarray(image, dtype=np.uint8)
 
@@ -85,7 +87,7 @@ def histogram_l1_distance(path_a: PathLike, path_b: PathLike) -> float:
 
 def _gaussian_kernel(win: int = _SSIM_WIN, sigma: float = _SSIM_SIGMA) -> np.ndarray:
     axis = np.arange(win, dtype=np.float64) - (win // 2)
-    kernel = np.exp(-(axis ** 2) / (2.0 * sigma * sigma))
+    kernel = np.exp(-(axis**2) / (2.0 * sigma * sigma))
     kernel /= kernel.sum()
     return kernel
 
@@ -94,8 +96,12 @@ def _separable_conv(image: np.ndarray, kernel: np.ndarray) -> np.ndarray:
     # reflect-pad so the window is defined at the borders of a 64x64 frame
     pad = len(kernel) // 2
     padded = np.pad(image, pad, mode="reflect")
-    tmp = np.apply_along_axis(lambda row: np.convolve(row, kernel, mode="valid"), -1, padded)
-    return np.apply_along_axis(lambda col: np.convolve(col, kernel, mode="valid"), -2, tmp)
+    tmp = np.apply_along_axis(
+        lambda row: np.convolve(row, kernel, mode="valid"), -1, padded
+    )
+    return np.apply_along_axis(
+        lambda col: np.convolve(col, kernel, mode="valid"), -2, tmp
+    )
 
 
 def ssim_gray(a: np.ndarray, b: np.ndarray) -> float:
@@ -105,11 +111,11 @@ def ssim_gray(a: np.ndarray, b: np.ndarray) -> float:
     kernel = _gaussian_kernel()
     mu1 = _separable_conv(a, kernel)
     mu2 = _separable_conv(b, kernel)
-    sigma1 = _separable_conv(a * a, kernel) - mu1 ** 2
-    sigma2 = _separable_conv(b * b, kernel) - mu2 ** 2
+    sigma1 = _separable_conv(a * a, kernel) - mu1**2
+    sigma2 = _separable_conv(b * b, kernel) - mu2**2
     sigma12 = _separable_conv(a * b, kernel) - mu1 * mu2
     num = (2 * mu1 * mu2 + _SSIM_C1) * (2 * sigma12 + _SSIM_C2)
-    den = (mu1 ** 2 + mu2 ** 2 + _SSIM_C1) * (sigma1 + sigma2 + _SSIM_C2)
+    den = (mu1**2 + mu2**2 + _SSIM_C1) * (sigma1 + sigma2 + _SSIM_C2)
     return float((num / den).mean())
 
 
@@ -124,8 +130,15 @@ def pair_metrics(path_a: PathLike, path_b: PathLike) -> dict:
     b = _gray64(path_b)
     counts_a, _ = np.histogram(a, bins=_HIST_BINS, range=(0, 256), density=False)
     counts_b, _ = np.histogram(b, bins=_HIST_BINS, range=(0, 256), density=False)
-    hist = float(np.abs(counts_a.astype(np.float64) / max(1, int(counts_a.sum()))
-                        - counts_b.astype(np.float64) / max(1, int(counts_b.sum()))).sum()) / 2.0
+    hist = (
+        float(
+            np.abs(
+                counts_a.astype(np.float64) / max(1, int(counts_a.sum()))
+                - counts_b.astype(np.float64) / max(1, int(counts_b.sum()))
+            ).sum()
+        )
+        / 2.0
+    )
     return {"hist_l1": hist, "ssim": ssim_gray(a, b)}
 
 
@@ -142,11 +155,7 @@ def is_scene_cut(
     `threshold` is the hard-cut histogram L1 (same meaning as before this change).
     """
     hist_hi = DEFAULT_HIST_THRESHOLD if threshold is None else threshold
-    ssim_lo = (
-        DEFAULT_SSIM_THRESHOLD
-        if ssim_threshold is None
-        else ssim_threshold
-    )
+    ssim_lo = DEFAULT_SSIM_THRESHOLD if ssim_threshold is None else ssim_threshold
     floor = DEFAULT_HIST_FLOOR if hist_floor is None else hist_floor
     # Env overrides apply only when the caller did not pass an explicit value,
     # so existing tests that pass `threshold=` keep a stable meaning.

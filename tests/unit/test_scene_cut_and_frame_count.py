@@ -6,9 +6,15 @@ import numpy as np
 from PIL import Image
 
 from src.shared.scene_cut import (
+    DEFAULT_HIST_FLOOR,
+    DEFAULT_HIST_THRESHOLD,
+    DEFAULT_SSIM_THRESHOLD,
     histogram_l1_distance,
     integer_factor_frame_count,
     is_scene_cut,
+    pair_metrics,
+    ssim_distance,
+    ssim_gray,
 )
 from src.shared.fps_planning import plan_output_frames
 
@@ -62,16 +68,9 @@ def test_noise_frames_from_one_shot_are_not_cuts(tmp_path: Path):
 
 # --- combined SSIM + histogram detector (mahoraga regression + motion) ---
 
-from src.shared.scene_cut import (
-    DEFAULT_HIST_FLOOR,
-    DEFAULT_HIST_THRESHOLD,
-    DEFAULT_SSIM_THRESHOLD,
-    pair_metrics,
-    ssim_gray,
-    ssim_distance,
+FIXTURE_DIR = (
+    Path(__file__).resolve().parents[1] / "fixtures" / "scene_cut" / "mahoraga_64"
 )
-
-FIXTURE_DIR = Path(__file__).resolve().parents[1] / "fixtures" / "scene_cut" / "mahoraga_64"
 # 0-based indices of the first frame of each known cut in the 25 fps source.
 MAHORAGA_CUTS = ((24, 25), (25, 26), (26, 27), (55, 56))
 
@@ -144,4 +143,6 @@ def test_ssim_of_identical_frames_is_one(tmp_path: Path):
     path = tmp_path / "same.png"
     Image.new("L", (48, 48), 80).save(path)
     assert ssim_distance(path, path) == pytest.approx(1.0, abs=1e-6)
-    assert ssim_gray(np.full((32, 32), 80, dtype=np.uint8), np.full((32, 32), 80, dtype=np.uint8)) == pytest.approx(1.0, abs=1e-6)
+    assert ssim_gray(
+        np.full((32, 32), 80, dtype=np.uint8), np.full((32, 32), 80, dtype=np.uint8)
+    ) == pytest.approx(1.0, abs=1e-6)

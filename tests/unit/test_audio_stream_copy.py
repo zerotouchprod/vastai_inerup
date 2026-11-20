@@ -189,9 +189,38 @@ def test_shortest_after_make_zero_is_what_drops_trailing_packets(tmp_path: Path)
     src = tmp_path / "src.mp4"
     _make_source(src)
     raw = tmp_path / "raw.m4a"
-    _run(["ffmpeg", "-y", "-v", "error", "-i", str(src), "-vn", "-c:a", "copy", "-avoid_negative_ts", "disabled", str(raw)])
+    _run(
+        [
+            "ffmpeg",
+            "-y",
+            "-v",
+            "error",
+            "-i",
+            str(src),
+            "-vn",
+            "-c:a",
+            "copy",
+            "-avoid_negative_ts",
+            "disabled",
+            str(raw),
+        ]
+    )
     shifted = tmp_path / "shifted.m4a"
-    _run(["ffmpeg", "-y", "-v", "error", "-i", str(raw), "-c", "copy", "-avoid_negative_ts", "make_zero", str(shifted)])
+    _run(
+        [
+            "ffmpeg",
+            "-y",
+            "-v",
+            "error",
+            "-i",
+            str(raw),
+            "-c",
+            "copy",
+            "-avoid_negative_ts",
+            "make_zero",
+            str(shifted),
+        ]
+    )
     video = tmp_path / "processed.mp4"
     _run(
         [
