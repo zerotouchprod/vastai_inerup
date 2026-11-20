@@ -23,7 +23,7 @@ steps:
     image: python:3.10-slim
     commands:
       - apt-get update -qq && apt-get install -y -qq ffmpeg >/dev/null
-      - pip install -q pytest "numpy<2" "opencv-python-headless<5" requests pyyaml pydantic
+      - pip install -q pytest "numpy<2" "opencv-python-headless<5" pillow requests pyyaml pydantic
       - python -m compileall -q src/serverless
       - python -m pytest tests/unit/test_serverless.py -q
 
