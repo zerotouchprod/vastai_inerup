@@ -97,10 +97,19 @@ class AudioPreserver:
                 f"Audio track detected: codec={codec}, duration={duration:.2f}s, bitrate={bitrate}kbps"
             )
 
-            # Extract audio stream
+            # Extract audio stream. Keep the source timestamps (including a
+            # negative AAC priming offset). The default MP4/M4A muxer may
+            # otherwise apply -avoid_negative_ts make_zero, which stretches
+            # the packet timeline past the video duration and then loses the
+            # last packets at merge when -shortest is also set.
             stream = ffmpeg.input(str(video_path))
             audio = stream.audio
-            output = ffmpeg.output(audio, str(output_path), acodec="copy")
+            output = ffmpeg.output(
+                audio,
+                str(output_path),
+                acodec="copy",
+                avoid_negative_ts="disabled",
+            )
 
             # Run extraction
             ffmpeg.run(
@@ -155,15 +164,20 @@ class AudioPreserver:
             video = ffmpeg.input(str(video_path))
             audio = ffmpeg.input(str(audio_path))
 
-            # Merge streams
+            # Stream-copy the sidecar (already extracted with acodec=copy).
+            # Do not pass -shortest: after a make_zero timestamp shift the
+            # audio timeline is ~encoder-delay longer than the video, and
+            # -shortest then drops the last AAC packets (131→129 on a 3 s
+            # 44.1 kHz source: audio duration 2.995374 s). Do not rewrite
+            # negative timestamps either, so priming stays in place and
+            # A/V duration remains the video length.
             output = ffmpeg.output(
                 video.video,  # Video stream
                 audio.audio,  # Audio stream
                 str(output_path),
                 vcodec=video_codec,  # Don't re-encode video (fast)
-                acodec=self.audio_codec,  # Re-encode audio to target codec
-                audio_bitrate=self.audio_bitrate,
-                shortest=None,  # Match shortest stream duration
+                acodec="copy",
+                avoid_negative_ts="disabled",
             )
 
             # Run merge

@@ -93,8 +93,8 @@ class VideoProcessingOrchestrator:
 
                     # .m4a/.mka instead of raw ADTS .aac: a container
                     # duration is exact, ADTS duration is a bitrate guess.
-                    # (The merge uses -shortest on real timestamps; no code
-                    # path trims by the probed duration, it is log-only.)
+                    # Merge stream-copies the sidecar and does not use
+                    # -shortest (that flag dropped trailing AAC packets).
                     from src.infrastructure.video.audio_handler import (
                         audio_sidecar_name,
                     )
