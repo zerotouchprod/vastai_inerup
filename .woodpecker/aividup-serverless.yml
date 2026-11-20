@@ -9,6 +9,9 @@ when:
       include:
         - 'src/serverless/**'
         - 'src/worker/processors.py'
+        - 'src/shared/scene_cut.py'
+        - 'src/infrastructure/processors/rife/**'
+        - 'src/infrastructure/video/**'
         - 'src/infrastructure/media/**'
         - 'tests/unit/test_serverless.py'
         - 'tests/fixtures/sls_fake_child.py'
